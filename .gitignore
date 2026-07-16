@@ -1,0 +1,25 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.vite/
+*.log
+.DS_Store
+
+# Local design and research artifacts
+.codex-*
+/Show
+*.md
+!README.md
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

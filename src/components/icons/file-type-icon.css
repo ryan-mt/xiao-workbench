@@ -1,0 +1,28 @@
+.file-type-icon {
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+  shape-rendering: geometricPrecision;
+}
+
+.file-type-icon text {
+  fill: #ffffff;
+  font-family: Arial, sans-serif;
+  font-size: 6.6px;
+  font-weight: 700;
+  letter-spacing: -0.35px;
+}
+
+.file-type-icon text.is-dark {
+  fill: #292929;
+}
+
+.file-type-icon text.is-rust {
+  fill: #9a3f1e;
+  font-size: 8px;
+}
+
+.file-type-icon text.is-wide {
+  font-size: 5.8px;
+  letter-spacing: -0.55px;
+}
