@@ -391,6 +391,7 @@ export const titleFromPrompt = (prompt: string) => {
 export function useAgentRuntime(
   workspacePath: string,
   activeTaskId: string,
+  activeTaskExecutionKey: string,
   activeTaskTitle: string,
   activeTaskTimeline: TimelineEntry[],
   activeTaskModel: string | null,
@@ -424,6 +425,7 @@ export function useAgentRuntime(
   const sessionIds = useRef(new Map<string, string>());
   const sessionModels = useRef(new Map<string, string | null>());
   const sessionRequestedModels = useRef(new Map<string, string | null>());
+  const sessionExecutionKeys = useRef(new Map<string, string>());
   const syncedGoals = useRef(new Map<string, string>());
   const threadTasks = useRef(new Map<string, string>());
   const liveAgentEntries = useRef(new Map<string, string>());
@@ -506,6 +508,16 @@ export function useAgentRuntime(
     activeTaskIdRef.current = activeTaskId;
     timelineCache.current.set(activeTaskId, activeTaskTimeline);
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
+    const sessionExecutionKey = sessionExecutionKeys.current.get(activeTaskId);
+    if (sessionExecutionKey && sessionExecutionKey !== activeTaskExecutionKey) {
+      const staleThreadId = sessionIds.current.get(activeTaskId);
+      if (staleThreadId) threadTasks.current.delete(staleThreadId);
+      sessionIds.current.delete(activeTaskId);
+      sessionModels.current.delete(activeTaskId);
+      sessionRequestedModels.current.delete(activeTaskId);
+      sessionExecutionKeys.current.delete(activeTaskId);
+      syncedGoals.current.delete(activeTaskId);
+    }
     setRuntime((current) => ({
       ...current,
       threadId:
@@ -513,7 +525,12 @@ export function useAgentRuntime(
           ? current.threadId
           : sessionIds.current.get(activeTaskId) ?? null,
     }));
-  }, [activeTaskApprovalPolicy, activeTaskId, activeTaskTimeline]);
+  }, [
+    activeTaskApprovalPolicy,
+    activeTaskExecutionKey,
+    activeTaskId,
+    activeTaskTimeline,
+  ]);
 
   const updateTimeline = useCallback(
     (taskId: string, update: (current: TimelineEntry[]) => TimelineEntry[]) => {
@@ -683,7 +700,7 @@ export function useAgentRuntime(
       void nativeBridge.discardGitCheckpoint(staleCheckpoint.token).catch(() => undefined);
     }
     try {
-      const checkpoint = await nativeBridge.createGitCheckpoint(turnWorkspacePath);
+      const checkpoint = await nativeBridge.createGitCheckpoint(turnWorkspacePath, taskId);
       turnCheckpoints.current.set(taskId, { token: checkpoint, workspacePath: turnWorkspacePath });
     } catch (reason) {
       appendRuntimeLog(
@@ -702,7 +719,11 @@ export function useAgentRuntime(
     }));
     let response: TurnStartResponse;
     try {
-      response = await nativeBridge.agentRequest<TurnStartResponse>("turn/start", params);
+      response = await nativeBridge.agentRequest<TurnStartResponse>(
+        "turn/start",
+        params,
+        { projectPath: turnWorkspacePath, taskId },
+      );
     } catch (reason) {
       const checkpoint = turnCheckpoints.current.get(taskId);
       turnCheckpoints.current.delete(taskId);
@@ -1218,6 +1239,7 @@ export function useAgentRuntime(
           try {
             checkpointTurnDiff = await nativeBridge.finishGitCheckpoint(
               checkpoint.workspacePath,
+              taskId,
               checkpoint.token,
             );
           } catch (reason) {
@@ -1328,6 +1350,7 @@ export function useAgentRuntime(
                 sessionIds.current.clear();
                sessionModels.current.clear();
                sessionRequestedModels.current.clear();
+               sessionExecutionKeys.current.clear();
               threadTasks.current.clear();
               liveAgentEntries.current.clear();
               activeThinkingEntries.current.clear();
@@ -1506,10 +1529,13 @@ export function useAgentRuntime(
           sessionRequestedModels.current.has(activeTaskId),
           sessionRequestedModels.current.get(activeTaskId),
           activeTaskModel,
+          sessionExecutionKeys.current.get(activeTaskId),
+          activeTaskExecutionKey,
         );
         if (needsSession) {
           const session = await nativeBridge.startXiaoSession(
             workspacePath,
+            activeTaskId,
             activeTaskModel,
             historyFromTimeline(currentTimeline),
             threadId ?? null,
@@ -1521,6 +1547,7 @@ export function useAgentRuntime(
           sessionIds.current.set(activeTaskId, threadId);
           sessionModels.current.set(activeTaskId, session.model);
           sessionRequestedModels.current.set(activeTaskId, activeTaskModel);
+          sessionExecutionKeys.current.set(activeTaskId, activeTaskExecutionKey);
           threadTasks.current.set(threadId, activeTaskId);
           syncedGoals.current.delete(activeTaskId);
           updateTimeline(activeTaskId, invalidateUndoHistory);
@@ -1593,6 +1620,7 @@ export function useAgentRuntime(
     [
       activeTaskId,
       activeTaskApprovalPolicy,
+      activeTaskExecutionKey,
       activeTaskGoal,
       activeTaskMode,
       activeTaskModel,
@@ -1730,9 +1758,9 @@ export function useAgentRuntime(
     setRuntime((current) => ({ ...current, error: null }));
     try {
       if (patch.trim()) {
-        await nativeBridge.applyGitPatch(workspacePath, patch, true, true);
+        await nativeBridge.applyGitPatch(workspacePath, activeTaskId, patch, true, true);
         stage = "files";
-        await nativeBridge.applyGitPatch(workspacePath, patch, true, false);
+        await nativeBridge.applyGitPatch(workspacePath, activeTaskId, patch, true, false);
         patchReverted = true;
       }
 
@@ -1762,8 +1790,8 @@ export function useAgentRuntime(
 
       if (patchReverted) {
         try {
-          await nativeBridge.applyGitPatch(workspacePath, patch, false, true);
-          await nativeBridge.applyGitPatch(workspacePath, patch, false, false);
+          await nativeBridge.applyGitPatch(workspacePath, activeTaskId, patch, false, true);
+          await nativeBridge.applyGitPatch(workspacePath, activeTaskId, patch, false, false);
           message += " Xiao restored the workspace changes.";
         } catch (restoreReason) {
           const restoreFailure = restoreReason instanceof Error

@@ -6,14 +6,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::execution::models::{
+    ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
+    NewManagedWorktreeRecord, TaskExecutionBinding,
+};
 
 use super::models::{
     XiaoLegacyStore, XiaoProjectSummary, XiaoTaskDocument, XiaoThreadBinding,
-    XiaoThreadPersistence, XiaoTimelinePage, XiaoWorkspaceDocument, XiaoWorkspaceUpdate,
-    XIAO_DATABASE_SCHEMA_VERSION, XIAO_SCHEMA_VERSION,
+    XiaoThreadPersistence, XiaoTimelinePage, XiaoWorkspaceDocument, XiaoWorkspaceMode,
+    XiaoWorkspaceUpdate, XIAO_DATABASE_SCHEMA_VERSION, XIAO_SCHEMA_VERSION,
 };
 
 const DATABASE_FILE_NAME: &str = "xiao-state.sqlite3";
@@ -127,7 +135,62 @@ CREATE TABLE run_events (
 );
 "#;
 
+const MIGRATION_2_SQL: &str = r#"
+ALTER TABLE workspaces ADD COLUMN public_id TEXT;
+CREATE UNIQUE INDEX workspaces_by_public_id ON workspaces(public_id);
+
+CREATE TABLE execution_environments (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('windows')),
+    label TEXT NOT NULL,
+    workspace_root TEXT NOT NULL,
+    availability TEXT NOT NULL CHECK (availability IN ('available', 'unavailable')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE TABLE managed_worktrees (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    run_id TEXT,
+    repository_root TEXT NOT NULL,
+    repository_common_dir_sha256 TEXT NOT NULL,
+    checkout_path TEXT NOT NULL UNIQUE,
+    execution_root TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    owner_marker_path TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN (
+        'preparing', 'active', 'removing', 'failed', 'removed'
+    )),
+    failure_reason TEXT,
+    created_at INTEGER NOT NULL,
+    removed_at INTEGER,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL,
+    UNIQUE (repository_root, branch)
+);
+
+CREATE UNIQUE INDEX managed_worktrees_one_live_per_task
+    ON managed_worktrees(workspace_id, task_id)
+    WHERE status IN ('preparing', 'active', 'removing');
+CREATE INDEX managed_worktrees_by_workspace_status
+    ON managed_worktrees(workspace_id, status, created_at DESC);
+
+ALTER TABLE tasks ADD COLUMN execution_environment_id TEXT
+    REFERENCES execution_environments(id);
+ALTER TABLE tasks ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'local'
+    CHECK (workspace_mode IN ('local', 'managed-worktree'));
+ALTER TABLE tasks ADD COLUMN managed_worktree_id TEXT
+    REFERENCES managed_worktrees(id);
+"#;
+
 pub struct XiaoRepository {
+    app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
 }
 
@@ -145,12 +208,14 @@ impl XiaoRepository {
     pub fn initialize(app_data_dir: PathBuf) -> Self {
         match open_connection(&app_data_dir, RepositoryOpenOptions::default()) {
             Ok(connection) => Self {
+                app_data_dir,
                 state: Mutex::new(RepositoryState {
                     connection: Some(connection),
                     initialization_error: None,
                 }),
             },
             Err(error) => Self {
+                app_data_dir,
                 state: Mutex::new(RepositoryState {
                     connection: None,
                     initialization_error: Some(error),
@@ -160,7 +225,7 @@ impl XiaoRepository {
     }
 
     #[cfg(test)]
-    fn open(app_data_dir: &Path) -> Result<Self, String> {
+    pub(crate) fn open(app_data_dir: &Path) -> Result<Self, String> {
         Self::open_with_options(app_data_dir, RepositoryOpenOptions::default())
     }
 
@@ -171,6 +236,7 @@ impl XiaoRepository {
     ) -> Result<Self, String> {
         let connection = open_connection(app_data_dir, options)?;
         Ok(Self {
+            app_data_dir: app_data_dir.to_path_buf(),
             state: Mutex::new(RepositoryState {
                 connection: Some(connection),
                 initialization_error: None,
@@ -241,6 +307,275 @@ impl XiaoRepository {
     pub fn list_projects(&self) -> Result<Vec<XiaoProjectSummary>, String> {
         self.with_connection(list_projects_from_connection)
     }
+
+    pub(crate) fn app_data_dir(&self) -> PathBuf {
+        self.app_data_dir.clone()
+    }
+
+    pub(crate) fn task_execution_binding(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+    ) -> Result<TaskExecutionBinding, String> {
+        self.with_connection(|connection| {
+            load_task_execution_binding(
+                connection,
+                &normalize_workspace_path(workspace_path),
+                task_id,
+            )
+        })
+    }
+
+    pub(crate) fn begin_managed_worktree(
+        &self,
+        record: NewManagedWorktreeRecord,
+    ) -> Result<(), String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start managed worktree setup: {error}"))?;
+            let (workspace_mode, managed_worktree_id): (String, Option<String>) = transaction
+                .query_row(
+                    r#"SELECT workspace_mode, managed_worktree_id FROM tasks
+                     WHERE workspace_id = ?1 AND task_id = ?2"#,
+                    params![record.workspace_id, record.task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| format!("Could not load task worktree binding: {error}"))?;
+            if workspace_mode != "local" || managed_worktree_id.is_some() {
+                return Err("The Xiao task already has an execution worktree.".to_owned());
+            }
+            transaction
+                .execute(
+                    r#"INSERT INTO managed_worktrees(
+                        id, workspace_id, task_id, run_id, repository_root,
+                        repository_common_dir_sha256, checkout_path, execution_root,
+                        branch, base_commit, owner_marker_path, status, failure_reason,
+                        created_at, removed_at
+                     ) VALUES (
+                        ?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                        'preparing', NULL, ?11, NULL
+                     )"#,
+                    params![
+                        record.id,
+                        record.workspace_id,
+                        record.task_id,
+                        record.repository_root,
+                        record.repository_common_dir_sha256,
+                        record.checkout_path,
+                        record.execution_root,
+                        record.branch,
+                        record.base_commit,
+                        record.owner_marker_path,
+                        record.created_at
+                    ],
+                )
+                .map_err(|error| {
+                    format!("Could not reserve managed worktree ownership: {error}")
+                })?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit managed worktree setup: {error}"))
+        })
+    }
+
+    pub(crate) fn activate_managed_worktree(
+        &self,
+        worktree_id: &str,
+        checkout_path: &str,
+        execution_root: &str,
+        owner_marker_path: &str,
+    ) -> Result<(), String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start worktree activation: {error}"))?;
+            let (workspace_id, task_id, status): (i64, String, String) = transaction
+                .query_row(
+                    "SELECT workspace_id, task_id, status FROM managed_worktrees WHERE id = ?1",
+                    [worktree_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| format!("Could not load prepared worktree: {error}"))?;
+            if status != "preparing" {
+                return Err("The managed worktree is not awaiting activation.".to_owned());
+            }
+            let changed = transaction
+                .execute(
+                    r#"UPDATE managed_worktrees SET
+                        checkout_path = ?1, execution_root = ?2, owner_marker_path = ?3,
+                        status = 'active', failure_reason = NULL
+                     WHERE id = ?4 AND status = 'preparing'"#,
+                    params![
+                        checkout_path,
+                        execution_root,
+                        owner_marker_path,
+                        worktree_id
+                    ],
+                )
+                .map_err(|error| format!("Could not activate managed worktree record: {error}"))?;
+            if changed != 1 {
+                return Err(
+                    "Managed worktree activation lost its ownership reservation.".to_owned(),
+                );
+            }
+            let task_changed = transaction
+                .execute(
+                    r#"UPDATE tasks SET workspace_mode = 'managed-worktree',
+                        managed_worktree_id = ?1
+                     WHERE workspace_id = ?2 AND task_id = ?3
+                       AND workspace_mode = 'local' AND managed_worktree_id IS NULL"#,
+                    params![worktree_id, workspace_id, task_id],
+                )
+                .map_err(|error| format!("Could not bind task to managed worktree: {error}"))?;
+            if task_changed != 1 {
+                return Err("The Xiao task execution binding changed during setup.".to_owned());
+            }
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit worktree activation: {error}"))
+        })
+    }
+
+    pub(crate) fn fail_managed_worktree(
+        &self,
+        worktree_id: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        let reason = bounded_diagnostic(reason);
+        self.with_connection(|connection| {
+            connection
+                .execute(
+                    r#"UPDATE managed_worktrees SET status = 'failed', failure_reason = ?1
+                     WHERE id = ?2 AND status = 'preparing'"#,
+                    params![reason, worktree_id],
+                )
+                .map_err(|error| format!("Could not record managed worktree failure: {error}"))?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn begin_managed_worktree_removal(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+        worktree_id: &str,
+    ) -> Result<ManagedWorktreeRecord, String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start managed worktree removal: {error}"))?;
+            let binding = load_task_execution_binding(
+                &transaction,
+                &normalize_workspace_path(workspace_path),
+                task_id,
+            )?;
+            let record = binding
+                .managed_worktree
+                .ok_or("The Xiao task has no managed worktree.")?;
+            if record.id != worktree_id {
+                return Err("The managed worktree does not belong to this task.".to_owned());
+            }
+            match record.status {
+                ManagedWorktreeStatus::Active => {
+                    let changed = transaction
+                        .execute(
+                            "UPDATE managed_worktrees SET status = 'removing' WHERE id = ?1 AND status = 'active'",
+                            [worktree_id],
+                        )
+                        .map_err(|error| format!("Could not reserve worktree removal: {error}"))?;
+                    if changed != 1 {
+                        return Err("Managed worktree removal reservation was lost.".to_owned());
+                    }
+                }
+                ManagedWorktreeStatus::Removing => {}
+                _ => return Err("Only active managed worktrees can be removed.".to_owned()),
+            }
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit worktree removal intent: {error}"))?;
+            Ok(ManagedWorktreeRecord {
+                status: ManagedWorktreeStatus::Removing,
+                ..record
+            })
+        })
+    }
+
+    pub(crate) fn finish_managed_worktree_removal(&self, worktree_id: &str) -> Result<(), String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not finish managed worktree removal: {error}"))?;
+            let (workspace_id, task_id, status): (i64, String, String) = transaction
+                .query_row(
+                    "SELECT workspace_id, task_id, status FROM managed_worktrees WHERE id = ?1",
+                    [worktree_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| format!("Could not load removing worktree: {error}"))?;
+            if status != "removing" {
+                return Err("The managed worktree is not reserved for removal.".to_owned());
+            }
+            let environment_id: String = transaction
+                .query_row(
+                    "SELECT id FROM execution_environments WHERE workspace_id = ?1",
+                    [workspace_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not restore local task environment: {error}"))?;
+            let task_changed = transaction
+                .execute(
+                    r#"UPDATE tasks SET execution_environment_id = ?1,
+                        workspace_mode = 'local', managed_worktree_id = NULL
+                     WHERE workspace_id = ?2 AND task_id = ?3
+                       AND managed_worktree_id = ?4"#,
+                    params![environment_id, workspace_id, task_id, worktree_id],
+                )
+                .map_err(|error| format!("Could not restore task Local mode: {error}"))?;
+            if task_changed != 1 {
+                return Err("The task no longer matches the removing worktree.".to_owned());
+            }
+            transaction
+                .execute(
+                    r#"UPDATE managed_worktrees SET status = 'removed', removed_at = ?1,
+                        failure_reason = NULL WHERE id = ?2 AND status = 'removing'"#,
+                    params![now_millis()?, worktree_id],
+                )
+                .map_err(|error| format!("Could not mark managed worktree removed: {error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit managed worktree removal: {error}"))
+        })
+    }
+
+    pub(crate) fn list_managed_worktree_records(
+        &self,
+        workspace_path: &str,
+    ) -> Result<Vec<ManagedWorktreeRecord>, String> {
+        self.with_connection(|connection| {
+            let workspace_id = workspace_id(connection, &normalize_workspace_path(workspace_path))?;
+            let mut statement = connection
+                .prepare(
+                    r#"SELECT id, workspace_id, task_id, run_id, repository_root,
+                        repository_common_dir_sha256, checkout_path, execution_root,
+                        branch, base_commit, owner_marker_path, status, failure_reason,
+                        created_at, removed_at
+                     FROM managed_worktrees
+                     WHERE workspace_id = ?1 AND status != 'removed'
+                     ORDER BY created_at DESC"#,
+                )
+                .map_err(|error| format!("Could not prepare managed worktree list: {error}"))?;
+            let rows = statement
+                .query_map([workspace_id], managed_worktree_from_row)
+                .map_err(|error| format!("Could not query managed worktrees: {error}"))?;
+            rows.map(|row| {
+                let row =
+                    row.map_err(|error| format!("Could not decode managed worktree: {error}"))?;
+                decode_managed_worktree(row)
+            })
+            .collect()
+        })
+    }
 }
 
 fn open_connection(
@@ -277,8 +612,26 @@ fn configure_connection(connection: &mut Connection) -> Result<(), String> {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| format!("Could not enable Xiao database foreign keys: {error}"))?;
-    let journal_mode: String = connection
-        .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+    let journal_mode = (0..20)
+        .find_map(|attempt| {
+            match connection.query_row("PRAGMA journal_mode = WAL", [], |row| {
+                row.get::<_, String>(0)
+            }) {
+                Ok(mode) => Some(Ok(mode)),
+                Err(error)
+                    if attempt < 19
+                        && matches!(
+                            error.sqlite_error_code(),
+                            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                        ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(25));
+                    None
+                }
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .expect("WAL configuration retry loop must return on its final attempt")
         .map_err(|error| format!("Could not enable Xiao database WAL mode: {error}"))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
         return Err(format!(
@@ -316,7 +669,14 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         ));
     }
 
-    let migrations = [(1_i64, "durable_workspace_and_run_store", MIGRATION_1_SQL)];
+    let migrations = [
+        (1_i64, "durable_workspace_and_run_store", MIGRATION_1_SQL),
+        (
+            2_i64,
+            "execution_environments_and_managed_worktrees",
+            MIGRATION_2_SQL,
+        ),
+    ];
     for (version, name, sql) in migrations {
         let already_applied = connection
             .query_row(
@@ -352,6 +712,9 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         transaction
             .execute_batch(sql)
             .map_err(|error| format!("Could not apply Xiao migration {version}: {error}"))?;
+        if version == 2 {
+            backfill_execution_environments(&transaction)?;
+        }
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -361,6 +724,85 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         transaction
             .commit()
             .map_err(|error| format!("Could not commit Xiao migration {version}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn backfill_execution_environments(transaction: &Transaction<'_>) -> Result<(), String> {
+    let workspaces = {
+        let mut statement = transaction
+            .prepare("SELECT id, workspace_path, public_id FROM workspaces ORDER BY id")
+            .map_err(|error| {
+                format!("Could not prepare execution environment backfill: {error}")
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|error| format!("Could not query execution environment backfill: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not decode execution environment backfill: {error}"))?
+    };
+    let timestamp = now_millis()?;
+    for (workspace_id, workspace_path, existing_public_id) in workspaces {
+        let public_id = existing_public_id.unwrap_or_else(new_uuid_v7);
+        transaction
+            .execute(
+                "UPDATE workspaces SET public_id = ?1 WHERE id = ?2",
+                params![public_id, workspace_id],
+            )
+            .map_err(|error| format!("Could not assign Xiao workspace identity: {error}"))?;
+        let environment_id = new_uuid_v7();
+        let availability = if Path::new(&workspace_path).is_dir() {
+            "available"
+        } else {
+            "unavailable"
+        };
+        transaction
+            .execute(
+                r#"INSERT INTO execution_environments(
+                    id, workspace_id, kind, label, workspace_root, availability,
+                    created_at, updated_at
+                 ) VALUES (?1, ?2, 'windows', 'Windows local', ?3, ?4, ?5, ?5)"#,
+                params![
+                    environment_id,
+                    workspace_id,
+                    workspace_path,
+                    availability,
+                    timestamp
+                ],
+            )
+            .map_err(|error| format!("Could not backfill Xiao execution environment: {error}"))?;
+        transaction
+            .execute(
+                r#"UPDATE tasks SET execution_environment_id = ?1,
+                    workspace_mode = 'local', managed_worktree_id = NULL
+                 WHERE workspace_id = ?2"#,
+                params![environment_id, workspace_id],
+            )
+            .map_err(|error| format!("Could not bind Xiao tasks to local execution: {error}"))?;
+    }
+
+    let incomplete_workspaces: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE public_id IS NULL OR public_id = ''",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not verify Xiao workspace identities: {error}"))?;
+    let incomplete_tasks: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE execution_environment_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not verify Xiao task environments: {error}"))?;
+    if incomplete_workspaces != 0 || incomplete_tasks != 0 {
+        return Err("Execution environment migration verification failed.".to_owned());
     }
     Ok(())
 }
@@ -661,6 +1103,9 @@ fn prepare_legacy_document(document: &mut XiaoWorkspaceDocument) {
         task.timeline_complete = true;
         task.timeline_start = 0;
         task.timeline_entry_count = task.timeline.len();
+        task.execution_environment_id = None;
+        task.workspace_mode = XiaoWorkspaceMode::Local;
+        task.managed_worktree_id = None;
     }
 }
 
@@ -690,13 +1135,19 @@ fn apply_workspace_update(
 
     transaction
         .execute(
-            r#"INSERT INTO workspaces(workspace_path, active_task_id, show_archived, updated_at)
-             VALUES (?1, NULL, ?2, 0)
+            r#"INSERT INTO workspaces(
+                workspace_path, active_task_id, show_archived, updated_at, public_id
+             ) VALUES (?1, NULL, ?2, 0, ?3)
              ON CONFLICT(workspace_path) DO NOTHING"#,
-            params![update.workspace_path, bool_to_i64(update.show_archived)],
+            params![
+                update.workspace_path,
+                bool_to_i64(update.show_archived),
+                new_uuid_v7()
+            ],
         )
         .map_err(|error| format!("Could not create Xiao workspace record: {error}"))?;
     let workspace_id = workspace_id(transaction, &update.workspace_path)?;
+    let environment = ensure_local_environment(transaction, workspace_id, &update.workspace_path)?;
     let existing_task_ids = task_ids(transaction, workspace_id)?;
 
     for task in &mut update.tasks {
@@ -708,7 +1159,7 @@ fn apply_workspace_update(
                 task.id
             ));
         }
-        upsert_task(transaction, workspace_id, task)?;
+        upsert_task(transaction, workspace_id, &environment.id, task)?;
         if task.timeline_complete {
             replace_task_timeline_if_changed(transaction, workspace_id, task)?;
         }
@@ -716,6 +1167,19 @@ fn apply_workspace_update(
 
     let desired_ids = update.task_ids.iter().cloned().collect::<HashSet<_>>();
     for existing_id in existing_task_ids.difference(&desired_ids) {
+        let owned_worktrees: i64 = transaction
+            .query_row(
+                r#"SELECT COUNT(*) FROM managed_worktrees
+                 WHERE workspace_id = ?1 AND task_id = ?2 AND status != 'removed'"#,
+                params![workspace_id, existing_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect task worktree ownership: {error}"))?;
+        if owned_worktrees != 0 {
+            return Err(format!(
+                "Clean up Xiao-managed worktrees before removing task `{existing_id}`."
+            ));
+        }
         transaction
             .execute(
                 "DELETE FROM tasks WHERE workspace_id = ?1 AND task_id = ?2",
@@ -857,6 +1321,7 @@ fn prepare_task_for_save(task: &mut XiaoTaskDocument) -> Result<(), String> {
 fn upsert_task(
     connection: &Connection,
     workspace_id: i64,
+    execution_environment_id: &str,
     task: &XiaoTaskDocument,
 ) -> Result<(), String> {
     let follow_ups_json = json_string(&task.follow_ups, "task follow-ups")?;
@@ -868,8 +1333,12 @@ fn upsert_task(
             r#"INSERT INTO tasks(
                 workspace_id, task_id, position, title, created_at, updated_at, draft_text,
                 follow_ups_json, archived, pinned, unread, model, reasoning_effort,
-                thread_binding_json, mode, approval_policy, sandbox_mode, goal_json, plan_json
-             ) VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                thread_binding_json, mode, approval_policy, sandbox_mode, goal_json, plan_json,
+                execution_environment_id, workspace_mode, managed_worktree_id
+             ) VALUES (
+                ?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'local', NULL
+             )
              ON CONFLICT(workspace_id, task_id) DO UPDATE SET
                 title = excluded.title, created_at = excluded.created_at,
                 updated_at = excluded.updated_at, draft_text = excluded.draft_text,
@@ -898,6 +1367,7 @@ fn upsert_task(
                 task.sandbox_mode,
                 goal_json,
                 plan_json,
+                execution_environment_id,
             ],
         )
         .map_err(|error| format!("Could not save Xiao task `{}`: {error}", task.id))?;
@@ -1029,7 +1499,8 @@ fn load_task_metadata(
                 t.task_id, t.title, t.created_at, t.updated_at, t.draft_text,
                 t.follow_ups_json, t.archived, t.pinned, t.unread, t.model,
                 t.reasoning_effort, t.thread_binding_json, t.mode, t.approval_policy,
-                t.sandbox_mode, t.goal_json, t.plan_json, t.timeline_entry_count
+                t.sandbox_mode, t.goal_json, t.plan_json, t.timeline_entry_count,
+                t.execution_environment_id, t.workspace_mode, t.managed_worktree_id
              FROM tasks t WHERE t.workspace_id = ?1 ORDER BY t.position ASC"#,
         )
         .map_err(|error| format!("Could not prepare Xiao task load: {error}"))?;
@@ -1054,6 +1525,9 @@ fn load_task_metadata(
                 goal_json: row.get(15)?,
                 plan_json: row.get(16)?,
                 timeline_entry_count: row.get(17)?,
+                execution_environment_id: row.get(18)?,
+                workspace_mode: row.get(19)?,
+                managed_worktree_id: row.get(20)?,
             })
         })
         .map_err(|error| format!("Could not query Xiao tasks: {error}"))?;
@@ -1084,6 +1558,9 @@ struct StoredTaskRow {
     goal_json: Option<String>,
     plan_json: Option<String>,
     timeline_entry_count: i64,
+    execution_environment_id: Option<String>,
+    workspace_mode: String,
+    managed_worktree_id: Option<String>,
 }
 
 impl StoredTaskRow {
@@ -1116,6 +1593,9 @@ impl StoredTaskRow {
             timeline_start: timeline_entry_count,
             timeline_entry_count,
             plan: parse_optional_json(self.plan_json.as_deref(), "task plan")?,
+            execution_environment_id: self.execution_environment_id,
+            workspace_mode: XiaoWorkspaceMode::from_database(&self.workspace_mode)?,
+            managed_worktree_id: self.managed_worktree_id,
         })
     }
 }
@@ -1210,6 +1690,164 @@ fn load_timeline_page_by_id(
     })
 }
 
+fn load_task_execution_binding(
+    connection: &Connection,
+    workspace_path: &str,
+    task_id: &str,
+) -> Result<TaskExecutionBinding, String> {
+    let row = connection
+        .query_row(
+            r#"SELECT
+                w.id, w.public_id, w.workspace_path, t.task_id, t.workspace_mode,
+                e.id, e.kind, e.label, e.workspace_root, e.availability,
+                t.managed_worktree_id
+             FROM workspaces w
+             JOIN tasks t ON t.workspace_id = w.id
+             JOIN execution_environments e ON e.id = t.execution_environment_id
+             WHERE w.workspace_path = ?1 AND t.task_id = ?2"#,
+            params![workspace_path, task_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not load task execution binding: {error}"))?
+        .ok_or_else(|| format!("Xiao task `{task_id}` was not found in this workspace."))?;
+    let (
+        workspace_id,
+        workspace_public_id,
+        project_path,
+        task_id,
+        workspace_mode,
+        environment_id,
+        environment_kind,
+        environment_label,
+        environment_root,
+        environment_availability,
+        managed_worktree_id,
+    ) = row;
+    let workspace_public_id = workspace_public_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("The Xiao workspace is missing its durable identity.")?;
+    let workspace_mode = XiaoWorkspaceMode::from_database(&workspace_mode)?;
+    let managed_worktree = match managed_worktree_id {
+        Some(worktree_id) => {
+            let stored = connection
+                .query_row(
+                    r#"SELECT id, workspace_id, task_id, run_id, repository_root,
+                        repository_common_dir_sha256, checkout_path, execution_root,
+                        branch, base_commit, owner_marker_path, status, failure_reason,
+                        created_at, removed_at
+                     FROM managed_worktrees
+                     WHERE id = ?1 AND workspace_id = ?2 AND task_id = ?3"#,
+                    params![worktree_id, workspace_id, task_id],
+                    managed_worktree_from_row,
+                )
+                .optional()
+                .map_err(|error| format!("Could not load task managed worktree: {error}"))?
+                .ok_or("The task references a missing managed worktree record.")?;
+            Some(decode_managed_worktree(stored)?)
+        }
+        None => None,
+    };
+    match workspace_mode {
+        XiaoWorkspaceMode::Local if managed_worktree.is_some() => {
+            return Err("A Local task cannot reference a managed worktree.".to_owned());
+        }
+        XiaoWorkspaceMode::ManagedWorktree if managed_worktree.is_none() => {
+            return Err("The managed task has no owned worktree record.".to_owned());
+        }
+        _ => {}
+    }
+    Ok(TaskExecutionBinding {
+        workspace_id,
+        workspace_public_id,
+        project_path,
+        task_id,
+        workspace_mode,
+        environment: ExecutionEnvironmentRecord {
+            id: environment_id,
+            kind: environment_kind,
+            label: environment_label,
+            workspace_root: environment_root,
+            availability: environment_availability,
+        },
+        managed_worktree,
+    })
+}
+
+struct StoredManagedWorktreeRow {
+    id: String,
+    workspace_id: i64,
+    task_id: String,
+    run_id: Option<String>,
+    repository_root: String,
+    repository_common_dir_sha256: String,
+    checkout_path: String,
+    execution_root: String,
+    branch: String,
+    base_commit: String,
+    owner_marker_path: String,
+    status: String,
+    failure_reason: Option<String>,
+    created_at: i64,
+    removed_at: Option<i64>,
+}
+
+fn managed_worktree_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredManagedWorktreeRow> {
+    Ok(StoredManagedWorktreeRow {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        task_id: row.get(2)?,
+        run_id: row.get(3)?,
+        repository_root: row.get(4)?,
+        repository_common_dir_sha256: row.get(5)?,
+        checkout_path: row.get(6)?,
+        execution_root: row.get(7)?,
+        branch: row.get(8)?,
+        base_commit: row.get(9)?,
+        owner_marker_path: row.get(10)?,
+        status: row.get(11)?,
+        failure_reason: row.get(12)?,
+        created_at: row.get(13)?,
+        removed_at: row.get(14)?,
+    })
+}
+
+fn decode_managed_worktree(row: StoredManagedWorktreeRow) -> Result<ManagedWorktreeRecord, String> {
+    Ok(ManagedWorktreeRecord {
+        id: row.id,
+        workspace_id: row.workspace_id,
+        task_id: row.task_id,
+        run_id: row.run_id,
+        repository_root: row.repository_root,
+        repository_common_dir_sha256: row.repository_common_dir_sha256,
+        checkout_path: row.checkout_path,
+        execution_root: row.execution_root,
+        branch: row.branch,
+        base_commit: row.base_commit,
+        owner_marker_path: row.owner_marker_path,
+        status: ManagedWorktreeStatus::from_database(&row.status)?,
+        failure_reason: row.failure_reason,
+        created_at: row.created_at,
+        removed_at: row.removed_at,
+    })
+}
+
 fn list_projects_from_connection(
     connection: &mut Connection,
 ) -> Result<Vec<XiaoProjectSummary>, String> {
@@ -1240,6 +1878,64 @@ fn list_projects_from_connection(
         })
     })
     .collect()
+}
+
+fn ensure_local_environment(
+    connection: &Connection,
+    workspace_id: i64,
+    workspace_path: &str,
+) -> Result<ExecutionEnvironmentRecord, String> {
+    let existing = connection
+        .query_row(
+            r#"SELECT id, kind, label, workspace_root, availability
+             FROM execution_environments WHERE workspace_id = ?1"#,
+            [workspace_id],
+            |row| {
+                Ok(ExecutionEnvironmentRecord {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    label: row.get(2)?,
+                    workspace_root: row.get(3)?,
+                    availability: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not load Xiao execution environment: {error}"))?;
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+
+    let timestamp = now_millis()?;
+    let environment = ExecutionEnvironmentRecord {
+        id: new_uuid_v7(),
+        kind: "windows".to_owned(),
+        label: "Windows local".to_owned(),
+        workspace_root: workspace_path.to_owned(),
+        availability: if Path::new(workspace_path).is_dir() {
+            "available".to_owned()
+        } else {
+            "unavailable".to_owned()
+        },
+    };
+    connection
+        .execute(
+            r#"INSERT INTO execution_environments(
+                id, workspace_id, kind, label, workspace_root, availability,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)"#,
+            params![
+                environment.id,
+                workspace_id,
+                environment.kind,
+                environment.label,
+                environment.workspace_root,
+                environment.availability,
+                timestamp
+            ],
+        )
+        .map_err(|error| format!("Could not create Xiao execution environment: {error}"))?;
+    Ok(environment)
 }
 
 fn workspace_id(connection: &Connection, workspace_path: &str) -> Result<i64, String> {
@@ -1282,6 +1978,9 @@ fn canonical_document_hash(document: &XiaoWorkspaceDocument) -> Result<String, S
         task.timeline_complete = true;
         task.timeline_start = 0;
         task.timeline_entry_count = task.timeline.len();
+        task.execution_environment_id = None;
+        task.workspace_mode = XiaoWorkspaceMode::Local;
+        task.managed_worktree_id = None;
     }
     let bytes = serde_json::to_vec(&document)
         .map_err(|error| format!("Could not hash Xiao workspace document: {error}"))?;
@@ -1419,6 +2118,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+fn bounded_diagnostic(value: &str) -> String {
+    const MAX_BYTES: usize = 4096;
+    if value.len() <= MAX_BYTES {
+        return value.to_owned();
+    }
+    let mut end = MAX_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
 fn bool_to_i64(value: bool) -> i64 {
     if value {
         1
@@ -1433,6 +2144,10 @@ fn to_i64(value: usize, label: &str) -> Result<i64, String> {
 
 fn to_usize(value: i64, label: &str) -> Result<usize, String> {
     usize::try_from(value).map_err(|_| format!("Xiao {label} is invalid."))
+}
+
+fn new_uuid_v7() -> String {
+    Uuid::now_v7().to_string()
 }
 
 fn now_millis() -> Result<i64, String> {
@@ -1536,6 +2251,9 @@ mod tests {
             timeline_start: 0,
             timeline_entry_count: timeline_len,
             plan: None,
+            execution_environment_id: None,
+            workspace_mode: XiaoWorkspaceMode::Local,
+            managed_worktree_id: None,
         }
     }
 
@@ -1567,6 +2285,9 @@ mod tests {
                 task.remove("timelineComplete");
                 task.remove("timelineStart");
                 task.remove("timelineEntryCount");
+                task.remove("executionEnvironmentId");
+                task.remove("workspaceMode");
+                task.remove("managedWorktreeId");
             }
         }
         serde_json::to_vec_pretty(&value).unwrap()
@@ -1620,7 +2341,7 @@ mod tests {
                     let synchronous: i64 = connection
                         .query_row("PRAGMA synchronous", [], |row| row.get(0))
                         .map_err(|error| error.to_string())?;
-                    assert_eq!(migration_count, 1);
+                    assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
                     assert_eq!(foreign_keys, 1);
                     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
                     assert_eq!(synchronous, 2);
@@ -1637,7 +2358,78 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|error| error.to_string())?;
-                assert_eq!(migration_count, 1);
+                assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn schema_v1_upgrade_backfills_local_execution_bindings() {
+        let directory = TestDirectory::new("schema-v1-upgrade");
+        let workspace = directory.workspace("workspace");
+        {
+            let connection = Connection::open(directory.path.join(DATABASE_FILE_NAME)).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO workspaces(
+                        id, workspace_path, active_task_id, show_archived, updated_at
+                     ) VALUES (1, ?1, 'task', 0, 2)"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO tasks(
+                        workspace_id, task_id, position, title, created_at, updated_at,
+                        draft_text, follow_ups_json, archived, pinned, unread, model,
+                        reasoning_effort, thread_binding_json, mode, approval_policy,
+                        sandbox_mode, goal_json, plan_json, timeline_sha256,
+                        timeline_entry_count
+                     ) VALUES (
+                        1, 'task', 0, 'Task', 1, 2, '', '[]', 0, 0, 0,
+                        NULL, NULL, NULL, 'default', 'on-request', 'workspace-write',
+                        NULL, NULL, NULL, 0
+                     )"#,
+                    [],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let binding = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        assert_eq!(binding.workspace_mode, XiaoWorkspaceMode::Local);
+        assert_eq!(binding.environment.kind, "windows");
+        assert_eq!(
+            normalize_workspace_path(&binding.environment.workspace_root),
+            normalize_workspace_path(&workspace.to_string_lossy())
+        );
+        assert!(Uuid::parse_str(&binding.workspace_public_id).is_ok());
+        assert!(Uuid::parse_str(&binding.environment.id).is_ok());
+        repository
+            .with_connection(|connection| {
+                let versions: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(versions, 2);
                 Ok(())
             })
             .unwrap();
@@ -1734,6 +2526,143 @@ mod tests {
         assert_eq!(loaded_task.timeline.len(), 3);
         assert!(loaded_task.timeline_complete);
         assert_eq!(loaded_task.timeline_entry_count, 3);
+        assert!(loaded_task.execution_environment_id.is_some());
+        assert_eq!(loaded_task.workspace_mode, XiaoWorkspaceMode::Local);
+        assert_eq!(loaded_task.managed_worktree_id, None);
+    }
+
+    #[test]
+    fn generic_task_save_cannot_forge_native_worktree_ownership() {
+        let directory = TestDirectory::new("forged-execution-binding");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        let original_environment = full_workspace(&repository, &workspace).tasks[0]
+            .execution_environment_id
+            .clone();
+
+        let mut forged = full_workspace(&repository, &workspace);
+        forged.tasks[0].execution_environment_id = Some("forged-environment".to_owned());
+        forged.tasks[0].workspace_mode = XiaoWorkspaceMode::ManagedWorktree;
+        forged.tasks[0].managed_worktree_id = Some("forged-worktree".to_owned());
+        repository.save_workspace(update(forged)).unwrap();
+
+        let loaded = full_workspace(&repository, &workspace);
+        assert_eq!(
+            loaded.tasks[0].execution_environment_id,
+            original_environment
+        );
+        assert_eq!(loaded.tasks[0].workspace_mode, XiaoWorkspaceMode::Local);
+        assert_eq!(loaded.tasks[0].managed_worktree_id, None);
+    }
+
+    #[test]
+    fn managed_worktree_repository_lifecycle_is_transactional() {
+        let directory = TestDirectory::new("managed-lifecycle");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        let binding = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        let ownership = directory.path.join("managed");
+        let checkout = ownership.join("checkout");
+        let marker = ownership.join("ownership.json");
+        let id = new_uuid_v7();
+        repository
+            .begin_managed_worktree(NewManagedWorktreeRecord {
+                id: id.clone(),
+                workspace_id: binding.workspace_id,
+                task_id: "task".to_owned(),
+                repository_root: workspace.to_string_lossy().into_owned(),
+                repository_common_dir_sha256: "hash".to_owned(),
+                checkout_path: checkout.to_string_lossy().into_owned(),
+                execution_root: checkout.to_string_lossy().into_owned(),
+                branch: format!("xiao/task/{}", &id[..8]),
+                base_commit: "base".to_owned(),
+                owner_marker_path: marker.to_string_lossy().into_owned(),
+                created_at: now_millis().unwrap(),
+            })
+            .unwrap();
+        repository
+            .activate_managed_worktree(
+                &id,
+                &checkout.to_string_lossy(),
+                &checkout.to_string_lossy(),
+                &marker.to_string_lossy(),
+            )
+            .unwrap();
+        let active = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        assert_eq!(active.workspace_mode, XiaoWorkspaceMode::ManagedWorktree);
+        assert_eq!(active.managed_worktree.as_ref().unwrap().id, id);
+
+        let removing = repository
+            .begin_managed_worktree_removal(&workspace.to_string_lossy(), "task", &id)
+            .unwrap();
+        assert_eq!(removing.status, ManagedWorktreeStatus::Removing);
+        repository.finish_managed_worktree_removal(&id).unwrap();
+        let local = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        assert_eq!(local.workspace_mode, XiaoWorkspaceMode::Local);
+        assert!(local.managed_worktree.is_none());
+    }
+
+    #[test]
+    fn concurrent_worktree_reservations_allow_one_owner_per_task() {
+        let directory = TestDirectory::new("managed-concurrent");
+        let workspace = directory.workspace("workspace");
+        let repository = std::sync::Arc::new(XiaoRepository::open(&directory.path).unwrap());
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        let binding = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut workers = Vec::new();
+        for index in 0..2 {
+            let repository = std::sync::Arc::clone(&repository);
+            let barrier = std::sync::Arc::clone(&barrier);
+            let id = new_uuid_v7();
+            let workspace_id = binding.workspace_id;
+            let root = directory.path.join(format!("owned-{index}"));
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                repository.begin_managed_worktree(NewManagedWorktreeRecord {
+                    id: id.clone(),
+                    workspace_id,
+                    task_id: "task".to_owned(),
+                    repository_root: "repository".to_owned(),
+                    repository_common_dir_sha256: "hash".to_owned(),
+                    checkout_path: root.join("checkout").to_string_lossy().into_owned(),
+                    execution_root: root.join("checkout").to_string_lossy().into_owned(),
+                    branch: format!("xiao/task/{}", &id[..8]),
+                    base_commit: "base".to_owned(),
+                    owner_marker_path: root.join("ownership.json").to_string_lossy().into_owned(),
+                    created_at: now_millis().unwrap(),
+                })
+            }));
+        }
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(
+            repository
+                .list_managed_worktree_records(&workspace.to_string_lossy())
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

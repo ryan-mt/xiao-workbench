@@ -85,7 +85,13 @@ export const needsAgentSession = (
   hasRequestedModel: boolean,
   previousRequestedModel: string | null | undefined,
   requestedModel: string | null,
-) => !threadId || !hasRequestedModel || previousRequestedModel !== requestedModel;
+  previousExecutionKey: string | undefined,
+  requestedExecutionKey: string,
+) =>
+  !threadId ||
+  !hasRequestedModel ||
+  previousRequestedModel !== requestedModel ||
+  previousExecutionKey !== requestedExecutionKey;
 
 export const invalidateUndoHistory = (timeline: TimelineEntry[]): TimelineEntry[] => {
   if (!timeline.some((entry) => entry.turnDiff !== undefined)) return timeline;

@@ -5125,7 +5125,7 @@ dependencies = [
 
 [[package]]
 name = "xiao-workbench"
-version = "0.0.0-day07152026"
+version = "0.0.0-day07162026"
 dependencies = [
  "portable-pty",
  "rusqlite",
@@ -5139,6 +5139,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "ureq",
+ "uuid",
  "webkit2gtk",
  "webview2-com",
  "windows",

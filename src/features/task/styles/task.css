@@ -171,6 +171,22 @@
   white-space: nowrap;
 }
 
+.task-header__context-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-header__environment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  white-space: nowrap;
+}
+
 .task-header__branch {
   display: inline-flex;
   min-width: 0;
@@ -3036,6 +3052,14 @@
   gap: 8px;
   color: var(--muted-strong);
 }
+
+.composer-add__settings > small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.composer-add__settings > small.is-error { color: var(--danger); }
 
 .composer__tools-left .composer-add__settings select {
   width: 100%;

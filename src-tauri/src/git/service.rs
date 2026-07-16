@@ -5,7 +5,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::models::{GitBranch, GitFileChange, GitFileStatus, GitSummary, GitWorktree};
+use super::models::{
+    GitBranch, GitFileChange, GitFileStatus, GitRepositoryIdentity, GitSummary, GitWorktree,
+    GitWorktreeEvidence,
+};
 
 const MAX_CHANGES: usize = 300;
 const MAX_PATCH_BYTES: usize = 96 * 1024;
@@ -768,6 +771,190 @@ fn command_error(stderr: &[u8], fallback: &str) -> String {
     } else {
         error
     }
+}
+
+pub(crate) fn inspect_git_repository(
+    workspace_path: &Path,
+) -> Result<GitRepositoryIdentity, String> {
+    let workspace = workspace_path
+        .canonicalize()
+        .map_err(|error| format!("Could not canonicalize project for isolation: {error}"))?;
+    if !workspace.is_dir() {
+        return Err("The Xiao project is not a directory.".to_owned());
+    }
+    let repository_root = run_git(&workspace, &["rev-parse", "--show-toplevel"])
+        .and_then(|path| PathBuf::from(path.trim()).canonicalize().ok())
+        .ok_or("Managed worktree isolation requires a Git repository.")?;
+    let common_dir_output = run_git(
+        &workspace,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .or_else(|| run_git(&workspace, &["rev-parse", "--git-common-dir"]))
+    .ok_or("Could not resolve the Git common directory.")?;
+    let common_candidate = PathBuf::from(common_dir_output.trim());
+    let common_candidate = if common_candidate.is_absolute() {
+        common_candidate
+    } else {
+        workspace.join(common_candidate)
+    };
+    let common_dir = common_candidate
+        .canonicalize()
+        .map_err(|error| format!("Could not canonicalize the Git common directory: {error}"))?;
+    let head = run_git(&repository_root, &["rev-parse", "--verify", "HEAD"])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or("Managed worktree isolation requires at least one Git commit.")?;
+    let workspace_relative = workspace
+        .strip_prefix(&repository_root)
+        .map_err(|_| "The project path is outside its reported Git repository.".to_owned())?
+        .to_path_buf();
+    Ok(GitRepositoryIdentity {
+        repository_root,
+        common_dir,
+        workspace_relative,
+        head,
+    })
+}
+
+pub(crate) fn create_managed_worktree(
+    repository: &GitRepositoryIdentity,
+    checkout_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    if checkout_path.exists() {
+        return Err("The managed checkout path already exists.".to_owned());
+    }
+    run_git_checked(
+        &repository.repository_root,
+        &[
+            "check-ref-format".to_owned(),
+            "--branch".to_owned(),
+            branch.to_owned(),
+        ],
+    )?;
+    run_git_checked(
+        &repository.repository_root,
+        &[
+            "worktree".to_owned(),
+            "add".to_owned(),
+            "-b".to_owned(),
+            branch.to_owned(),
+            display_path(checkout_path),
+            repository.head.clone(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn find_worktree_evidence(
+    repository_root: &Path,
+    expected_checkout: &Path,
+) -> Result<Option<GitWorktreeEvidence>, String> {
+    let expected_checkout = expected_checkout
+        .canonicalize()
+        .map_err(|error| format!("Could not canonicalize managed checkout evidence: {error}"))?;
+    let output = run_git_checked(
+        repository_root,
+        &[
+            "worktree".to_owned(),
+            "list".to_owned(),
+            "--porcelain".to_owned(),
+        ],
+    )?;
+    for block in output
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty())
+    {
+        let mut path = None;
+        let mut head = None;
+        let mut branch = "detached".to_owned();
+        for line in block.lines() {
+            if let Some(value) = line.strip_prefix("worktree ") {
+                path = PathBuf::from(value).canonicalize().ok();
+            } else if let Some(value) = line.strip_prefix("HEAD ") {
+                head = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+                branch = value.to_owned();
+            }
+        }
+        if path.as_deref() == Some(expected_checkout.as_path()) {
+            return Ok(Some(GitWorktreeEvidence {
+                path: expected_checkout,
+                branch,
+                head: head.unwrap_or_default(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn prune_managed_worktrees(repository_root: &Path) -> Result<(), String> {
+    run_git_checked(
+        repository_root,
+        &["worktree".to_owned(), "prune".to_owned()],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn worktree_path_registered(
+    repository_root: &Path,
+    expected_checkout: &Path,
+) -> Result<bool, String> {
+    let output = run_git_checked(
+        repository_root,
+        &[
+            "worktree".to_owned(),
+            "list".to_owned(),
+            "--porcelain".to_owned(),
+        ],
+    )?;
+    Ok(output.lines().any(|line| {
+        line.strip_prefix("worktree ")
+            .is_some_and(|path| paths_equal_for_evidence(Path::new(path), expected_checkout))
+    }))
+}
+
+fn paths_equal_for_evidence(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    #[cfg(windows)]
+    {
+        display_path(&left).eq_ignore_ascii_case(&display_path(&right))
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+pub(crate) fn managed_worktree_has_changes(checkout_path: &Path) -> Result<bool, String> {
+    let status = run_git(
+        checkout_path,
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+    )
+    .ok_or("Could not inspect managed worktree changes.")?;
+    Ok(!status.trim().is_empty())
+}
+
+pub(crate) fn remove_managed_worktree(
+    repository_root: &Path,
+    checkout_path: &Path,
+) -> Result<(), String> {
+    run_git_checked(
+        repository_root,
+        &[
+            "worktree".to_owned(),
+            "remove".to_owned(),
+            "--force".to_owned(),
+            display_path(checkout_path),
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn list_worktrees(workspace_path: &str) -> Result<Vec<GitWorktree>, String> {

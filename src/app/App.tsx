@@ -12,6 +12,7 @@ import type {
 import type {
   XiaoProjectSummary,
   XiaoWorkspaceDocument,
+  XiaoWorkspaceMode,
   XiaoWorkspaceUpdate,
 } from "../core/models/xiao";
 import { titleFromPrompt, useAgentRuntime } from "../features/agent/hooks/useAgentRuntime";
@@ -36,6 +37,7 @@ import { GlobalContextMenu } from "../features/shell/components/GlobalContextMen
 import { Sidebar } from "../features/shell/components/Sidebar";
 import { TitleBar } from "../features/shell/components/TitleBar";
 import type { AppPage } from "../features/shell/shell.types";
+import { managedWorktreeCleanupMessage } from "../features/task/taskEnvironment";
 import { forkTaskFromEntry } from "../features/task/taskFork";
 import {
   completeTimelineMetadata,
@@ -163,6 +165,9 @@ const createDraftTask = (defaults: TaskRunDefaults): WorkbenchTask => {
     timelineStart: 0,
     timelineEntryCount: 0,
     plan: null,
+    executionEnvironmentId: null,
+    workspaceMode: "local",
+    managedWorktreeId: null,
   };
 };
 
@@ -202,7 +207,9 @@ type StoredWorkbenchTask = Omit<
   | "approvalPolicy"
   | "draftText"
   | "followUps"
+  | "executionEnvironmentId"
   | "goal"
+  | "managedWorktreeId"
   | "mode"
   | "plan"
   | "reasoningEffort"
@@ -213,6 +220,7 @@ type StoredWorkbenchTask = Omit<
   | "timelineEntryCount"
   | "timelineLoaded"
   | "timelineStart"
+  | "workspaceMode"
 > & {
   draftText?: string;
   followUps?: WorkbenchTask["followUps"];
@@ -224,6 +232,9 @@ type StoredWorkbenchTask = Omit<
   timelineComplete?: boolean;
   timelineStart?: number;
   timelineEntryCount?: number;
+  executionEnvironmentId?: string | null;
+  workspaceMode?: "local" | "managed-worktree";
+  managedWorktreeId?: string | null;
   mode?: "default" | "plan";
   approvalPolicy?: "never" | "on-request" | "untrusted";
   sandboxMode?: "danger-full-access" | "read-only" | "workspace-write";
@@ -322,6 +333,11 @@ const isWorkbenchTask = (value: unknown): value is StoredWorkbenchTask => {
     (task.timelineStart === undefined || (typeof task.timelineStart === "number" && task.timelineStart >= 0)) &&
     (task.timelineEntryCount === undefined ||
       (typeof task.timelineEntryCount === "number" && task.timelineEntryCount >= 0)) &&
+    (task.executionEnvironmentId === undefined || task.executionEnvironmentId === null ||
+      typeof task.executionEnvironmentId === "string") &&
+    (task.workspaceMode === undefined || ["local", "managed-worktree"].includes(String(task.workspaceMode))) &&
+    (task.managedWorktreeId === undefined || task.managedWorktreeId === null ||
+      typeof task.managedWorktreeId === "string") &&
     (task.mode === undefined || task.mode === "default" || task.mode === "plan") &&
     (task.approvalPolicy === undefined ||
       ["never", "on-request", "untrusted"].includes(String(task.approvalPolicy))) &&
@@ -342,6 +358,8 @@ const isLegacyEmptyDraft = (task: StoredWorkbenchTask) =>
   (task.reasoningEffort === undefined || task.reasoningEffort === null) &&
   (task.threadId === undefined || task.threadId === null) &&
   (task.threadBinding === undefined || task.threadBinding === null) &&
+  (task.workspaceMode === undefined || task.workspaceMode === "local") &&
+  (task.managedWorktreeId === undefined || task.managedWorktreeId === null) &&
   (task.mode === undefined || task.mode === "default") &&
   (task.approvalPolicy === undefined || task.approvalPolicy === "on-request") &&
   (task.sandboxMode === undefined || task.sandboxMode === "workspace-write") &&
@@ -389,6 +407,9 @@ const readBrowserTaskState = (workspacePath: string): StoredTaskState => {
         timelineComplete: true,
         timelineStart: 0,
         timelineEntryCount: task.timeline.length,
+        executionEnvironmentId: task.executionEnvironmentId ?? null,
+        workspaceMode: task.workspaceMode ?? "local",
+        managedWorktreeId: task.managedWorktreeId ?? null,
       }));
     const activeTaskId =
       typeof parsed.activeTaskId === "string" &&
@@ -424,6 +445,9 @@ const stateFromDocument = (document: XiaoWorkspaceDocument): StoredTaskState => 
     timelineComplete: task.timelineComplete,
     timelineStart: task.timelineStart,
     timelineEntryCount: task.timelineEntryCount,
+    executionEnvironmentId: task.executionEnvironmentId ?? null,
+    workspaceMode: task.workspaceMode ?? "local",
+    managedWorktreeId: task.managedWorktreeId ?? null,
     meta: taskMeta(task.updatedAt),
     group: taskGroup(task.updatedAt, task.id === document.activeTaskId && !task.archived),
   })),
@@ -481,14 +505,6 @@ const mergeProject = (
 export function App() {
   const { profile, saveProfile } = useLocalProfile();
   const [activeProjectPath, setActiveProjectPath] = useState<string | undefined>(readActiveProjectPath);
-  const {
-    workspace,
-    system,
-    loading,
-    error: workspaceError,
-    refresh,
-    loadDirectory,
-  } = useWorkspace(activeProjectPath);
   const { theme, setTheme } = useTheme();
   const { preferences, updatePreferences, updateTaskRunDefaults } = useAppPreferences();
   const codexUpdate = useCodexUpdate();
@@ -506,6 +522,8 @@ export function App() {
   const [taskHistoryError, setTaskHistoryError] = useState<string | null>(null);
   const [taskSaveError, setTaskSaveError] = useState<string | null>(null);
   const [taskHistoryLoadingId, setTaskHistoryLoadingId] = useState<string | null>(null);
+  const [environmentBusyTaskId, setEnvironmentBusyTaskId] = useState<string | null>(null);
+  const [environmentError, setEnvironmentError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<WorkbenchTask[]>(initialTaskState.tasks);
   const [activeTaskId, setActiveTaskId] = useState(initialTaskState.activeTaskId);
   const [draftTask, setDraftTask] = useState(() => createDraftTask(preferences.taskRunDefaults));
@@ -539,9 +557,19 @@ export function App() {
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
+  const executionTaskId = activeProjectPath === taskWorkspacePath ? selectedTask?.id ?? null : null;
+  const {
+    workspace,
+    system,
+    loading,
+    error: workspaceError,
+    refresh,
+    loadDirectory,
+  } = useWorkspace(activeProjectPath, executionTaskId);
   const activeTaskHistoryLoading = Boolean(
     selectedTask && !selectedTask.timelineComplete && !taskHistoryError,
   );
+  const activeEnvironmentBusy = environmentBusyTaskId === activeTask.id;
   const taskStateError = taskLoadError ?? taskHistoryError ?? taskSaveError;
   const pendingReviewContext = reviewContextByTask[activeTask.id] ?? [];
   const focusedLaunch =
@@ -647,6 +675,8 @@ export function App() {
     setTaskStateReady(false);
     setTaskLoadError(null);
     setTaskHistoryError(null);
+    setEnvironmentError(null);
+    setEnvironmentBusyTaskId(null);
 
     const loadState = async () => {
       try {
@@ -709,6 +739,7 @@ export function App() {
 
   useEffect(() => {
     setTaskHistoryError(null);
+    setEnvironmentError(null);
   }, [activeTaskId, taskWorkspacePath]);
 
   useEffect(() => {
@@ -947,6 +978,7 @@ export function App() {
   const agent = useAgentRuntime(
     workspace.path,
     activeTask.id,
+    `${activeTask.workspaceMode}:${activeTask.managedWorktreeId ?? activeTask.executionEnvironmentId ?? "default"}`,
     activeTask.title,
     activeTask.timeline,
     activeTask.model,
@@ -1031,8 +1063,92 @@ export function App() {
     }
   }, [agent.questionRequest, preferences.notifyApprovals]);
 
+  const changeTaskWorkspaceMode = async (workspaceMode: XiaoWorkspaceMode) => {
+    if (workspaceMode === activeTask.workspaceMode) return;
+    if (
+      !isTauriHost() ||
+      !taskStateReady ||
+      activeTaskHistoryLoading ||
+      activeEnvironmentBusy ||
+      activeTask.archived ||
+      activeTask.followUps.length > 0 ||
+      agent.runtime.phase === "working"
+    ) {
+      setEnvironmentError("The task environment cannot change while task work is active.");
+      return;
+    }
+
+    const task = { ...activeTask, meta: "Now" as const, group: "Active" as const };
+    const persistedTasks = selectedTask
+      ? tasks
+      : tasks.some((item) => item.id === task.id)
+        ? tasks
+        : [task, ...tasks];
+    const persistedState = {
+      tasks: persistedTasks,
+      activeTaskId: task.id,
+      showArchived: false,
+    };
+    setEnvironmentBusyTaskId(task.id);
+    setEnvironmentError(null);
+    if (!selectedTask) {
+      setTasks(persistedTasks);
+      setActiveTaskId(task.id);
+      setOpenTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]);
+      setDraftTabOpen(false);
+    }
+
+    try {
+      await persistTaskState(workspace.path, persistedState);
+      const context = workspaceMode === "managed-worktree"
+        ? await nativeBridge.prepareXiaoManagedWorktree(workspace.path, task.id)
+        : await (async () => {
+            const records = await nativeBridge.listXiaoManagedWorktrees(workspace.path);
+            const managed = records.find((record) => record.id === task.managedWorktreeId);
+            if (!managed) throw new Error("The task's managed worktree record is unavailable.");
+            const confirmed = window.confirm(managedWorktreeCleanupMessage(managed));
+            if (!confirmed) return null;
+            return nativeBridge.removeXiaoManagedWorktree(
+              workspace.path,
+              task.id,
+              managed.id,
+              true,
+            );
+          })();
+      if (!context) return;
+      const updatedAt = Date.now();
+      const executionPatch: Partial<WorkbenchTask> = {
+        executionEnvironmentId: context.environment.id,
+        workspaceMode: context.workspaceMode,
+        managedWorktreeId: context.managedWorktree?.id ?? null,
+        updatedAt,
+        meta: "Now",
+      };
+      setTasks((current) => current.map((item) =>
+        item.id === task.id ? { ...item, ...executionPatch } : item,
+      ));
+      setDraftTask((current) =>
+        current.id === task.id ? { ...current, ...executionPatch } : current,
+      );
+      await refresh();
+    } catch (reason) {
+      setEnvironmentError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setEnvironmentBusyTaskId((current) => current === task.id ? null : current);
+    }
+  };
+
   const submitTask = async (prompt: string, attachments: Parameters<typeof agent.submit>[1]) => {
-    if (!taskStateReady || activeTaskHistoryLoading || taskStateError) return false;
+    if (
+      !taskStateReady ||
+      activeTaskHistoryLoading ||
+      activeEnvironmentBusy ||
+      taskStateError ||
+      workspaceError
+    ) return false;
+
+    let persistedTasks = tasks;
+    let persistedActiveTaskId = activeTaskId;
     if (!selectedTask) {
       const updatedAt = Date.now();
       const materializedTask: WorkbenchTask = {
@@ -1043,15 +1159,24 @@ export function App() {
         group: "Active",
         draftText: "",
       };
-      setTasks((current) =>
-        current.some((task) => task.id === materializedTask.id)
-          ? current
-          : [materializedTask, ...current],
-      );
+      persistedTasks = tasks.some((task) => task.id === materializedTask.id)
+        ? tasks
+        : [materializedTask, ...tasks];
+      persistedActiveTaskId = materializedTask.id;
+      setTasks(persistedTasks);
       setOpenTaskIds((current) => current.includes(materializedTask.id) ? current : [...current, materializedTask.id]);
       setActiveTaskId(materializedTask.id);
       setDraftTabOpen(false);
       setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    }
+    try {
+      await persistTaskState(workspace.path, {
+        tasks: persistedTasks,
+        activeTaskId: persistedActiveTaskId,
+        showArchived: false,
+      });
+    } catch {
+      return false;
     }
     return agent.submit(prompt, attachments);
   };
@@ -1061,7 +1186,9 @@ export function App() {
     if (
       !taskStateReady ||
       activeTaskHistoryLoading ||
+      activeEnvironmentBusy ||
       taskStateError ||
+      workspaceError ||
       activeTask.archived ||
       !cleanPrompt
     ) return false;
@@ -1096,7 +1223,9 @@ export function App() {
       sendingFollowUpId ||
       !taskStateReady ||
       !activeTask.timelineComplete ||
-      taskStateError
+      activeEnvironmentBusy ||
+      taskStateError ||
+      workspaceError
     ) return;
     const followUp = activeTask.followUps.find((item) => item.id === followUpId);
     if (!followUp) return;
@@ -1129,6 +1258,7 @@ export function App() {
     if (
       !taskStateReady ||
       !activeTask.timelineComplete ||
+      activeEnvironmentBusy ||
       activeTask.archived ||
       !followUp ||
       agent.runtime.phase !== "ready" ||
@@ -1161,6 +1291,7 @@ export function App() {
     activeTask.followUps,
     activeTask.id,
     activeTask.timelineComplete,
+    activeEnvironmentBusy,
     agent.runtime.phase,
     agent.submit,
     agent.undoing,
@@ -1219,6 +1350,7 @@ export function App() {
       !taskStateReady ||
       taskStateError ||
       !activeTask.timelineComplete ||
+      activeEnvironmentBusy ||
       activeTask.archived ||
       activeTask.followUps.length > 0 ||
       agent.runtime.phase !== "ready" ||
@@ -1351,6 +1483,7 @@ export function App() {
       !scheduled ||
       scheduled.taskId !== activeTask.id ||
       !activeTask.timelineComplete ||
+      activeEnvironmentBusy ||
       agent.runtime.phase !== "ready" ||
       scheduleSubmittingRef.current === scheduled.id
     ) return;
@@ -1368,6 +1501,7 @@ export function App() {
   }, [
     activeTask.id,
     activeTask.timelineComplete,
+    activeEnvironmentBusy,
     agent,
     pendingScheduledPrompt,
     preferences.notifyErrors,
@@ -1381,6 +1515,7 @@ export function App() {
   const setTaskArchived = (taskId: string, archived: boolean) => {
     if (
       !taskStateReady ||
+      environmentBusyTaskId === taskId ||
       (agent.runtime.phase === "working" && agent.runtime.taskId === taskId)
     ) return;
     const updatedAt = Date.now();
@@ -1448,6 +1583,9 @@ export function App() {
       followUps: [],
       threadId: null,
       threadBinding: null,
+      executionEnvironmentId: null,
+      workspaceMode: "local",
+      managedWorktreeId: null,
       goal: null,
       meta: "Now",
       group: "Active" as const,
@@ -1825,6 +1963,7 @@ export function App() {
           ) : (
             <TaskWorkspace
               taskId={activeTask.id}
+              executionTaskId={executionTaskId}
               taskTitle={activeTask.title}
               taskArchived={activeTask.archived}
               launchMode={focusedLaunch}
@@ -1839,6 +1978,9 @@ export function App() {
               mode={activeTask.mode}
               approvalPolicy={activeTask.approvalPolicy}
               sandboxMode={activeTask.sandboxMode}
+              workspaceMode={activeTask.workspaceMode}
+              environmentBusy={activeEnvironmentBusy}
+              environmentError={environmentError ?? workspaceError}
               goal={activeTask.goal}
               plan={activeTask.plan}
               reviewContext={pendingReviewContext}
@@ -1880,6 +2022,7 @@ export function App() {
                 patchActiveTask({ sandboxMode });
                 updateTaskRunDefaults({ sandboxMode });
               }}
+              onWorkspaceModeChange={changeTaskWorkspaceMode}
               onGoalSet={agent.setGoal}
               onGoalClear={agent.clearGoal}
               onInterrupt={agent.interrupt}
@@ -1919,12 +2062,14 @@ export function App() {
               system={system}
               runtime={agent.runtime}
               task={activeTask}
+              executionTaskId={executionTaskId}
+              executionTransitioning={activeEnvironmentBusy}
               timeline={agent.timeline}
               models={agent.models}
               contextUsage={agent.contextUsage}
               plan={activeTask.plan}
               runtimeLogs={agent.runtimeLogs}
-              loading={loading}
+              loading={loading || activeEnvironmentBusy}
               error={workspaceError}
               onRefresh={refresh}
               onLoadDirectory={loadDirectory}

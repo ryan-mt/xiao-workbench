@@ -17,6 +17,7 @@ import {
   type TimelineEntry,
 } from "../../../core/models/agent";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
@@ -25,6 +26,7 @@ import "../styles/task.css";
 
 type TaskWorkspaceProps = {
   taskId: string;
+  executionTaskId: string | null;
   taskTitle: string;
   taskArchived: boolean;
   launchMode: boolean;
@@ -39,6 +41,9 @@ type TaskWorkspaceProps = {
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
   sandboxMode: AgentSandboxMode;
+  workspaceMode: XiaoWorkspaceMode;
+  environmentBusy: boolean;
+  environmentError: string | null;
   goal: AgentGoal | null;
   plan: AgentPlan | null;
   reviewContext: AgentAttachment[];
@@ -80,6 +85,7 @@ type TaskWorkspaceProps = {
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
   onSandboxModeChange: (mode: AgentSandboxMode) => void;
+  onWorkspaceModeChange: (mode: XiaoWorkspaceMode) => Promise<void>;
   onGoalSet: (objective: string, status?: AgentGoal["status"]) => Promise<boolean>;
   onGoalClear: () => Promise<boolean>;
   onInterrupt: () => Promise<void>;
@@ -95,6 +101,7 @@ type TaskWorkspaceProps = {
 
 export function TaskWorkspace({
   taskId,
+  executionTaskId,
   taskTitle,
   taskArchived,
   launchMode,
@@ -109,6 +116,9 @@ export function TaskWorkspace({
   mode,
   approvalPolicy,
   sandboxMode,
+  workspaceMode,
+  environmentBusy,
+  environmentError,
   goal,
   plan,
   reviewContext,
@@ -147,6 +157,7 @@ export function TaskWorkspace({
   onModeChange,
   onApprovalPolicyChange,
   onSandboxModeChange,
+  onWorkspaceModeChange,
   onGoalSet,
   onGoalClear,
   onInterrupt,
@@ -163,6 +174,7 @@ export function TaskWorkspace({
     !taskArchived &&
     !taskStateError &&
     !taskStateLoading &&
+    !environmentBusy &&
     !compacting &&
     !undoing &&
     followUps.length === 0;
@@ -185,6 +197,7 @@ export function TaskWorkspace({
     <Composer
       key={taskId}
       taskId={taskId}
+      executionTaskId={executionTaskId}
       workspacePath={workspace.path}
       runtime={runtime}
       models={models}
@@ -194,6 +207,12 @@ export function TaskWorkspace({
       mode={mode}
       approvalPolicy={approvalPolicy}
       sandboxMode={sandboxMode}
+      workspaceMode={workspaceMode}
+      isolationAvailable={workspace.execution.isolationAvailable}
+      isolationUnavailableReason={workspace.execution.isolationUnavailableReason}
+      environmentBusy={environmentBusy}
+      environmentError={environmentError}
+      managedWorktree={workspace.execution.managedWorktree}
       goal={goal}
       plan={plan}
       reviewContext={reviewContext}
@@ -215,6 +234,7 @@ export function TaskWorkspace({
       onModeChange={onModeChange}
       onApprovalPolicyChange={onApprovalPolicyChange}
       onSandboxModeChange={onSandboxModeChange}
+      onWorkspaceModeChange={onWorkspaceModeChange}
       onGoalSet={onGoalSet}
       onGoalClear={onGoalClear}
       onInterrupt={onInterrupt}
@@ -231,7 +251,9 @@ export function TaskWorkspace({
       onReviewContextSent={onReviewContextSent}
       onDraftChange={onDraftChange}
       onResolveQuestion={onResolveQuestion}
-      disabled={taskArchived || taskStateLoading || Boolean(taskStateError)}
+      disabled={
+        taskArchived || taskStateLoading || environmentBusy || Boolean(taskStateError)
+      }
       disabledPlaceholder={taskStateLoading ? "Loading task history…" : undefined}
       storageError={taskStateError}
     />
@@ -280,7 +302,7 @@ export function TaskWorkspace({
         workspace={workspace}
         runtime={runtime}
         contextPercent={contextPercent}
-        archiveDisabled={taskStateLoading || Boolean(taskStateError)}
+        archiveDisabled={environmentBusy || taskStateLoading || Boolean(taskStateError)}
         canUndo={canUndo}
         undoing={undoing}
         onFocusView={onFocusView}

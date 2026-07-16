@@ -119,13 +119,14 @@ describe("Fast service tier", () => {
 
 describe("needsAgentSession", () => {
   it("does not resume a default-model thread after its null selection is cached", () => {
-    expect(needsAgentSession("thread-1", true, null, null)).toBe(false);
+    expect(needsAgentSession("thread-1", true, null, null, "local", "local")).toBe(false);
   });
 
   it("resumes when the thread is new or the requested model changes", () => {
-    expect(needsAgentSession(undefined, true, null, null)).toBe(true);
-    expect(needsAgentSession("thread-1", false, undefined, null)).toBe(true);
-    expect(needsAgentSession("thread-1", true, "gpt-old", "gpt-new")).toBe(true);
+    expect(needsAgentSession(undefined, true, null, null, "local", "local")).toBe(true);
+    expect(needsAgentSession("thread-1", false, undefined, null, "local", "local")).toBe(true);
+    expect(needsAgentSession("thread-1", true, "gpt-old", "gpt-new", "local", "local")).toBe(true);
+    expect(needsAgentSession("thread-1", true, null, null, "local", "managed:one")).toBe(true);
   });
 });
 

@@ -80,6 +80,9 @@ const sourceTask = (): WorkbenchTask => ({
   timelineStart: 0,
   timelineEntryCount: 4,
   plan: { explanation: "Current plan", steps: [{ step: "Implement", status: "completed" }] },
+  executionEnvironmentId: "environment-source",
+  workspaceMode: "managed-worktree",
+  managedWorktreeId: "worktree-source",
 });
 
 describe("forkTaskFromEntry", () => {
@@ -111,6 +114,9 @@ describe("forkTaskFromEntry", () => {
       timelineComplete: true,
       timelineStart: 0,
       timelineEntryCount: 2,
+      executionEnvironmentId: null,
+      workspaceMode: "local",
+      managedWorktreeId: null,
       mode: "plan",
       approvalPolicy: "untrusted",
       sandboxMode: "read-only",

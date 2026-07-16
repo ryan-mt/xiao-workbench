@@ -10,9 +10,11 @@ import type {
 import type {
   CodexUpdateResult,
   CodexUpdateStatus,
+  ExecutionContext,
   FileNode,
   GitBranch,
   GitSummary,
+  ManagedWorktreeSummary,
   WorkspaceSnapshot,
   SystemInfo,
 } from "../models/workspace";
@@ -26,12 +28,12 @@ import type {
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
 export const nativeBridge = {
-  getWorkspace(path?: string) {
-    return invoke<WorkspaceSnapshot>("get_workspace_snapshot", { path });
+  getWorkspace(path?: string, taskId?: string | null) {
+    return invoke<WorkspaceSnapshot>("get_workspace_snapshot", { path, taskId });
   },
 
-  listWorkspaceFiles(workspacePath: string, relativePath: string) {
-    return invoke<FileNode[]>("list_workspace_files", { workspacePath, relativePath });
+  listWorkspaceFiles(projectPath: string, taskId: string | null, relativePath: string) {
+    return invoke<FileNode[]>("list_workspace_files", { projectPath, taskId, relativePath });
   },
 
   getSystemInfo() {
@@ -54,8 +56,17 @@ export const nativeBridge = {
     return invoke<void>("stop_agent_runtime");
   },
 
-  agentRequest<T = Record<string, unknown>>(method: string, params: Record<string, unknown> | null = {}) {
-    return invoke<T>("agent_request", { method, params });
+  agentRequest<T = Record<string, unknown>>(
+    method: string,
+    params: Record<string, unknown> | null = {},
+    context?: { projectPath: string; taskId: string | null },
+  ) {
+    return invoke<T>("agent_request", {
+      method,
+      params,
+      projectPath: context?.projectPath,
+      taskId: context?.taskId,
+    });
   },
 
   replyToAgent(requestId: number | string, result: Record<string, unknown>) {
@@ -75,7 +86,8 @@ export const nativeBridge = {
   },
 
   startXiaoSession(
-    workspacePath: string,
+    projectPath: string,
+    taskId: string,
     model: string | null,
     history: XiaoHistoryItem[],
     threadId: string | null,
@@ -84,7 +96,8 @@ export const nativeBridge = {
     sandbox: string,
   ) {
     return invoke<AgentSessionStart>("start_xiao_session", {
-      workspacePath,
+      projectPath,
+      taskId,
       model,
       history,
       threadId,
@@ -94,48 +107,61 @@ export const nativeBridge = {
     });
   },
 
-  readWorkspaceFile(workspacePath: string, relativePath: string) {
-    return invoke<string>("read_workspace_file", { workspacePath, relativePath });
+  readWorkspaceFile(projectPath: string, taskId: string | null, relativePath: string) {
+    return invoke<string>("read_workspace_file", { projectPath, taskId, relativePath });
   },
 
   mutateGit(
-    workspacePath: string,
+    projectPath: string,
+    taskId: string | null,
     action: "commit" | "discard" | "stage" | "stage-all" | "switch" | "unstage",
     paths: string[],
     message?: string,
   ) {
-    return invoke<string>("mutate_git", { workspacePath, action, paths, message });
+    return invoke<string>("mutate_git", { projectPath, taskId, action, paths, message });
   },
 
-  getGitBranches(workspacePath: string) {
-    return invoke<GitBranch[]>("get_git_branches", { workspacePath });
+  getGitBranches(projectPath: string, taskId: string | null) {
+    return invoke<GitBranch[]>("get_git_branches", { projectPath, taskId });
   },
 
-  compareGitBranch(workspacePath: string, baseBranch: string) {
-    return invoke<GitSummary>("compare_git_branch", { workspacePath, baseBranch });
+  compareGitBranch(projectPath: string, taskId: string | null, baseBranch: string) {
+    return invoke<GitSummary>("compare_git_branch", { projectPath, taskId, baseBranch });
   },
 
-  getGitWorktrees(workspacePath: string) {
+  getGitWorktrees(projectPath: string, taskId: string | null) {
     return invoke<Array<{ path: string; branch: string; head: string; isMain: boolean }>>(
       "get_git_worktrees",
-      { workspacePath },
+      { projectPath, taskId },
     );
   },
 
-  addGitWorktree(workspacePath: string, targetPath: string, branch: string) {
-    return invoke<void>("add_git_worktree", { workspacePath, targetPath, branch });
+  addGitWorktree(projectPath: string, targetPath: string, branch: string) {
+    return invoke<void>("add_git_worktree", { projectPath, targetPath, branch });
   },
 
-  applyGitPatch(workspacePath: string, patch: string, reverse: boolean, checkOnly: boolean) {
-    return invoke<void>("apply_git_patch", { workspacePath, patch, reverse, checkOnly });
+  applyGitPatch(
+    projectPath: string,
+    taskId: string | null,
+    patch: string,
+    reverse: boolean,
+    checkOnly: boolean,
+  ) {
+    return invoke<void>("apply_git_patch", {
+      projectPath,
+      taskId,
+      patch,
+      reverse,
+      checkOnly,
+    });
   },
 
-  createGitCheckpoint(workspacePath: string) {
-    return invoke<string>("create_git_checkpoint", { workspacePath });
+  createGitCheckpoint(projectPath: string, taskId: string | null) {
+    return invoke<string>("create_git_checkpoint", { projectPath, taskId });
   },
 
-  finishGitCheckpoint(workspacePath: string, token: string) {
-    return invoke<string>("finish_git_checkpoint", { workspacePath, token });
+  finishGitCheckpoint(projectPath: string, taskId: string | null, token: string) {
+    return invoke<string>("finish_git_checkpoint", { projectPath, taskId, token });
   },
 
   discardGitCheckpoint(token: string) {
@@ -144,14 +170,16 @@ export const nativeBridge = {
 
   startTerminal(
     sessionId: string,
-    workspacePath: string,
+    projectPath: string,
+    taskId: string | null,
     shell: string,
     cols: number,
     rows: number,
   ) {
     return invoke<{ sessionId: string; shell: string }>("start_terminal", {
       sessionId,
-      workspacePath,
+      projectPath,
+      taskId,
       shell,
       cols,
       rows,
@@ -192,6 +220,32 @@ export const nativeBridge = {
 
   setBrowserMuted(label: string, muted: boolean) {
     return invoke<void>("set_browser_muted", { label, muted });
+  },
+
+  getXiaoExecutionContext(projectPath: string, taskId: string | null) {
+    return invoke<ExecutionContext>("get_xiao_execution_context", { projectPath, taskId });
+  },
+
+  prepareXiaoManagedWorktree(projectPath: string, taskId: string) {
+    return invoke<ExecutionContext>("prepare_xiao_managed_worktree", { projectPath, taskId });
+  },
+
+  listXiaoManagedWorktrees(projectPath: string) {
+    return invoke<ManagedWorktreeSummary[]>("list_xiao_managed_worktrees", { projectPath });
+  },
+
+  removeXiaoManagedWorktree(
+    projectPath: string,
+    taskId: string,
+    worktreeId: string,
+    confirmed: boolean,
+  ) {
+    return invoke<ExecutionContext>("remove_xiao_managed_worktree", {
+      projectPath,
+      taskId,
+      worktreeId,
+      confirmed,
+    });
   },
 
   loadXiaoWorkspace(workspacePath: string, includeActiveTimeline = true) {

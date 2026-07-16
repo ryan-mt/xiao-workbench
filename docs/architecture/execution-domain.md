@@ -1,8 +1,8 @@
 # Execution domain architecture
 
-Status: **Accepted for M0**
+Status: **Accepted; implemented through M2**
 
-Baseline: Xiao `33bfa96`, 2026-07-16
+Baseline: Xiao `33bfa96`, 2026-07-16. M2 implementation baseline: `d13293e`.
 
 This document fixes the domain boundaries and invariants for durable runs,
 routines, verification and isolated execution. Exact SQL and DTO syntax belongs
@@ -30,6 +30,11 @@ Rust host
             +-- Git/filesystem/native PTY through environment executor
             `-- SQLite + bounded artifacts in Xiao app data
 ```
+
+The diagram is the target topology. Through M2, Xiao still owns one process-local
+Codex app-server; Rust binds each thread to its task and resolved execution root,
+and environment changes invalidate that binding. Durable/per-environment runtime
+ownership remains M3 work.
 
 React may optimistically display a pending action, but Rust is authoritative for
 task/run/routine status. Closing/reloading the webview cannot create, complete,
@@ -75,7 +80,7 @@ createdAt
 updatedAt
 ```
 
-It answers where agent, Git, terminal, filesystem and verification execute. M1
+It answers where agent, Git, terminal, filesystem and verification execute. M2
 creates one Windows-local environment per migrated workspace. M7 adds WSL.
 
 Rules:
@@ -424,11 +429,14 @@ workspaceId
 taskId
 runId?
 repositoryRoot
+repositoryCommonDirSha256
 checkoutPath
+executionRoot
 branch
 baseCommit
 ownerMarkerPath
-status
+status: preparing | active | removing | failed | removed
+failureReason?
 createdAt
 removedAt?
 ```
@@ -453,7 +461,7 @@ file. Marker schema:
   "runId": "uuid-or-null",
   "canonicalCheckoutPath": "environment-native path",
   "repositoryCommonDirSha256": "hex",
-  "branch": "xiao/task-short/run-short",
+  "branch": "xiao/task-short/worktree-id",
   "createdAt": 0
 }
 ```
@@ -461,7 +469,7 @@ file. Marker schema:
 Deletion requires every condition:
 
 1. checkout canonicalizes under the managed-worktree root;
-2. database record is active and matches marker IDs/path;
+2. database record is active (or has a durable removal intent) and matches marker IDs/path;
 3. marker schema/version/hash is valid;
 4. `git worktree list --porcelain` reports the same checkout/repository;
 5. user confirms cleanup unless it is rollback of a setup transaction that never
@@ -486,6 +494,7 @@ schema_migrations
 legacy_imports
 workspaces
 tasks
+execution_environments
 task_timeline_entries
 runs
 run_events
@@ -500,9 +509,9 @@ artifacts
 managed_worktrees
 ```
 
-M1 initially needs workspaces/tasks/task timeline, runs/run events and migration
-metadata. Later milestones add their tables through numbered migrations. Do not create unused
-empty abstractions in M1 merely to match the eventual list.
+M1 introduced workspaces/tasks/task timeline, runs/run events and migration
+metadata. M2 adds execution environments and managed-worktree ownership through
+numbered migration 2. Later milestones add only the tables they actually use.
 
 ### Database ownership
 

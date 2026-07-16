@@ -31,7 +31,11 @@ type McpServerResponse = Omit<McpServer, "displayName" | "toolCount"> & {
 type CapabilitySource = "apps" | "mcp" | "plugins" | "skills";
 type CapabilityIssue = { message: string; tone: "error" | "notice" };
 
-type ExtensionsPanelProps = { workspace: WorkspaceSnapshot; runtime: AgentRuntimeState };
+type ExtensionsPanelProps = {
+  workspace: WorkspaceSnapshot;
+  taskId: string | null;
+  runtime: AgentRuntimeState;
+};
 
 const conciseError = (reason: unknown) => {
   const value = reason instanceof Error ? reason.message : String(reason);
@@ -66,7 +70,7 @@ const pluginAction = (plugin: Plugin) => {
   return "Install";
 };
 
-export function ExtensionsPanel({ workspace, runtime }: ExtensionsPanelProps) {
+export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelProps) {
   const runtimeAvailable = runtime.phase === "ready" || runtime.phase === "working";
   const [skills, setSkills] = useState<Skill[]>([]);
   const [plugins, setPlugins] = useState<Plugin[]>([]);
@@ -94,18 +98,24 @@ export function ExtensionsPanel({ workspace, runtime }: ExtensionsPanelProps) {
         ? Promise.resolve(null)
         : nativeBridge.agentRequest<{ data: App[] }>("app/list", { forceRefetch: force, limit: 100 });
       const [skillResult, pluginResult, mcpResult, appResult] = await Promise.allSettled([
-        nativeBridge.agentRequest<{ data: Array<{ skills: Skill[] }> }>("skills/list", {
-          cwds: [workspace.path],
-          forceReload: force,
-        }),
+        nativeBridge.agentRequest<{ data: Array<{ skills: Skill[] }> }>(
+          "skills/list",
+          { cwds: [workspace.path], forceReload: force },
+          { projectPath: workspace.path, taskId },
+        ),
         nativeBridge.agentRequest<{
           marketplaces: Array<{ name: string; path: string | null; plugins: Omit<Plugin, "marketplaceName" | "marketplacePath">[] }>;
           marketplaceLoadErrors?: Array<{ message: string }>;
-        }>("plugin/list", { cwds: [workspace.path] }),
-        nativeBridge.agentRequest<{ data: McpServerResponse[] }>("mcpServerStatus/list", {
-          detail: "toolsAndAuthOnly",
-          limit: 100,
-        }),
+        }>(
+          "plugin/list",
+          { cwds: [workspace.path] },
+          { projectPath: workspace.path, taskId },
+        ),
+        nativeBridge.agentRequest<{ data: McpServerResponse[] }>(
+          "mcpServerStatus/list",
+          { detail: "toolsAndAuthOnly", limit: 100 },
+          { projectPath: workspace.path, taskId },
+        ),
         appRequest,
       ]);
       if (requestId !== refreshEpoch.current) return;
@@ -164,7 +174,7 @@ export function ExtensionsPanel({ workspace, runtime }: ExtensionsPanelProps) {
     } finally {
       if (requestId === refreshEpoch.current) setLoading(false);
     }
-  }, [runtimeAvailable, workspace.path]);
+  }, [runtimeAvailable, taskId, workspace.execution.executionRoot, workspace.path]);
 
   useEffect(() => {
     void refresh();

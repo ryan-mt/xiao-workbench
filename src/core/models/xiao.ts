@@ -9,6 +9,7 @@ import type {
 } from "./agent";
 
 export type XiaoThreadPersistence = "ephemeral" | "persistent" | "legacy-untrusted";
+export type XiaoWorkspaceMode = "local" | "managed-worktree";
 
 export type XiaoThreadBinding = {
   threadId: string;
@@ -43,6 +44,9 @@ export type XiaoTaskDocument = {
   timelineStart: number;
   timelineEntryCount: number;
   plan?: AgentPlan | null;
+  executionEnvironmentId?: string | null;
+  workspaceMode?: XiaoWorkspaceMode;
+  managedWorktreeId?: string | null;
 };
 
 export type XiaoProjectSummary = {

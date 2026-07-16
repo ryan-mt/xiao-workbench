@@ -50,10 +50,19 @@ export function TaskHeader({
     <header className="task-header">
       <div className="task-header__copy">
         <h1>{taskTitle}</h1>
-        <button className="task-header__branch" onClick={() => onFocusView("changes")}>
-          <XiaoIcon name="branch" size={13} />
-          <span>{branch}</span>
-        </button>
+        <div className="task-header__context-row">
+          <button className="task-header__branch" onClick={() => onFocusView("changes")}>
+            <XiaoIcon name="branch" size={13} />
+            <span>{branch}</span>
+          </button>
+          <span
+            className="task-header__environment"
+            title={workspace.execution.executionRoot}
+          >
+            <XiaoIcon name="workspace" size={12} />
+            {workspace.execution.workspaceMode === "managed-worktree" ? "Isolated" : "Local"}
+          </span>
+        </div>
       </div>
 
       <div className="task-header__actions">

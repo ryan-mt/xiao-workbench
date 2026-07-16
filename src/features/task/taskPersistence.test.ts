@@ -43,6 +43,9 @@ const task = (): WorkbenchTask => ({
   timelineStart: 2,
   timelineEntryCount: 4,
   plan: null,
+  executionEnvironmentId: "environment-1",
+  workspaceMode: "local",
+  managedWorktreeId: null,
 });
 
 const page = (entries: TimelineEntry[], start: number, total: number, hasMore: boolean): XiaoTimelinePage => ({
@@ -63,6 +66,9 @@ describe("task persistence", () => {
     });
     expect(document.timelineComplete).toBe(false);
     expect(document.timelineEntryCount).toBe(4);
+    expect(document.executionEnvironmentId).toBe("environment-1");
+    expect(document.workspaceMode).toBe("local");
+    expect(document.managedWorktreeId).toBeNull();
   });
 
   it("omits an unchanged timeline from metadata-only updates", () => {

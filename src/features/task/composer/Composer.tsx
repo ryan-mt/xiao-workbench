@@ -17,6 +17,8 @@ import type {
   AgentRuntimeState,
   AgentSandboxMode,
 } from "../../../core/models/agent";
+import type { ManagedWorktreeSummary } from "../../../core/models/workspace";
+import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { ModelPicker } from "./ModelPicker";
@@ -38,6 +40,7 @@ const promptHistoryStorageKey = "xiao.prompt-history.v1";
 
 type ComposerProps = {
   taskId: string;
+  executionTaskId: string | null;
   workspacePath: string;
   runtime: AgentRuntimeState;
   models: AgentModelSummary[];
@@ -47,6 +50,12 @@ type ComposerProps = {
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
   sandboxMode: AgentSandboxMode;
+  workspaceMode: XiaoWorkspaceMode;
+  isolationAvailable: boolean;
+  isolationUnavailableReason: string | null;
+  environmentBusy: boolean;
+  environmentError: string | null;
+  managedWorktree: ManagedWorktreeSummary | null;
   goal: AgentGoal | null;
   plan: AgentPlan | null;
   reviewContext: AgentAttachment[];
@@ -67,6 +76,7 @@ type ComposerProps = {
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
   onSandboxModeChange: (mode: AgentSandboxMode) => void;
+  onWorkspaceModeChange: (mode: XiaoWorkspaceMode) => Promise<void>;
   onGoalSet: (objective: string, status?: AgentGoal["status"]) => Promise<boolean>;
   onGoalClear: () => Promise<boolean>;
   onOpenView: (view: FocusView) => void;
@@ -90,6 +100,12 @@ type ComposerProps = {
   disabledPlaceholder?: string;
   storageError?: string | null;
   autoFocus?: boolean;
+};
+
+const compactBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 };
 
 const attachmentFromPath = (path: string, kind?: AgentAttachment["kind"]): AgentAttachment => {
@@ -117,6 +133,7 @@ const dataUrlAttachment = (file: File) =>
 
 export function Composer({
   taskId,
+  executionTaskId,
   workspacePath,
   runtime,
   models,
@@ -126,6 +143,12 @@ export function Composer({
   mode,
   approvalPolicy,
   sandboxMode,
+  workspaceMode,
+  isolationAvailable,
+  isolationUnavailableReason,
+  environmentBusy,
+  environmentError,
+  managedWorktree,
   goal,
   plan,
   reviewContext,
@@ -146,6 +169,7 @@ export function Composer({
   onModeChange,
   onApprovalPolicyChange,
   onSandboxModeChange,
+  onWorkspaceModeChange,
   onGoalSet,
   onGoalClear,
   onOpenView,
@@ -247,11 +271,15 @@ export function Composer({
       setFileSearchLoading(true);
       setFileSearchError(null);
       void nativeBridge
-        .agentRequest<FuzzyFileResponse>("fuzzyFileSearch", {
-          query: fileMention.query,
-          roots: [workspacePath],
-          cancellationToken: null,
-        })
+        .agentRequest<FuzzyFileResponse>(
+          "fuzzyFileSearch",
+          {
+            query: fileMention.query,
+            roots: [workspacePath],
+            cancellationToken: null,
+          },
+          { projectPath: workspacePath, taskId: executionTaskId },
+        )
         .then((result) => {
           if (requestId !== fileSearchRequest.current) return;
           setFileResults(result.files.slice(0, 9));
@@ -268,7 +296,7 @@ export function Composer({
     }, 100);
 
     return () => window.clearTimeout(timer);
-  }, [fileMention?.query, runtime.phase, workspacePath]);
+  }, [executionTaskId, fileMention?.query, runtime.phase, workspacePath]);
 
   useEffect(() => {
     if (!addMenuOpen) return;
@@ -1093,6 +1121,35 @@ export function Composer({
                     <span><strong>Capabilities</strong><small>Inspect skills, plugins, MCP, and apps</small></span>
                   </button>
                   <div className="composer-add__settings">
+                    <span>Run environment</span>
+                    <label title={isolationUnavailableReason ?? undefined}>
+                      <span>Workspace</span>
+                      <select
+                        aria-label="Workspace mode"
+                        value={workspaceMode}
+                        disabled={disabled || environmentBusy}
+                        onChange={(event) =>
+                          void onWorkspaceModeChange(event.target.value as XiaoWorkspaceMode)
+                        }
+                      >
+                        <option value="local">Local project</option>
+                        <option
+                          value="managed-worktree"
+                          disabled={!isolationAvailable && workspaceMode !== "managed-worktree"}
+                        >
+                          Isolated worktree
+                        </option>
+                      </select>
+                    </label>
+                    {managedWorktree ? (
+                      <small title={managedWorktree.checkoutPath}>
+                        {managedWorktree.branch} · {managedWorktree.sizeComplete ? "" : "≥"}
+                        {compactBytes(managedWorktree.diskBytes)}
+                        {managedWorktree.hasChanges ? " · uncommitted changes" : ""}
+                      </small>
+                    ) : null}
+                    {environmentBusy ? <small>Preparing execution environment…</small> : null}
+                    {environmentError ? <small className="is-error">{environmentError}</small> : null}
                     <span>Run permissions</span>
                     <label>
                       <span>Approval</span>

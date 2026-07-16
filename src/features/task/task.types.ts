@@ -7,7 +7,7 @@ import type {
   AgentSandboxMode,
   TimelineEntry,
 } from "../../core/models/agent";
-import type { XiaoThreadBinding } from "../../core/models/xiao";
+import type { XiaoThreadBinding, XiaoWorkspaceMode } from "../../core/models/xiao";
 
 export type TaskGroup = "Active" | "Recent" | "Yesterday" | "This week";
 
@@ -37,4 +37,7 @@ export type WorkbenchTask = {
   timelineStart: number;
   timelineEntryCount: number;
   plan: AgentPlan | null;
+  executionEnvironmentId: string | null;
+  workspaceMode: XiaoWorkspaceMode;
+  managedWorktreeId: string | null;
 };

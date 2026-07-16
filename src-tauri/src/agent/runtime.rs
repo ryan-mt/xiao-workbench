@@ -25,6 +25,7 @@ pub struct AgentRuntime {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     pending: PendingRequests,
     generation: Arc<AtomicU64>,
+    thread_bindings: Mutex<HashMap<String, String>>,
     next_id: AtomicU64,
 }
 
@@ -42,6 +43,7 @@ impl Default for AgentRuntime {
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             generation: Arc::new(AtomicU64::new(0)),
+            thread_bindings: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
@@ -69,6 +71,10 @@ impl AgentRuntime {
 
         let generation = advance_generation(&self.generation);
         fail_pending_requests(&self.pending, "Agent runtime restarted before responding.");
+        self.thread_bindings
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clear();
         *child_slot = None;
         *self.stdin.lock().map_err(|error| error.to_string())? = None;
 
@@ -203,7 +209,59 @@ impl AgentRuntime {
             }
             child.wait().map_err(|error| error.to_string())?;
         }
+        self.thread_bindings
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clear();
         Ok(())
+    }
+
+    pub fn bind_thread_to_task(
+        &self,
+        thread_id: &str,
+        project_path: &str,
+        task_id: &str,
+        execution_root: &str,
+    ) -> Result<(), String> {
+        let binding = format!("{project_path}\0{task_id}\0{execution_root}");
+        let mut bindings = self
+            .thread_bindings
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if bindings
+            .get(thread_id)
+            .is_some_and(|existing| existing != &binding)
+        {
+            return Err(
+                "The agent thread is already bound to another Xiao task or execution environment."
+                    .to_owned(),
+            );
+        }
+        bindings.insert(thread_id.to_owned(), binding);
+        Ok(())
+    }
+
+    pub fn require_thread_task(
+        &self,
+        thread_id: &str,
+        project_path: &str,
+        task_id: &str,
+        execution_root: &str,
+    ) -> Result<(), String> {
+        let binding = format!("{project_path}\0{task_id}\0{execution_root}");
+        match self
+            .thread_bindings
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(thread_id)
+        {
+            Some(existing) if existing == &binding => Ok(()),
+            Some(_) => Err(
+                "The agent thread belongs to another Xiao task or execution environment."
+                    .to_owned(),
+            ),
+            None => Err("The agent thread is not owned by this Xiao runtime.".to_owned()),
+        }
     }
 
     pub async fn request(&self, method: String, params: Value) -> Result<Value, String> {
@@ -465,6 +523,33 @@ mod tests {
         );
 
         assert!(pending.lock().unwrap().contains_key(&9));
+    }
+
+    #[test]
+    fn runtime_threads_cannot_cross_task_bindings() {
+        let runtime = AgentRuntime::default();
+        runtime
+            .bind_thread_to_task("thread", "C:/project", "task-a", "C:/project")
+            .unwrap();
+        runtime
+            .require_thread_task("thread", "C:/project", "task-a", "C:/project")
+            .unwrap();
+        assert!(runtime
+            .require_thread_task("thread", "C:/project", "task-b", "C:/project")
+            .unwrap_err()
+            .contains("another Xiao task"));
+        assert!(runtime
+            .require_thread_task("thread", "C:/project", "task-a", "C:/managed")
+            .unwrap_err()
+            .contains("another Xiao task"));
+        assert!(runtime
+            .bind_thread_to_task("thread", "C:/other", "task-a", "C:/other")
+            .unwrap_err()
+            .contains("another Xiao task"));
+        assert!(runtime
+            .require_thread_task("unknown", "C:/project", "task-a", "C:/project")
+            .unwrap_err()
+            .contains("not owned"));
     }
 
     #[test]

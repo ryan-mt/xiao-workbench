@@ -1,5 +1,6 @@
 mod agent;
 mod browser;
+mod execution;
 mod git;
 mod system;
 mod terminal;
@@ -14,6 +15,10 @@ use agent::runtime::AgentRuntime;
 use browser::commands::{
     get_browser_url, go_back_browser, go_forward_browser, navigate_browser, reload_browser,
     set_browser_muted,
+};
+use execution::commands::{
+    get_xiao_execution_context, list_xiao_managed_worktrees, prepare_xiao_managed_worktree,
+    remove_xiao_managed_worktree,
 };
 use git::commands::{
     add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
@@ -65,6 +70,10 @@ pub fn run() {
         .manage(TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             get_workspace_snapshot,
+            get_xiao_execution_context,
+            prepare_xiao_managed_worktree,
+            list_xiao_managed_worktrees,
+            remove_xiao_managed_worktree,
             list_workspace_files,
             read_workspace_file,
             get_system_info,

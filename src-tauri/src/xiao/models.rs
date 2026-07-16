@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 1;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +68,30 @@ pub struct XiaoTaskDocument {
     pub timeline_entry_count: usize,
     #[serde(default)]
     pub plan: Option<Value>,
+    #[serde(default)]
+    pub execution_environment_id: Option<String>,
+    #[serde(default)]
+    pub workspace_mode: XiaoWorkspaceMode,
+    #[serde(default)]
+    pub managed_worktree_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum XiaoWorkspaceMode {
+    #[default]
+    Local,
+    ManagedWorktree,
+}
+
+impl XiaoWorkspaceMode {
+    pub fn from_database(value: &str) -> Result<Self, String> {
+        match value {
+            "local" => Ok(Self::Local),
+            "managed-worktree" => Ok(Self::ManagedWorktree),
+            _ => Err(format!("Unsupported Xiao workspace mode `{value}`.")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]

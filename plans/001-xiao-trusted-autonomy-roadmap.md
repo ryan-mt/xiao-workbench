@@ -15,7 +15,7 @@
 
 ## Status
 
-- **Execution status**: IN PROGRESS (M1 DONE; M2 not started)
+- **Execution status**: IN PROGRESS (M3 next)
 - **Priority**: P1
 - **Effort**: L — chương trình nhiều milestone; ước lượng đầy đủ ở phần Release roadmap
 - **Risk**: HIGH — thay đổi persistence, runtime lifecycle, Git worktree và background execution
@@ -431,7 +431,7 @@ Estimate assumes one experienced maintainer working mostly full-time. It include
 |---|---|---:|---|---|
 | M0 | Architecture and protocol decisions locked | M | — | DONE |
 | M1 | Durable state preview; no user-visible feature loss | L | M0 | DONE |
-| M2 | Safe task-owned execution roots/worktrees | L | M1 | TODO |
+| M2 | Safe task-owned execution roots/worktrees | L | M1 | DONE |
 | M3 | Recoverable queue and bounded concurrent runs | L | M2 | TODO |
 | M4 | Routines Beta | L | M3 | TODO |
 | M5 | Verified Autonomy Beta | L | M4 | TODO |
@@ -581,7 +581,7 @@ Ensure every filesystem, Git, terminal and agent action has one explicit executi
 - Local workspace mode remains default for migrated tasks.
 - Managed-worktree mode creates a Xiao-owned branch/path under the M0-selected app-data root.
 - Ownership metadata distinguishes Xiao-managed worktrees from manually created worktrees.
-- New tasks can choose Local or Isolated Worktree; routine-created tasks default to isolated worktree when the project is a Git repository.
+- New interactive tasks can choose Local or Isolated Worktree. Routine-created environment selection remains deferred to the M4 native scheduler; renderer-scheduled tasks stay Local until then.
 - Git, terminal and agent APIs receive resolved execution root from native state, not arbitrary frontend/model input.
 - Cleanup UI lists disk usage and requires explicit confirmation.
 
@@ -613,7 +613,7 @@ Ensure every filesystem, Git, terminal and agent action has one explicit executi
 
 ### Exit gate
 
-Every new run can report one canonical environment and execution root, and Xiao can prove whether it owns a worktree before offering deletion.
+Every interactive task can report one canonical environment and execution root, and Xiao can prove whether it owns a worktree before offering deletion. Durable run snapshots remain M3 work.
 
 ### STOP conditions
 

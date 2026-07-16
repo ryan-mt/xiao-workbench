@@ -42,6 +42,8 @@ type FocusRailProps = {
   system: SystemInfo;
   runtime: AgentRuntimeState;
   task: WorkbenchTask;
+  executionTaskId: string | null;
+  executionTransitioning: boolean;
   timeline: TimelineEntry[];
   models: AgentModelSummary[];
   contextUsage: ThreadTokenUsage | null;
@@ -82,6 +84,8 @@ export function FocusRail({
   system,
   runtime,
   task,
+  executionTaskId,
+  executionTransitioning,
   timeline,
   models,
   contextUsage,
@@ -204,7 +208,14 @@ export function FocusRail({
       </header>
 
       <div className={`focus-panel focus-panel--${activeView}`}>
-        {activeView === "changes" && <ChangesPanel workspace={workspace} onRefresh={onRefresh} />}
+        {activeView === "changes" && (
+          <ChangesPanel
+            workspace={workspace}
+            taskId={executionTaskId}
+            transitioning={executionTransitioning}
+            onRefresh={onRefresh}
+          />
+        )}
         {activeView === "context" && (
           <ContextPanel
             key={task.id}
@@ -220,6 +231,7 @@ export function FocusRail({
         {activeView === "files" && (
           <OpenFilePanel
             workspace={workspace}
+            taskId={executionTaskId}
             loading={loading}
             activeFile={activeFile}
             onActiveFileChange={setActiveFile}
@@ -230,11 +242,19 @@ export function FocusRail({
           />
         )}
         {activeView === "plan" && <PlanPanel runtime={runtime} plan={plan} />}
-        {activeView === "extensions" && <ExtensionsPanel workspace={workspace} runtime={runtime} />}
+        {activeView === "extensions" && (
+          <ExtensionsPanel workspace={workspace} taskId={executionTaskId} runtime={runtime} />
+        )}
         {(terminalOpened || activeView === "terminal") && (
           <div className="focus-terminal-slot" hidden={activeView !== "terminal"}>
             <Suspense fallback={<div className="terminal-loading"><XiaoIcon name="pending" size={15} /> Starting terminal</div>}>
-              <TerminalPanel active={activeView === "terminal"} workspace={workspace} system={system} />
+              <TerminalPanel
+                active={activeView === "terminal"}
+                workspace={workspace}
+                taskId={executionTaskId}
+                system={system}
+                transitioning={executionTransitioning}
+              />
             </Suspense>
           </div>
         )}
