@@ -28,6 +28,14 @@ pub struct AgentDailyUsageBucket {
     pub tokens: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelServiceTier {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentModelSummary {
@@ -38,6 +46,7 @@ pub struct AgentModelSummary {
     pub is_default: bool,
     pub default_reasoning_effort: String,
     pub supported_reasoning_efforts: Vec<AgentReasoningEffortOption>,
+    pub service_tiers: Vec<AgentModelServiceTier>,
     pub context_window: Option<u64>,
 }
 
@@ -83,6 +92,8 @@ pub(crate) struct ModelRecord {
     pub default_reasoning_effort: String,
     #[serde(default)]
     pub supported_reasoning_efforts: Vec<AgentReasoningEffortOption>,
+    #[serde(default)]
+    pub service_tiers: Vec<AgentModelServiceTier>,
     #[serde(default)]
     pub context_window: Option<u64>,
 }

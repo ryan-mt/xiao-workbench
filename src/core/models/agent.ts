@@ -205,7 +205,14 @@ export type AgentModelSummary = {
   isDefault: boolean;
   defaultReasoningEffort: string;
   supportedReasoningEfforts: AgentReasoningEffortOption[];
+  serviceTiers: AgentModelServiceTier[];
   contextWindow?: number | null;
+};
+
+export type AgentModelServiceTier = {
+  id: string;
+  name: string;
+  description: string;
 };
 
 export type AgentReasoningEffortOption = {

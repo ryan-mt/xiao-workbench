@@ -34,6 +34,7 @@ type TaskWorkspaceProps = {
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
+  fastMode: boolean;
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
   sandboxMode: AgentSandboxMode;
@@ -74,6 +75,7 @@ type TaskWorkspaceProps = {
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
+  onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
   onSandboxModeChange: (mode: AgentSandboxMode) => void;
@@ -101,6 +103,7 @@ export function TaskWorkspace({
   models,
   selectedModel,
   selectedReasoningEffort,
+  fastMode,
   mode,
   approvalPolicy,
   sandboxMode,
@@ -138,6 +141,7 @@ export function TaskWorkspace({
   onResolveQuestion,
   onModelChange,
   onReasoningEffortChange,
+  onFastModeChange,
   onModeChange,
   onApprovalPolicyChange,
   onSandboxModeChange,
@@ -183,6 +187,7 @@ export function TaskWorkspace({
       models={models}
       selectedModel={selectedModel}
       selectedReasoningEffort={selectedReasoningEffort}
+      fastMode={fastMode}
       mode={mode}
       approvalPolicy={approvalPolicy}
       sandboxMode={sandboxMode}
@@ -203,6 +208,7 @@ export function TaskWorkspace({
       autoFocus={launchMode}
       onModelChange={onModelChange}
       onReasoningEffortChange={onReasoningEffortChange}
+      onFastModeChange={onFastModeChange}
       onModeChange={onModeChange}
       onApprovalPolicyChange={onApprovalPolicyChange}
       onSandboxModeChange={onSandboxModeChange}

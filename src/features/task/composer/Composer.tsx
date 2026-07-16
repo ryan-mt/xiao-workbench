@@ -35,6 +35,7 @@ type ComposerProps = {
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
+  fastMode: boolean;
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
   sandboxMode: AgentSandboxMode;
@@ -54,6 +55,7 @@ type ComposerProps = {
   undoing: boolean;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
+  onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
   onSandboxModeChange: (mode: AgentSandboxMode) => void;
@@ -111,6 +113,7 @@ export function Composer({
   models,
   selectedModel,
   selectedReasoningEffort,
+  fastMode,
   mode,
   approvalPolicy,
   sandboxMode,
@@ -130,6 +133,7 @@ export function Composer({
   undoing,
   onModelChange,
   onReasoningEffortChange,
+  onFastModeChange,
   onModeChange,
   onApprovalPolicyChange,
   onSandboxModeChange,
@@ -1043,9 +1047,11 @@ export function Composer({
               models={models}
               selectedModel={selectedModel}
               selectedReasoningEffort={selectedReasoningEffort}
+              fastMode={fastMode}
               disabled={disabled || undoing || runtime.phase === "starting"}
               onModelChange={onModelChange}
               onReasoningEffortChange={onReasoningEffortChange}
+              onFastModeChange={onFastModeChange}
             />
           </div>
           <div className="composer__actions">

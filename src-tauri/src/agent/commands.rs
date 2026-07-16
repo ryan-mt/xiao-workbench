@@ -62,6 +62,7 @@ pub async fn start_xiao_session(
     model: Option<String>,
     history: Vec<models::XiaoHistoryItem>,
     thread_id: Option<String>,
+    service_tier: Option<String>,
     approval_policy: Option<String>,
     sandbox: Option<String>,
     runtime: State<'_, AgentRuntime>,
@@ -72,6 +73,7 @@ pub async fn start_xiao_session(
         model,
         history,
         thread_id,
+        service_tier,
         approval_policy,
         sandbox,
     )

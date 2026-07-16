@@ -1,6 +1,7 @@
 import type {
   AgentApprovalRequestKind,
   AgentAttachment,
+  AgentModelSummary,
   TimelineEntry,
 } from "../../../core/models/agent";
 
@@ -33,6 +34,18 @@ export const userInput = (prompt: string, attachments: AgentAttachment[]) => [
     return { type: "text", text: `${label}: ${attachment.path}`, text_elements: [] };
   }),
 ];
+
+export const fastServiceTier = (model: AgentModelSummary | null | undefined) =>
+  model?.serviceTiers.find((tier) => {
+    const id = tier.id.trim().toLocaleLowerCase();
+    const name = tier.name.trim().toLocaleLowerCase();
+    return id === "fast" || id === "priority" || name === "fast";
+  }) ?? null;
+
+export const serviceTierForFastMode = (
+  model: AgentModelSummary | null | undefined,
+  fastMode: boolean,
+) => fastMode ? fastServiceTier(model)?.id ?? null : null;
 
 export const permissionGrantFromRequest = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object") return {};

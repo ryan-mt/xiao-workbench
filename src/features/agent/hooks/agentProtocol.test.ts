@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import type { AgentModelSummary } from "../../../core/models/agent";
 import {
   approvalResponse,
   contextCompactionTimelineEntry,
+  fastServiceTier,
   invalidateUndoHistory,
   latestUndoableTurn,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
+  serviceTierForFastMode,
   threadCompactRequest,
   userInput,
 } from "./agentProtocol";
@@ -77,6 +80,40 @@ describe("mcpElicitationDeclineResponse", () => {
       content: null,
       _meta: null,
     });
+  });
+});
+
+describe("Fast service tier", () => {
+  const model = (serviceTiers: AgentModelSummary["serviceTiers"]): AgentModelSummary => ({
+    id: "gpt-5.4",
+    model: "gpt-5.4",
+    displayName: "GPT-5.4",
+    description: "Test model",
+    isDefault: true,
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [],
+    serviceTiers,
+  });
+
+  it("uses the exact Fast tier advertised by the Codex model catalog", () => {
+    const activeModel = model([
+      { id: "priority", name: "Fast", description: "1.5x speed, increased usage" },
+    ]);
+
+    expect(fastServiceTier(activeModel)).toEqual(activeModel.serviceTiers[0]);
+    expect(serviceTierForFastMode(activeModel, true)).toBe("priority");
+    expect(serviceTierForFastMode(activeModel, false)).toBeNull();
+  });
+
+  it("does not infer Fast support from a model name", () => {
+    expect(fastServiceTier(model([]))).toBeNull();
+    expect(serviceTierForFastMode(model([]), true)).toBeNull();
+  });
+
+  it("accepts legacy catalog tier ids when the display name is unavailable", () => {
+    expect(fastServiceTier(model([
+      { id: "fast", name: "Priority", description: "Faster responses" },
+    ]))?.id).toBe("fast");
   });
 });
 

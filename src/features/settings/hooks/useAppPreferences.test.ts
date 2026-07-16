@@ -11,6 +11,7 @@ describe("normalizeAppPreferences", () => {
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
+      fastMode: true,
       launchBrand: "wordmark",
       wrapCode: true,
       notifyCompletions: false,
@@ -30,6 +31,7 @@ describe("normalizeAppPreferences", () => {
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
+      fastMode: true,
       launchBrand: "wordmark",
       wrapCode: true,
       notifyCompletions: false,
@@ -49,6 +51,7 @@ describe("normalizeAppPreferences", () => {
   it("adds safe defaults to preferences saved by older versions", () => {
     const preferences = normalizeAppPreferences({ wrapCode: true });
 
+    expect(preferences.fastMode).toBe(false);
     expect(preferences.launchBrand).toBe("logo");
     expect(preferences.taskRunDefaults).toEqual(defaultTaskRunDefaults);
   });

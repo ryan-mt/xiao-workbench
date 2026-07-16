@@ -99,6 +99,7 @@ pub async fn list_models(runtime: &AgentRuntime) -> Result<Vec<AgentModelSummary
                     is_default: model.is_default,
                     default_reasoning_effort: model.default_reasoning_effort,
                     supported_reasoning_efforts: model.supported_reasoning_efforts,
+                    service_tiers: model.service_tiers,
                     context_window: model.context_window,
                 }),
         );
@@ -121,6 +122,7 @@ pub async fn start_xiao_session(
     model: Option<String>,
     history: Vec<XiaoHistoryItem>,
     thread_id: Option<String>,
+    service_tier: Option<String>,
     approval_policy: Option<String>,
     sandbox: Option<String>,
 ) -> Result<AgentSessionStart, String> {
@@ -132,6 +134,7 @@ pub async fn start_xiao_session(
         &workspace_path,
         model.as_deref(),
         thread_id.as_deref(),
+        service_tier.as_deref(),
         approval_policy.as_deref(),
         sandbox.as_deref(),
     );
@@ -162,6 +165,7 @@ fn isolated_thread_start_request(
     workspace_path: &str,
     model: Option<&str>,
     _persisted_thread_id: Option<&str>,
+    service_tier: Option<&str>,
     approval_policy: Option<&str>,
     sandbox: Option<&str>,
 ) -> (&'static str, Value) {
@@ -170,6 +174,7 @@ fn isolated_thread_start_request(
         json!({
             "cwd": workspace_path,
             "model": model,
+            "serviceTier": service_tier,
             "approvalPolicy": approval_policy,
             "sandbox": sandbox,
             "ephemeral": true,
@@ -213,6 +218,7 @@ mod tests {
             "C:/workspace",
             Some("gpt-test"),
             Some("persisted-thread"),
+            Some("priority"),
             Some("on-request"),
             Some("workspace-write"),
         );
@@ -220,6 +226,7 @@ mod tests {
         assert_eq!(method, "thread/start");
         assert_eq!(params["ephemeral"], true);
         assert_eq!(params["serviceName"], "Xiao Workbench");
+        assert_eq!(params["serviceTier"], "priority");
         assert!(params.get("threadId").is_none());
     }
 

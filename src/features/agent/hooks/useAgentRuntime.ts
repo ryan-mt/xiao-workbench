@@ -33,6 +33,7 @@ import {
   needsAgentSession,
   permissionGrantFromRequest,
   reviewContextText,
+  serviceTierForFastMode,
   threadCompactRequest,
   userInput,
 } from "./agentProtocol";
@@ -394,6 +395,7 @@ export function useAgentRuntime(
   activeTaskTimeline: TimelineEntry[],
   activeTaskModel: string | null,
   activeTaskReasoningEffort: string | null,
+  fastMode: boolean,
   activeTaskMode: AgentMode,
   activeTaskApprovalPolicy: AgentApprovalPolicy,
   activeTaskSandboxMode: AgentSandboxMode,
@@ -643,6 +645,7 @@ export function useAgentRuntime(
     reasoningEffort: string | null,
     mode: AgentMode,
     model: string | null,
+    serviceTier: string | null,
     approvalPolicy: AgentApprovalPolicy,
     sandboxMode: AgentSandboxMode,
     turnWorkspacePath: string,
@@ -652,6 +655,7 @@ export function useAgentRuntime(
       threadId,
       input: userInput(prompt, attachments),
       effort: reasoningEffort,
+      serviceTier,
       approvalPolicy,
       sandboxPolicy: sandboxPolicyForTurn(sandboxMode, turnWorkspacePath),
     };
@@ -1493,6 +1497,10 @@ export function useAgentRuntime(
       let threadId = sessionIds.current.get(activeTaskId);
 
       try {
+        const requestedModel = activeTaskModel
+          ? models.find((model) => model.model === activeTaskModel)
+          : models.find((model) => model.isDefault);
+        const requestedServiceTier = serviceTierForFastMode(requestedModel, fastMode);
         const needsSession = needsAgentSession(
           threadId,
           sessionRequestedModels.current.has(activeTaskId),
@@ -1505,6 +1513,7 @@ export function useAgentRuntime(
             activeTaskModel,
             historyFromTimeline(currentTimeline),
             threadId ?? null,
+            requestedServiceTier,
             activeTaskApprovalPolicy,
             activeTaskSandboxMode,
           );
@@ -1532,6 +1541,10 @@ export function useAgentRuntime(
             `${activeTaskGoal.status}:${activeTaskGoal.objective}`,
           );
         }
+        const turnModel = sessionModels.current.get(activeTaskId) ?? activeTaskModel;
+        const turnModelSummary = turnModel
+          ? models.find((model) => model.model === turnModel)
+          : requestedModel;
         const turnId = await sendTurn(
           threadId,
           cleanPrompt,
@@ -1539,7 +1552,8 @@ export function useAgentRuntime(
           activeTaskId,
           activeTaskReasoningEffort,
           activeTaskMode,
-          sessionModels.current.get(activeTaskId) ?? activeTaskModel,
+          turnModel,
+          serviceTierForFastMode(turnModelSummary, fastMode),
           activeTaskApprovalPolicy,
           activeTaskSandboxMode,
           workspacePath,
@@ -1583,6 +1597,8 @@ export function useAgentRuntime(
       activeTaskMode,
       activeTaskModel,
       activeTaskReasoningEffort,
+      fastMode,
+      models,
       activeTaskSandboxMode,
       activeTaskTitle,
       activeTaskTimeline,

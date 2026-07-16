@@ -74,6 +74,7 @@ export const nativeBridge = {
     model: string | null,
     history: XiaoHistoryItem[],
     threadId: string | null,
+    serviceTier: string | null,
     approvalPolicy: string,
     sandbox: string,
   ) {
@@ -82,6 +83,7 @@ export const nativeBridge = {
       model,
       history,
       threadId,
+      serviceTier,
       approvalPolicy,
       sandbox,
     });

@@ -750,6 +750,7 @@ export function App() {
     activeTask.timeline,
     activeTask.model,
     activeTask.reasoningEffort,
+    preferences.fastMode,
     activeTask.mode,
     activeTask.approvalPolicy,
     activeTask.sandboxMode,
@@ -1604,6 +1605,7 @@ export function App() {
               models={visibleModels}
               selectedModel={activeTask.model}
               selectedReasoningEffort={activeTask.reasoningEffort}
+              fastMode={preferences.fastMode}
               mode={activeTask.mode}
               approvalPolicy={activeTask.approvalPolicy}
               sandboxMode={activeTask.sandboxMode}
@@ -1634,6 +1636,7 @@ export function App() {
                 patchActiveTask({ reasoningEffort });
                 updateTaskRunDefaults({ reasoningEffort });
               }}
+              onFastModeChange={(fastMode) => updatePreferences({ fastMode })}
               onModeChange={(mode) => {
                 patchActiveTask({ mode });
                 updateTaskRunDefaults({ mode });
