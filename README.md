@@ -1,6 +1,6 @@
 # Xiao Workbench
 
-**Windows beta · v0.1.0-beta.1**
+**Windows beta · 0.0.0day07152026**
 
 Xiao is a calm desktop desk for noisy agent work. The conversation stays in the
 middle; the plan, files, changes, terminal, browser, and the occasional break

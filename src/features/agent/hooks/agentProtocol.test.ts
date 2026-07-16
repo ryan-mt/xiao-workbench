@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   approvalResponse,
+  contextCompactionTimelineEntry,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
+  threadCompactRequest,
 } from "./agentProtocol";
 
 describe("approvalResponse", () => {
@@ -60,5 +62,42 @@ describe("needsAgentSession", () => {
     expect(needsAgentSession(undefined, true, null, null)).toBe(true);
     expect(needsAgentSession("thread-1", false, undefined, null)).toBe(true);
     expect(needsAgentSession("thread-1", true, "gpt-old", "gpt-new")).toBe(true);
+  });
+});
+
+describe("threadCompactRequest", () => {
+  it("uses the native app-server compaction method and thread payload", () => {
+    expect(threadCompactRequest("thread-1")).toEqual({
+      method: "thread/compact/start",
+      params: { threadId: "thread-1" },
+    });
+  });
+});
+
+describe("contextCompactionTimelineEntry", () => {
+  it("projects the official item lifecycle without inventing a summary prompt", () => {
+    const item = { type: "contextCompaction", id: "compact-1" };
+
+    expect(contextCompactionTimelineEntry(item, "started")).toMatchObject({
+      id: "compact-1",
+      kind: "result",
+      title: "Compacting context",
+      meta: "Context",
+      status: "active",
+    });
+    expect(contextCompactionTimelineEntry(item, "completed")).toMatchObject({
+      id: "compact-1",
+      kind: "result",
+      title: "Context compacted",
+      meta: "Context",
+      status: "success",
+    });
+  });
+
+  it("ignores unrelated or malformed items", () => {
+    expect(contextCompactionTimelineEntry({ type: "agentMessage", id: "message-1" }, "completed"))
+      .toBeNull();
+    expect(contextCompactionTimelineEntry({ type: "contextCompaction" }, "completed"))
+      .toBeNull();
   });
 });

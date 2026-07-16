@@ -749,7 +749,6 @@ export function App() {
     activeTask.timeline,
     activeTask.model,
     activeTask.reasoningEffort,
-    activeTask.threadId,
     activeTask.mode,
     activeTask.approvalPolicy,
     activeTask.sandboxMode,
@@ -1580,6 +1579,9 @@ export function App() {
               sendingFollowUpId={sendingFollowUpId}
               failedFollowUpId={failedFollowUpId}
               restoredAttachments={restoredAttachmentsByTask[activeTask.id] ?? []}
+              canCompact={agent.canCompact}
+              compacting={agent.compacting}
+              hasThread={agent.hasThread}
               canUndo={agent.canUndo && activeTask.followUps.length === 0}
               undoing={agent.undoing}
               contextUsage={agent.contextUsage}
@@ -1621,6 +1623,7 @@ export function App() {
                 delete next[activeTask.id];
                 return next;
               })}
+              onCompact={agent.compact}
               onUndo={() => void undoTaskTurn()}
               onRemoveReviewContext={removeReviewContext}
               onReviewContextSent={clearReviewContext}

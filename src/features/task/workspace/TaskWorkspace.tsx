@@ -46,6 +46,9 @@ type TaskWorkspaceProps = {
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
   restoredAttachments: AgentAttachment[];
+  canCompact: boolean;
+  compacting: boolean;
+  hasThread: boolean;
   canUndo: boolean;
   undoing: boolean;
   contextUsage: ThreadTokenUsage | null;
@@ -58,6 +61,7 @@ type TaskWorkspaceProps = {
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
   onRestoredAttachmentsConsumed: () => void;
+  onCompact: () => Promise<boolean>;
   onUndo: () => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: () => void;
@@ -107,6 +111,9 @@ export function TaskWorkspace({
   sendingFollowUpId,
   failedFollowUpId,
   restoredAttachments,
+  canCompact,
+  compacting,
+  hasThread,
   canUndo,
   undoing,
   contextUsage,
@@ -119,6 +126,7 @@ export function TaskWorkspace({
   onSendFollowUpNow,
   onRetryFollowUp,
   onRestoredAttachmentsConsumed,
+  onCompact,
   onUndo,
   onRemoveReviewContext,
   onReviewContextSent,
@@ -176,6 +184,9 @@ export function TaskWorkspace({
       sendingFollowUpId={sendingFollowUpId}
       failedFollowUpId={failedFollowUpId}
       restoredAttachments={restoredAttachments}
+      canCompact={canCompact}
+      compacting={compacting}
+      hasThread={hasThread}
       canUndo={canUndo}
       undoing={undoing}
       autoFocus={launchMode}
@@ -194,6 +205,7 @@ export function TaskWorkspace({
       onSendFollowUpNow={onSendFollowUpNow}
       onRetryFollowUp={onRetryFollowUp}
       onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
+      onCompact={onCompact}
       onUndo={onUndo}
       onRemoveReviewContext={onRemoveReviewContext}
       onReviewContextSent={onReviewContextSent}

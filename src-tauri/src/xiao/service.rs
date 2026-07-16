@@ -34,6 +34,7 @@ pub fn load_workspace(
 
 pub fn save_workspace(app: &AppHandle, mut document: XiaoWorkspaceDocument) -> Result<(), String> {
     document.workspace_path = normalize_workspace_path(&document.workspace_path);
+    clear_runtime_thread_ids(&mut document);
     validate_document(&document)?;
     let _store_guard = STORE_LOCK.lock().map_err(|error| error.to_string())?;
     let mut store = read_store(app)?;
@@ -173,6 +174,7 @@ fn normalize_store_paths(store: &mut XiaoStore) {
     let mut workspaces: Vec<XiaoWorkspaceDocument> = Vec::new();
     for mut document in std::mem::take(&mut store.workspaces) {
         document.workspace_path = normalize_workspace_path(&document.workspace_path);
+        clear_runtime_thread_ids(&mut document);
         remove_empty_bootstrap_tasks(&mut document);
         if let Some(existing) = workspaces
             .iter_mut()
@@ -185,6 +187,12 @@ fn normalize_store_paths(store: &mut XiaoStore) {
         }
     }
     store.workspaces = workspaces;
+}
+
+fn clear_runtime_thread_ids(document: &mut XiaoWorkspaceDocument) {
+    for task in &mut document.tasks {
+        task.thread_id = None;
+    }
 }
 
 fn remove_empty_bootstrap_tasks(document: &mut XiaoWorkspaceDocument) {
@@ -452,6 +460,20 @@ mod tests {
         assert_eq!(store.workspaces.len(), 1);
         assert_eq!(store.workspaces[0].tasks.len(), 2);
         assert_eq!(store.workspaces[0].workspace_path, canonical);
+    }
+
+    #[test]
+    fn persisted_runtime_thread_ids_are_removed_on_load() {
+        let mut workspace = document("C:/one", "task-1");
+        workspace.tasks[0].thread_id = Some("runtime-only-thread".to_owned());
+        let mut store = XiaoStore {
+            schema_version: XIAO_SCHEMA_VERSION,
+            workspaces: vec![workspace],
+        };
+
+        normalize_store_paths(&mut store);
+
+        assert_eq!(store.workspaces[0].tasks[0].thread_id, None);
     }
 
     #[test]

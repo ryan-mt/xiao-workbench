@@ -9,13 +9,14 @@ const elapsedLabel = (elapsedMs: number) => {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 };
 
-const statusLabel = (timeline: TimelineEntry[]) => {
+export const statusLabel = (timeline: TimelineEntry[]) => {
   const active = [...timeline]
     .reverse()
     .find((entry) => entry.status === "active" || (entry.kind === "approval" && entry.status === "warning"));
   if (active?.kind === "command") return "Running command";
   if (active?.kind === "explore") return "Exploring workspace";
   if (active?.kind === "change") return "Applying changes";
+  if (active?.kind === "result" && active.meta === "Context") return "Compacting context";
   if (active?.kind === "result") return "Writing response";
   if (active?.kind === "approval") return "Waiting for approval";
   if (timeline.at(-1)?.kind === "result") return "Finishing";

@@ -97,6 +97,7 @@ export function ActivityItem({
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
   const assistantMessage = entry.kind === "result" && entry.title === "Agent response";
+  const contextCompaction = entry.kind === "result" && entry.meta === "Context";
 
   if (entry.kind === "thought" && entry.status !== "active" && !entry.body?.trim()) return null;
 
@@ -159,6 +160,36 @@ export function ActivityItem({
             <div className="activity__assistant-actions">
               <CopyButton text={entry.body} />
             </div>
+          )}
+        </div>
+      </article>
+    );
+  }
+
+  if (contextCompaction) {
+    return (
+      <article
+        className={`activity activity--context-compaction activity--${entry.status ?? "idle"}`}
+        style={{ "--activity-index": index } as React.CSSProperties}
+      >
+        <div className="context-compaction">
+          <span className="context-compaction__glyph" aria-hidden="true">
+            <i />
+            <i />
+            <b />
+          </span>
+          <span className="context-compaction__copy">
+            <small>Session context</small>
+            <strong>{entry.title}</strong>
+          </span>
+          {entry.status === "active" ? (
+            <i className="activity__pulse" aria-hidden="true" />
+          ) : (
+            <XiaoIcon
+              className={`context-compaction__state context-compaction__state--${entry.status ?? "idle"}`}
+              name={entry.status === "success" ? "check" : "close"}
+              size={15}
+            />
           )}
         </div>
       </article>

@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
-import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
+import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
 import type {
   AgentApprovalPolicy,
@@ -21,6 +21,12 @@ import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { ModelPicker } from "./ModelPicker";
 import { QuestionDock } from "./QuestionDock";
+import {
+  filterSlashCommands,
+  SLASH_COMMANDS,
+  slashCommandDisabledReason,
+  type SlashCommand,
+} from "./slashCommands";
 
 type ComposerProps = {
   taskId: string;
@@ -41,6 +47,9 @@ type ComposerProps = {
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
   restoredAttachments: AgentAttachment[];
+  canCompact: boolean;
+  compacting: boolean;
+  hasThread: boolean;
   canUndo: boolean;
   undoing: boolean;
   onModelChange: (model: string | null) => void;
@@ -58,6 +67,7 @@ type ComposerProps = {
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
   onRestoredAttachmentsConsumed: () => void;
+  onCompact: () => Promise<boolean>;
   onUndo: () => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: () => void;
@@ -94,71 +104,6 @@ const dataUrlAttachment = (file: File) =>
     reader.readAsDataURL(file);
   });
 
-type SlashCommandId =
-  | "review"
-  | "test"
-  | "init"
-  | "plan"
-  | "goal"
-  | "undo"
-  | "changes"
-  | "files"
-  | "browser"
-  | "context"
-  | "terminal"
-  | "capabilities"
-  | "runtime";
-
-type SlashCommand = {
-  id: SlashCommandId;
-  trigger: string;
-  title: string;
-  description: string;
-  group: "Workflow" | "Task" | "Workspace";
-  icon: XiaoIconName;
-  prompt?: string;
-};
-
-const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    id: "review",
-    trigger: "review",
-    title: "Review current changes",
-    description: "Find bugs, regressions, security risks, and missing tests",
-    group: "Workflow",
-    icon: "changes",
-    prompt: "Review the current workspace changes. Prioritize bugs, behavioral regressions, security risks, and missing tests. Report findings first with file and line references.",
-  },
-  {
-    id: "test",
-    trigger: "test",
-    title: "Run and repair tests",
-    description: "Verify the current work and fix failures caused by it",
-    group: "Workflow",
-    icon: "check",
-    prompt: "Run the relevant checks and tests for the current changes. Fix failures caused by the changes, then report exactly what passed and what could not be verified.",
-  },
-  {
-    id: "init",
-    trigger: "init",
-    title: "Build repository guidance",
-    description: "Create a compact, verified AGENTS.md for future sessions",
-    group: "Workflow",
-    icon: "brief",
-    prompt: "Create or update AGENTS.md for this repository. Inspect executable configuration and existing instructions first. Keep only verified, high-signal commands, architecture facts, conventions, and operational gotchas that a future coding agent would otherwise miss.",
-  },
-  { id: "plan", trigger: "plan", title: "Toggle plan mode", description: "Plan the approach before implementation", group: "Task", icon: "plan" },
-  { id: "goal", trigger: "goal", title: "Set task goal", description: "Keep a persistent objective above the conversation", group: "Task", icon: "target" },
-  { id: "undo", trigger: "undo", title: "Undo last turn", description: "Restore the task and workspace checkpoint", group: "Task", icon: "undo" },
-  { id: "changes", trigger: "changes", title: "Inspect working changes", description: "Open the scoped diff and repository actions", group: "Workspace", icon: "changes" },
-  { id: "files", trigger: "files", title: "Browse workspace files", description: "Open the file tree and source preview", group: "Workspace", icon: "files" },
-  { id: "browser", trigger: "browser", title: "Open research browser", description: "Browse Google, YouTube, and research links inside Xiao", group: "Workspace", icon: "browser" },
-  { id: "context", trigger: "context", title: "Inspect session context", description: "Review token usage and active context", group: "Workspace", icon: "result" },
-  { id: "terminal", trigger: "terminal", title: "Open terminal", description: "Use the shell rooted in this workspace", group: "Workspace", icon: "terminal" },
-  { id: "capabilities", trigger: "capabilities", title: "Open capabilities", description: "Inspect skills, plugins, MCP servers, and apps", group: "Workspace", icon: "capability" },
-  { id: "runtime", trigger: "runtime", title: "Inspect runtime", description: "Open Codex connection details and logs", group: "Workspace", icon: "runtime" },
-];
-
 export function Composer({
   taskId,
   workspacePath,
@@ -178,6 +123,9 @@ export function Composer({
   sendingFollowUpId,
   failedFollowUpId,
   restoredAttachments,
+  canCompact,
+  compacting,
+  hasThread,
   canUndo,
   undoing,
   onModelChange,
@@ -195,6 +143,7 @@ export function Composer({
   onSendFollowUpNow,
   onRetryFollowUp,
   onRestoredAttachmentsConsumed,
+  onCompact,
   onUndo,
   onRemoveReviewContext,
   onReviewContextSent,
@@ -231,6 +180,7 @@ export function Composer({
   const canSteer = currentTaskWorking && Boolean(runtime.threadId && runtime.turnId);
   const canSubmit =
     !disabled &&
+    !compacting &&
     !undoing &&
     !activeQuestionRequest &&
     (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0) &&
@@ -250,14 +200,11 @@ export function Composer({
     planSteps.find((step) => step.status === "pending") ??
     planSteps.at(-1);
   const normalizedSlashQuery = slashQuery?.trim().toLocaleLowerCase() ?? "";
-  const filteredSlashCommands = SLASH_COMMANDS.filter((command) => {
-    if (command.id === "undo" && (!canUndo || undoing)) return false;
-    if (!normalizedSlashQuery) return true;
-    return `${command.trigger} ${command.title} ${command.description}`
-      .toLocaleLowerCase()
-      .includes(normalizedSlashQuery);
-  });
+  const filteredSlashCommands = filterSlashCommands(SLASH_COMMANDS, normalizedSlashQuery)
+    .filter((command) => command.id !== "undo" || (canUndo && !undoing));
   const slashMenuOpen = slashQuery !== null;
+  const disabledReasonForSlashCommand = (command: SlashCommand) =>
+    slashCommandDisabledReason(command, { canCompact, compacting, hasThread });
 
   useEffect(() => setGoalValue(goal?.objective ?? ""), [goal?.objective]);
 
@@ -415,6 +362,7 @@ export function Composer({
   };
 
   const chooseSlashCommand = (command: SlashCommand) => {
+    if (disabledReasonForSlashCommand(command)) return;
     setSlashQuery(null);
     if (command.prompt) {
       updateValue(command.prompt);
@@ -437,6 +385,10 @@ export function Composer({
         break;
       case "goal":
         setGoalEditorOpen(true);
+        break;
+      case "compact":
+        void onCompact();
+        window.requestAnimationFrame(() => textarea.current?.focus());
         break;
       case "undo":
         onUndo();
@@ -559,6 +511,7 @@ export function Composer({
     : "Task execution needs the native Xiao app; this browser view is for previewing the interface.";
   let composerPlaceholder = "Ask Xiao anything. Use / for commands and @ for files";
   if (storageError) composerPlaceholder = "Task storage is unavailable";
+  else if (compacting) composerPlaceholder = "Compacting session context…";
   else if (undoing) composerPlaceholder = "Undoing the last turn…";
   else if (disabled) composerPlaceholder = "Restore this task to continue";
   else if (runtime.phase === "starting") composerPlaceholder = "Connecting to Codex…";
@@ -775,8 +728,12 @@ export function Composer({
               aria-label="Xiao commands"
             >
               <header>
-                <span className="composer-slash-menu__identity"><b>/</b><span><strong>Xiao commands</strong><small>{slashQuery ? `Filtering /${slashQuery}` : "Task and workspace actions"}</small></span></span>
-                <em>{filteredSlashCommands.length}</em>
+                <span className="composer-slash-menu__identity">
+                  <b>/</b>
+                  <strong>Commands</strong>
+                  <code>{slashQuery ? `/${slashQuery}` : "Task and workspace actions"}</code>
+                </span>
+                <small>{filteredSlashCommands.length} {filteredSlashCommands.length === 1 ? "result" : "results"}</small>
               </header>
               <div
                 className="composer-slash-menu__list"
@@ -784,30 +741,37 @@ export function Composer({
                 role="listbox"
                 aria-label="Available commands"
               >
-                {filteredSlashCommands.map((command, index) => (
-                  <button
-                    className={index === activeSlashCommand ? "is-active" : undefined}
-                    id={`composer-slash-command-${command.id}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === activeSlashCommand}
-                    key={command.id}
-                    ref={(node) => {
-                      slashCommandOptions.current[index] = node;
-                    }}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onMouseEnter={() => setActiveSlashCommand(index)}
-                    onClick={() => chooseSlashCommand(command)}
-                  >
-                    <span className="composer-slash-menu__icon"><XiaoIcon name={command.icon} size={15} /></span>
-                    <span className="composer-slash-menu__copy"><strong><code>/{command.trigger}</code>{command.title}</strong><small>{command.description}</small></span>
-                    <em>{command.group}</em>
-                    <XiaoIcon name="enter" size={13} />
-                  </button>
-                ))}
+                {filteredSlashCommands.map((command, index) => {
+                  const disabledReason = disabledReasonForSlashCommand(command);
+                  const active = index === activeSlashCommand;
+                  return (
+                    <button
+                      className={`${active ? "is-active" : ""}${disabledReason ? " is-disabled" : ""}`.trim() || undefined}
+                      id={`composer-slash-command-${command.id}`}
+                      type="button"
+                      role="option"
+                      aria-disabled={disabledReason ? true : undefined}
+                      aria-selected={active}
+                      key={command.id}
+                      ref={(node) => {
+                        slashCommandOptions.current[index] = node;
+                      }}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onMouseEnter={() => setActiveSlashCommand(index)}
+                      onClick={() => chooseSlashCommand(command)}
+                    >
+                      <span className="composer-slash-menu__icon"><XiaoIcon name={command.icon} size={14} /></span>
+                      <span className="composer-slash-menu__copy">
+                        <strong><code>/{command.trigger}</code><span>{command.title}</span></strong>
+                        <small>{disabledReason ?? command.description}</small>
+                      </span>
+                      <em>{disabledReason ? "Unavailable" : command.group}</em>
+                    </button>
+                  );
+                })}
                 {!filteredSlashCommands.length ? <p><strong>No matching command</strong><span>Try /review, /plan, or /files.</span></p> : null}
               </div>
-              <footer><span><kbd>Up</kbd><kbd>Down</kbd> navigate</span><span><kbd>Enter</kbd> select <kbd>Esc</kbd> close</span></footer>
+              <footer><span><kbd>↑↓</kbd> Navigate</span><span><kbd>Enter</kbd> Run <kbd>Esc</kbd> Close</span></footer>
             </div>
           ) : null}
           {fileMention ? (
@@ -906,7 +870,7 @@ export function Composer({
             ref={textarea}
             autoFocus={autoFocus}
             value={value}
-            disabled={disabled || undoing}
+            disabled={disabled || compacting || undoing}
             aria-keyshortcuts="Control+Enter Meta+Enter"
             aria-autocomplete={slashQuery !== null || fileMention ? "list" : undefined}
             aria-controls={slashQuery !== null ? "composer-slash-commands" : undefined}
@@ -1003,7 +967,7 @@ export function Composer({
                 ref={addMenuTrigger}
                 aria-label="Add context or task settings"
                 aria-expanded={addMenuOpen}
-                disabled={disabled || undoing || selectingAttachments}
+                disabled={disabled || compacting || undoing || selectingAttachments}
                 onClick={(event) => {
                   const nextOpen = !addMenuOpen;
                   setAddMenuOpen(nextOpen);

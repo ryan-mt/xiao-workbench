@@ -5019,7 +5019,7 @@ dependencies = [
 
 [[package]]
 name = "xiao-workbench"
-version = "0.1.0-beta.1"
+version = "0.0.0-day07152026"
 dependencies = [
  "portable-pty",
  "semver",

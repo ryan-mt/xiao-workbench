@@ -128,58 +128,62 @@ pub async fn start_xiao_session(
         return Err("A workspace path is required to start a Xiao session.".to_owned());
     }
 
-    let existing_thread = thread_id.filter(|id| !id.trim().is_empty());
-    let (method, params) = if let Some(thread_id) = existing_thread.as_ref() {
-        (
-            "thread/resume",
-            json!({
-                "threadId": thread_id,
-                "cwd": workspace_path,
-                "model": model,
-                "approvalPolicy": approval_policy,
-                "sandbox": sandbox,
-            }),
-        )
-    } else {
-        (
-            "thread/start",
-            json!({
-                "cwd": workspace_path,
-                "model": model,
-                "approvalPolicy": approval_policy,
-                "sandbox": sandbox,
-                "ephemeral": false,
-                "serviceName": "Xiao Workbench",
-            }),
-        )
-    };
+    let (method, params) = isolated_thread_start_request(
+        &workspace_path,
+        model.as_deref(),
+        thread_id.as_deref(),
+        approval_policy.as_deref(),
+        sandbox.as_deref(),
+    );
     let result = runtime.request(method.to_owned(), params).await?;
     let response: ThreadStartResponse = serde_json::from_value(result)
         .map_err(|error| format!("Invalid {method} response: {error}"))?;
 
-    if existing_thread.is_none() {
-        let history_items = history
-            .into_iter()
-            .filter(|item| !item.text.trim().is_empty())
-            .map(history_item_to_response_item)
-            .collect::<Result<Vec<_>, _>>()?;
-        if !history_items.is_empty() {
-            runtime
-                .request(
-                    "thread/inject_items".to_owned(),
-                    json!({
-                        "threadId": response.thread.id,
-                        "items": history_items,
-                    }),
-                )
-                .await?;
-        }
+    let history_items = history_items_for_injection(history)?;
+    if !history_items.is_empty() {
+        runtime
+            .request(
+                "thread/inject_items".to_owned(),
+                json!({
+                    "threadId": response.thread.id,
+                    "items": history_items,
+                }),
+            )
+            .await?;
     }
 
     Ok(AgentSessionStart {
         thread_id: response.thread.id,
         model: response.model,
     })
+}
+
+fn isolated_thread_start_request(
+    workspace_path: &str,
+    model: Option<&str>,
+    _persisted_thread_id: Option<&str>,
+    approval_policy: Option<&str>,
+    sandbox: Option<&str>,
+) -> (&'static str, Value) {
+    (
+        "thread/start",
+        json!({
+            "cwd": workspace_path,
+            "model": model,
+            "approvalPolicy": approval_policy,
+            "sandbox": sandbox,
+            "ephemeral": true,
+            "serviceName": "Xiao Workbench",
+        }),
+    )
+}
+
+fn history_items_for_injection(history: Vec<XiaoHistoryItem>) -> Result<Vec<Value>, String> {
+    history
+        .into_iter()
+        .filter(|item| !item.text.trim().is_empty())
+        .map(history_item_to_response_item)
+        .collect()
 }
 
 fn history_item_to_response_item(item: XiaoHistoryItem) -> Result<Value, String> {
@@ -202,6 +206,45 @@ fn history_item_to_response_item(item: XiaoHistoryItem) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_sessions_ignore_persisted_thread_ids() {
+        let (method, params) = isolated_thread_start_request(
+            "C:/workspace",
+            Some("gpt-test"),
+            Some("persisted-thread"),
+            Some("on-request"),
+            Some("workspace-write"),
+        );
+
+        assert_eq!(method, "thread/start");
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["serviceName"], "Xiao Workbench");
+        assert!(params.get("threadId").is_none());
+    }
+
+    #[test]
+    fn isolated_sessions_restore_xiao_history() {
+        let items = history_items_for_injection(vec![
+            XiaoHistoryItem {
+                role: "user".to_owned(),
+                text: "Previous question".to_owned(),
+            },
+            XiaoHistoryItem {
+                role: "assistant".to_owned(),
+                text: "Previous answer".to_owned(),
+            },
+            XiaoHistoryItem {
+                role: "assistant".to_owned(),
+                text: "   ".to_owned(),
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[1]["role"], "assistant");
+    }
 
     #[test]
     fn history_items_use_responses_api_message_shape() {

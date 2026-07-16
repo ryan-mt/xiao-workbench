@@ -26,9 +26,11 @@ import type {
 import { useCodexUsage } from "../../profile/hooks/useCodexUsage";
 import {
   approvalResponse,
+  contextCompactionTimelineEntry,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
+  threadCompactRequest,
 } from "./agentProtocol";
 
 const MAX_RUNTIME_LOGS = 240;
@@ -178,6 +180,9 @@ const readTokenUsage = (value: unknown): TokenUsageBreakdown | null => {
 };
 
 const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | null => {
+  const contextCompaction = contextCompactionTimelineEntry(item, "completed");
+  if (contextCompaction) return contextCompaction;
+
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
   const createdAt = Date.now();
 
@@ -414,7 +419,6 @@ export function useAgentRuntime(
   activeTaskTimeline: TimelineEntry[],
   activeTaskModel: string | null,
   activeTaskReasoningEffort: string | null,
-  activeTaskThreadId: string | null,
   activeTaskMode: AgentMode,
   activeTaskApprovalPolicy: AgentApprovalPolicy,
   activeTaskSandboxMode: AgentSandboxMode,
@@ -435,6 +439,7 @@ export function useAgentRuntime(
   const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLogEntry[]>([]);
   const [threadUsage, setThreadUsage] = useState<Record<string, ThreadTokenUsage>>({});
   const [questionRequest, setQuestionRequest] = useState<AgentQuestionRequest | null>(null);
+  const [compactingTaskId, setCompactingTaskId] = useState<string | null>(null);
   const [undoing, setUndoing] = useState(false);
   const [listenersReady, setListenersReady] = useState(!isTauriHost());
   const { usage, recordUsage } = useCodexUsage();
@@ -458,6 +463,7 @@ export function useAgentRuntime(
   const autoResolvingRequests = useRef(new Set<string>());
   const reconnectAttempt = useRef(0);
   const runtimeStopError = useRef<string | null>(null);
+  const compactingTasks = useRef(new Set<string>());
   const undoingRef = useRef(false);
   const timelineCache = useRef(new Map<string, TimelineEntry[]>());
   const onTimelineChangeRef = useRef(onTimelineChange);
@@ -522,19 +528,15 @@ export function useAgentRuntime(
   useEffect(() => {
     activeTaskIdRef.current = activeTaskId;
     timelineCache.current.set(activeTaskId, activeTaskTimeline);
-    if (activeTaskThreadId) {
-      sessionIds.current.set(activeTaskId, activeTaskThreadId);
-      threadTasks.current.set(activeTaskThreadId, activeTaskId);
-    }
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
     setRuntime((current) => ({
       ...current,
       threadId:
         current.phase === "working"
           ? current.threadId
-          : activeTaskThreadId ?? sessionIds.current.get(activeTaskId) ?? null,
+          : sessionIds.current.get(activeTaskId) ?? null,
     }));
-  }, [activeTaskApprovalPolicy, activeTaskId, activeTaskThreadId, activeTaskTimeline]);
+  }, [activeTaskApprovalPolicy, activeTaskId, activeTaskTimeline]);
 
   const updateTimeline = useCallback(
     (taskId: string, update: (current: TimelineEntry[]) => TimelineEntry[]) => {
@@ -1054,6 +1056,17 @@ export function useAgentRuntime(
       if (message.method === "item/started") {
         const item = readItem(message);
         if (!item) return;
+        if (item.type === "contextCompaction") {
+          const entry = contextCompactionTimelineEntry(item, "started");
+          if (entry) {
+            updateTimeline(taskId, (current) =>
+              current.some((currentEntry) => currentEntry.id === entry.id)
+                ? current.map((currentEntry) => currentEntry.id === entry.id ? entry : currentEntry)
+                : [...current, entry],
+            );
+          }
+          return;
+        }
         if (item.type === "reasoning") {
           const itemId = typeof item.id === "string" ? item.id : crypto.randomUUID();
           const entryId = reasoningEntries.current.get(itemId) ?? itemId;
@@ -1191,7 +1204,12 @@ export function useAgentRuntime(
         const status = turn?.status;
         const hasFinalStatus = status === "completed" || status === "failed" || status === "interrupted";
         const outcome: AgentTurnOutcome = hasFinalStatus ? status : "failed";
-        onPlanChangeRef.current(taskId, null);
+        const manualCompaction = compactingTasks.current.delete(taskId);
+        if (manualCompaction) {
+          setCompactingTaskId((current) => current === taskId ? null : current);
+        } else {
+          onPlanChangeRef.current(taskId, null);
+        }
         const errorValue = turn?.error;
         const errorMessage = outcome === "failed"
           ? errorValue &&
@@ -1239,7 +1257,7 @@ export function useAgentRuntime(
           turnStartedAt: null,
           error: errorMessage,
         }));
-        onTaskFinishedRef.current(taskId, outcome);
+        if (!manualCompaction) onTaskFinishedRef.current(taskId, outcome);
         void refreshAccountUsage();
         updateTimeline(taskId, (current) => {
           const settledStatus: TimelineEntry["status"] =
@@ -1330,6 +1348,7 @@ export function useAgentRuntime(
               activeThinkingEntries.current.clear();
                reasoningEntries.current.clear();
                reasoningChannels.current.clear();
+               compactingTasks.current.clear();
                workingTaskId.current = null;
                appendRuntimeLog("system", "Agent runtime stopped.");
               setAccount(null);
@@ -1337,6 +1356,7 @@ export function useAgentRuntime(
                setModels([]);
                 setThreadUsage({});
                 setQuestionRequest(null);
+               setCompactingTaskId(null);
                setRuntime(stopError ? { ...initialRuntime, phase: "error", error: stopError } : initialRuntime);
              }
           }),
@@ -1488,7 +1508,7 @@ export function useAgentRuntime(
         turnStartedAt: Date.now(),
         error: null,
       }));
-      let threadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId);
+      let threadId = sessionIds.current.get(activeTaskId);
 
       try {
         const needsSession = needsAgentSession(
@@ -1580,7 +1600,6 @@ export function useAgentRuntime(
       activeTaskModel,
       activeTaskReasoningEffort,
       activeTaskSandboxMode,
-      activeTaskThreadId,
       activeTaskTitle,
       activeTaskTimeline,
       runtime.phase,
@@ -1589,6 +1608,46 @@ export function useAgentRuntime(
       workspacePath,
     ],
   );
+
+  const compact = useCallback(async () => {
+    const threadId = sessionIds.current.get(activeTaskId);
+    if (runtime.phase !== "ready" || !threadId || compactingTasks.current.size > 0) {
+      return false;
+    }
+
+    compactingTasks.current.add(activeTaskId);
+    setCompactingTaskId(activeTaskId);
+    workingTaskId.current = activeTaskId;
+    setRuntime((current) => ({
+      ...current,
+      phase: "working",
+      taskId: activeTaskId,
+      threadId,
+      turnId: null,
+      turnStartedAt: Date.now(),
+      error: null,
+    }));
+
+    const request = threadCompactRequest(threadId);
+    try {
+      await nativeBridge.agentRequest(request.method, request.params);
+      return true;
+    } catch (reason) {
+      compactingTasks.current.delete(activeTaskId);
+      setCompactingTaskId((current) => current === activeTaskId ? null : current);
+      if (workingTaskId.current === activeTaskId) workingTaskId.current = null;
+      const failure = reason instanceof Error ? reason.message : String(reason);
+      setRuntime((current) => ({
+        ...current,
+        phase: current.taskId === activeTaskId ? "ready" : current.phase,
+        taskId: current.taskId === activeTaskId ? null : current.taskId,
+        turnId: current.taskId === activeTaskId ? null : current.turnId,
+        turnStartedAt: current.taskId === activeTaskId ? null : current.turnStartedAt,
+        error: `Could not compact context: ${failure}`,
+      }));
+      return false;
+    }
+  }, [activeTaskId, runtime.phase]);
 
   const interrupt = useCallback(async () => {
     if (runtime.taskId !== activeTaskId || !runtime.threadId || !runtime.turnId) return;
@@ -1623,7 +1682,7 @@ export function useAgentRuntime(
         });
       }
 
-      const threadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId);
+      const threadId = sessionIds.current.get(activeTaskId);
       if (!threadId) return true;
       try {
         await nativeBridge.agentRequest("thread/settings/update", {
@@ -1640,7 +1699,7 @@ export function useAgentRuntime(
         return false;
       }
     },
-    [activeTaskId, activeTaskThreadId, declineWithoutPrompt],
+    [activeTaskId, declineWithoutPrompt],
   );
 
   const undoLastTurn = useCallback(async (): Promise<AgentUndoResult | null> => {
@@ -1648,7 +1707,7 @@ export function useAgentRuntime(
     const target = [...timeline].reverse().find(
       (entry) => entry.kind === "user" && entry.turnId && entry.turnDiff?.trim(),
     );
-    const threadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId);
+    const threadId = sessionIds.current.get(activeTaskId);
     if (undoingRef.current || runtime.phase !== "ready" || !target?.turnId || !threadId) {
       return null;
     }
@@ -1724,7 +1783,6 @@ export function useAgentRuntime(
     }
   }, [
     activeTaskId,
-    activeTaskThreadId,
     activeTaskTimeline,
     runtime.phase,
     updateTimeline,
@@ -1736,7 +1794,7 @@ export function useAgentRuntime(
       const cleanObjective = objective.trim();
       if (!cleanObjective) return false;
       const goal = { objective: cleanObjective, status } satisfies AgentGoal;
-      const threadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId);
+      const threadId = sessionIds.current.get(activeTaskId);
       if (!threadId) {
         onTaskGoalChangeRef.current(activeTaskId, goal);
         return true;
@@ -1758,11 +1816,11 @@ export function useAgentRuntime(
         return false;
       }
     },
-    [activeTaskId, activeTaskThreadId],
+    [activeTaskId],
   );
 
   const clearGoal = useCallback(async () => {
-    const threadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId);
+    const threadId = sessionIds.current.get(activeTaskId);
     if (!threadId) {
       onTaskGoalChangeRef.current(activeTaskId, null);
       syncedGoals.current.delete(activeTaskId);
@@ -1780,7 +1838,7 @@ export function useAgentRuntime(
       }));
       return false;
     }
-  }, [activeTaskId, activeTaskThreadId]);
+  }, [activeTaskId]);
 
   const resolveApproval = useCallback(
     async (
@@ -1861,7 +1919,9 @@ export function useAgentRuntime(
     [],
   );
 
-  const activeThreadId = activeTaskThreadId ?? sessionIds.current.get(activeTaskId) ?? null;
+  const activeThreadId = sessionIds.current.get(activeTaskId) ?? null;
+  const compacting = compactingTaskId === activeTaskId;
+  const canCompact = runtime.phase === "ready" && Boolean(activeThreadId) && compactingTaskId === null;
   const canUndo = runtime.phase === "ready" && Boolean(
     activeThreadId &&
     [...activeTaskTimeline].reverse().some(
@@ -1878,11 +1938,15 @@ export function useAgentRuntime(
     runtimeLogs,
     questionRequest,
     contextUsage: activeThreadId ? threadUsage[activeThreadId] ?? null : null,
+    hasThread: Boolean(activeThreadId),
+    canCompact,
+    compacting,
     canUndo,
     undoing,
     usage,
     connect,
     submit,
+    compact,
     interrupt,
     setApprovalPolicy,
     undoLastTurn,

@@ -1,4 +1,4 @@
-import type { AgentApprovalRequestKind } from "../../../core/models/agent";
+import type { AgentApprovalRequestKind, TimelineEntry } from "../../../core/models/agent";
 
 export const permissionGrantFromRequest = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object") return {};
@@ -39,3 +39,24 @@ export const needsAgentSession = (
   previousRequestedModel: string | null | undefined,
   requestedModel: string | null,
 ) => !threadId || !hasRequestedModel || previousRequestedModel !== requestedModel;
+
+export const threadCompactRequest = (threadId: string) => ({
+  method: "thread/compact/start" as const,
+  params: { threadId },
+});
+
+export const contextCompactionTimelineEntry = (
+  item: Record<string, unknown>,
+  lifecycle: "started" | "completed",
+): TimelineEntry | null => {
+  if (item.type !== "contextCompaction" || typeof item.id !== "string") return null;
+  const completed = lifecycle === "completed";
+  return {
+    id: item.id,
+    kind: "result",
+    title: completed ? "Context compacted" : "Compacting context",
+    createdAt: Date.now(),
+    meta: "Context",
+    status: completed ? "success" : "active",
+  };
+};
