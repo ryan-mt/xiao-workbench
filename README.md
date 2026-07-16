@@ -88,3 +88,8 @@ far more useful than a perfect bug-report template.
 Xiao does not add its own analytics. Websites opened in the browser keep their
 own privacy policies, and Codex follows the account and configuration of your
 local Codex installation.
+
+## License
+
+Xiao Workbench is open-source software available under the
+[MIT License](LICENSE).
