@@ -65,6 +65,14 @@ cargo test --manifest-path src-tauri/Cargo.toml
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
+## Contributing
+
+Active development happens on the
+[`dev`](https://github.com/ryan-mt/xiao-workbench/tree/dev) branch. Create
+feature branches from `dev` and target pull requests back to `dev`, not `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification, and pull request
+guidance.
+
 ## A beta, honestly
 
 Xiao is usable, but this is still the first public beta. Native WebViews,
