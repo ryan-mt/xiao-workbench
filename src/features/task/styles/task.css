@@ -74,7 +74,7 @@
 .task-launch__brand small {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 520;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -344,6 +344,44 @@
   line-height: 1.55;
   text-wrap: pretty;
   white-space: pre-wrap;
+}
+
+.activity__user-actions {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.activity--user-message:hover .activity__user-actions,
+.activity--user-message:focus-within .activity__user-actions {
+  opacity: 1;
+}
+
+.activity__user-actions button {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  cursor: pointer;
+}
+
+.activity__user-actions button:hover,
+.activity__user-actions button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+  outline: none;
+}
+
+@media (hover: none) {
+  .activity__user-actions { opacity: 1; }
 }
 
 .activity__review-comments {
@@ -1986,7 +2024,7 @@
 .plan-dock__list li > small {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 560;
 }
 
@@ -2012,7 +2050,7 @@
 
 .plan-dock__check b {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 560;
 }
 

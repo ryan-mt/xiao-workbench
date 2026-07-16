@@ -1,4 +1,38 @@
-import type { AgentApprovalRequestKind, TimelineEntry } from "../../../core/models/agent";
+import type {
+  AgentApprovalRequestKind,
+  AgentAttachment,
+  TimelineEntry,
+} from "../../../core/models/agent";
+
+export const reviewContextText = (attachment: AgentAttachment) => {
+  const start = attachment.lineStart;
+  const end = attachment.lineEnd ?? start;
+  const lines = start ? `:${start}${end && end !== start ? `-${end}` : ""}` : "";
+  return [
+    `[Review comment on ${attachment.path}${lines}]`,
+    attachment.preview,
+    attachment.comment ? `Comment: ${attachment.comment}` : undefined,
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+export const userInput = (prompt: string, attachments: AgentAttachment[]) => [
+  { type: "text", text: prompt, text_elements: [] },
+  ...attachments.map((attachment) => {
+    if (attachment.kind === "review") {
+      return { type: "text", text: reviewContextText(attachment), text_elements: [] };
+    }
+    if (attachment.kind === "image" && attachment.url) {
+      return { type: "image", url: attachment.url };
+    }
+    if (attachment.kind === "image") {
+      return { type: "localImage", path: attachment.path };
+    }
+    const label = attachment.kind === "directory" ? "Attached directory" : "Attached file";
+    return { type: "text", text: `${label}: ${attachment.path}`, text_elements: [] };
+  }),
+];
 
 export const permissionGrantFromRequest = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object") return {};

@@ -32,6 +32,7 @@ import { GlobalContextMenu } from "../features/shell/components/GlobalContextMen
 import { Sidebar } from "../features/shell/components/Sidebar";
 import { TitleBar } from "../features/shell/components/TitleBar";
 import type { AppPage } from "../features/shell/shell.types";
+import { forkTaskFromEntry } from "../features/task/taskFork";
 import type { TaskGroup, WorkbenchTask } from "../features/task/task.types";
 import { TaskWorkspace } from "../features/task/workspace/TaskWorkspace";
 import { useWorkspace } from "../features/workspace/hooks/useWorkspace";
@@ -998,6 +999,42 @@ export function App() {
     }
   };
 
+  const forkTask = (entryId: string) => {
+    if (
+      !taskStateReady ||
+      taskStateError ||
+      activeTask.archived ||
+      activeTask.followUps.length > 0 ||
+      agent.runtime.phase !== "ready" ||
+      agent.compacting ||
+      agent.undoing
+    ) return;
+
+    const fork = forkTaskFromEntry(
+      { ...activeTask, timeline: agent.timeline },
+      entryId,
+      { id: crypto.randomUUID(), createdAt: Date.now() },
+    );
+    if (!fork) return;
+    if (!window.confirm(
+      "Fork this task from the selected prompt?\n\nEarlier conversation history will be copied into a new task. The prompt and attachments will be restored, but workspace files will stay unchanged.",
+    )) return;
+
+    setTasks((current) => [fork.task, ...current]);
+    setOpenTaskIds((current) => [...current, fork.task.id]);
+    setActiveTaskId(fork.task.id);
+    setDraftTabOpen(false);
+    setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    if (fork.attachments.length) {
+      setRestoredAttachmentsByTask((current) => ({
+        ...current,
+        [fork.task.id]: fork.attachments,
+      }));
+    }
+    setActivePage("tasks");
+    closeSidebarOnNarrow();
+  };
+
   const stageReviewContext = (attachment: AgentAttachment) => {
     setReviewContextByTask((current) => {
       const existing = current[activeTask.id] ?? [];
@@ -1625,6 +1662,7 @@ export function App() {
               })}
               onCompact={agent.compact}
               onUndo={() => void undoTaskTurn()}
+              onForkTask={forkTask}
               onRemoveReviewContext={removeReviewContext}
               onReviewContextSent={clearReviewContext}
               onResolveQuestion={agent.resolveQuestion}

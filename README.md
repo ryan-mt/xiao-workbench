@@ -1,6 +1,10 @@
-# Xiao Workbench
+<p align="center">
+  <img src="src-tauri/icons/app-icon.png" alt="Xiao Workbench mushroom logo" width="180" />
+</p>
 
-**Windows beta · 0.0.0day07152026**
+<h1 align="center">Xiao Workbench</h1>
+
+<p align="center"><strong>Windows beta · 0.0.0day07152026</strong></p>
 
 Xiao is a calm desktop desk for noisy agent work. The conversation stays in the
 middle; the plan, files, changes, terminal, browser, and the occasional break

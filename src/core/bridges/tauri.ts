@@ -11,6 +11,8 @@ import type {
   CodexUpdateResult,
   CodexUpdateStatus,
   FileNode,
+  GitBranch,
+  GitSummary,
   WorkspaceSnapshot,
   SystemInfo,
 } from "../models/workspace";
@@ -96,6 +98,14 @@ export const nativeBridge = {
     message?: string,
   ) {
     return invoke<string>("mutate_git", { workspacePath, action, paths, message });
+  },
+
+  getGitBranches(workspacePath: string) {
+    return invoke<GitBranch[]>("get_git_branches", { workspacePath });
+  },
+
+  compareGitBranch(workspacePath: string, baseBranch: string) {
+    return invoke<GitSummary>("compare_git_branch", { workspacePath, baseBranch });
   },
 
   getGitWorktrees(workspacePath: string) {

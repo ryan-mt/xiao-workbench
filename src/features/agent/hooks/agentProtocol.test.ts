@@ -9,7 +9,32 @@ import {
   needsAgentSession,
   permissionGrantFromRequest,
   threadCompactRequest,
+  userInput,
 } from "./agentProtocol";
+
+describe("userInput", () => {
+  it("sends attached file and directory paths as model-visible text", () => {
+    expect(userInput("Summarize this", [
+      { name: "report.pdf", path: "C:\\Documents\\report.pdf", kind: "file" },
+      { name: "notes", path: "C:\\Documents\\notes", kind: "directory" },
+    ])).toEqual([
+      { type: "text", text: "Summarize this", text_elements: [] },
+      { type: "text", text: "Attached file: C:\\Documents\\report.pdf", text_elements: [] },
+      { type: "text", text: "Attached directory: C:\\Documents\\notes", text_elements: [] },
+    ]);
+  });
+
+  it("keeps image attachments on the native image inputs", () => {
+    expect(userInput("Describe these", [
+      { name: "disk.png", path: "C:\\Images\\disk.png", kind: "image" },
+      { name: "paste.png", path: "clipboard:1", kind: "image", url: "data:image/png;base64,abc" },
+    ])).toEqual([
+      { type: "text", text: "Describe these", text_elements: [] },
+      { type: "localImage", path: "C:\\Images\\disk.png" },
+      { type: "image", url: "data:image/png;base64,abc" },
+    ]);
+  });
+});
 
 describe("approvalResponse", () => {
   it("declines command and file approvals under Never ask", () => {

@@ -32,7 +32,9 @@ import {
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
+  reviewContextText,
   threadCompactRequest,
+  userInput,
 } from "./agentProtocol";
 
 const MAX_RUNTIME_LOGS = 240;
@@ -351,19 +353,6 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
   return null;
 };
 
-const reviewContextText = (attachment: AgentAttachment) => {
-  const start = attachment.lineStart;
-  const end = attachment.lineEnd ?? start;
-  const lines = start ? `:${start}${end && end !== start ? `-${end}` : ""}` : "";
-  return [
-    `[Review comment on ${attachment.path}${lines}]`,
-    attachment.preview,
-    attachment.comment ? `Comment: ${attachment.comment}` : undefined,
-  ]
-    .filter(Boolean)
-    .join("\n");
-};
-
 const historyFromTimeline = (timeline: TimelineEntry[]): XiaoHistoryItem[] =>
   timeline.flatMap<XiaoHistoryItem>((entry) => {
     if (entry.kind === "user" && entry.title.trim()) {
@@ -378,22 +367,6 @@ const historyFromTimeline = (timeline: TimelineEntry[]): XiaoHistoryItem[] =>
     }
     return [];
   });
-
-const userInput = (prompt: string, attachments: AgentAttachment[]) => [
-  { type: "text", text: prompt, text_elements: [] },
-  ...attachments.map((attachment) => {
-    if (attachment.kind === "review") {
-      return { type: "text", text: reviewContextText(attachment), text_elements: [] };
-    }
-    if (attachment.kind === "image" && attachment.url) {
-      return { type: "image", url: attachment.url };
-    }
-    if (attachment.kind === "image") {
-      return { type: "localImage", path: attachment.path };
-    }
-    return { type: "mention", name: attachment.name, path: attachment.path };
-  }),
-];
 
 const sandboxPolicyForTurn = (mode: AgentSandboxMode, workspacePath: string) => {
   if (mode === "danger-full-access") return { type: "dangerFullAccess" };

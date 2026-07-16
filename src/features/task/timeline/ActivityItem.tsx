@@ -8,6 +8,8 @@ type ActivityItemProps = {
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
   taskId: string;
+  canFork: boolean;
+  onForkTask: (entryId: string) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
@@ -91,6 +93,8 @@ export function ActivityItem({
   showReasoningSummaries,
   expandToolOutput,
   taskId,
+  canFork,
+  onForkTask,
   onResolveApproval,
   onReviewChanges,
 }: ActivityItemProps) {
@@ -143,6 +147,18 @@ export function ActivityItem({
               })}
             </div>
           )}
+          {entry.kind === "user" && canFork ? (
+            <div className="activity__user-actions">
+              <button
+                type="button"
+                title="Create a new task from the conversation before this prompt"
+                onClick={() => onForkTask(entry.id)}
+              >
+                <XiaoIcon name="branch" size={12} />
+                Fork from here
+              </button>
+            </div>
+          ) : null}
         </div>
       </article>
     );

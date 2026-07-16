@@ -5,8 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::models::GitWorktree;
-use super::models::{GitFileChange, GitFileStatus, GitSummary};
+use super::models::{GitBranch, GitFileChange, GitFileStatus, GitSummary, GitWorktree};
 
 const MAX_CHANGES: usize = 300;
 const MAX_PATCH_BYTES: usize = 96 * 1024;
@@ -107,6 +106,181 @@ pub fn read_git_summary(root: &Path) -> Option<GitSummary> {
     Some(summary)
 }
 
+pub fn list_branches(workspace_path: &str) -> Result<Vec<GitBranch>, String> {
+    let root = Path::new(workspace_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let output = run_git(
+        &root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%09%(HEAD)%09%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    .ok_or("Could not list Git branches.")?;
+    let mut branches = output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let name = fields.next()?.trim();
+            let current = fields.next()?.trim() == "*";
+            let full_ref = fields.next()?.trim();
+            if name.is_empty() || full_ref.ends_with("/HEAD") {
+                return None;
+            }
+            Some(GitBranch {
+                name: name.to_owned(),
+                current,
+                remote: full_ref.starts_with("refs/remotes/"),
+            })
+        })
+        .collect::<Vec<_>>();
+    branches.sort_by(|left, right| {
+        right
+            .current
+            .cmp(&left.current)
+            .then_with(|| left.remote.cmp(&right.remote))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(branches)
+}
+
+pub fn read_git_comparison(workspace_path: &str, base_branch: &str) -> Result<GitSummary, String> {
+    let base_branch = base_branch.trim();
+    if base_branch.is_empty()
+        || base_branch.starts_with('-')
+        || base_branch.chars().any(char::is_whitespace)
+    {
+        return Err("A valid comparison branch is required.".to_owned());
+    }
+
+    let workspace_root = Path::new(workspace_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let repository_root = run_git(&workspace_root, &["rev-parse", "--show-toplevel"])
+        .and_then(|path| PathBuf::from(path.trim()).canonicalize().ok())
+        .ok_or("The workspace is not inside a Git repository.")?;
+    let prefix = run_git(&workspace_root, &["rev-parse", "--show-prefix"])
+        .unwrap_or_default()
+        .trim()
+        .replace('\\', "/");
+    let scope = prefix.trim_end_matches('/');
+    let scope = if scope.is_empty() { "." } else { scope };
+    let revision = format!("{base_branch}^{{commit}}");
+    let base_commit = run_git(&repository_root, &["rev-parse", "--verify", &revision])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Git branch `{base_branch}` was not found."))?;
+    let merge_base = run_git(&repository_root, &["merge-base", "HEAD", &base_commit])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Git branch `{base_branch}` has no common history with HEAD."))?;
+    let changed = run_git(
+        &repository_root,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            &merge_base,
+            "--",
+            scope,
+        ],
+    )
+    .ok_or("Could not compare Git branches.")?;
+    let branch = run_git(&repository_root, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .unwrap_or_else(|| "HEAD".to_owned());
+    let mut summary = GitSummary {
+        branch: branch.trim().to_owned(),
+        repository_root: display_path(&repository_root),
+        workspace_scoped: repository_root != workspace_root,
+        added: 0,
+        modified: 0,
+        deleted: 0,
+        untracked: 0,
+        clean: true,
+        changes: Vec::new(),
+        changes_truncated: false,
+    };
+
+    let mut fields = changed.split('\0').filter(|field| !field.is_empty());
+    while let (Some(code), Some(repository_path)) = (fields.next(), fields.next()) {
+        let workspace_path = repository_path
+            .strip_prefix(&prefix)
+            .unwrap_or(repository_path)
+            .to_owned();
+        let status = match code.chars().next() {
+            Some('A') => {
+                summary.added += 1;
+                GitFileStatus::Added
+            }
+            Some('D') => {
+                summary.deleted += 1;
+                GitFileStatus::Deleted
+            }
+            _ => {
+                summary.modified += 1;
+                GitFileStatus::Modified
+            }
+        };
+        if summary.changes.len() == MAX_CHANGES {
+            summary.changes_truncated = true;
+            continue;
+        }
+        let (patch, patch_truncated, additions, deletions) =
+            tracked_patch_against(&repository_root, &merge_base, repository_path);
+        summary.changes.push(GitFileChange {
+            path: workspace_path,
+            status,
+            additions,
+            deletions,
+            patch,
+            patch_truncated,
+        });
+    }
+
+    let untracked = run_git(
+        &workspace_root,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            "--",
+            ".",
+        ],
+    )
+    .ok_or("Could not read untracked files.")?;
+    for line in untracked.split('\0').filter(|line| line.starts_with("?? ")) {
+        let repository_path = line.get(3..).unwrap_or_default().replace('\\', "/");
+        let workspace_path = repository_path
+            .strip_prefix(&prefix)
+            .unwrap_or(&repository_path)
+            .to_owned();
+        summary.untracked += 1;
+        if summary.changes.len() == MAX_CHANGES {
+            summary.changes_truncated = true;
+            continue;
+        }
+        let (patch, patch_truncated, additions, deletions) =
+            untracked_patch(&workspace_root, &workspace_path);
+        summary.changes.push(GitFileChange {
+            path: workspace_path,
+            status: GitFileStatus::Untracked,
+            additions,
+            deletions,
+            patch,
+            patch_truncated,
+        });
+    }
+
+    summary.clean = summary.added + summary.modified + summary.deleted + summary.untracked == 0;
+    Ok(summary)
+}
+
 fn display_path(path: &Path) -> String {
     let value = path.to_string_lossy().into_owned();
     #[cfg(windows)]
@@ -131,6 +305,28 @@ fn tracked_patch(repository_root: &Path, path: &str) -> (String, bool, usize, us
             )
         })
         .unwrap_or_default();
+    let (additions, deletions) = count_patch_lines(&patch);
+    let (patch, truncated) = truncate_patch(patch);
+    (patch, truncated, additions, deletions)
+}
+
+fn tracked_patch_against(
+    repository_root: &Path,
+    base_commit: &str,
+    path: &str,
+) -> (String, bool, usize, usize) {
+    let patch = run_git(
+        repository_root,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--unified=3",
+            base_commit,
+            "--",
+            path,
+        ],
+    )
+    .unwrap_or_default();
     let (additions, deletions) = count_patch_lines(&patch);
     let (patch, truncated) = truncate_patch(patch);
     (patch, truncated, additions, deletions)
@@ -741,7 +937,8 @@ fn hide_window(_command: &mut Command) {}
 mod tests {
     use super::{
         apply_workspace_patch, create_workspace_checkpoint, discard_workspace_checkpoint,
-        finish_workspace_checkpoint, read_git_summary, run_git_action,
+        finish_workspace_checkpoint, list_branches, read_git_comparison, read_git_summary,
+        run_git_action,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -781,6 +978,65 @@ mod tests {
     #[test]
     fn current_workspace_has_a_git_summary() {
         assert!(read_git_summary(Path::new(env!("CARGO_MANIFEST_DIR"))).is_some());
+    }
+
+    #[test]
+    fn branch_comparison_is_scoped_and_does_not_checkout() {
+        let root = temporary_directory("branch-comparison");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("outside.txt"), "outside before\n").unwrap();
+        fs::write(workspace.join("base.txt"), "base before\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        run(&root, &["branch", "-M", "main"]);
+        run(&root, &["switch", "-c", "feature"]);
+        fs::write(root.join("outside.txt"), "outside committed\n").unwrap();
+        fs::write(workspace.join("feature.txt"), "feature\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "feature"]);
+        fs::write(root.join("outside.txt"), "outside working\n").unwrap();
+        fs::write(workspace.join("base.txt"), "base working\n").unwrap();
+        fs::write(workspace.join("scratch.txt"), "scratch\n").unwrap();
+
+        let head_before = git_text(&root, &["rev-parse", "HEAD"]);
+        let status_before = super::run_git(&root, &["status", "--porcelain"]).unwrap();
+        let summary = read_git_comparison(&workspace.to_string_lossy(), "main").unwrap();
+        let paths = summary
+            .changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(summary.branch, "feature");
+        assert!(summary.workspace_scoped);
+        assert!(paths.contains(&"base.txt"));
+        assert!(paths.contains(&"feature.txt"));
+        assert!(paths.contains(&"scratch.txt"));
+        assert!(!paths.iter().any(|path| path.contains("outside.txt")));
+        assert!(summary
+            .changes
+            .iter()
+            .find(|change| change.path == "feature.txt")
+            .unwrap()
+            .patch
+            .contains("+feature"));
+        assert_eq!(git_text(&root, &["rev-parse", "HEAD"]), head_before);
+        assert_eq!(
+            super::run_git(&root, &["status", "--porcelain"]).unwrap(),
+            status_before
+        );
+
+        let branches = list_branches(&workspace.to_string_lossy()).unwrap();
+        assert!(branches.iter().any(|branch| branch.name == "main"));
+        assert!(branches
+            .iter()
+            .any(|branch| branch.name == "feature" && branch.current));
+        assert!(read_git_comparison(&workspace.to_string_lossy(), "--help").is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

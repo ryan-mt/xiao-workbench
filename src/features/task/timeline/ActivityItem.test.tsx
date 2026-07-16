@@ -12,10 +12,39 @@ const renderCompaction = (entry: TimelineEntry) => renderToStaticMarkup(
     showReasoningSummaries
     expandToolOutput={false}
     taskId="task-1"
+    canFork={false}
+    onForkTask={() => undefined}
     onResolveApproval={async () => undefined}
     onReviewChanges={() => undefined}
   />,
 );
+
+describe("ActivityItem user message", () => {
+  it("shows the fork action only while forking is available", () => {
+    const entry: TimelineEntry = {
+      id: "user-1",
+      kind: "user",
+      title: "Try another approach",
+      status: "success",
+    };
+    const renderUser = (canFork: boolean) => renderToStaticMarkup(
+      <ActivityItem
+        entry={entry}
+        index={0}
+        showReasoningSummaries
+        expandToolOutput={false}
+        taskId="task-1"
+        canFork={canFork}
+        onForkTask={() => undefined}
+        onResolveApproval={async () => undefined}
+        onReviewChanges={() => undefined}
+      />,
+    );
+
+    expect(renderUser(true)).toContain("Fork from here");
+    expect(renderUser(false)).not.toContain("Fork from here");
+  });
+});
 
 describe("ActivityItem context compaction", () => {
   it("renders the active compaction animation hook", () => {

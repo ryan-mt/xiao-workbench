@@ -16,8 +16,8 @@ use browser::commands::{
     set_browser_muted,
 };
 use git::commands::{
-    add_git_worktree, apply_git_patch, create_git_checkpoint, discard_git_checkpoint,
-    finish_git_checkpoint, get_git_worktrees, mutate_git,
+    add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
+    discard_git_checkpoint, finish_git_checkpoint, get_git_branches, get_git_worktrees, mutate_git,
 };
 use system::commands::{check_codex_update, get_system_info, update_codex_cli};
 use terminal::commands::{resize_terminal, start_terminal, stop_terminal, write_terminal};
@@ -62,6 +62,8 @@ pub fn run() {
             list_agent_models,
             start_xiao_session,
             mutate_git,
+            get_git_branches,
+            compare_git_branch,
             get_git_worktrees,
             add_git_worktree,
             apply_git_patch,

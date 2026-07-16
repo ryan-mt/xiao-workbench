@@ -1,7 +1,8 @@
-use super::models::GitWorktree;
+use super::models::{GitBranch, GitSummary, GitWorktree};
 use super::service::{
     apply_workspace_patch, create_workspace_checkpoint, create_worktree,
-    discard_workspace_checkpoint, finish_workspace_checkpoint, list_worktrees, run_git_action,
+    discard_workspace_checkpoint, finish_workspace_checkpoint, list_branches, list_worktrees,
+    read_git_comparison, run_git_action,
 };
 
 #[tauri::command]
@@ -12,6 +13,19 @@ pub fn mutate_git(
     message: Option<String>,
 ) -> Result<String, String> {
     run_git_action(&workspace_path, &action, &paths, message.as_deref())
+}
+
+#[tauri::command]
+pub fn get_git_branches(workspace_path: String) -> Result<Vec<GitBranch>, String> {
+    list_branches(&workspace_path)
+}
+
+#[tauri::command]
+pub fn compare_git_branch(
+    workspace_path: String,
+    base_branch: String,
+) -> Result<GitSummary, String> {
+    read_git_comparison(&workspace_path, &base_branch)
 }
 
 #[tauri::command]

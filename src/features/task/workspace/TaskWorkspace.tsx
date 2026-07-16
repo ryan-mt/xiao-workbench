@@ -63,6 +63,7 @@ type TaskWorkspaceProps = {
   onRestoredAttachmentsConsumed: () => void;
   onCompact: () => Promise<boolean>;
   onUndo: () => void;
+  onForkTask: (entryId: string) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: () => void;
   onDraftChange: (draftText: string) => void;
@@ -128,6 +129,7 @@ export function TaskWorkspace({
   onRestoredAttachmentsConsumed,
   onCompact,
   onUndo,
+  onForkTask,
   onRemoveReviewContext,
   onReviewContextSent,
   onDraftChange,
@@ -148,6 +150,13 @@ export function TaskWorkspace({
   const followLiveOutput = useRef(true);
   const previousWorking = useRef(false);
   const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
+  const canFork =
+    runtime.phase === "ready" &&
+    !taskArchived &&
+    !taskStateError &&
+    !compacting &&
+    !undoing &&
+    followUps.length === 0;
   const activeModel =
     (selectedModel ? models.find((model) => model.model === selectedModel) : models.find((model) => model.isDefault)) ??
     models.find((model) => model.isDefault);
@@ -276,6 +285,8 @@ export function TaskWorkspace({
           runtime={runtime}
           showReasoningSummaries={showReasoningSummaries}
           expandToolOutput={expandToolOutput}
+          canFork={canFork}
+          onForkTask={onForkTask}
           onResolveApproval={onResolveApproval}
           onReviewChanges={() => onFocusView("changes")}
         />

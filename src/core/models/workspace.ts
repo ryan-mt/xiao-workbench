@@ -18,6 +18,12 @@ export type GitSummary = {
   changesTruncated: boolean;
 };
 
+export type GitBranch = {
+  name: string;
+  current: boolean;
+  remote: boolean;
+};
+
 export type GitFileChange = {
   path: string;
   status: "added" | "modified" | "deleted" | "untracked";

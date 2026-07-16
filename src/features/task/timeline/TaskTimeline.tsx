@@ -9,6 +9,8 @@ type TaskTimelineProps = {
   runtime: AgentRuntimeState;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
+  canFork: boolean;
+  onForkTask: (entryId: string) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
@@ -69,6 +71,8 @@ export function TaskTimeline({
   runtime,
   showReasoningSummaries,
   expandToolOutput,
+  canFork,
+  onForkTask,
   taskId,
   onResolveApproval,
   onReviewChanges,
@@ -99,6 +103,8 @@ export function TaskTimeline({
             expandToolOutput={expandToolOutput}
             key={row.entry.id}
             taskId={taskId}
+            canFork={canFork}
+            onForkTask={onForkTask}
             onResolveApproval={onResolveApproval}
             onReviewChanges={onReviewChanges}
           />
