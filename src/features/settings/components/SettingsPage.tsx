@@ -67,6 +67,7 @@ const shortcuts = [
   { action: "Open runtime", keys: ["Ctrl", "`"] },
   { action: "Send prompt", keys: ["Enter"] },
   { action: "New line in prompt", keys: ["Shift", "Enter"] },
+  { action: "Browse prompt history", keys: ["↑", "↓"] },
   { action: "Paste image", keys: ["Ctrl", "V"] },
   { action: "Send line comment", keys: ["Ctrl", "Enter"] },
 ];

@@ -20,6 +20,12 @@ import type {
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { ModelPicker } from "./ModelPicker";
+import {
+  canNavigatePromptHistory,
+  navigatePromptHistory,
+  normalizePromptHistory,
+  prependPromptHistory,
+} from "./promptHistory";
 import { QuestionDock } from "./QuestionDock";
 import {
   filterSlashCommands,
@@ -27,6 +33,8 @@ import {
   slashCommandDisabledReason,
   type SlashCommand,
 } from "./slashCommands";
+
+const promptHistoryStorageKey = "xiao.prompt-history.v1";
 
 type ComposerProps = {
   taskId: string;
@@ -174,6 +182,9 @@ export function Composer({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [activeSlashCommand, setActiveSlashCommand] = useState(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const promptHistory = useRef<string[]>([]);
+  const promptHistoryIndex = useRef(-1);
+  const promptHistoryDraft = useRef<string | null>(null);
   const addMenu = useRef<HTMLDivElement>(null);
   const addMenuTrigger = useRef<HTMLButtonElement>(null);
   const fileSearchRequest = useRef(0);
@@ -335,6 +346,59 @@ export function Composer({
     setActiveSlashCommand(0);
   };
 
+  const resetPromptHistoryNavigation = () => {
+    promptHistoryIndex.current = -1;
+    promptHistoryDraft.current = null;
+  };
+
+  const readPromptHistory = () => {
+    try {
+      return normalizePromptHistory(
+        JSON.parse(window.localStorage.getItem(promptHistoryStorageKey) ?? "null") as unknown,
+      );
+    } catch {
+      return [];
+    }
+  };
+
+  const savePromptToHistory = (prompt: string) => {
+    if (!prompt.trim()) return;
+    const next = prependPromptHistory(readPromptHistory(), prompt);
+    promptHistory.current = next;
+    try {
+      window.localStorage.setItem(promptHistoryStorageKey, JSON.stringify(next));
+    } catch {
+      // Prompt history is optional when local storage is unavailable.
+    }
+  };
+
+  const moveThroughPromptHistory = (direction: "up" | "down") => {
+    if (promptHistoryIndex.current === -1) promptHistory.current = readPromptHistory();
+    const result = navigatePromptHistory({
+      direction,
+      entries: promptHistory.current,
+      historyIndex: promptHistoryIndex.current,
+      currentDraft: value,
+      savedDraft: promptHistoryDraft.current,
+    });
+    if (!result.handled) return false;
+
+    promptHistoryIndex.current = result.historyIndex;
+    promptHistoryDraft.current = result.savedDraft;
+    setValue(result.value);
+    setFileMention(null);
+    setSlashQuery(null);
+    window.requestAnimationFrame(() => {
+      if (!textarea.current) return;
+      const cursor = result.cursor === "start" ? 0 : result.value.length;
+      textarea.current.focus();
+      textarea.current.setSelectionRange(cursor, cursor);
+      textarea.current.style.height = "auto";
+      textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
+    });
+    return true;
+  };
+
   const chooseFileResult = (result: FuzzyFileResult) => {
     if (!fileMention) return;
     const next = removeFileMention(value, fileMention);
@@ -468,11 +532,13 @@ export function Composer({
 
   const submit = async (delivery: "queue" | "send" = currentTaskWorking ? "queue" : "send") => {
     if (!canSubmit) return;
-    const submittedValue = value.trim() || (reviewContext.length
+    const historyValue = value.trim();
+    const submittedValue = historyValue || (reviewContext.length
       ? "Address these review comments."
       : "Review the attached context.");
     const submittedAttachments = [...attachments, ...reviewContext];
 
+    resetPromptHistoryNavigation();
     updateValue("");
     setAttachments([]);
     setSlashQuery(null);
@@ -482,6 +548,7 @@ export function Composer({
       ? await onQueueFollowUp(submittedValue, submittedAttachments)
       : await onSubmit(submittedValue, submittedAttachments);
     if (submitted) {
+      savePromptToHistory(historyValue);
       onReviewContextSent();
       return;
     }
@@ -875,7 +942,7 @@ export function Composer({
             autoFocus={autoFocus}
             value={value}
             disabled={disabled || compacting || undoing}
-            aria-keyshortcuts="Control+Enter Meta+Enter"
+            aria-keyshortcuts="ArrowUp ArrowDown Control+Enter Meta+Enter"
             aria-autocomplete={slashQuery !== null || fileMention ? "list" : undefined}
             aria-controls={slashQuery !== null ? "composer-slash-commands" : undefined}
             aria-expanded={slashQuery !== null ? true : undefined}
@@ -895,6 +962,7 @@ export function Composer({
             placeholder={composerPlaceholder}
             onPaste={onPaste}
             onChange={(event) => {
+              resetPromptHistoryNavigation();
               updateValue(event.target.value);
               syncFileMention(event.target.value, event.target.selectionStart);
               syncSlashCommand(event.target.value, event.target.selectionStart);
@@ -944,6 +1012,22 @@ export function Composer({
                 if (event.key === "Escape") {
                   event.preventDefault();
                   setFileMention(null);
+                  return;
+                }
+              }
+              if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+                const direction = event.key === "ArrowUp" ? "up" : "down";
+                if (
+                  canNavigatePromptHistory(
+                    direction,
+                    event.currentTarget.value,
+                    event.currentTarget.selectionStart,
+                    event.currentTarget.selectionEnd,
+                    promptHistoryIndex.current >= 0,
+                  ) && moveThroughPromptHistory(direction)
+                ) {
+                  event.preventDefault();
                   return;
                 }
               }
