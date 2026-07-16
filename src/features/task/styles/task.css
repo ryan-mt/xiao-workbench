@@ -280,6 +280,13 @@
   padding: 34px 34px 44px;
 }
 
+.timeline__history-loading {
+  padding: 2px 0 20px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
 .timeline__empty {
   display: grid;
   min-height: 100%;

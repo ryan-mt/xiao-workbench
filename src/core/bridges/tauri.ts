@@ -16,7 +16,12 @@ import type {
   WorkspaceSnapshot,
   SystemInfo,
 } from "../models/workspace";
-import type { XiaoProjectSummary, XiaoWorkspaceDocument } from "../models/xiao";
+import type {
+  XiaoProjectSummary,
+  XiaoTimelinePage,
+  XiaoWorkspaceDocument,
+  XiaoWorkspaceUpdate,
+} from "../models/xiao";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -189,12 +194,29 @@ export const nativeBridge = {
     return invoke<void>("set_browser_muted", { label, muted });
   },
 
-  loadXiaoWorkspace(workspacePath: string) {
-    return invoke<XiaoWorkspaceDocument | null>("load_xiao_workspace", { workspacePath });
+  loadXiaoWorkspace(workspacePath: string, includeActiveTimeline = true) {
+    return invoke<XiaoWorkspaceDocument | null>("load_xiao_workspace", {
+      workspacePath,
+      includeActiveTimeline,
+    });
   },
 
-  saveXiaoWorkspace(document: XiaoWorkspaceDocument) {
-    return invoke<void>("save_xiao_workspace", { document });
+  loadXiaoTimelinePage(
+    workspacePath: string,
+    taskId: string,
+    before: number | null = null,
+    limit = 200,
+  ) {
+    return invoke<XiaoTimelinePage>("load_xiao_timeline_page", {
+      workspacePath,
+      taskId,
+      before,
+      limit,
+    });
+  },
+
+  saveXiaoWorkspace(update: XiaoWorkspaceUpdate) {
+    return invoke<void>("save_xiao_workspace", { update });
   },
 
   listXiaoProjects() {

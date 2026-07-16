@@ -1,4 +1,5 @@
 import type { AgentAttachment } from "../../core/models/agent";
+import { completeTimelineMetadata } from "./taskPersistence";
 import type { WorkbenchTask } from "./task.types";
 
 const forkTitle = (title: string) => {
@@ -24,7 +25,7 @@ export const forkTaskFromEntry = (
   const attachments = (selectedEntry.attachments ?? []).map((attachment) => ({ ...attachment }));
 
   return {
-    task: {
+    task: completeTimelineMetadata({
       ...source,
       id: identity.id,
       title: forkTitle(source.title),
@@ -38,10 +39,11 @@ export const forkTaskFromEntry = (
       draftText: selectedEntry.title,
       followUps: [],
       threadId: null,
+      threadBinding: null,
       goal: source.goal ? { ...source.goal } : null,
       timeline,
       plan: null,
-    },
+    }),
     attachments,
   };
 };

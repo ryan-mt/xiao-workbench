@@ -24,10 +24,11 @@ use terminal::commands::{resize_terminal, start_terminal, stop_terminal, write_t
 use terminal::runtime::TerminalManager;
 use workspace::commands::{get_workspace_snapshot, list_workspace_files, read_workspace_file};
 use xiao::commands::{
-    list_xiao_projects, load_xiao_workspace, open_xiao_project, save_xiao_workspace,
+    list_xiao_projects, load_xiao_timeline_page, load_xiao_workspace, open_xiao_project,
+    save_xiao_workspace,
 };
+use xiao::repository::XiaoRepository;
 
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -44,6 +45,22 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            #[cfg(debug_assertions)]
+            let app_data_dir = match std::env::var_os("XIAO_WORKBENCH_STATE_DIR") {
+                Some(path) => {
+                    let path = std::path::PathBuf::from(path);
+                    if !path.is_absolute() {
+                        return Err("XIAO_WORKBENCH_STATE_DIR must be an absolute path.".into());
+                    }
+                    path
+                }
+                None => app_data_dir,
+            };
+            app.manage(XiaoRepository::initialize(app_data_dir));
+            Ok(())
+        })
         .manage(AgentRuntime::default())
         .manage(TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
@@ -81,6 +98,7 @@ pub fn run() {
             get_browser_url,
             set_browser_muted,
             load_xiao_workspace,
+            load_xiao_timeline_page,
             save_xiao_workspace,
             list_xiao_projects,
             open_xiao_project,

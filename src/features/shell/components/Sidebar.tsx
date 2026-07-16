@@ -590,7 +590,7 @@ export function Sidebar({
                                 const taskMenuOpen = taskMenu?.taskId === task.id;
                                 const taskMeta = taskRunning
                                   ? "Running"
-                                  : task.meta === "Draft" || (!task.timeline.length && !task.threadId)
+                                  : task.meta === "Draft" || (task.timelineEntryCount === 0 && !task.threadId)
                                     ? "Draft"
                                     : `Updated ${relativeTime(task.updatedAt, now)}`;
                                 const stateLabel = taskRunning

@@ -87,6 +87,7 @@ type ComposerProps = {
     answers: Record<string, string[]>,
   ) => Promise<boolean>;
   disabled?: boolean;
+  disabledPlaceholder?: string;
   storageError?: string | null;
   autoFocus?: boolean;
 };
@@ -162,6 +163,7 @@ export function Composer({
   onDraftChange,
   onResolveQuestion,
   disabled = false,
+  disabledPlaceholder = "Restore this task to continue",
   storageError = null,
   autoFocus = false,
 }: ComposerProps) {
@@ -584,7 +586,7 @@ export function Composer({
   if (storageError) composerPlaceholder = "Task storage is unavailable";
   else if (compacting) composerPlaceholder = "Compacting session context…";
   else if (undoing) composerPlaceholder = "Undoing the last turn…";
-  else if (disabled) composerPlaceholder = "Restore this task to continue";
+  else if (disabled) composerPlaceholder = disabledPlaceholder;
   else if (runtime.phase === "starting") composerPlaceholder = "Connecting to Codex…";
   else if (runtime.phase === "offline") {
     composerPlaceholder = isTauriHost()

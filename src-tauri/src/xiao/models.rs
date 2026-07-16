@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 1;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XiaoWorkspaceDocument {
     pub schema_version: u32,
@@ -13,7 +14,18 @@ pub struct XiaoWorkspaceDocument {
     pub tasks: Vec<XiaoTaskDocument>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XiaoWorkspaceUpdate {
+    pub schema_version: u32,
+    pub workspace_path: String,
+    pub active_task_id: Option<String>,
+    pub show_archived: bool,
+    pub task_ids: Vec<String>,
+    pub tasks: Vec<XiaoTaskDocument>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XiaoTaskDocument {
     pub id: String,
@@ -34,6 +46,8 @@ pub struct XiaoTaskDocument {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub thread_binding: Option<XiaoThreadBinding>,
     #[serde(default = "default_mode")]
     pub mode: String,
     #[serde(default = "default_approval_policy")]
@@ -44,16 +58,57 @@ pub struct XiaoTaskDocument {
     pub goal: Option<Value>,
     #[serde(default)]
     pub timeline: Vec<Value>,
+    #[serde(default = "default_true")]
+    pub timeline_loaded: bool,
+    #[serde(default = "default_true")]
+    pub timeline_complete: bool,
+    #[serde(default)]
+    pub timeline_start: usize,
+    #[serde(default)]
+    pub timeline_entry_count: usize,
     #[serde(default)]
     pub plan: Option<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XiaoThreadBinding {
+    pub thread_id: String,
+    pub persistence: XiaoThreadPersistence,
+    pub materialized: bool,
+    pub thread_source: Option<String>,
+    pub cli_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum XiaoThreadPersistence {
+    Ephemeral,
+    Persistent,
+    LegacyUntrusted,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XiaoTimelinePage {
+    pub entries: Vec<Value>,
+    pub start: usize,
+    pub total: usize,
+    pub has_more: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_mode() -> String {
     "default".to_owned()
 }
+
 fn default_approval_policy() -> String {
     "on-request".to_owned()
 }
+
 fn default_sandbox_mode() -> String {
     "workspace-write".to_owned()
 }
@@ -68,7 +123,76 @@ pub struct XiaoProjectSummary {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct XiaoStore {
+pub(crate) struct XiaoLegacyStore {
     pub schema_version: u32,
     pub workspaces: Vec<XiaoWorkspaceDocument>,
+}
+
+#[allow(dead_code)] // Persisted schema contract; RunService starts using this in M3.
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XiaoRunRecord {
+    pub id: String,
+    pub workspace_path: String,
+    pub task_id: String,
+    pub idempotency_key: String,
+    pub parent_run_id: Option<String>,
+    pub candidate_group_id: Option<String>,
+    pub status: XiaoRunStatus,
+    pub agent_outcome: XiaoAgentOutcome,
+    pub verification_outcome: XiaoVerificationOutcome,
+    pub execution_root: String,
+    pub queued_at: i64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub version: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XiaoRunStatus {
+    Queued,
+    Preparing,
+    Running,
+    WaitingForInput,
+    Verifying,
+    Completed,
+    NeedsAttention,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XiaoAgentOutcome {
+    Pending,
+    Completed,
+    Failed,
+    Interrupted,
+    Cancelled,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum XiaoVerificationOutcome {
+    NotRequested,
+    Pending,
+    Passed,
+    Failed,
+    Blocked,
+}
+
+#[allow(dead_code)] // Persisted schema contract; RunService starts using this in M3.
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XiaoRunEventRecord {
+    pub run_id: String,
+    pub sequence: i64,
+    pub timestamp: i64,
+    pub event_type: String,
+    pub safe_payload: Value,
 }

@@ -9,6 +9,7 @@ type TaskTimelineProps = {
   runtime: AgentRuntimeState;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
+  historyLoading: boolean;
   canFork: boolean;
   onForkTask: (entryId: string) => void;
   onResolveApproval: (
@@ -71,6 +72,7 @@ export function TaskTimeline({
   runtime,
   showReasoningSummaries,
   expandToolOutput,
+  historyLoading,
   canFork,
   onForkTask,
   taskId,
@@ -80,7 +82,10 @@ export function TaskTimeline({
   const rows = timelineRows(timeline);
   return (
     <div className="timeline" aria-live="polite">
-      {!timeline.length ? (
+      {historyLoading ? (
+        <div className="timeline__history-loading">Loading earlier task activity…</div>
+      ) : null}
+      {!timeline.length && !historyLoading ? (
         <div className="timeline__empty">
           <span className="timeline__empty-mark"><XiaoIcon name="command" size={22} /></span>
           <h2>What are we building?</h2>

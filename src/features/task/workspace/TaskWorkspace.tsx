@@ -29,6 +29,7 @@ type TaskWorkspaceProps = {
   taskArchived: boolean;
   launchMode: boolean;
   taskStateError: string | null;
+  taskStateLoading: boolean;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
   models: AgentModelSummary[];
@@ -98,6 +99,7 @@ export function TaskWorkspace({
   taskArchived,
   launchMode,
   taskStateError,
+  taskStateLoading,
   timeline,
   runtime,
   models,
@@ -160,6 +162,7 @@ export function TaskWorkspace({
     runtime.phase === "ready" &&
     !taskArchived &&
     !taskStateError &&
+    !taskStateLoading &&
     !compacting &&
     !undoing &&
     followUps.length === 0;
@@ -228,7 +231,8 @@ export function TaskWorkspace({
       onReviewContextSent={onReviewContextSent}
       onDraftChange={onDraftChange}
       onResolveQuestion={onResolveQuestion}
-      disabled={taskArchived || Boolean(taskStateError)}
+      disabled={taskArchived || taskStateLoading || Boolean(taskStateError)}
+      disabledPlaceholder={taskStateLoading ? "Loading task history…" : undefined}
       storageError={taskStateError}
     />
   );
@@ -276,7 +280,7 @@ export function TaskWorkspace({
         workspace={workspace}
         runtime={runtime}
         contextPercent={contextPercent}
-        archiveDisabled={Boolean(taskStateError)}
+        archiveDisabled={taskStateLoading || Boolean(taskStateError)}
         canUndo={canUndo}
         undoing={undoing}
         onFocusView={onFocusView}
@@ -297,6 +301,7 @@ export function TaskWorkspace({
           runtime={runtime}
           showReasoningSummaries={showReasoningSummaries}
           expandToolOutput={expandToolOutput}
+          historyLoading={taskStateLoading}
           canFork={canFork}
           onForkTask={onForkTask}
           onResolveApproval={onResolveApproval}
