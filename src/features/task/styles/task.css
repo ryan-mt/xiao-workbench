@@ -36,6 +36,13 @@
   user-select: none;
 }
 
+.task-launch__logo {
+  display: block;
+  width: clamp(64px, 7vw, 88px);
+  height: clamp(64px, 7vw, 88px);
+  object-fit: contain;
+}
+
 .task-launch__wordmark {
   display: flex;
   align-items: center;

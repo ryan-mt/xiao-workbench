@@ -54,6 +54,7 @@ type TaskWorkspaceProps = {
   contextUsage: ThreadTokenUsage | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
+  launchBrand: "logo" | "wordmark";
   workspace: WorkspaceSnapshot;
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
@@ -120,6 +121,7 @@ export function TaskWorkspace({
   contextUsage,
   showReasoningSummaries,
   expandToolOutput,
+  launchBrand,
   workspace,
   onSubmit,
   onQueueFollowUp,
@@ -232,9 +234,13 @@ export function TaskWorkspace({
         <div className="task-launch">
           <div className="task-launch__inner">
             <div className="task-launch__brand" aria-label="XIAO">
-              <span className="task-launch__wordmark" aria-hidden="true">
-                <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
-              </span>
+              {launchBrand === "logo" ? (
+                <img className="task-launch__logo" src="/xiao-mark.png" alt="" aria-hidden="true" />
+              ) : (
+                <span className="task-launch__wordmark" aria-hidden="true">
+                  <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
+                </span>
+              )}
               <small>Local agent workspace</small>
             </div>
             {composer}

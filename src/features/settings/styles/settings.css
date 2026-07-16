@@ -646,6 +646,8 @@
   background: var(--surface-raised);
 }
 
+.settings-list--appearance { margin-top: 12px; }
+
 .settings-row {
   display: grid;
   min-height: 66px;
@@ -660,6 +662,30 @@
 .settings-row > div:first-child { min-width: 0; }
 .settings-row strong { color: var(--text-soft); font-size: var(--text-label); font-weight: 570; }
 .settings-row p { max-width: 58ch; margin: 4px 0 0; color: var(--muted); font-size: var(--text-micro); line-height: 1.45; }
+
+.settings-choice {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-deep);
+}
+
+.settings-choice button {
+  min-width: 54px;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  font-weight: 570;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.settings-choice button:hover { color: var(--text); }
+.settings-choice button.is-selected { background: var(--surface-raised); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.settings-choice button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 .settings-toggle {
   position: relative;

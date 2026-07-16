@@ -206,6 +206,14 @@ export function SettingsPage({
                     </label>
                   ))}
                 </fieldset>
+                <div className="settings-list settings-list--appearance">
+                  <SettingRow title="Start screen mark" description="Show the app logo or XIAO wordmark above the new-task composer.">
+                    <div className="settings-choice" role="group" aria-label="Start screen mark">
+                      <button type="button" className={preferences.launchBrand === "logo" ? "is-selected" : undefined} aria-pressed={preferences.launchBrand === "logo"} onClick={() => onPreferencesChange({ launchBrand: "logo" })}>Logo</button>
+                      <button type="button" className={preferences.launchBrand === "wordmark" ? "is-selected" : undefined} aria-pressed={preferences.launchBrand === "wordmark"} onClick={() => onPreferencesChange({ launchBrand: "wordmark" })}>XIAO</button>
+                    </div>
+                  </SettingRow>
+                </div>
               </div>
               <div className="settings-block">
                 <h3>Behavior</h3>

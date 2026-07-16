@@ -1624,6 +1624,7 @@ export function App() {
               contextUsage={agent.contextUsage}
               showReasoningSummaries={preferences.showReasoningSummaries}
               expandToolOutput={preferences.expandToolOutput}
+              launchBrand={preferences.launchBrand}
               workspace={workspace}
               onModelChange={(model) => {
                 patchActiveTask({ model, reasoningEffort: null });

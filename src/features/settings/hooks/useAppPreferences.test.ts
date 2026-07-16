@@ -11,6 +11,7 @@ describe("normalizeAppPreferences", () => {
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
+      launchBrand: "wordmark",
       wrapCode: true,
       notifyCompletions: false,
       notifyErrors: false,
@@ -29,6 +30,7 @@ describe("normalizeAppPreferences", () => {
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
+      launchBrand: "wordmark",
       wrapCode: true,
       notifyCompletions: false,
       notifyErrors: false,
@@ -44,10 +46,11 @@ describe("normalizeAppPreferences", () => {
     });
   });
 
-  it("adds safe task defaults to preferences saved by older versions", () => {
-    expect(normalizeAppPreferences({ wrapCode: true }).taskRunDefaults).toEqual(
-      defaultTaskRunDefaults,
-    );
+  it("adds safe defaults to preferences saved by older versions", () => {
+    const preferences = normalizeAppPreferences({ wrapCode: true });
+
+    expect(preferences.launchBrand).toBe("logo");
+    expect(preferences.taskRunDefaults).toEqual(defaultTaskRunDefaults);
   });
 
   it("keeps valid partial defaults and rejects invalid enum values", () => {
