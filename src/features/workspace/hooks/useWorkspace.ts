@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
 import type { SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspace";
@@ -22,9 +22,17 @@ export function useWorkspace(path?: string) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refreshId = useRef(0);
+  const requestedPath = useRef(path);
+
+  useLayoutEffect(() => {
+    requestedPath.current = path;
+  }, [path]);
 
   const refresh = useCallback(async () => {
+    if (requestedPath.current !== path) return;
     const requestId = ++refreshId.current;
+    const isCurrentRequest = () =>
+      requestId === refreshId.current && requestedPath.current === path;
     if (!isTauriHost()) {
       setLoading(false);
       return;
@@ -38,14 +46,14 @@ export function useWorkspace(path?: string) {
         nativeBridge.getWorkspace(path),
         nativeBridge.getSystemInfo(),
       ]);
-      if (requestId !== refreshId.current) return;
+      if (!isCurrentRequest()) return;
       setWorkspace(nextWorkspace);
       setSystem(nextSystem);
     } catch (reason) {
-      if (requestId !== refreshId.current) return;
+      if (!isCurrentRequest()) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      if (requestId === refreshId.current) setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   }, [path]);
 

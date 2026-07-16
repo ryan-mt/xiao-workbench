@@ -40,6 +40,25 @@ export const needsAgentSession = (
   requestedModel: string | null,
 ) => !threadId || !hasRequestedModel || previousRequestedModel !== requestedModel;
 
+export const invalidateUndoHistory = (timeline: TimelineEntry[]): TimelineEntry[] => {
+  if (!timeline.some((entry) => entry.turnDiff !== undefined)) return timeline;
+  return timeline.map((entry) => {
+    if (entry.turnDiff === undefined) return entry;
+    const next = { ...entry };
+    delete next.turnDiff;
+    return next;
+  });
+};
+
+export const latestUndoableTurn = (timeline: TimelineEntry[]): TimelineEntry | null => {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const entry = timeline[index];
+    if (entry.kind !== "user") continue;
+    return entry.turnId && entry.turnDiff !== undefined ? entry : null;
+  }
+  return null;
+};
+
 export const threadCompactRequest = (threadId: string) => ({
   method: "thread/compact/start" as const,
   params: { threadId },

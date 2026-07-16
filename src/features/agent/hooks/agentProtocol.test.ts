@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   approvalResponse,
   contextCompactionTimelineEntry,
+  invalidateUndoHistory,
+  latestUndoableTurn,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
@@ -62,6 +64,46 @@ describe("needsAgentSession", () => {
     expect(needsAgentSession(undefined, true, null, null)).toBe(true);
     expect(needsAgentSession("thread-1", false, undefined, null)).toBe(true);
     expect(needsAgentSession("thread-1", true, "gpt-old", "gpt-new")).toBe(true);
+  });
+});
+
+describe("undo history", () => {
+  const changedTurn = {
+    id: "user-1",
+    kind: "user" as const,
+    title: "Change a file",
+    turnId: "turn-1",
+    turnDiff: "diff --git a/file b/file",
+  };
+
+  it("treats an empty captured patch as an undoable latest turn", () => {
+    const noFileTurn = {
+      id: "user-2",
+      kind: "user" as const,
+      title: "Explain the code",
+      turnId: "turn-2",
+      turnDiff: "",
+    };
+
+    expect(latestUndoableTurn([changedTurn, noFileTurn])).toBe(noFileTurn);
+  });
+
+  it("does not skip an untracked latest turn to roll back an older turn", () => {
+    const injectedTurn = {
+      id: "user-2",
+      kind: "user" as const,
+      title: "History from an isolated session",
+      turnId: "old-turn",
+    };
+
+    expect(latestUndoableTurn([changedTurn, injectedTurn])).toBeNull();
+  });
+
+  it("invalidates patches that belong to a previous or compacted session", () => {
+    const timeline = invalidateUndoHistory([changedTurn]);
+
+    expect(timeline[0]).not.toHaveProperty("turnDiff");
+    expect(latestUndoableTurn(timeline)).toBeNull();
   });
 });
 

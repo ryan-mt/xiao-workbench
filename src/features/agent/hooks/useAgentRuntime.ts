@@ -27,6 +27,8 @@ import { useCodexUsage } from "../../profile/hooks/useCodexUsage";
 import {
   approvalResponse,
   contextCompactionTimelineEntry,
+  invalidateUndoHistory,
+  latestUndoableTurn,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
@@ -1135,15 +1137,18 @@ export function useAgentRuntime(
           activeThinkingEntries.current.delete(taskId);
         }
         if (item.type === "fileChange") onWorkspaceChangeRef.current();
-        updateTimeline(taskId, (current) =>
-          current.some((currentEntry) => currentEntry.id === completedEntry.id)
-            ? current.map((currentEntry) =>
+        updateTimeline(taskId, (current) => {
+          const timeline = item.type === "contextCompaction"
+            ? invalidateUndoHistory(current)
+            : current;
+          return timeline.some((currentEntry) => currentEntry.id === completedEntry.id)
+            ? timeline.map((currentEntry) =>
                 currentEntry.id === completedEntry.id
                   ? { ...completedEntry, body: completedEntry.body ?? currentEntry.body }
                   : currentEntry,
               )
-            : [...current, completedEntry],
-        );
+            : [...timeline, completedEntry];
+        });
       }
 
       if (
@@ -1207,6 +1212,9 @@ export function useAgentRuntime(
         const manualCompaction = compactingTasks.current.delete(taskId);
         if (manualCompaction) {
           setCompactingTaskId((current) => current === taskId ? null : current);
+          if (outcome === "completed") {
+            updateTimeline(taskId, invalidateUndoHistory);
+          }
         } else {
           onPlanChangeRef.current(taskId, null);
         }
@@ -1349,6 +1357,7 @@ export function useAgentRuntime(
                reasoningEntries.current.clear();
                reasoningChannels.current.clear();
                compactingTasks.current.clear();
+               syncedGoals.current.clear();
                workingTaskId.current = null;
                appendRuntimeLog("system", "Agent runtime stopped.");
               setAccount(null);
@@ -1531,6 +1540,8 @@ export function useAgentRuntime(
           sessionModels.current.set(activeTaskId, session.model);
           sessionRequestedModels.current.set(activeTaskId, activeTaskModel);
           threadTasks.current.set(threadId, activeTaskId);
+          syncedGoals.current.delete(activeTaskId);
+          updateTimeline(activeTaskId, invalidateUndoHistory);
           onTaskThreadChangeRef.current(activeTaskId, threadId);
         }
         if (!threadId) throw new Error("Codex did not return a thread id.");
@@ -1704,9 +1715,7 @@ export function useAgentRuntime(
 
   const undoLastTurn = useCallback(async (): Promise<AgentUndoResult | null> => {
     const timeline = timelineCache.current.get(activeTaskId) ?? activeTaskTimeline;
-    const target = [...timeline].reverse().find(
-      (entry) => entry.kind === "user" && entry.turnId && entry.turnDiff?.trim(),
-    );
+    const target = latestUndoableTurn(timeline);
     const threadId = sessionIds.current.get(activeTaskId);
     if (undoingRef.current || runtime.phase !== "ready" || !target?.turnId || !threadId) {
       return null;
@@ -1923,10 +1932,7 @@ export function useAgentRuntime(
   const compacting = compactingTaskId === activeTaskId;
   const canCompact = runtime.phase === "ready" && Boolean(activeThreadId) && compactingTaskId === null;
   const canUndo = runtime.phase === "ready" && Boolean(
-    activeThreadId &&
-    [...activeTaskTimeline].reverse().some(
-      (entry) => entry.kind === "user" && entry.turnId && entry.turnDiff?.trim(),
-    ),
+    activeThreadId && latestUndoableTurn(activeTaskTimeline),
   );
 
   return {
