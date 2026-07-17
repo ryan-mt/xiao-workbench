@@ -12,9 +12,7 @@ src-tauri/gen/
 *.md
 !README.md
 !CONTRIBUTING.md
-!docs/product/trusted-autonomy.md
-!docs/architecture/execution-domain.md
-!docs/architecture/codex-runtime-decisions.md
+/docs/
 /plans/
 
 # Local credentials and signing material
