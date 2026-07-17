@@ -15,7 +15,7 @@ src-tauri/gen/
 !docs/product/trusted-autonomy.md
 !docs/architecture/execution-domain.md
 !docs/architecture/codex-runtime-decisions.md
-!plans/*.md
+/plans/
 
 # Local credentials and signing material
 .env
