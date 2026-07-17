@@ -86,6 +86,9 @@ pub fn prepare_managed_task_environment(
     task_id: &str,
 ) -> Result<ExecutionContext, String> {
     let binding = repository.task_execution_binding(project_path, task_id)?;
+    if repository.task_has_active_runs(project_path, task_id)? {
+        return Err("Cancel active Xiao runs before changing the task environment.".to_owned());
+    }
     if binding.workspace_mode != XiaoWorkspaceMode::Local || binding.managed_worktree.is_some() {
         return Err("The task already uses a managed worktree.".to_owned());
     }
@@ -222,6 +225,9 @@ pub fn remove_managed_task_environment(
 ) -> Result<ExecutionContext, String> {
     if !confirmed {
         return Err("Managed worktree cleanup requires explicit confirmation.".to_owned());
+    }
+    if repository.task_has_active_runs(project_path, task_id)? {
+        return Err("Cancel active Xiao runs before changing the task environment.".to_owned());
     }
     let record = repository.begin_managed_worktree_removal(project_path, task_id, worktree_id)?;
     let binding = repository.task_execution_binding(project_path, task_id)?;

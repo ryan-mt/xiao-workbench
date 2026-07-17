@@ -86,7 +86,7 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
 
   const refresh = useCallback(async (force = false) => {
     const requestId = ++refreshEpoch.current;
-    if (!runtimeAvailable) {
+    if (!runtimeAvailable || !taskId) {
       appAccessBlocked.current = false;
       setLoading(false);
       return;
@@ -96,7 +96,11 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
     try {
       const appRequest = appAccessBlocked.current && !force
         ? Promise.resolve(null)
-        : nativeBridge.agentRequest<{ data: App[] }>("app/list", { forceRefetch: force, limit: 100 });
+        : nativeBridge.agentRequest<{ data: App[] }>(
+            "app/list",
+            { forceRefetch: force, limit: 100 },
+            { projectPath: workspace.path, taskId },
+          );
       const [skillResult, pluginResult, mcpResult, appResult] = await Promise.allSettled([
         nativeBridge.agentRequest<{ data: Array<{ skills: Skill[] }> }>(
           "skills/list",
@@ -184,7 +188,12 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
   const updateSkill = async (skill: Skill) => {
     setBusy(`skill:${skill.path}`);
     try {
-      await nativeBridge.agentRequest("skills/config/write", { path: skill.path, enabled: !skill.enabled });
+      if (!taskId) throw new Error("Open a persisted task before changing skills.");
+      await nativeBridge.agentRequest(
+        "skills/config/write",
+        { path: skill.path, enabled: !skill.enabled },
+        { projectPath: workspace.path, taskId },
+      );
       await refresh();
     } catch (reason) {
       setError(conciseError(reason));
@@ -196,14 +205,23 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
   const updatePlugin = async (plugin: Plugin) => {
     setBusy(`plugin:${plugin.id}`);
     try {
+      if (!taskId) throw new Error("Open a persisted task before changing plugins.");
       if (plugin.installed) {
-        await nativeBridge.agentRequest("plugin/uninstall", { pluginId: plugin.id });
+        await nativeBridge.agentRequest(
+          "plugin/uninstall",
+          { pluginId: plugin.id },
+          { projectPath: workspace.path, taskId },
+        );
       } else {
-        await nativeBridge.agentRequest("plugin/install", {
-          pluginName: plugin.name,
-          marketplacePath: plugin.marketplacePath,
-          remoteMarketplaceName: plugin.marketplacePath ? null : plugin.marketplaceName,
-        });
+        await nativeBridge.agentRequest(
+          "plugin/install",
+          {
+            pluginName: plugin.name,
+            marketplacePath: plugin.marketplacePath,
+            remoteMarketplaceName: plugin.marketplacePath ? null : plugin.marketplaceName,
+          },
+          { projectPath: workspace.path, taskId },
+        );
       }
       await refresh();
     } catch (reason) {

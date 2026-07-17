@@ -1,8 +1,9 @@
 # Execution domain architecture
 
-Status: **Accepted; implemented through M2**
+Status: **Accepted; implemented through M3**
 
 Baseline: Xiao `33bfa96`, 2026-07-16. M2 implementation baseline: `d13293e`.
+M3 implementation is tracked by Plan 005 from baseline `132090c`.
 
 This document fixes the domain boundaries and invariants for durable runs,
 routines, verification and isolated execution. Exact SQL and DTO syntax belongs
@@ -31,10 +32,11 @@ Rust host
             `-- SQLite + bounded artifacts in Xiao app data
 ```
 
-The diagram is the target topology. Through M2, Xiao still owns one process-local
-Codex app-server; Rust binds each thread to its task and resolved execution root,
-and environment changes invalidate that binding. Durable/per-environment runtime
-ownership remains M3 work.
+Through M3, this ownership boundary is implemented for interactive runs: Rust
+owns the durable queue/state machine, one app-server per execution environment,
+persistent Xiao thread bindings and generation-safe event routing. React renders
+native snapshots/events and retains only presentation state and explicit controls.
+Routine scheduling, verification and evidence remain later-milestone work.
 
 React may optimistically display a pending action, but Rust is authoritative for
 task/run/routine status. Closing/reloading the webview cannot create, complete,
@@ -592,7 +594,8 @@ Rules:
 - a run waiting for approval remains one in-flight slot and stays bound to its
   process generation; with the global limit of 2, one unrelated eligible run can
   still use the remaining slot;
-- runtime generation increments on every process start/restart;
+- runtime generation is allocated durably per environment and increments on every
+  process start/restart;
 - stale-generation responses/events cannot mutate newer runs;
 - request map keys are client request IDs; run event routing additionally checks
   thread/turn/item IDs;

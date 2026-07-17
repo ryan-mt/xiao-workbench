@@ -4,20 +4,30 @@ use tauri::{AppHandle, State};
 use crate::execution::service::resolve_execution_context;
 use crate::xiao::repository::XiaoRepository;
 
-use super::runtime::{AgentRuntime, StartResult};
+use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
 use super::{models, service};
 
 #[tauri::command]
 pub fn start_agent_runtime(
     app: AppHandle,
-    runtime: State<'_, AgentRuntime>,
+    project_path: String,
+    task_id: String,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
-    runtime.start(app)
+    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    runtimes.start(app, &context.environment.id)
 }
 
 #[tauri::command]
-pub fn stop_agent_runtime(runtime: State<'_, AgentRuntime>) -> Result<(), String> {
-    runtime.stop()
+pub fn stop_agent_runtime(
+    project_path: String,
+    task_id: String,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<(), String> {
+    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    runtimes.stop(&context.environment.id)
 }
 
 #[tauri::command]
@@ -26,36 +36,24 @@ pub async fn agent_request(
     mut params: Value,
     project_path: Option<String>,
     task_id: Option<String>,
-    runtime: State<'_, AgentRuntime>,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Value, String> {
+    if native_run_method(&method) {
+        return Err(format!(
+            "Agent method `{method}` is owned by the native Xiao RunService."
+        ));
+    }
+    let project_path = project_path
+        .as_deref()
+        .ok_or("This agent request requires a Xiao project context.")?;
+    let task_id = task_id
+        .as_deref()
+        .ok_or("This agent request requires a persisted Xiao task.")?;
+    let context = resolve_execution_context(&repository, project_path, Some(task_id))?;
     if method_uses_execution_root(&method) {
-        if matches!(method.as_str(), "turn/start" | "command/exec") && task_id.is_none() {
-            return Err(format!(
-                "Agent method `{method}` requires a persisted Xiao task."
-            ));
-        }
-        let project_path = project_path
-            .as_deref()
-            .ok_or("This agent request requires a Xiao project context.")?;
-        let context = resolve_execution_context(&repository, project_path, task_id.as_deref())?;
         if method == "command/exec" {
             validate_direct_command(&params)?;
-        }
-        if method == "turn/start" {
-            let thread_id = params
-                .get("threadId")
-                .and_then(Value::as_str)
-                .ok_or("turn/start requires a thread id.")?;
-            let task_id = task_id
-                .as_deref()
-                .ok_or("turn/start requires a persisted Xiao task.")?;
-            runtime.require_thread_task(
-                thread_id,
-                &context.project_path,
-                task_id,
-                &context.execution_root,
-            )?;
         }
         strip_execution_path_fields(&mut params);
         apply_execution_root(&method, &mut params, &context.execution_root)?;
@@ -64,7 +62,32 @@ pub async fn agent_request(
             "Agent method `{method}` cannot accept frontend-provided execution paths."
         ));
     }
-    runtime.request(method, params).await
+    if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
+        runtimes.require_thread_task(
+            &context.environment.id,
+            thread_id,
+            &context.project_path,
+            task_id,
+            &context.execution_root,
+        )?;
+    }
+    runtimes
+        .request(&context.environment.id, method, params)
+        .await
+}
+
+fn native_run_method(method: &str) -> bool {
+    method.starts_with("turn/")
+        || matches!(
+            method,
+            "thread/start"
+                | "thread/resume"
+                | "thread/inject_items"
+                | "thread/delete"
+                | "thread/fork"
+                | "thread/archive"
+                | "thread/unarchive"
+        )
 }
 
 fn method_uses_execution_root(method: &str) -> bool {
@@ -191,67 +214,39 @@ fn apply_execution_root(
 }
 
 #[tauri::command]
-pub fn agent_reply(
-    request_id: Value,
-    result: Value,
-    runtime: State<'_, AgentRuntime>,
-) -> Result<(), String> {
-    runtime.reply(request_id, result)
-}
-
-#[tauri::command]
 pub async fn read_agent_account(
-    runtime: State<'_, AgentRuntime>,
+    project_path: String,
+    task_id: String,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
 ) -> Result<models::AgentAccountSummary, String> {
+    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let runtime = runtimes.runtime(&context.environment.id)?;
     service::read_account(&runtime).await
 }
 
 #[tauri::command]
 pub async fn read_agent_usage(
-    runtime: State<'_, AgentRuntime>,
+    project_path: String,
+    task_id: String,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
 ) -> Result<models::AgentAccountUsage, String> {
+    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let runtime = runtimes.runtime(&context.environment.id)?;
     service::read_account_usage(&runtime).await
 }
 
 #[tauri::command]
 pub async fn list_agent_models(
-    runtime: State<'_, AgentRuntime>,
-) -> Result<Vec<models::AgentModelSummary>, String> {
-    service::list_models(&runtime).await
-}
-
-#[tauri::command]
-pub async fn start_xiao_session(
     project_path: String,
     task_id: String,
-    model: Option<String>,
-    history: Vec<models::XiaoHistoryItem>,
-    thread_id: Option<String>,
-    service_tier: Option<String>,
-    approval_policy: Option<String>,
-    sandbox: Option<String>,
-    runtime: State<'_, AgentRuntime>,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
-) -> Result<models::AgentSessionStart, String> {
+) -> Result<Vec<models::AgentModelSummary>, String> {
     let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
-    let session = service::start_xiao_session(
-        &runtime,
-        context.execution_root.clone(),
-        model,
-        history,
-        thread_id,
-        service_tier,
-        approval_policy,
-        sandbox,
-    )
-    .await?;
-    runtime.bind_thread_to_task(
-        &session.thread_id,
-        &context.project_path,
-        &task_id,
-        &context.execution_root,
-    )?;
-    Ok(session)
+    let runtime = runtimes.runtime(&context.environment.id)?;
+    service::list_models(&runtime).await
 }
 
 #[cfg(test)]
@@ -259,8 +254,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_execution_root, contains_execution_path_fields, strip_execution_path_fields,
-        validate_direct_command,
+        apply_execution_root, contains_execution_path_fields, native_run_method,
+        strip_execution_path_fields, validate_direct_command,
     };
 
     #[test]
@@ -272,6 +267,23 @@ mod tests {
         let mut search = json!({ "query": "x", "roots": ["C:/escape"] });
         apply_execution_root("fuzzyFileSearch", &mut search, "C:/owned/root").unwrap();
         assert_eq!(search["roots"], json!(["C:/owned/root"]));
+    }
+
+    #[test]
+    fn renderer_cannot_invoke_native_run_or_thread_lifecycle_methods() {
+        for method in [
+            "turn/start",
+            "turn/steer",
+            "turn/interrupt",
+            "thread/start",
+            "thread/resume",
+            "thread/inject_items",
+            "thread/delete",
+        ] {
+            assert!(native_run_method(method), "{method} should be native-owned");
+        }
+        assert!(!native_run_method("thread/settings/update"));
+        assert!(!native_run_method("thread/compact/start"));
     }
 
     #[test]

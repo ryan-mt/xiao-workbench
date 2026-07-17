@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 2;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,73 +150,4 @@ pub struct XiaoProjectSummary {
 pub(crate) struct XiaoLegacyStore {
     pub schema_version: u32,
     pub workspaces: Vec<XiaoWorkspaceDocument>,
-}
-
-#[allow(dead_code)] // Persisted schema contract; RunService starts using this in M3.
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XiaoRunRecord {
-    pub id: String,
-    pub workspace_path: String,
-    pub task_id: String,
-    pub idempotency_key: String,
-    pub parent_run_id: Option<String>,
-    pub candidate_group_id: Option<String>,
-    pub status: XiaoRunStatus,
-    pub agent_outcome: XiaoAgentOutcome,
-    pub verification_outcome: XiaoVerificationOutcome,
-    pub execution_root: String,
-    pub queued_at: i64,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub version: i64,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XiaoRunStatus {
-    Queued,
-    Preparing,
-    Running,
-    WaitingForInput,
-    Verifying,
-    Completed,
-    NeedsAttention,
-    Failed,
-    Cancelled,
-    Interrupted,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XiaoAgentOutcome {
-    Pending,
-    Completed,
-    Failed,
-    Interrupted,
-    Cancelled,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XiaoVerificationOutcome {
-    NotRequested,
-    Pending,
-    Passed,
-    Failed,
-    Blocked,
-}
-
-#[allow(dead_code)] // Persisted schema contract; RunService starts using this in M3.
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XiaoRunEventRecord {
-    pub run_id: String,
-    pub sequence: i64,
-    pub timestamp: i64,
-    pub event_type: String,
-    pub safe_payload: Value,
 }

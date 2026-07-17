@@ -15,7 +15,7 @@
 
 ## Status
 
-- **Execution status**: IN PROGRESS (M3 next)
+- **Execution status**: IN PROGRESS (M3 done; M4 next)
 - **Priority**: P1
 - **Effort**: L — chương trình nhiều milestone; ước lượng đầy đủ ở phần Release roadmap
 - **Risk**: HIGH — thay đổi persistence, runtime lifecycle, Git worktree và background execution
@@ -432,7 +432,7 @@ Estimate assumes one experienced maintainer working mostly full-time. It include
 | M0 | Architecture and protocol decisions locked | M | — | DONE |
 | M1 | Durable state preview; no user-visible feature loss | L | M0 | DONE |
 | M2 | Safe task-owned execution roots/worktrees | L | M1 | DONE |
-| M3 | Recoverable queue and bounded concurrent runs | L | M2 | TODO |
+| M3 | Recoverable queue and bounded concurrent runs | L | M2 | DONE |
 | M4 | Routines Beta | L | M3 | TODO |
 | M5 | Verified Autonomy Beta | L | M4 | TODO |
 | M6 | Agent Observatory + local handoff bundle | L | M3 | TODO |

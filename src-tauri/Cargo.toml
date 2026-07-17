@@ -29,7 +29,13 @@ uuid = { version = "1", features = ["v7"] }
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows = "0.61"
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"

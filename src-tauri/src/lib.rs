@@ -2,16 +2,17 @@ mod agent;
 mod browser;
 mod execution;
 mod git;
+mod runs;
 mod system;
 mod terminal;
 mod workspace;
 mod xiao;
 
 use agent::commands::{
-    agent_reply, agent_request, list_agent_models, read_agent_account, read_agent_usage,
-    start_agent_runtime, start_xiao_session, stop_agent_runtime,
+    agent_request, list_agent_models, read_agent_account, read_agent_usage, start_agent_runtime,
+    stop_agent_runtime,
 };
-use agent::runtime::AgentRuntime;
+use agent::runtime::EnvironmentRuntimeRegistry;
 use browser::commands::{
     get_browser_url, go_back_browser, go_forward_browser, navigate_browser, reload_browser,
     set_browser_muted,
@@ -24,6 +25,11 @@ use git::commands::{
     add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
     discard_git_checkpoint, finish_git_checkpoint, get_git_branches, get_git_worktrees, mutate_git,
 };
+use runs::commands::{
+    cancel_xiao_run, enqueue_xiao_run, list_xiao_pending_inputs, list_xiao_runs,
+    load_xiao_run_events, resolve_xiao_run_input, retry_xiao_run,
+};
+use runs::service::RunService;
 use system::commands::{check_codex_update, get_system_info, update_codex_cli};
 use terminal::commands::{resize_terminal, start_terminal, stop_terminal, write_terminal};
 use terminal::runtime::TerminalManager;
@@ -35,6 +41,10 @@ use xiao::commands::{
 use xiao::repository::XiaoRepository;
 
 use tauri::Manager;
+
+pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
+    agent::supervisor::run_if_requested()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,9 +74,11 @@ pub fn run() {
                 None => app_data_dir,
             };
             app.manage(XiaoRepository::initialize(app_data_dir));
+            app.manage(EnvironmentRuntimeRegistry::default());
+            app.manage(RunService::default());
+            app.state::<RunService>().start(app.handle().clone());
             Ok(())
         })
-        .manage(AgentRuntime::default())
         .manage(TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             get_workspace_snapshot,
@@ -82,11 +94,16 @@ pub fn run() {
             start_agent_runtime,
             stop_agent_runtime,
             agent_request,
-            agent_reply,
             read_agent_account,
             read_agent_usage,
             list_agent_models,
-            start_xiao_session,
+            enqueue_xiao_run,
+            list_xiao_runs,
+            list_xiao_pending_inputs,
+            load_xiao_run_events,
+            cancel_xiao_run,
+            retry_xiao_run,
+            resolve_xiao_run_input,
             mutate_git,
             get_git_branches,
             compare_git_branch,

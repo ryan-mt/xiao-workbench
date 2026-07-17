@@ -12,10 +12,11 @@ roadmap is not one PR: every milestone requires a narrower child plan numbered
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |---|---|---|---|---|---|
-| [001](001-xiao-trusted-autonomy-roadmap.md) | Trusted local-autonomy roadmap | P1 | L (program) | — | IN PROGRESS (M3 next) |
+| [001](001-xiao-trusted-autonomy-roadmap.md) | Trusted local-autonomy roadmap | P1 | L (program) | — | IN PROGRESS (M4 next) |
 | [002](002-m0-runtime-protocol-decisions.md) | M0 runtime/protocol decisions | P0 | M | 001 | DONE |
 | [003](003-m1-durable-sqlite-store.md) | M1 durable SQLite store | P0 | L | 002 | DONE |
 | [004](004-m2-execution-environments-managed-worktrees.md) | M2 execution environments and managed worktrees | P0 | L | 003 | DONE |
+| [005](005-m3-native-durable-run-queue.md) | M3 native durable run queue | P0 | L | 004 | DONE |
 
 Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED: <reason>` | `REJECTED: <reason>`.
 
@@ -26,7 +27,7 @@ Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED: <reason>` | `REJECTED
 | M0 | Lock persistence/runtime/protocol decisions | M | — | DONE |
 | M1 | Durable store and beta-state migration | L | M0 | DONE |
 | M2 | Task-bound environments and managed worktrees | L | M1 | DONE |
-| M3 | Native run registry and durable queue | L | M2 | TODO |
+| M3 | Native run registry and durable queue | L | M2 | DONE |
 | M4 | Xiao Routines 2.0 | L | M3 | TODO |
 | M5 | Verified Done and evidence | L | M4 | TODO |
 | M6 | Agent Observatory, time travel and handoff bundle | L | M3 | TODO |

@@ -10,6 +10,7 @@ import {
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
+  reconcilePendingApprovalEntries,
   serviceTierForFastMode,
   threadCompactRequest,
   userInput,
@@ -60,6 +61,34 @@ describe("approvalResponse", () => {
       permissions: {},
       scope: "turn",
     });
+  });
+});
+
+describe("pending approval reconciliation", () => {
+  const approval = (id: string, runId: string, pendingInputId?: string) => ({
+    id,
+    kind: "approval" as const,
+    title: "Approval",
+    status: "warning" as const,
+    meta: "Waiting for your decision",
+    runId,
+    pendingInputId,
+  });
+
+  it("expires only callbacks that are terminal or absent from native pending inputs", () => {
+    const active = approval("active", "run-active", "pending-active");
+    const stale = approval("stale", "run-stale", "pending-stale");
+    const terminal = approval("terminal", "run-terminal", "pending-terminal");
+
+    const reconciled = reconcilePendingApprovalEntries(
+      [active, stale, terminal],
+      new Set(["pending-active", "pending-terminal"]),
+      "run-terminal",
+    );
+
+    expect(reconciled[0]).toEqual(active);
+    expect(reconciled[1]).toMatchObject({ status: "error", meta: "Request expired" });
+    expect(reconciled[2]).toMatchObject({ status: "error", meta: "Request expired" });
   });
 });
 

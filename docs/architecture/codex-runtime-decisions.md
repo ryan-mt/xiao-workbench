@@ -452,13 +452,31 @@ restart initialize:   86 ms
 thread resume:      1544 ms
 ```
 
-Auth/config/plugin cache can change these values. M3 must keep runtime startup
-off the UI thread and show explicit Preparing state rather than promising a
-fixed latency.
+Auth/config/plugin cache can change these values. M3 keeps runtime startup off
+the UI thread and shows explicit Preparing state rather than promising a fixed
+latency.
 
 Performance guard: investigate a reproducible startup or active-stream
 regression greater than 20% against these fixture methods before release. Do not
 turn a one-machine number into a hard cross-device SLA.
+
+### M3 durable-queue implementation
+
+Plan 005 implements the accepted topology with SQLite schema 3, a native FIFO
+`RunService`, a global limit of two, task serialization, pending-input records,
+persistent Xiao-owned threads and a durable per-environment runtime-generation
+counter. Startup and runtime loss interrupt ambiguous in-flight work without
+resubmission; renderer lifecycle methods are rejected by the native command
+boundary. On Windows, each app-server is launched through a Xiao supervisor that
+holds a `KILL_ON_JOB_CLOSE` Job Object; loss of the parent stdin pipe terminates
+the complete runtime process tree instead of leaving orphaned Codex descendants.
+
+An isolated debug executable with a fake app-server proved two concurrent tasks,
+FIFO promotion, no same-task overlap, approval waiting with unrelated progress,
+exact thread resume across generations and hard-kill recovery with one
+Interrupted event and zero additional `turn/start` calls. The post-implementation
+live probe also passed concurrent correlation, command interruption and approval
+recovery against `codex-cli 0.144.5`.
 
 ## Known non-blocking risks
 
@@ -496,13 +514,13 @@ None permits bypassing approvals, path scoping, ownership checks or evidence.
 - Implement the managed root/marker/database/Git four-way ownership proof.
 - Resolve one execution environment/root in Rust for every operation.
 
-### M3
+### M3 (implemented by Plan 005)
 
-- Implement one app-server per environment and limit 2.
-- Route by run + generation + thread + turn/item identity.
-- Make all in-flight startup reconciliation Interrupted.
-- Never restore a stale approval callback.
-- Add deterministic fake-runtime tests before relying on live Codex.
+- One app-server per environment with global limit 2.
+- Exact run + durable generation + thread + turn/item routing.
+- In-flight startup reconciliation to Interrupted without resubmission.
+- Stale approval invalidation and exact pending-input resolution.
+- Deterministic fake-runtime validation before the passing live Codex probe.
 
 ### M6
 

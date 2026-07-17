@@ -74,6 +74,25 @@ export const approvalResponse = (
   return { decision };
 };
 
+export const reconcilePendingApprovalEntries = (
+  timeline: TimelineEntry[],
+  activePendingInputIds: ReadonlySet<string> | null,
+  terminalRunId?: string,
+): TimelineEntry[] => {
+  let changed = false;
+  const reconciled = timeline.map((entry) => {
+    if (entry.kind !== "approval" || entry.status !== "warning") return entry;
+    const terminal = terminalRunId != null && entry.runId === terminalRunId;
+    const noLongerPending = activePendingInputIds != null && (
+      !entry.pendingInputId || !activePendingInputIds.has(entry.pendingInputId)
+    );
+    if (!terminal && !noLongerPending) return entry;
+    changed = true;
+    return { ...entry, status: "error" as const, meta: "Request expired" };
+  });
+  return changed ? reconciled : timeline;
+};
+
 export const mcpElicitationDeclineResponse = (): Record<string, unknown> => ({
   action: "decline",
   content: null,

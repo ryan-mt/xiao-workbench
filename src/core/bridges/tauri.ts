@@ -4,8 +4,6 @@ import type {
   AgentAccountSummary,
   AgentAccountUsage,
   AgentModelSummary,
-  AgentSessionStart,
-  XiaoHistoryItem,
 } from "../models/agent";
 import type {
   CodexUpdateResult,
@@ -24,6 +22,12 @@ import type {
   XiaoWorkspaceDocument,
   XiaoWorkspaceUpdate,
 } from "../models/xiao";
+import type {
+  EnqueueRunRequest,
+  PendingInputSnapshot,
+  RunEventPage,
+  RunSnapshot,
+} from "../models/run";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -48,12 +52,17 @@ export const nativeBridge = {
     return invoke<CodexUpdateResult>("update_codex_cli");
   },
 
-  startAgent() {
-    return invoke<{ version: string; alreadyRunning: boolean }>("start_agent_runtime");
+  startAgent(projectPath: string, taskId: string) {
+    return invoke<{
+      version: string;
+      alreadyRunning: boolean;
+      environmentId: string;
+      generation: number;
+    }>("start_agent_runtime", { projectPath, taskId });
   },
 
-  stopAgent() {
-    return invoke<void>("stop_agent_runtime");
+  stopAgent(projectPath: string, taskId: string) {
+    return invoke<void>("stop_agent_runtime", { projectPath, taskId });
   },
 
   agentRequest<T = Record<string, unknown>>(
@@ -69,42 +78,47 @@ export const nativeBridge = {
     });
   },
 
-  replyToAgent(requestId: number | string, result: Record<string, unknown>) {
-    return invoke<void>("agent_reply", { requestId, result });
+  readAgentAccount(projectPath: string, taskId: string) {
+    return invoke<AgentAccountSummary>("read_agent_account", { projectPath, taskId });
   },
 
-  readAgentAccount() {
-    return invoke<AgentAccountSummary>("read_agent_account");
+  readAgentUsage(projectPath: string, taskId: string) {
+    return invoke<AgentAccountUsage>("read_agent_usage", { projectPath, taskId });
   },
 
-  readAgentUsage() {
-    return invoke<AgentAccountUsage>("read_agent_usage");
+  listAgentModels(projectPath: string, taskId: string) {
+    return invoke<AgentModelSummary[]>("list_agent_models", { projectPath, taskId });
   },
 
-  listAgentModels() {
-    return invoke<AgentModelSummary[]>("list_agent_models");
+  enqueueXiaoRun(request: EnqueueRunRequest) {
+    return invoke<RunSnapshot>("enqueue_xiao_run", { request });
   },
 
-  startXiaoSession(
-    projectPath: string,
-    taskId: string,
-    model: string | null,
-    history: XiaoHistoryItem[],
-    threadId: string | null,
-    serviceTier: string | null,
-    approvalPolicy: string,
-    sandbox: string,
-  ) {
-    return invoke<AgentSessionStart>("start_xiao_session", {
-      projectPath,
+  listXiaoRuns(workspacePath: string, taskId: string | null = null, limit = 50) {
+    return invoke<RunSnapshot[]>("list_xiao_runs", { workspacePath, taskId, limit });
+  },
+
+  listXiaoPendingInputs(workspacePath: string, taskId: string | null = null) {
+    return invoke<PendingInputSnapshot[]>("list_xiao_pending_inputs", {
+      workspacePath,
       taskId,
-      model,
-      history,
-      threadId,
-      serviceTier,
-      approvalPolicy,
-      sandbox,
     });
+  },
+
+  loadXiaoRunEvents(runId: string, afterSequence: number | null = null, limit = 200) {
+    return invoke<RunEventPage>("load_xiao_run_events", { runId, afterSequence, limit });
+  },
+
+  cancelXiaoRun(runId: string) {
+    return invoke<RunSnapshot>("cancel_xiao_run", { runId });
+  },
+
+  retryXiaoRun(runId: string, idempotencyKey: string) {
+    return invoke<RunSnapshot>("retry_xiao_run", { runId, idempotencyKey });
+  },
+
+  resolveXiaoRunInput(pendingInputId: string, result: Record<string, unknown>) {
+    return invoke<RunSnapshot>("resolve_xiao_run_input", { pendingInputId, result });
   },
 
   readWorkspaceFile(projectPath: string, taskId: string | null, relativePath: string) {

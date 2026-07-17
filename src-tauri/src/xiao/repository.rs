@@ -189,6 +189,88 @@ ALTER TABLE tasks ADD COLUMN managed_worktree_id TEXT
     REFERENCES managed_worktrees(id);
 "#;
 
+const MIGRATION_3_SQL: &str = r#"
+ALTER TABLE runs ADD COLUMN execution_environment_id TEXT
+    REFERENCES execution_environments(id);
+ALTER TABLE runs ADD COLUMN managed_worktree_id TEXT
+    REFERENCES managed_worktrees(id);
+ALTER TABLE runs ADD COLUMN input_json TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(input_json));
+ALTER TABLE runs ADD COLUMN history_json TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(history_json));
+ALTER TABLE runs ADD COLUMN prompt TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN model TEXT;
+ALTER TABLE runs ADD COLUMN reasoning_effort TEXT;
+ALTER TABLE runs ADD COLUMN service_tier TEXT;
+ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE runs ADD COLUMN approval_policy TEXT NOT NULL DEFAULT 'on-request';
+ALTER TABLE runs ADD COLUMN sandbox_mode TEXT NOT NULL DEFAULT 'workspace-write';
+ALTER TABLE runs ADD COLUMN goal_json TEXT CHECK (goal_json IS NULL OR json_valid(goal_json));
+ALTER TABLE runs ADD COLUMN thread_id TEXT;
+ALTER TABLE runs ADD COLUMN thread_source TEXT;
+ALTER TABLE runs ADD COLUMN cli_version TEXT;
+ALTER TABLE runs ADD COLUMN runtime_generation INTEGER
+    CHECK (runtime_generation IS NULL OR runtime_generation >= 0);
+ALTER TABLE runs ADD COLUMN turn_id TEXT;
+ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0
+    CHECK (cancel_requested IN (0, 1));
+
+UPDATE runs
+SET execution_environment_id = (
+    SELECT execution_environment_id FROM tasks
+    WHERE tasks.workspace_id = runs.workspace_id AND tasks.task_id = runs.task_id
+), managed_worktree_id = (
+    SELECT managed_worktree_id FROM tasks
+    WHERE tasks.workspace_id = runs.workspace_id AND tasks.task_id = runs.task_id
+);
+
+ALTER TABLE run_events ADD COLUMN event_key TEXT;
+CREATE UNIQUE INDEX run_events_by_idempotency
+    ON run_events(run_id, event_key) WHERE event_key IS NOT NULL;
+CREATE INDEX runs_fifo_eligibility
+    ON runs(status, queued_at, id);
+CREATE INDEX runs_by_environment_status
+    ON runs(execution_environment_id, status, queued_at);
+CREATE UNIQUE INDEX runs_by_runtime_turn
+    ON runs(execution_environment_id, runtime_generation, thread_id, turn_id)
+    WHERE runtime_generation IS NOT NULL AND thread_id IS NOT NULL AND turn_id IS NOT NULL;
+
+CREATE TABLE runtime_generations (
+    execution_environment_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL CHECK (generation >= 0),
+    FOREIGN KEY (execution_environment_id)
+        REFERENCES execution_environments(id) ON DELETE CASCADE
+);
+INSERT INTO runtime_generations(execution_environment_id, generation)
+SELECT e.id, COALESCE(MAX(r.runtime_generation), 0)
+FROM execution_environments e
+LEFT JOIN runs r ON r.execution_environment_id = e.id
+GROUP BY e.id;
+
+CREATE TABLE pending_inputs (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    runtime_generation INTEGER NOT NULL CHECK (runtime_generation >= 0),
+    request_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'command_approval', 'file_approval', 'permissions', 'question', 'mcp_elicitation'
+    )),
+    safe_summary_json TEXT NOT NULL CHECK (json_valid(safe_summary_json)),
+    opened_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    invalidated_at INTEGER,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE,
+    UNIQUE (run_id, runtime_generation, request_id, thread_id, turn_id, item_id)
+);
+CREATE INDEX pending_inputs_by_run_open
+    ON pending_inputs(run_id, resolved_at, invalidated_at);
+CREATE INDEX pending_inputs_by_generation_open
+    ON pending_inputs(runtime_generation, resolved_at, invalidated_at);
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -244,7 +326,7 @@ impl XiaoRepository {
         })
     }
 
-    fn with_connection<T>(
+    pub(crate) fn with_connection<T>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, String>,
     ) -> Result<T, String> {
@@ -676,6 +758,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             "execution_environments_and_managed_worktrees",
             MIGRATION_2_SQL,
         ),
+        (3_i64, "native_durable_run_queue", MIGRATION_3_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -1167,6 +1250,20 @@ fn apply_workspace_update(
 
     let desired_ids = update.task_ids.iter().cloned().collect::<HashSet<_>>();
     for existing_id in existing_task_ids.difference(&desired_ids) {
+        let active_runs: i64 = transaction
+            .query_row(
+                r#"SELECT COUNT(*) FROM runs
+                 WHERE workspace_id = ?1 AND task_id = ?2
+                   AND status IN ('queued', 'preparing', 'running', 'waiting_for_input', 'verifying')"#,
+                params![workspace_id, existing_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect task run ownership: {error}"))?;
+        if active_runs != 0 {
+            return Err(format!(
+                "Cancel active Xiao runs before removing task `{existing_id}`."
+            ));
+        }
         let owned_worktrees: i64 = transaction
             .query_row(
                 r#"SELECT COUNT(*) FROM managed_worktrees
@@ -1299,6 +1396,14 @@ fn validate_task(task: &XiaoTaskDocument) -> Result<(), String> {
 }
 
 fn prepare_task_for_save(task: &mut XiaoTaskDocument) -> Result<(), String> {
+    if task
+        .thread_binding
+        .as_ref()
+        .is_some_and(|binding| binding.persistence == XiaoThreadPersistence::Persistent)
+    {
+        task.thread_binding = None;
+        task.thread_id = None;
+    }
     if task.thread_binding.is_none() {
         task.thread_binding = task.thread_id.take().map(|thread_id| XiaoThreadBinding {
             thread_id,
@@ -1345,7 +1450,12 @@ fn upsert_task(
                 follow_ups_json = excluded.follow_ups_json, archived = excluded.archived,
                 pinned = excluded.pinned, unread = excluded.unread, model = excluded.model,
                 reasoning_effort = excluded.reasoning_effort,
-                thread_binding_json = excluded.thread_binding_json, mode = excluded.mode,
+                thread_binding_json = CASE
+                    WHEN json_extract(tasks.thread_binding_json, '$.persistence') = 'persistent'
+                    THEN tasks.thread_binding_json
+                    ELSE excluded.thread_binding_json
+                END,
+                mode = excluded.mode,
                 approval_policy = excluded.approval_policy, sandbox_mode = excluded.sandbox_mode,
                 goal_json = excluded.goal_json, plan_json = excluded.plan_json"#,
             params![
@@ -2341,10 +2451,34 @@ mod tests {
                     let synchronous: i64 = connection
                         .query_row("PRAGMA synchronous", [], |row| row.get(0))
                         .map_err(|error| error.to_string())?;
+                    let pending_inputs: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pending_inputs'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let runtime_generations: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_generations'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let run_generation_columns: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name IN ('execution_environment_id', 'input_json', 'runtime_generation', 'turn_id', 'cancel_requested')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
                     assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
                     assert_eq!(foreign_keys, 1);
                     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
                     assert_eq!(synchronous, 2);
+                    assert_eq!(pending_inputs, 1);
+                    assert_eq!(runtime_generations, 1);
+                    assert_eq!(run_generation_columns, 5);
                     Ok(())
                 })
                 .unwrap();
@@ -2429,7 +2563,139 @@ mod tests {
                         row.get(0)
                     })
                     .map_err(|error| error.to_string())?;
-                assert_eq!(versions, 2);
+                assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn schema_v2_upgrade_preserves_existing_run_and_backfills_native_queue_fields() {
+        let directory = TestDirectory::new("schema-v2-upgrade");
+        let workspace = directory.path.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        let environment_id;
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO workspaces(
+                        id, workspace_path, active_task_id, show_archived, updated_at
+                     ) VALUES (1, ?1, 'task', 0, 2)"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO tasks(
+                        workspace_id, task_id, position, title, created_at, updated_at,
+                        draft_text, follow_ups_json, archived, pinned, unread, model,
+                        reasoning_effort, thread_binding_json, mode, approval_policy,
+                        sandbox_mode, goal_json, plan_json, timeline_sha256,
+                        timeline_entry_count
+                     ) VALUES (
+                        1, 'task', 0, 'Task', 1, 2, '', '[]', 0, 0, 0,
+                        'gpt-test', 'medium', NULL, 'default', 'on-request',
+                        'workspace-write', NULL, NULL, NULL, 0
+                     )"#,
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            environment_id = connection
+                .query_row("SELECT id FROM execution_environments", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO runs(
+                        id, workspace_id, task_id, idempotency_key, status,
+                        agent_outcome, verification_outcome, execution_root,
+                        queued_at, version
+                     ) VALUES (
+                        'legacy-run', 1, 'task', 'legacy-key', 'queued',
+                        'pending', 'not_requested', ?1, 3, 0
+                     )"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO run_events(
+                        run_id, sequence, timestamp, event_type, safe_payload_json
+                     ) VALUES ('legacy-run', 0, 3, 'legacy.queued', '{}')"#,
+                    [],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let run = repository.get_run("legacy-run").unwrap();
+        assert_eq!(run.execution_environment_id, environment_id);
+        assert!(run.input.is_empty());
+        assert!(run.history.is_empty());
+        assert_eq!(run.prompt, "");
+        assert!(!run.cancel_requested);
+        assert_eq!(
+            repository
+                .allocate_runtime_generation(&environment_id)
+                .unwrap(),
+            1
+        );
+        repository
+            .with_connection(|connection| {
+                let versions: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                let pending_inputs: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pending_inputs'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let event_key: Option<String> = connection
+                    .query_row(
+                        "SELECT event_key FROM run_events WHERE run_id = 'legacy-run'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let foreign_key_errors: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                assert_eq!(pending_inputs, 1);
+                assert_eq!(event_key, None);
+                assert_eq!(foreign_key_errors, 0);
                 Ok(())
             })
             .unwrap();
@@ -2529,6 +2795,29 @@ mod tests {
         assert!(loaded_task.execution_environment_id.is_some());
         assert_eq!(loaded_task.workspace_mode, XiaoWorkspaceMode::Local);
         assert_eq!(loaded_task.managed_worktree_id, None);
+    }
+
+    #[test]
+    fn generic_task_save_cannot_forge_persistent_thread_ownership() {
+        let directory = TestDirectory::new("forged-thread-binding");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let mut forged = task("task", 0);
+        forged.thread_binding = Some(XiaoThreadBinding {
+            thread_id: "foreign-thread".to_owned(),
+            persistence: XiaoThreadPersistence::Persistent,
+            materialized: true,
+            thread_source: Some("xiao-workbench".to_owned()),
+            cli_version: Some("fake".to_owned()),
+        });
+
+        repository
+            .save_workspace(update(document(&workspace, vec![forged])))
+            .unwrap();
+
+        assert!(full_workspace(&repository, &workspace).tasks[0]
+            .thread_binding
+            .is_none());
     }
 
     #[test]
@@ -2906,6 +3195,58 @@ mod tests {
     }
 
     #[test]
+    fn active_run_prevents_task_removal() {
+        let directory = TestDirectory::new("active-run-delete");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        repository
+            .with_connection(|connection| {
+                let workspace_id = workspace_id(
+                    connection,
+                    &normalize_workspace_path(&workspace.to_string_lossy()),
+                )?;
+                connection
+                    .execute(
+                        r#"INSERT INTO runs(
+                            id, workspace_id, task_id, idempotency_key, status, agent_outcome,
+                            verification_outcome, execution_root, queued_at, version
+                         ) VALUES ('run', ?1, 'task', 'key', 'queued', 'pending',
+                            'not_requested', ?2, 1, 0)"#,
+                        params![workspace_id, workspace.to_string_lossy()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        let removal = repository.save_workspace(XiaoWorkspaceUpdate {
+            schema_version: XIAO_SCHEMA_VERSION,
+            workspace_path: workspace.to_string_lossy().into_owned(),
+            active_task_id: None,
+            show_archived: false,
+            task_ids: Vec::new(),
+            tasks: Vec::new(),
+        });
+
+        assert!(removal.is_err());
+        assert_eq!(full_workspace(&repository, &workspace).tasks.len(), 1);
+        repository
+            .with_connection(|connection| {
+                let runs: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM runs WHERE id = 'run'", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(runs, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn removing_a_task_cascades_timeline_run_and_events() {
         let directory = TestDirectory::new("cascade-delete");
         let workspace = directory.workspace("workspace");
@@ -2921,7 +3262,7 @@ mod tests {
                         r#"INSERT INTO runs(
                             id, workspace_id, task_id, idempotency_key, status, agent_outcome,
                             verification_outcome, execution_root, queued_at, version
-                         ) VALUES ('run', ?1, 'task', 'key', 'queued', 'pending',
+                         ) VALUES ('run', ?1, 'task', 'key', 'completed', 'completed',
                             'not_requested', ?2, 1, 0)"#,
                         params![workspace_id, workspace.to_string_lossy()],
                     )

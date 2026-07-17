@@ -16,6 +16,7 @@ import {
   type ThreadTokenUsage,
   type TimelineEntry,
 } from "../../../core/models/agent";
+import type { RunSnapshot } from "../../../core/models/run";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
@@ -34,6 +35,7 @@ type TaskWorkspaceProps = {
   taskStateLoading: boolean;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
+  latestRun: RunSnapshot | null;
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
@@ -89,6 +91,7 @@ type TaskWorkspaceProps = {
   onGoalSet: (objective: string, status?: AgentGoal["status"]) => Promise<boolean>;
   onGoalClear: () => Promise<boolean>;
   onInterrupt: () => Promise<void>;
+  onRetryRun: (runId: string) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
@@ -109,6 +112,7 @@ export function TaskWorkspace({
   taskStateLoading,
   timeline,
   runtime,
+  latestRun,
   models,
   selectedModel,
   selectedReasoningEffort,
@@ -161,6 +165,7 @@ export function TaskWorkspace({
   onGoalSet,
   onGoalClear,
   onInterrupt,
+  onRetryRun,
   onResolveApproval,
   onFocusView,
   onToggleArchived,
@@ -301,11 +306,13 @@ export function TaskWorkspace({
         taskArchived={taskArchived}
         workspace={workspace}
         runtime={runtime}
+        latestRun={latestRun}
         contextPercent={contextPercent}
         archiveDisabled={environmentBusy || taskStateLoading || Boolean(taskStateError)}
         canUndo={canUndo}
         undoing={undoing}
         onFocusView={onFocusView}
+        onRetryRun={onRetryRun}
         onToggleArchived={onToggleArchived}
         onUndo={onUndo}
       />

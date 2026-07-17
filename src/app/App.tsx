@@ -904,28 +904,6 @@ export function App() {
     );
   }, []);
 
-  const updateTaskThread = useCallback((taskId: string, threadId: string) => {
-    const threadBinding = {
-      threadId,
-      persistence: "ephemeral" as const,
-      materialized: false,
-      threadSource: "xiao-workbench",
-      cliVersion: null,
-    };
-    setTasks((current) =>
-      current.map((task) =>
-        task.id === taskId
-          ? { ...task, threadId, threadBinding, updatedAt: Date.now(), meta: "Now" }
-          : task,
-      ),
-    );
-    setDraftTask((current) =>
-      current.id === taskId
-        ? { ...current, threadId, threadBinding, updatedAt: Date.now(), meta: "Now" }
-        : current,
-    );
-  }, []);
-
   const updateTaskGoal = useCallback((taskId: string, goal: AgentGoal | null) => {
     setTasks((current) =>
       current.map((task) =>
@@ -978,24 +956,19 @@ export function App() {
   const agent = useAgentRuntime(
     workspace.path,
     activeTask.id,
-    `${activeTask.workspaceMode}:${activeTask.managedWorktreeId ?? activeTask.executionEnvironmentId ?? "default"}`,
     activeTask.title,
     activeTask.timeline,
+    activeTask.timelineComplete,
     activeTask.model,
-    activeTask.reasoningEffort,
     preferences.fastMode,
-    activeTask.mode,
     activeTask.approvalPolicy,
-    activeTask.sandboxMode,
-    activeTask.goal,
     updateTaskTimeline,
     updateTaskPlan,
     updateTaskTitle,
-    updateTaskThread,
     updateTaskGoal,
     markTaskFinished,
     refresh,
-    !codexUpdate.updating,
+    !codexUpdate.updating && Boolean(executionTaskId),
   );
   const titleBarTabs = [
     ...openTaskIds.flatMap((taskId) => {
@@ -1003,7 +976,7 @@ export function App() {
       return task ? [{
         id: task.id,
         title: task.title,
-        working: agent.runtime.phase === "working" && agent.runtime.taskId === task.id,
+        working: agent.isTaskWorking(task.id),
       }] : [];
     }),
     ...(draftTabOpen ? [{ id: draftTask.id, title: "New task", draft: true, working: false }] : []),
@@ -1192,20 +1165,8 @@ export function App() {
       activeTask.archived ||
       !cleanPrompt
     ) return false;
-    const followUp = {
-      id: crypto.randomUUID(),
-      prompt: cleanPrompt,
-      attachments: attachments.map((attachment) => ({ ...attachment })),
-      createdAt: Date.now(),
-    };
-    const updatedAt = Date.now();
-    setTasks((current) => current.map((task) =>
-      task.id === activeTask.id
-        ? { ...task, followUps: [...task.followUps, followUp], updatedAt, meta: "Now" }
-        : task,
-    ));
     setFailedFollowUpId(null);
-    return true;
+    return agent.submit(cleanPrompt, attachments);
   };
 
   const removeTaskFollowUp = (followUpId: string) => {
@@ -1233,7 +1194,7 @@ export function App() {
     setSendingFollowUpId(followUp.id);
     setFailedFollowUpId(null);
     try {
-      const success = await agent.submit(followUp.prompt, followUp.attachments);
+      const success = await agent.submit(followUp.prompt, followUp.attachments, followUp.id);
       if (!success) {
         setFailedFollowUpId(followUp.id);
         return;
@@ -1252,53 +1213,6 @@ export function App() {
       setSendingFollowUpId((current) => current === followUp.id ? null : current);
     }
   };
-
-  useEffect(() => {
-    const followUp = activeTask.followUps[0];
-    if (
-      !taskStateReady ||
-      !activeTask.timelineComplete ||
-      activeEnvironmentBusy ||
-      activeTask.archived ||
-      !followUp ||
-      agent.runtime.phase !== "ready" ||
-      agent.undoing ||
-      sendingFollowUpId ||
-      failedFollowUpId === followUp.id
-    ) return;
-
-    const taskId = activeTask.id;
-    setSendingFollowUpId(followUp.id);
-    void agent.submit(followUp.prompt, followUp.attachments).then((success) => {
-      if (!success) {
-        setFailedFollowUpId(followUp.id);
-        return;
-      }
-      setTasks((current) => current.map((task) =>
-        task.id === taskId
-          ? {
-              ...task,
-              followUps: task.followUps.filter((item) => item.id !== followUp.id),
-              updatedAt: Date.now(),
-              meta: "Now",
-            }
-          : task,
-      ));
-      setFailedFollowUpId((current) => current === followUp.id ? null : current);
-    }).finally(() => setSendingFollowUpId((current) => current === followUp.id ? null : current));
-  }, [
-    activeTask.archived,
-    activeTask.followUps,
-    activeTask.id,
-    activeTask.timelineComplete,
-    activeEnvironmentBusy,
-    agent.runtime.phase,
-    agent.submit,
-    agent.undoing,
-    failedFollowUpId,
-    sendingFollowUpId,
-    taskStateReady,
-  ]);
 
   const patchActiveTask = (patch: Partial<WorkbenchTask>) => {
     setTasks((current) =>
@@ -1484,11 +1398,10 @@ export function App() {
       scheduled.taskId !== activeTask.id ||
       !activeTask.timelineComplete ||
       activeEnvironmentBusy ||
-      agent.runtime.phase !== "ready" ||
       scheduleSubmittingRef.current === scheduled.id
     ) return;
     scheduleSubmittingRef.current = scheduled.id;
-    void agent.submit(scheduled.prompt, []).then((success) => {
+    void submitTask(scheduled.prompt, []).then((success) => {
       if (!success) {
         setScheduledTasks((current) => current.map((task) => task.id === scheduled.id ? { ...task, status: "failed" } : task));
         setPendingScheduledPrompt(null);
@@ -1516,7 +1429,7 @@ export function App() {
     if (
       !taskStateReady ||
       environmentBusyTaskId === taskId ||
-      (agent.runtime.phase === "working" && agent.runtime.taskId === taskId)
+      agent.isTaskWorking(taskId)
     ) return;
     const updatedAt = Date.now();
     setTasks((current) => {
@@ -1683,7 +1596,7 @@ export function App() {
   };
 
   const removeProject = (path: string) => {
-    if (workspace.path === path && agent.runtime.phase === "working") return;
+    if (workspace.path === path && agent.hasActiveRuns) return;
     const fallback = projects.find((project) => project.path !== path);
     updateProjectPreference(path, { hidden: true });
     if (workspace.path === path && fallback) {
@@ -1784,7 +1697,7 @@ export function App() {
   };
 
   const addProject = async () => {
-    if (agent.runtime.phase === "working") return;
+    if (agent.hasActiveRuns) return;
     if (!isTauriHost()) return;
     const selected = await open({ directory: true, multiple: false, title: "Add a project to Xiao" });
     if (typeof selected !== "string") return;
@@ -1858,7 +1771,7 @@ export function App() {
             update={codexUpdate.status?.updateAvailable && codexUpdate.status.canUpdate ? {
               version: codexUpdate.status.latestVersion,
               installing: codexUpdate.updating,
-              disabled: codexUpdate.updating || agent.runtime.phase === "working" || agent.runtime.phase === "starting",
+              disabled: codexUpdate.updating || agent.hasActiveRuns || agent.runtime.phase === "starting",
               onInstall: () => {
                 void codexUpdate.install().then((result) => {
                   if (result) void refresh();
@@ -1875,7 +1788,7 @@ export function App() {
             tasks={tasks}
             activeTaskId={selectedTask?.id ?? ""}
             workspace={workspace}
-            runtime={agent.runtime}
+            workingTaskIds={agent.workingTaskIds}
             account={agent.account}
             profile={profile}
             canOpenProjects={isTauriHost()}
@@ -1897,7 +1810,7 @@ export function App() {
             }}
             onAddProject={() => void addProject()}
             onSelectProject={(path) => {
-              if (agent.runtime.phase === "working") return;
+              if (agent.hasActiveRuns) return;
               setActiveProjectPath(path);
               setActivePage("tasks");
               setFocusPanelOpen(false);
@@ -1971,6 +1884,7 @@ export function App() {
               taskStateLoading={activeTaskHistoryLoading}
               timeline={agent.timeline}
               runtime={agent.runtime}
+              latestRun={agent.latestRun}
               models={visibleModels}
               selectedModel={activeTask.model}
               selectedReasoningEffort={activeTask.reasoningEffort}
@@ -2026,6 +1940,7 @@ export function App() {
               onGoalSet={agent.setGoal}
               onGoalClear={agent.clearGoal}
               onInterrupt={agent.interrupt}
+              onRetryRun={(runId) => { void agent.retryRun(runId); }}
               onSubmit={submitTask}
               onQueueFollowUp={queueTaskFollowUp}
               onRemoveFollowUp={removeTaskFollowUp}

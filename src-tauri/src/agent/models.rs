@@ -57,14 +57,7 @@ pub struct AgentReasoningEffortOption {
     pub description: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSessionStart {
-    pub thread_id: String,
-    pub model: String,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 pub struct XiaoHistoryItem {
     pub role: String,
     pub text: String,
@@ -101,10 +94,23 @@ pub(crate) struct ModelRecord {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ThreadStartResponse {
     pub thread: ThreadRecord,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ThreadRecord {
     pub id: String,
+    #[serde(default)]
+    pub ephemeral: Option<bool>,
+    #[serde(default)]
+    pub thread_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PersistentAgentSession {
+    pub thread_id: String,
+    pub model: Option<String>,
+    pub materialized: bool,
 }
