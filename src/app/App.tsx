@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -9,17 +10,20 @@ import type {
   AgentTurnOutcome,
   TimelineEntry,
 } from "../core/models/agent";
+import type { RoutineOpenRunTarget, RoutineSummary } from "../core/models/routine";
 import type {
   XiaoProjectSummary,
   XiaoWorkspaceDocument,
   XiaoWorkspaceMode,
   XiaoWorkspaceUpdate,
 } from "../core/models/xiao";
+import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import { titleFromPrompt, useAgentRuntime } from "../features/agent/hooks/useAgentRuntime";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
-import type { ScheduledTask } from "../features/focus-rail/components/SchedulePanel";
+import type { RoutineDraft } from "../features/focus-rail/components/SchedulePanel";
 import type { FocusView } from "../features/focus-rail/focus-rail.types";
+import { useRoutines } from "../features/focus-rail/hooks/useRoutines";
 import { ProfilePage } from "../features/profile/components/ProfilePage";
 import { useLocalProfile } from "../features/profile/hooks/useLocalProfile";
 import {
@@ -71,25 +75,12 @@ type ProjectPreferences = Record<string, ProjectPreference>;
 
 const projectPreferencesStorageKey = "xiao.projects.v1";
 const activeProjectStorageKey = "xiao.active-project.v1";
-const scheduleStorageKey = (workspacePath: string) => `xiao.schedules.v1:${workspacePath}`;
+const comparableWorkspacePath = (path: string) =>
+  path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase();
 
 const readActiveProjectPath = () => {
   try { return window.localStorage.getItem(activeProjectStorageKey) || undefined; }
   catch { return undefined; }
-};
-
-const readScheduledTasks = (workspacePath: string): ScheduledTask[] => {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(scheduleStorageKey(workspacePath)) ?? "[]") as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is ScheduledTask => {
-          if (!item || typeof item !== "object") return false;
-          const task = item as Partial<ScheduledTask>;
-          return typeof task.id === "string" && typeof task.prompt === "string" &&
-            typeof task.runAt === "number" && ["pending", "running", "completed", "failed"].includes(task.status ?? "");
-        }).map((task) => task.status === "running" ? { ...task, status: "failed" as const } : task)
-      : [];
-  } catch { return []; }
 };
 
 const readProjectPreferences = (): ProjectPreferences => {
@@ -547,12 +538,10 @@ export function App() {
   const [archivedTasks, setArchivedTasks] = useState<ArchivedTaskItem[]>([]);
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
   const [archivedTasksError, setArchivedTasksError] = useState<string | null>(null);
-  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
   const [reviewContextByTask, setReviewContextByTask] = useState<Record<string, AgentAttachment[]>>({});
   const [restoredAttachmentsByTask, setRestoredAttachmentsByTask] = useState<Record<string, AgentAttachment[]>>({});
-  const [scheduleWorkspacePath, setScheduleWorkspacePath] = useState("");
-  const [pendingScheduledPrompt, setPendingScheduledPrompt] = useState<{ id: string; taskId: string; prompt: string } | null>(null);
-  const scheduleSubmittingRef = useRef<string | null>(null);
+  const [routineOpenTarget, setRoutineOpenTarget] = useState<RoutineOpenRunTarget | null>(null);
+  const handledRoutineRunRef = useRef<string | null>(null);
   const [sendingFollowUpId, setSendingFollowUpId] = useState<string | null>(null);
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
@@ -566,19 +555,35 @@ export function App() {
     refresh,
     loadDirectory,
   } = useWorkspace(activeProjectPath, executionTaskId);
+  const routineController = useRoutines(workspace.path);
   const activeTaskHistoryLoading = Boolean(
     selectedTask && !selectedTask.timelineComplete && !taskHistoryError,
   );
   const activeEnvironmentBusy = environmentBusyTaskId === activeTask.id;
   const taskStateError = taskLoadError ?? taskHistoryError ?? taskSaveError;
   const pendingReviewContext = reviewContextByTask[activeTask.id] ?? [];
+  const dangerousRoutineIds = new Set(
+    routineController.routines
+      .filter((routine) =>
+        routine.sandboxMode === "danger-full-access" ||
+        tasks.find((task) => task.id === routine.taskId)?.sandboxMode === "danger-full-access",
+      )
+      .map((routine) => routine.id),
+  );
   const focusedLaunch =
     taskStateReady &&
     taskWorkspacePath === workspace.path &&
     activePage === "tasks" &&
+    routineOpenTarget?.taskId !== activeTask.id &&
     (!selectedTask || !selectedTask.archived) &&
     activeTask.timelineComplete &&
     activeTask.timeline.length === 0;
+  if (taskStateReady && taskWorkspacePath === workspace.path) {
+    latestTaskStateRef.current = {
+      path: workspace.path,
+      state: { tasks, activeTaskId, showArchived: false },
+    };
+  }
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebarOnNarrow = useCallback(() => {
@@ -653,6 +658,46 @@ export function App() {
     try { window.localStorage.setItem(activeProjectStorageKey, activeProjectPath); }
     catch { /* The current session still keeps the selected project. */ }
   }, [activeProjectPath]);
+
+  useEffect(() => {
+    if (!isTauriHost()) return;
+    let disposed = false;
+    let removeListener: (() => void) | null = null;
+    void listen<RoutineOpenRunTarget>("xiao://routine-open-run", (event) => {
+      const target = event.payload;
+      handledRoutineRunRef.current = null;
+      setRoutineOpenTarget(target);
+      setActiveProjectPath(target.workspacePath);
+      setActivePage("tasks");
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else removeListener = unlisten;
+    }).catch((reason) => {
+      if (!disposed) console.error("Could not register the routine deep-link listener.", reason);
+    });
+    return () => {
+      disposed = true;
+      removeListener?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !routineOpenTarget ||
+      handledRoutineRunRef.current === routineOpenTarget.runId ||
+      !taskStateReady ||
+      comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(routineOpenTarget.workspacePath) ||
+      !tasks.some((task) => task.id === routineOpenTarget.taskId)
+    ) return;
+    handledRoutineRunRef.current = routineOpenTarget.runId;
+    setActiveTaskId(routineOpenTarget.taskId);
+    setOpenTaskIds((current) => current.includes(routineOpenTarget.taskId)
+      ? current
+      : [...current, routineOpenTarget.taskId]);
+    setActivePage("tasks");
+    setFocusView("schedule");
+    setFocusPanelOpen(true);
+  }, [routineOpenTarget, taskStateReady, taskWorkspacePath, tasks]);
 
   useEffect(() => {
     if (!isTauriHost()) return;
@@ -787,20 +832,6 @@ export function App() {
   ]);
 
   useEffect(() => {
-    if (loading || scheduleWorkspacePath === workspace.path) return;
-    setScheduledTasks(readScheduledTasks(workspace.path));
-    setScheduleWorkspacePath(workspace.path);
-    setPendingScheduledPrompt(null);
-    scheduleSubmittingRef.current = null;
-  }, [loading, scheduleWorkspacePath, workspace.path]);
-
-  useEffect(() => {
-    if (!scheduleWorkspacePath || scheduleWorkspacePath !== workspace.path) return;
-    try { window.localStorage.setItem(scheduleStorageKey(workspace.path), JSON.stringify(scheduledTasks)); }
-    catch { /* Scheduling remains available for the current app session. */ }
-  }, [scheduleWorkspacePath, scheduledTasks, workspace.path]);
-
-  useEffect(() => {
     if (!taskStateReady || workspace.path !== taskWorkspacePath) return;
     const state = { tasks, activeTaskId, showArchived: false };
     latestTaskStateRef.current = { path: workspace.path, state };
@@ -917,24 +948,11 @@ export function App() {
 
   const markTaskFinished = useCallback(
     (taskId: string, outcome: AgentTurnOutcome) => {
-      const scheduled = pendingScheduledPrompt;
-      if (scheduled?.taskId === taskId) {
-        setScheduledTasks((current) => current.map((task) =>
-          task.id === scheduled.id
-            ? { ...task, status: outcome === "completed" ? "completed" : "failed" }
-            : task,
-        ));
-        setPendingScheduledPrompt(null);
-        scheduleSubmittingRef.current = null;
-        if (outcome === "completed" && preferences.notifyCompletions && "Notification" in window && Notification.permission === "granted") {
-          new Notification("Xiao finished a scheduled task", { body: scheduled.prompt });
-        }
-      }
       const finished = tasks.find((task) => task.id === taskId);
       if (
         outcome === "completed" &&
-        scheduled?.taskId !== taskId &&
         finished &&
+        !routineController.routines.some((routine) => routine.taskId === taskId) &&
         taskId !== activeTaskId &&
         preferences.notifyCompletions &&
         "Notification" in window &&
@@ -950,7 +968,7 @@ export function App() {
         ),
       );
     },
-    [activeTaskId, pendingScheduledPrompt, preferences.notifyCompletions, tasks],
+    [activeTaskId, preferences.notifyCompletions, routineController.routines, tasks],
   );
 
   const agent = useAgentRuntime(
@@ -1378,51 +1396,83 @@ export function App() {
     setFocusPanelOpen(false);
   };
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (pendingScheduledPrompt || !taskStateReady) return;
-      const due = scheduledTasks.find((task) => task.status === "pending" && task.runAt <= Date.now());
-      if (!due) return;
-      const taskId = createTask(titleFromPrompt(due.prompt));
-      if (!taskId) return;
-      setScheduledTasks((current) => current.map((task) => task.id === due.id ? { ...task, status: "running" } : task));
-      setPendingScheduledPrompt({ id: due.id, taskId, prompt: due.prompt });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [pendingScheduledPrompt, scheduledTasks, taskStateReady]);
+  const applyRoutineBinding = (routine: RoutineSummary) => {
+    setTasks((current) => current.map((task) => task.id === routine.taskId ? {
+      ...task,
+      title: `Routine: ${routine.title}`,
+      updatedAt: Date.now(),
+      meta: "Now",
+      executionEnvironmentId: routine.executionEnvironmentId,
+      workspaceMode: routine.workspaceMode,
+      managedWorktreeId: routine.managedWorktreeId,
+    } : task));
+  };
 
-  useEffect(() => {
-    const scheduled = pendingScheduledPrompt;
-    if (
-      !scheduled ||
-      scheduled.taskId !== activeTask.id ||
-      !activeTask.timelineComplete ||
-      activeEnvironmentBusy ||
-      scheduleSubmittingRef.current === scheduled.id
-    ) return;
-    scheduleSubmittingRef.current = scheduled.id;
-    void submitTask(scheduled.prompt, []).then((success) => {
-      if (!success) {
-        setScheduledTasks((current) => current.map((task) => task.id === scheduled.id ? { ...task, status: "failed" } : task));
-        setPendingScheduledPrompt(null);
-        scheduleSubmittingRef.current = null;
-        if (preferences.notifyErrors && "Notification" in window && Notification.permission === "granted") {
-          new Notification("Xiao could not start a scheduled task", { body: scheduled.prompt });
+  const createRoutine = async (draft: RoutineDraft) => {
+    if (!isTauriHost() || !taskStateReady || taskWorkspacePath !== workspace.path) {
+      throw new Error("The workspace must finish loading before a routine can be created.");
+    }
+    const taskTitle = draft.title || titleFromPrompt(draft.prompt);
+    const routineTask: WorkbenchTask = {
+      ...createDraftTask(preferences.taskRunDefaults),
+      title: `Routine: ${taskTitle}`,
+    };
+    const nextTasks = [routineTask, ...tasks];
+    setTasks(nextTasks);
+    await persistTaskState(workspace.path, {
+      tasks: nextTasks,
+      activeTaskId,
+      showArchived: false,
+    });
+    try {
+      const routineModel = routineTask.model
+        ? agent.models.find((model) => model.model === routineTask.model)
+        : agent.models.find((model) => model.isDefault);
+      const routine = await routineController.create({
+        projectPath: workspace.path,
+        taskId: routineTask.id,
+        ...draft,
+        serviceTier: serviceTierForFastMode(routineModel, preferences.fastMode),
+      });
+      applyRoutineBinding(routine);
+    } catch (reason) {
+      const latest = latestTaskStateRef.current;
+      if (latest?.path === workspace.path) {
+        const rollbackState = {
+          ...latest.state,
+          tasks: latest.state.tasks.filter((task) => task.id !== routineTask.id),
+        };
+        try {
+          await persistTaskState(workspace.path, rollbackState);
+          setTasks((current) => current.filter((task) => task.id !== routineTask.id));
+        } catch {
+          // Keep the task visible if native ownership prevents safe rollback.
         }
       }
-    });
-  }, [
-    activeTask.id,
-    activeTask.timelineComplete,
-    activeEnvironmentBusy,
-    agent,
-    pendingScheduledPrompt,
-    preferences.notifyErrors,
-  ]);
+      throw reason;
+    }
+  };
 
-  const scheduleTask = (prompt: string, runAt: number) => {
-    setScheduledTasks((current) => [...current, { id: crypto.randomUUID(), prompt, runAt, status: "pending" }]);
-    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
+  const updateRoutine = async (routineId: string, draft: RoutineDraft) => {
+    if (taskStateReady && taskWorkspacePath === workspace.path) {
+      await persistTaskState(workspace.path, {
+        tasks,
+        activeTaskId,
+        showArchived: false,
+      });
+    }
+    const currentRoutine = routineController.routines.find((routine) => routine.id === routineId);
+    const routineTask = tasks.find((task) => task.id === currentRoutine?.taskId);
+    const modelId = routineTask ? routineTask.model : currentRoutine?.model;
+    const routineModel = modelId
+      ? agent.models.find((model) => model.model === modelId)
+      : agent.models.find((model) => model.isDefault);
+    const routine = await routineController.update({
+      routineId,
+      ...draft,
+      serviceTier: serviceTierForFastMode(routineModel, preferences.fastMode),
+    });
+    applyRoutineBinding(routine);
   };
 
   const setTaskArchived = (taskId: string, archived: boolean) => {
@@ -1988,9 +2038,25 @@ export function App() {
               error={workspaceError}
               onRefresh={refresh}
               onLoadDirectory={loadDirectory}
-              scheduledTasks={scheduledTasks}
-              onScheduleTask={scheduleTask}
-              onRemoveScheduledTask={(id) => setScheduledTasks((current) => current.filter((task) => task.id !== id))}
+              routines={routineController.routines}
+              routinesLoading={routineController.loading}
+              routinesError={routineController.error}
+              routineCreating={routineController.creating}
+              routineBusyIds={routineController.busyIds}
+              routineOpenRunId={routineOpenTarget?.runId ?? null}
+              nativeRoutinesAvailable={isTauriHost()}
+              dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}
+              dangerousRoutineIds={dangerousRoutineIds}
+              onCreateRoutine={createRoutine}
+              onUpdateRoutine={updateRoutine}
+              onSetRoutineEnabled={async (routineId, enabled) => {
+                await routineController.setEnabled(routineId, enabled);
+              }}
+              onRunRoutineNow={async (routineId) => {
+                await routineController.runNow(routineId);
+              }}
+              onDeleteRoutine={routineController.remove}
+              onClearRoutineError={routineController.clearError}
               reviewContext={pendingReviewContext}
               onStageReviewContext={stageReviewContext}
               onRemoveReviewContext={removeReviewContext}

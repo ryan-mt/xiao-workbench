@@ -28,6 +28,11 @@ import type {
   RunEventPage,
   RunSnapshot,
 } from "../models/run";
+import type {
+  CreateRoutineRequest,
+  RoutineSummary,
+  UpdateRoutineRequest,
+} from "../models/routine";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -119,6 +124,30 @@ export const nativeBridge = {
 
   resolveXiaoRunInput(pendingInputId: string, result: Record<string, unknown>) {
     return invoke<RunSnapshot>("resolve_xiao_run_input", { pendingInputId, result });
+  },
+
+  createXiaoRoutine(request: CreateRoutineRequest) {
+    return invoke<RoutineSummary>("create_xiao_routine", { request });
+  },
+
+  updateXiaoRoutine(request: UpdateRoutineRequest) {
+    return invoke<RoutineSummary>("update_xiao_routine", { request });
+  },
+
+  listXiaoRoutines(workspacePath: string) {
+    return invoke<RoutineSummary[]>("list_xiao_routines", { workspacePath });
+  },
+
+  setXiaoRoutineEnabled(routineId: string, enabled: boolean) {
+    return invoke<RoutineSummary>("set_xiao_routine_enabled", { routineId, enabled });
+  },
+
+  runXiaoRoutineNow(routineId: string, idempotencyKey: string) {
+    return invoke<RoutineSummary>("run_xiao_routine_now", { routineId, idempotencyKey });
+  },
+
+  deleteXiaoRoutine(routineId: string) {
+    return invoke<void>("delete_xiao_routine", { routineId });
   },
 
   readWorkspaceFile(projectPath: string, taskId: string | null, relativePath: string) {

@@ -44,7 +44,7 @@ SELECT
     r.reasoning_effort, r.service_tier, r.mode, r.approval_policy,
     r.sandbox_mode, r.goal_json, r.thread_id, r.thread_source, r.cli_version,
     r.runtime_generation, r.turn_id, r.cancel_requested, r.queued_at,
-    r.started_at, r.finished_at, r.version
+    r.started_at, r.finished_at, r.version, r.routine_occurrence_id
 FROM runs r
 JOIN workspaces w ON w.id = r.workspace_id
 "#;
@@ -180,104 +180,113 @@ impl XiaoRepository {
     }
 
     pub(crate) fn enqueue_run(&self, run: NewRun) -> Result<RunMutation, String> {
-        validate_new_run(&run)?;
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| format!("Could not start Xiao run enqueue: {error}"))?;
-            if let Some(existing) = load_run_by_idempotency(&transaction, &run.idempotency_key)? {
-                if existing.workspace_id != run.workspace_id || existing.task_id != run.task_id {
-                    return Err("The Xiao run idempotency key belongs to another task.".to_owned());
-                }
-                transaction
-                    .commit()
-                    .map_err(|error| format!("Could not finish idempotent run enqueue: {error}"))?;
-                return Ok(RunMutation {
-                    run: existing,
-                    event: None,
-                });
-            }
-
-            let binding = transaction
-                .query_row(
-                    r#"SELECT t.execution_environment_id, t.managed_worktree_id
-                     FROM tasks t WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
-                    params![run.workspace_id, run.task_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(|error| format!("Could not validate Xiao run task: {error}"))?
-                .ok_or("The Xiao run task no longer exists.")?;
-            if binding.0.as_deref() != Some(run.execution_environment_id.as_str())
-                || binding.1 != run.managed_worktree_id
-            {
-                return Err("The Xiao run execution binding changed before enqueue.".to_owned());
-            }
-
-            let input_json = json_string(&run.input, "run input")?;
-            let history_json = json_string(&run.history, "run history")?;
-            let goal_json = optional_json_string(run.goal.as_ref(), "run goal")?;
-            transaction
-                .execute(
-                    r#"INSERT INTO runs(
-                        id, workspace_id, task_id, idempotency_key, parent_run_id,
-                        candidate_group_id, status, agent_outcome, verification_outcome,
-                        execution_root, queued_at, started_at, finished_at, version,
-                        execution_environment_id, managed_worktree_id, input_json,
-                        history_json, prompt, model, reasoning_effort, service_tier,
-                        mode, approval_policy, sandbox_mode, goal_json, thread_id,
-                        thread_source, cli_version, runtime_generation, turn_id,
-                        cancel_requested
-                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, 'queued', 'pending',
-                        'not_requested', ?7, ?8, NULL, NULL, 0, ?9, ?10, ?11,
-                        ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                        NULL, NULL, NULL, NULL, NULL, 0
-                     )"#,
-                    params![
-                        run.id,
-                        run.workspace_id,
-                        run.task_id,
-                        run.idempotency_key,
-                        run.parent_run_id,
-                        run.candidate_group_id,
-                        run.execution_root,
-                        run.queued_at,
-                        run.execution_environment_id,
-                        run.managed_worktree_id,
-                        input_json,
-                        history_json,
-                        run.prompt,
-                        run.model,
-                        run.reasoning_effort,
-                        run.service_tier,
-                        run.mode,
-                        run.approval_policy,
-                        run.sandbox_mode,
-                        goal_json,
-                    ],
-                )
-                .map_err(|error| format!("Could not enqueue Xiao run: {error}"))?;
-            let event = append_event(
-                &transaction,
-                &run.id,
-                "run.queued",
-                Some("lifecycle:queued"),
-                &json!({ "idempotencyKey": run.idempotency_key }),
-            )?;
-            let record = load_run(&transaction, &run.id)?;
+            let mutation = Self::enqueue_run_in_transaction(&transaction, &run)?;
             transaction
                 .commit()
                 .map_err(|error| format!("Could not commit Xiao run enqueue: {error}"))?;
-            Ok(RunMutation {
-                run: record,
-                event: Some(event),
-            })
+            Ok(mutation)
+        })
+    }
+
+    pub(crate) fn enqueue_run_in_transaction(
+        transaction: &Transaction<'_>,
+        run: &NewRun,
+    ) -> Result<RunMutation, String> {
+        validate_new_run(run)?;
+        if let Some(existing) = load_run_by_idempotency(transaction, &run.idempotency_key)? {
+            if existing.workspace_id != run.workspace_id || existing.task_id != run.task_id {
+                return Err("The Xiao run idempotency key belongs to another task.".to_owned());
+            }
+            return Ok(RunMutation {
+                run: existing,
+                event: None,
+            });
+        }
+
+        let binding = transaction
+            .query_row(
+                r#"SELECT t.execution_environment_id, t.managed_worktree_id
+                 FROM tasks t WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
+                params![run.workspace_id, run.task_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Could not validate Xiao run task: {error}"))?
+            .ok_or("The Xiao run task no longer exists.")?;
+        if binding.0.as_deref() != Some(run.execution_environment_id.as_str())
+            || binding.1 != run.managed_worktree_id
+        {
+            return Err("The Xiao run execution binding changed before enqueue.".to_owned());
+        }
+
+        let input_json = json_string(&run.input, "run input")?;
+        let history_json = json_string(&run.history, "run history")?;
+        let goal_json = optional_json_string(run.goal.as_ref(), "run goal")?;
+        transaction
+            .execute(
+                r#"INSERT INTO runs(
+                    id, workspace_id, task_id, idempotency_key, parent_run_id,
+                    candidate_group_id, status, agent_outcome, verification_outcome,
+                    execution_root, queued_at, started_at, finished_at, version,
+                    execution_environment_id, managed_worktree_id, input_json,
+                    history_json, prompt, model, reasoning_effort, service_tier,
+                    mode, approval_policy, sandbox_mode, goal_json, thread_id,
+                    thread_source, cli_version, runtime_generation, turn_id,
+                    cancel_requested, routine_occurrence_id
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, 'queued', 'pending',
+                    'not_requested', ?7, ?8, NULL, NULL, 0, ?9, ?10, ?11,
+                    ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+                    NULL, NULL, NULL, NULL, NULL, 0, ?21
+                 )"#,
+                params![
+                    run.id,
+                    run.workspace_id,
+                    run.task_id,
+                    run.idempotency_key,
+                    run.parent_run_id,
+                    run.candidate_group_id,
+                    run.execution_root,
+                    run.queued_at,
+                    run.execution_environment_id,
+                    run.managed_worktree_id,
+                    input_json,
+                    history_json,
+                    run.prompt,
+                    run.model,
+                    run.reasoning_effort,
+                    run.service_tier,
+                    run.mode,
+                    run.approval_policy,
+                    run.sandbox_mode,
+                    goal_json,
+                    run.routine_occurrence_id,
+                ],
+            )
+            .map_err(|error| format!("Could not enqueue Xiao run: {error}"))?;
+        let event = append_event(
+            transaction,
+            &run.id,
+            "run.queued",
+            Some("lifecycle:queued"),
+            &json!({
+                "idempotencyKey": run.idempotency_key,
+                "routineOccurrenceId": run.routine_occurrence_id,
+            }),
+        )?;
+        let record = load_run(transaction, &run.id)?;
+        Ok(RunMutation {
+            run: record,
+            event: Some(event),
         })
     }
 
@@ -1135,14 +1144,14 @@ impl XiaoRepository {
                         history_json, prompt, model, reasoning_effort, service_tier,
                         mode, approval_policy, sandbox_mode, goal_json, thread_id,
                         thread_source, cli_version, runtime_generation, turn_id,
-                        cancel_requested
+                        cancel_requested, routine_occurrence_id
                      ) SELECT
                         ?1, workspace_id, task_id, ?2, id, candidate_group_id,
                         'queued', 'pending', 'not_requested', execution_root, ?3,
                         NULL, NULL, 0, execution_environment_id, managed_worktree_id,
                         input_json, history_json, prompt, model, reasoning_effort,
                         service_tier, mode, approval_policy, sandbox_mode, goal_json,
-                        NULL, NULL, NULL, NULL, NULL, 0
+                        NULL, NULL, NULL, NULL, NULL, 0, NULL
                      FROM runs WHERE id = ?4"#,
                     params![id, idempotency_key, now_millis()?, source_run_id],
                 )
@@ -1291,6 +1300,10 @@ fn validate_new_run(run: &NewRun) -> Result<(), String> {
     if run.id.len() > MAX_RUN_IDENTITY_BYTES
         || run.task_id.len() > MAX_RUN_IDENTITY_BYTES
         || run.idempotency_key.len() > MAX_RUN_IDENTITY_BYTES
+        || run
+            .routine_occurrence_id
+            .as_ref()
+            .is_some_and(|id| id.len() > MAX_RUN_IDENTITY_BYTES)
         || run.execution_environment_id.len() > MAX_RUN_IDENTITY_BYTES
     {
         return Err("Xiao run identity exceeds the 512-byte limit.".to_owned());
@@ -1643,6 +1656,7 @@ struct StoredRunRow {
     started_at: Option<i64>,
     finished_at: Option<i64>,
     version: i64,
+    routine_occurrence_id: Option<String>,
 }
 
 impl StoredRunRow {
@@ -1689,6 +1703,7 @@ impl StoredRunRow {
             started_at: self.started_at,
             finished_at: self.finished_at,
             version: self.version,
+            routine_occurrence_id: self.routine_occurrence_id,
         })
     }
 }
@@ -1728,6 +1743,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<StoredRunRow> {
         started_at: row.get(30)?,
         finished_at: row.get(31)?,
         version: row.get(32)?,
+        routine_occurrence_id: row.get(33)?,
     })
 }
 
@@ -2007,6 +2023,7 @@ mod tests {
             idempotency_key: key.to_owned(),
             parent_run_id: None,
             candidate_group_id: None,
+            routine_occurrence_id: None,
             execution_environment_id: binding.environment.id,
             execution_root: workspace.to_owned(),
             managed_worktree_id: None,

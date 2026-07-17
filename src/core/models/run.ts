@@ -22,6 +22,7 @@ export type RunSnapshot = {
   idempotencyKey: string;
   parentRunId: string | null;
   candidateGroupId: string | null;
+  routineOccurrenceId: string | null;
   status: RunStatus;
   agentOutcome: RunAgentOutcome;
   verificationOutcome: RunVerificationOutcome;

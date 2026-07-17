@@ -271,6 +271,74 @@ CREATE INDEX pending_inputs_by_generation_open
     ON pending_inputs(runtime_generation, resolved_at, invalidated_at);
 "#;
 
+const MIGRATION_4_SQL: &str = r#"
+CREATE TABLE routines (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('one_shot', 'daily')),
+    timezone TEXT NOT NULL,
+    schedule_payload_json TEXT NOT NULL CHECK (json_valid(schedule_payload_json)),
+    missed_run_policy TEXT NOT NULL CHECK (missed_run_policy IN ('skip', 'run_once')),
+    model TEXT,
+    reasoning_effort TEXT,
+    service_tier TEXT,
+    mode TEXT NOT NULL,
+    approval_policy TEXT NOT NULL,
+    sandbox_mode TEXT NOT NULL,
+    goal_json TEXT CHECK (goal_json IS NULL OR json_valid(goal_json)),
+    execution_environment_id TEXT NOT NULL,
+    execution_root TEXT NOT NULL,
+    managed_worktree_id TEXT,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    next_run_at INTEGER,
+    last_run_at INTEGER,
+    last_error TEXT,
+    isolation_warning TEXT,
+    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE RESTRICT,
+    FOREIGN KEY (execution_environment_id)
+        REFERENCES execution_environments(id),
+    FOREIGN KEY (managed_worktree_id)
+        REFERENCES managed_worktrees(id)
+);
+CREATE INDEX routines_by_workspace_updated
+    ON routines(workspace_id, deleted_at, updated_at DESC);
+CREATE INDEX routines_due
+    ON routines(enabled, next_run_at, id)
+    WHERE deleted_at IS NULL AND enabled = 1 AND next_run_at IS NOT NULL;
+
+CREATE TABLE routine_occurrences (
+    id TEXT PRIMARY KEY,
+    routine_id TEXT NOT NULL,
+    scheduled_for INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('automatic', 'manual')),
+    status TEXT NOT NULL CHECK (status IN (
+        'reserved', 'dispatched', 'skipped', 'cancelled'
+    )),
+    run_id TEXT UNIQUE,
+    last_notification_key TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (routine_id) REFERENCES routines(id) ON DELETE RESTRICT,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL,
+    UNIQUE (routine_id, scheduled_for)
+);
+CREATE INDEX routine_occurrences_by_routine_time
+    ON routine_occurrences(routine_id, scheduled_for DESC, id DESC);
+
+ALTER TABLE runs ADD COLUMN routine_occurrence_id TEXT
+    REFERENCES routine_occurrences(id);
+CREATE UNIQUE INDEX runs_by_routine_occurrence
+    ON runs(routine_occurrence_id) WHERE routine_occurrence_id IS NOT NULL;
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -759,6 +827,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             MIGRATION_2_SQL,
         ),
         (3_i64, "native_durable_run_queue", MIGRATION_3_SQL),
+        (4_i64, "native_durable_routines", MIGRATION_4_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -1262,6 +1331,19 @@ fn apply_workspace_update(
         if active_runs != 0 {
             return Err(format!(
                 "Cancel active Xiao runs before removing task `{existing_id}`."
+            ));
+        }
+        let routine_count: i64 = transaction
+            .query_row(
+                r#"SELECT COUNT(*) FROM routines
+                 WHERE workspace_id = ?1 AND task_id = ?2"#,
+                params![workspace_id, existing_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect task routine ownership: {error}"))?;
+        if routine_count != 0 {
+            return Err(format!(
+                "Task `{existing_id}` cannot be removed because Xiao routine history is attached to it."
             ));
         }
         let owned_worktrees: i64 = transaction
@@ -2472,6 +2554,20 @@ mod tests {
                             |row| row.get(0),
                         )
                         .map_err(|error| error.to_string())?;
+                    let routine_tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('routines', 'routine_occurrences')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let routine_run_column: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'routine_occurrence_id'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
                     assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
                     assert_eq!(foreign_keys, 1);
                     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
@@ -2479,6 +2575,8 @@ mod tests {
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);
                     assert_eq!(run_generation_columns, 5);
+                    assert_eq!(routine_tables, 2);
+                    assert_eq!(routine_run_column, 1);
                     Ok(())
                 })
                 .unwrap();
@@ -2556,6 +2654,87 @@ mod tests {
         );
         assert!(Uuid::parse_str(&binding.workspace_public_id).is_ok());
         assert!(Uuid::parse_str(&binding.environment.id).is_ok());
+        repository
+            .with_connection(|connection| {
+                let versions: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn schema_v3_upgrade_adds_native_routines_once() {
+        let directory = TestDirectory::new("schema-v3-routines-upgrade");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            connection.execute_batch(MIGRATION_3_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (3, 'v3', 3)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .with_connection(|connection| {
+                let versions: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                let routine_tables: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('routines', 'routine_occurrences')",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let routine_run_column: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name = 'routine_occurrence_id'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                assert_eq!(routine_tables, 2);
+                assert_eq!(routine_run_column, 1);
+                Ok(())
+            })
+            .unwrap();
+        drop(repository);
+        let repository = XiaoRepository::open(&directory.path).unwrap();
         repository
             .with_connection(|connection| {
                 let versions: i64 = connection
@@ -2662,6 +2841,7 @@ mod tests {
         assert!(run.history.is_empty());
         assert_eq!(run.prompt, "");
         assert!(!run.cancel_requested);
+        assert_eq!(run.routine_occurrence_id, None);
         assert_eq!(
             repository
                 .allocate_runtime_generation(&environment_id)

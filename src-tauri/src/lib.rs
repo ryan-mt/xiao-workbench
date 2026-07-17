@@ -2,6 +2,7 @@ mod agent;
 mod browser;
 mod execution;
 mod git;
+mod routines;
 mod runs;
 mod system;
 mod terminal;
@@ -25,6 +26,11 @@ use git::commands::{
     add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
     discard_git_checkpoint, finish_git_checkpoint, get_git_branches, get_git_worktrees, mutate_git,
 };
+use routines::commands::{
+    create_xiao_routine, delete_xiao_routine, list_xiao_routines, run_xiao_routine_now,
+    set_xiao_routine_enabled, update_xiao_routine,
+};
+use routines::service::RoutineService;
 use runs::commands::{
     cancel_xiao_run, enqueue_xiao_run, list_xiao_pending_inputs, list_xiao_runs,
     load_xiao_run_events, resolve_xiao_run_input, retry_xiao_run,
@@ -60,6 +66,14 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             #[cfg(debug_assertions)]
@@ -76,7 +90,11 @@ pub fn run() {
             app.manage(XiaoRepository::initialize(app_data_dir));
             app.manage(EnvironmentRuntimeRegistry::default());
             app.manage(RunService::default());
+            app.manage(RoutineService::default());
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            routines::service::configure_tray(app)?;
             app.state::<RunService>().start(app.handle().clone());
+            app.state::<RoutineService>().start(app.handle().clone());
             Ok(())
         })
         .manage(TerminalManager::default())
@@ -104,6 +122,12 @@ pub fn run() {
             cancel_xiao_run,
             retry_xiao_run,
             resolve_xiao_run_input,
+            create_xiao_routine,
+            update_xiao_routine,
+            list_xiao_routines,
+            set_xiao_routine_enabled,
+            run_xiao_routine_now,
+            delete_xiao_routine,
             mutate_git,
             get_git_branches,
             compare_git_branch,

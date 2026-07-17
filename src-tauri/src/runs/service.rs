@@ -13,6 +13,7 @@ use crate::execution::service::resolve_execution_context;
 use crate::git::service::{
     create_workspace_checkpoint, discard_workspace_checkpoint, finish_workspace_checkpoint,
 };
+use crate::routines::service::RoutineService;
 use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
@@ -92,6 +93,11 @@ impl RunService {
         self.notify.notify_one();
     }
 
+    pub(crate) fn publish_enqueued(&self, app: &AppHandle, mutation: &RunMutation) {
+        emit_update(app, mutation, None);
+        self.wake();
+    }
+
     pub fn enqueue(
         &self,
         app: &AppHandle,
@@ -112,6 +118,7 @@ impl RunService {
             idempotency_key: request.idempotency_key,
             parent_run_id: None,
             candidate_group_id: None,
+            routine_occurrence_id: None,
             execution_environment_id: context.environment.id,
             execution_root: context.execution_root,
             managed_worktree_id: context.managed_worktree.map(|worktree| worktree.id),
@@ -1121,6 +1128,9 @@ fn emit_update(
     mutation: &RunMutation,
     pending_input: Option<PendingInputSnapshot>,
 ) {
+    if let Some(service) = app.try_state::<RoutineService>() {
+        service.handle_run_update(app, &mutation.run, pending_input.as_ref());
+    }
     let _ = app.emit(
         "xiao://run-update",
         RunUpdateEnvelope {
@@ -1264,6 +1274,7 @@ mod tests {
             idempotency_key: "key".to_owned(),
             parent_run_id: None,
             candidate_group_id: None,
+            routine_occurrence_id: None,
             status: RunStatus::Preparing,
             agent_outcome: super::super::models::AgentOutcome::Pending,
             verification_outcome: super::super::models::VerificationOutcome::NotRequested,

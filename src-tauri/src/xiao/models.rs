@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 3;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

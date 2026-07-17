@@ -26,6 +26,7 @@ const run = (patch: Partial<RunSnapshot> = {}): RunSnapshot => ({
   idempotencyKey: "key-a",
   parentRunId: null,
   candidateGroupId: null,
+  routineOccurrenceId: null,
   status: "queued",
   agentOutcome: "pending",
   verificationOutcome: "not_requested",
