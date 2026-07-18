@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::models::XiaoHistoryItem;
+use crate::verification::models::{AcceptanceContractSnapshot, VerificationBaselineState};
 use crate::xiao::models::XiaoThreadBinding;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -54,7 +55,11 @@ impl RunStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted
+            Self::Completed
+                | Self::NeedsAttention
+                | Self::Failed
+                | Self::Cancelled
+                | Self::Interrupted
         )
     }
 }
@@ -173,6 +178,13 @@ pub(crate) struct RunRecord {
     pub parent_run_id: Option<String>,
     pub candidate_group_id: Option<String>,
     pub routine_occurrence_id: Option<String>,
+    pub acceptance_contract_source_version_id: Option<String>,
+    pub acceptance_contract_snapshot: Option<AcceptanceContractSnapshot>,
+    pub acceptance_contract_snapshot_sha256: Option<String>,
+    pub verification_baseline_state: VerificationBaselineState,
+    pub verification_baseline_artifact_id: Option<String>,
+    pub verification_baseline_diagnostic: Option<String>,
+    pub latest_verification_attempt_id: Option<String>,
     pub status: RunStatus,
     pub agent_outcome: AgentOutcome,
     pub verification_outcome: VerificationOutcome,
@@ -211,6 +223,15 @@ impl RunRecord {
             parent_run_id: self.parent_run_id.clone(),
             candidate_group_id: self.candidate_group_id.clone(),
             routine_occurrence_id: self.routine_occurrence_id.clone(),
+            acceptance_contract_source_version_id: self
+                .acceptance_contract_source_version_id
+                .clone(),
+            acceptance_contract_snapshot: self.acceptance_contract_snapshot.clone(),
+            acceptance_contract_snapshot_sha256: self.acceptance_contract_snapshot_sha256.clone(),
+            verification_baseline_state: self.verification_baseline_state,
+            verification_baseline_artifact_id: self.verification_baseline_artifact_id.clone(),
+            verification_baseline_diagnostic: self.verification_baseline_diagnostic.clone(),
+            latest_verification_attempt_id: self.latest_verification_attempt_id.clone(),
             status: self.status,
             agent_outcome: self.agent_outcome,
             verification_outcome: self.verification_outcome,
@@ -248,6 +269,20 @@ pub struct RunSnapshot {
     pub parent_run_id: Option<String>,
     pub candidate_group_id: Option<String>,
     pub routine_occurrence_id: Option<String>,
+    #[serde(default)]
+    pub acceptance_contract_source_version_id: Option<String>,
+    #[serde(default)]
+    pub acceptance_contract_snapshot: Option<AcceptanceContractSnapshot>,
+    #[serde(default)]
+    pub acceptance_contract_snapshot_sha256: Option<String>,
+    #[serde(default)]
+    pub verification_baseline_state: VerificationBaselineState,
+    #[serde(default)]
+    pub verification_baseline_artifact_id: Option<String>,
+    #[serde(default)]
+    pub verification_baseline_diagnostic: Option<String>,
+    #[serde(default)]
+    pub latest_verification_attempt_id: Option<String>,
     pub status: RunStatus,
     pub agent_outcome: AgentOutcome,
     pub verification_outcome: VerificationOutcome,

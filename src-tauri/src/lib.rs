@@ -2,10 +2,12 @@ mod agent;
 mod browser;
 mod execution;
 mod git;
+mod process;
 mod routines;
 mod runs;
 mod system;
 mod terminal;
+mod verification;
 mod workspace;
 mod xiao;
 
@@ -39,6 +41,11 @@ use runs::service::RunService;
 use system::commands::{check_codex_update, get_system_info, update_codex_cli};
 use terminal::commands::{resize_terminal, start_terminal, stop_terminal, write_terminal};
 use terminal::runtime::TerminalManager;
+use verification::commands::{
+    discover_xiao_acceptance_presets, list_xiao_verification_evidence,
+    read_xiao_verification_artifact, rerun_xiao_verification, save_xiao_task_acceptance_contract,
+};
+use verification::service::VerificationService;
 use workspace::commands::{get_workspace_snapshot, list_workspace_files, read_workspace_file};
 use xiao::commands::{
     list_xiao_projects, load_xiao_timeline_page, load_xiao_workspace, open_xiao_project,
@@ -49,7 +56,7 @@ use xiao::repository::XiaoRepository;
 use tauri::Manager;
 
 pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
-    agent::supervisor::run_if_requested()
+    process::run_if_requested()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -90,6 +97,7 @@ pub fn run() {
             app.manage(XiaoRepository::initialize(app_data_dir));
             app.manage(EnvironmentRuntimeRegistry::default());
             app.manage(RunService::default());
+            app.manage(VerificationService::default());
             app.manage(RoutineService::default());
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             routines::service::configure_tray(app)?;
@@ -128,6 +136,11 @@ pub fn run() {
             set_xiao_routine_enabled,
             run_xiao_routine_now,
             delete_xiao_routine,
+            save_xiao_task_acceptance_contract,
+            rerun_xiao_verification,
+            list_xiao_verification_evidence,
+            read_xiao_verification_artifact,
+            discover_xiao_acceptance_presets,
             mutate_git,
             get_git_branches,
             compare_git_branch,

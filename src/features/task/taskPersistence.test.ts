@@ -37,6 +37,7 @@ const task = (): WorkbenchTask => ({
   approvalPolicy: "on-request",
   sandboxMode: "workspace-write",
   goal: null,
+  acceptanceContract: null,
   timeline: [entry("event-3"), entry("event-4")],
   timelineLoaded: true,
   timelineComplete: false,

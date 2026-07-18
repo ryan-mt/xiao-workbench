@@ -164,7 +164,7 @@ impl AgentRuntime {
                 "default_mode_request_user_input",
             ])
             .env("CODEX_SQLITE_HOME", runtime_state_dir);
-        let mut command = super::supervisor::supervise_command(command)?;
+        let mut command = crate::process::supervise_command(command)?;
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

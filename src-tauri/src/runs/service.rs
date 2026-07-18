@@ -14,6 +14,9 @@ use crate::git::service::{
     create_workspace_checkpoint, discard_workspace_checkpoint, finish_workspace_checkpoint,
 };
 use crate::routines::service::RoutineService;
+#[cfg(test)]
+use crate::verification::models::VerificationBaselineState;
+use crate::verification::service::{capture_baseline_if_required, VerificationService};
 use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
@@ -23,8 +26,8 @@ use super::models::{
 use super::repository::{
     bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent, RunMutation,
 };
+use super::RUN_CONCURRENCY_LIMIT;
 
-pub const RUN_CONCURRENCY_LIMIT: usize = 2;
 const THREAD_SOURCE: &str = "xiao-workbench";
 const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
 
@@ -34,6 +37,42 @@ pub struct RunService {
     dispatch: AsyncMutex<()>,
     input_resolutions: Mutex<()>,
     checkpoints: Mutex<HashMap<String, RunCheckpoint>>,
+    preparation_cancellations: Mutex<HashMap<String, PreparationCancellation>>,
+}
+
+#[derive(Clone)]
+struct PreparationCancellation {
+    requested: Arc<AtomicBool>,
+    stopped: Arc<PreparationCompletion>,
+}
+
+#[derive(Default)]
+struct PreparationCompletion {
+    completed: AtomicBool,
+    notify: Notify,
+}
+
+impl PreparationCompletion {
+    fn finish(&self) {
+        if !self.completed.swap(true, Ordering::AcqRel) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    async fn wait(&self) {
+        loop {
+            if self.completed.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.completed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 struct RunCheckpoint {
@@ -49,6 +88,7 @@ impl Default for RunService {
             dispatch: AsyncMutex::new(()),
             input_resolutions: Mutex::new(()),
             checkpoints: Mutex::new(HashMap::new()),
+            preparation_cancellations: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -91,6 +131,80 @@ impl RunService {
 
     pub fn wake(&self) {
         self.notify.notify_one();
+    }
+    fn begin_preparation(&self, run_id: &str) -> Result<Arc<AtomicBool>, String> {
+        let cancellation = PreparationCancellation {
+            requested: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(PreparationCompletion::default()),
+        };
+        let requested = Arc::clone(&cancellation.requested);
+        let replaced = self
+            .preparation_cancellations
+            .lock()
+            .map_err(|error| error.to_string())?
+            .insert(run_id.to_owned(), cancellation);
+        if let Some(replaced) = replaced {
+            replaced.requested.store(true, Ordering::Release);
+            replaced.stopped.finish();
+        }
+        Ok(requested)
+    }
+
+    fn cancel_preparation(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<Arc<PreparationCompletion>>, String> {
+        let cancellation = self
+            .preparation_cancellations
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(run_id)
+            .cloned();
+        if let Some(cancellation) = cancellation {
+            cancellation.requested.store(true, Ordering::Release);
+            return Ok(Some(cancellation.stopped));
+        }
+        Ok(None)
+    }
+
+    fn finish_preparation(&self, run_id: &str, cancellation: &Arc<AtomicBool>) {
+        if let Ok(mut cancellations) = self.preparation_cancellations.lock() {
+            if cancellations
+                .get(run_id)
+                .is_some_and(|current| Arc::ptr_eq(&current.requested, cancellation))
+            {
+                if let Some(finished) = cancellations.remove(run_id) {
+                    finished.stopped.finish();
+                }
+            }
+        }
+    }
+
+    fn finish_preparation_after_error(
+        &self,
+        run_id: &str,
+        cancellation: &Arc<AtomicBool>,
+        settle: impl FnOnce(),
+    ) {
+        let stopped = if let Ok(mut cancellations) = self.preparation_cancellations.lock() {
+            let is_current = cancellations
+                .get(run_id)
+                .is_some_and(|current| Arc::ptr_eq(&current.requested, cancellation));
+            if !is_current {
+                return;
+            }
+            if !cancellation.load(Ordering::Acquire) {
+                settle();
+            }
+            cancellations
+                .remove(run_id)
+                .map(|finished| finished.stopped)
+        } else {
+            None
+        };
+        if let Some(stopped) = stopped {
+            stopped.finish();
+        }
     }
 
     pub(crate) fn publish_enqueued(&self, app: &AppHandle, mutation: &RunMutation) {
@@ -153,18 +267,31 @@ impl RunService {
     }
 
     pub async fn cancel(&self, app: &AppHandle, run_id: &str) -> Result<RunSnapshot, String> {
-        let needs_dispatch_lock = {
+        let current_status = {
             let repository = app.state::<XiaoRepository>();
-            matches!(
-                repository.get_run(run_id)?.status,
-                RunStatus::Queued | RunStatus::Preparing
-            )
+            repository.get_run(run_id)?.status
         };
+        let needs_dispatch_lock =
+            matches!(current_status, RunStatus::Queued | RunStatus::Preparing);
         let _dispatch = if needs_dispatch_lock {
             Some(self.dispatch.lock().await)
         } else {
             None
         };
+        let current_status = if needs_dispatch_lock {
+            let repository = app.state::<XiaoRepository>();
+            repository.get_run(run_id)?.status
+        } else {
+            current_status
+        };
+        let preparation_stop = if current_status == RunStatus::Preparing {
+            self.cancel_preparation(run_id)?
+        } else {
+            None
+        };
+        if let Some(stopped) = preparation_stop {
+            stopped.wait().await;
+        }
         let disposition = {
             let _lifecycle = self
                 .input_resolutions
@@ -180,15 +307,37 @@ impl RunService {
                 self.wake();
                 Ok(snapshot)
             }
-            CancelDisposition::Interrupt { run, event } => {
-                if event.is_none() {
-                    return Ok(run.snapshot());
+            CancelDisposition::Verification { run, event } => {
+                if event.is_some() {
+                    emit_update(
+                        app,
+                        &RunMutation {
+                            run: run.clone(),
+                            event,
+                        },
+                        None,
+                    );
                 }
-                let intent = RunMutation {
-                    run: run.clone(),
-                    event,
-                };
-                emit_update(app, &intent, None);
+                if let Some(stop) = app.state::<VerificationService>().cancel(run_id)? {
+                    stop.wait().await?;
+                }
+                let mutation = app.state::<XiaoRepository>().finish_run_cancel(run_id)?;
+                let snapshot = mutation.run.snapshot();
+                emit_update(app, &mutation, None);
+                self.wake();
+                Ok(snapshot)
+            }
+            CancelDisposition::Interrupt { run, event } => {
+                if event.is_some() {
+                    emit_update(
+                        app,
+                        &RunMutation {
+                            run: run.clone(),
+                            event,
+                        },
+                        None,
+                    );
+                }
                 let environment_id = run.execution_environment_id.clone();
                 let generation = run
                     .runtime_generation
@@ -237,6 +386,20 @@ impl RunService {
                 Ok(snapshot)
             }
         }
+    }
+
+    pub(crate) fn rerun_verification(
+        &self,
+        app: &AppHandle,
+        run_id: &str,
+        request_key: &str,
+    ) -> Result<RunSnapshot, String> {
+        let _lifecycle = self
+            .input_resolutions
+            .lock()
+            .map_err(|error| error.to_string())?;
+        app.state::<VerificationService>()
+            .rerun(app, run_id, request_key)
     }
 
     pub fn retry(
@@ -403,11 +566,46 @@ fn reconcile_startup(app: &AppHandle) {
 }
 
 async fn prepare_claimed_run(app: AppHandle, claimed: RunRecord) {
-    let before_dispatch = prepare_before_turn(&app, &claimed).await;
-    let (attached_run, runtime, session) = match before_dispatch {
-        Ok(prepared) => prepared,
+    let cancellation = match app.state::<RunService>().begin_preparation(&claimed.id) {
+        Ok(cancellation) => cancellation,
         Err(error) => {
-            settle_preparation_failure(&app, &claimed.id, RunStatus::Failed, &error);
+            settle_preparation_failure(&app, &claimed.id, RunStatus::Interrupted, &error);
+            return;
+        }
+    };
+    match app.state::<XiaoRepository>().get_run(&claimed.id) {
+        Ok(run) if run.status == RunStatus::Preparing && !run.cancel_requested => {}
+        Ok(_) => {
+            app.state::<RunService>()
+                .finish_preparation(&claimed.id, &cancellation);
+            return;
+        }
+        Err(error) => {
+            app.state::<RunService>().finish_preparation_after_error(
+                &claimed.id,
+                &cancellation,
+                || {
+                    settle_preparation_failure(&app, &claimed.id, RunStatus::Interrupted, &error);
+                },
+            );
+            return;
+        }
+    }
+    let before_dispatch = prepare_before_turn(&app, &claimed, Arc::clone(&cancellation)).await;
+    let (attached_run, runtime, session) = match before_dispatch {
+        Ok(prepared) => {
+            app.state::<RunService>()
+                .finish_preparation(&claimed.id, &cancellation);
+            prepared
+        }
+        Err(error) => {
+            app.state::<RunService>().finish_preparation_after_error(
+                &claimed.id,
+                &cancellation,
+                || {
+                    settle_preparation_failure(&app, &claimed.id, RunStatus::Failed, &error);
+                },
+            );
             return;
         }
     };
@@ -496,6 +694,7 @@ fn settle_accepted_turn_failure(
 async fn prepare_before_turn(
     app: &AppHandle,
     claimed: &RunRecord,
+    cancellation: Arc<AtomicBool>,
 ) -> Result<
     (
         RunRecord,
@@ -522,6 +721,7 @@ async fn prepare_before_turn(
         let repository = app.state::<XiaoRepository>();
         repository.run_task_defaults(&claimed.workspace_path, &claimed.task_id)?
     };
+    capture_baseline_if_required(app, claimed, cancellation).await?;
     let start = {
         let registry = app.state::<EnvironmentRuntimeRegistry>();
         registry.start(app.clone(), &claimed.execution_environment_id)?
@@ -641,9 +841,14 @@ fn settle_preparation_failure(app: &AppHandle, run_id: &str, target: RunStatus, 
     let event_type = match target {
         RunStatus::Cancelled => "run.cancelled",
         RunStatus::Interrupted => "run.interrupted",
+        RunStatus::NeedsAttention => "verification.blocked",
         _ => "run.failed",
     };
-    let key = format!("preparation:{}", target.as_database());
+    let key = if target == RunStatus::NeedsAttention {
+        "verification:start-blocked".to_owned()
+    } else {
+        format!("preparation:{}", target.as_database())
+    };
     let mutation = app.state::<XiaoRepository>().transition_run(
         run_id,
         target,
@@ -785,6 +990,19 @@ fn apply_runtime_message(
         emit_update(app, &mutation, None);
         if mutation.event.is_some() {
             emit_protocol(app, &mutation, generation, &safe_message, turn_diff, None);
+        }
+        if mutation.run.status == RunStatus::Verifying && mutation.event.is_some() {
+            if let Err(error) = app
+                .state::<VerificationService>()
+                .launch_initial(app, &mutation.run.id)
+            {
+                settle_preparation_failure(
+                    app,
+                    &mutation.run.id,
+                    RunStatus::NeedsAttention,
+                    &error,
+                );
+            }
         }
         app.state::<RunService>().wake();
         return Ok(());
@@ -1123,7 +1341,7 @@ fn relative_path(value: &str, root: &str) -> String {
     "[external path]".to_owned()
 }
 
-fn emit_update(
+pub(crate) fn emit_update(
     app: &AppHandle,
     mutation: &RunMutation,
     pending_input: Option<PendingInputSnapshot>,
@@ -1197,13 +1415,86 @@ fn emit_live_protocol(
     );
 }
 
-fn emit_service_error(app: &AppHandle, error: &str) {
+pub(crate) fn emit_service_error(app: &AppHandle, error: &str) {
     let _ = app.emit("xiao://run-service-error", bounded_diagnostic(error));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_cancellation_requests_stop_and_waits_for_finish() {
+        let service = RunService::default();
+        let cancellation = service.begin_preparation("run-1").unwrap();
+        let stopped = service.cancel_preparation("run-1").unwrap().unwrap();
+
+        assert!(cancellation.load(Ordering::Acquire));
+        assert!(!stopped.completed.load(Ordering::Acquire));
+
+        service.finish_preparation("run-1", &cancellation);
+        tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), stopped.wait())
+                .await
+                .expect("preparation cancellation did not observe completion");
+        });
+    }
+
+    #[test]
+    fn preparation_error_settles_before_completion_unless_cancel_registered() {
+        let service = RunService::default();
+        let ordinary = service.begin_preparation("ordinary").unwrap();
+        let ordinary_completion = Arc::clone(
+            &service
+                .preparation_cancellations
+                .lock()
+                .unwrap()
+                .get("ordinary")
+                .unwrap()
+                .stopped,
+        );
+        let ordinary_settled = AtomicBool::new(false);
+
+        service.finish_preparation_after_error("ordinary", &ordinary, || {
+            assert!(!ordinary_completion.completed.load(Ordering::Acquire));
+            ordinary_settled.store(true, Ordering::Release);
+        });
+
+        assert!(ordinary_settled.load(Ordering::Acquire));
+        assert!(ordinary_completion.completed.load(Ordering::Acquire));
+
+        let cancelled = service.begin_preparation("cancelled").unwrap();
+        let cancelled_completion = service.cancel_preparation("cancelled").unwrap().unwrap();
+        let cancelled_settled = AtomicBool::new(false);
+        service.finish_preparation_after_error("cancelled", &cancelled, || {
+            cancelled_settled.store(true, Ordering::Release);
+        });
+
+        assert!(!cancelled_settled.load(Ordering::Acquire));
+        assert!(cancelled_completion.completed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn preparation_completion_wakes_concurrent_and_late_waiters() {
+        let completion = Arc::new(PreparationCompletion::default());
+        tauri::async_runtime::block_on(async {
+            let first = Arc::clone(&completion);
+            let second = Arc::clone(&completion);
+            let finisher = Arc::clone(&completion);
+            tokio::time::timeout(std::time::Duration::from_secs(1), async move {
+                tokio::join!(first.wait(), second.wait(), async move {
+                    tokio::task::yield_now().await;
+                    finisher.finish();
+                });
+            })
+            .await
+            .expect("concurrent preparation completion waiters hung");
+
+            tokio::time::timeout(std::time::Duration::from_secs(1), completion.wait())
+                .await
+                .expect("a late preparation completion waiter hung");
+        });
+    }
 
     #[test]
     fn safe_protocol_payload_redacts_secrets_data_and_external_paths() {
@@ -1275,6 +1566,13 @@ mod tests {
             parent_run_id: None,
             candidate_group_id: None,
             routine_occurrence_id: None,
+            acceptance_contract_source_version_id: None,
+            acceptance_contract_snapshot: None,
+            acceptance_contract_snapshot_sha256: None,
+            verification_baseline_state: VerificationBaselineState::NotRequired,
+            verification_baseline_artifact_id: None,
+            verification_baseline_diagnostic: None,
+            latest_verification_attempt_id: None,
             status: RunStatus::Preparing,
             agent_outcome: super::super::models::AgentOutcome::Pending,
             verification_outcome: super::super::models::VerificationOutcome::NotRequested,

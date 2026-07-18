@@ -30,6 +30,14 @@ type McpServerResponse = Omit<McpServer, "displayName" | "toolCount"> & {
 };
 type CapabilitySource = "apps" | "mcp" | "plugins" | "skills";
 type CapabilityIssue = { message: string; tone: "error" | "notice" };
+type CapabilityIdentity = {
+  generation: number;
+  key: string;
+  projectPath: string;
+  taskId: string;
+};
+type ScopedBusy = { generation: number; key: string };
+type ScopedError = { generation: number; message: string };
 
 type ExtensionsPanelProps = {
   workspace: WorkspaceSnapshot;
@@ -70,6 +78,7 @@ const pluginAction = (plugin: Plugin) => {
   return "Install";
 };
 
+
 export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelProps) {
   const runtimeAvailable = runtime.phase === "ready" || runtime.phase === "working";
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -77,52 +86,79 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
   const [apps, setApps] = useState<App[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [dataGeneration, setDataGeneration] = useState<number | null>(null);
+  const [loadingGeneration, setLoadingGeneration] = useState<number | null>(null);
+  const [busy, setBusy] = useState<ScopedBusy | null>(null);
+  const [error, setError] = useState<ScopedError | null>(null);
   const [issues, setIssues] = useState<Partial<Record<CapabilitySource, CapabilityIssue>>>({});
   const refreshEpoch = useRef(0);
   const appAccessBlocked = useRef(false);
+  const identityState = useRef<{
+    key: string | null;
+    generation: number;
+    current: CapabilityIdentity | null;
+  }>({ key: null, generation: 0, current: null });
 
-  const refresh = useCallback(async (force = false) => {
+  const nextIdentityKey = runtimeAvailable && taskId
+    ? `${workspace.path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase()}\u0000${taskId}`
+    : null;
+  if (identityState.current.key !== nextIdentityKey) {
+    const generation = identityState.current.generation + 1;
+    identityState.current = {
+      key: nextIdentityKey,
+      generation,
+      current: nextIdentityKey && taskId
+        ? { generation, key: nextIdentityKey, projectPath: workspace.path, taskId }
+        : null,
+    };
+    appAccessBlocked.current = false;
+  }
+  const identity = identityState.current.current;
+  const isCurrentIdentity = (candidate: CapabilityIdentity) =>
+    identityState.current.current?.generation === candidate.generation &&
+    identityState.current.current.key === candidate.key;
+
+  const refresh = useCallback(async (origin: CapabilityIdentity, force = false) => {
+    if (!isCurrentIdentity(origin)) return;
     const requestId = ++refreshEpoch.current;
-    if (!runtimeAvailable || !taskId) {
-      appAccessBlocked.current = false;
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
+    setLoadingGeneration(origin.generation);
     setError(null);
+    setDataGeneration(null);
+    setSkills([]);
+    setPlugins([]);
+    setApps([]);
+    setMcpServers([]);
+    setIssues({});
     try {
       const appRequest = appAccessBlocked.current && !force
         ? Promise.resolve(null)
         : nativeBridge.agentRequest<{ data: App[] }>(
             "app/list",
             { forceRefetch: force, limit: 100 },
-            { projectPath: workspace.path, taskId },
+            { projectPath: origin.projectPath, taskId: origin.taskId },
           );
       const [skillResult, pluginResult, mcpResult, appResult] = await Promise.allSettled([
         nativeBridge.agentRequest<{ data: Array<{ skills: Skill[] }> }>(
           "skills/list",
-          { cwds: [workspace.path], forceReload: force },
-          { projectPath: workspace.path, taskId },
+          { cwds: [origin.projectPath], forceReload: force },
+          { projectPath: origin.projectPath, taskId: origin.taskId },
         ),
         nativeBridge.agentRequest<{
           marketplaces: Array<{ name: string; path: string | null; plugins: Omit<Plugin, "marketplaceName" | "marketplacePath">[] }>;
           marketplaceLoadErrors?: Array<{ message: string }>;
         }>(
           "plugin/list",
-          { cwds: [workspace.path] },
-          { projectPath: workspace.path, taskId },
+          { cwds: [origin.projectPath] },
+          { projectPath: origin.projectPath, taskId: origin.taskId },
         ),
         nativeBridge.agentRequest<{ data: McpServerResponse[] }>(
           "mcpServerStatus/list",
           { detail: "toolsAndAuthOnly", limit: 100 },
-          { projectPath: workspace.path, taskId },
+          { projectPath: origin.projectPath, taskId: origin.taskId },
         ),
         appRequest,
       ]);
-      if (requestId !== refreshEpoch.current) return;
+      if (!isCurrentIdentity(origin) || requestId !== refreshEpoch.current) return;
 
       const nextIssues: Partial<Record<CapabilitySource, CapabilityIssue>> = {};
       if (skillResult.status === "fulfilled") {
@@ -173,44 +209,74 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
         nextIssues.apps = sourceIssue("apps", null);
       }
       setIssues(nextIssues);
+      setDataGeneration(origin.generation);
     } catch (reason) {
-      if (requestId === refreshEpoch.current) setError(conciseError(reason));
+      if (isCurrentIdentity(origin) && requestId === refreshEpoch.current) {
+        setError({ generation: origin.generation, message: conciseError(reason) });
+      }
     } finally {
-      if (requestId === refreshEpoch.current) setLoading(false);
+      if (isCurrentIdentity(origin) && requestId === refreshEpoch.current) {
+        setLoadingGeneration(null);
+      }
     }
-  }, [runtimeAvailable, taskId, workspace.execution.executionRoot, workspace.path]);
+  }, []);
 
   useEffect(() => {
-    void refresh();
-    return () => { refreshEpoch.current += 1; };
-  }, [refresh]);
+    if (!identity) {
+      refreshEpoch.current += 1;
+      appAccessBlocked.current = false;
+      setSkills([]);
+      setPlugins([]);
+      setApps([]);
+      setMcpServers([]);
+      setDataGeneration(null);
+      setLoadingGeneration(null);
+      setBusy(null);
+      setError(null);
+      setIssues({});
+      return;
+    }
+    void refresh(identity);
+    return () => {
+      if (isCurrentIdentity(identity)) refreshEpoch.current += 1;
+    };
+  }, [identity, refresh]);
 
-  const updateSkill = async (skill: Skill) => {
-    setBusy(`skill:${skill.path}`);
+  const updateSkill = async (origin: CapabilityIdentity, skill: Skill) => {
+    if (!isCurrentIdentity(origin)) return;
+    const busyKey = `skill:${skill.path}`;
+    setBusy({ generation: origin.generation, key: busyKey });
     try {
-      if (!taskId) throw new Error("Open a persisted task before changing skills.");
       await nativeBridge.agentRequest(
         "skills/config/write",
         { path: skill.path, enabled: !skill.enabled },
-        { projectPath: workspace.path, taskId },
+        { projectPath: origin.projectPath, taskId: origin.taskId },
       );
-      await refresh();
+      if (!isCurrentIdentity(origin)) return;
+      await refresh(origin);
     } catch (reason) {
-      setError(conciseError(reason));
+      if (isCurrentIdentity(origin)) {
+        setError({ generation: origin.generation, message: conciseError(reason) });
+      }
     } finally {
-      setBusy(null);
+      if (isCurrentIdentity(origin)) {
+        setBusy((current) =>
+          current?.generation === origin.generation && current.key === busyKey ? null : current,
+        );
+      }
     }
   };
 
-  const updatePlugin = async (plugin: Plugin) => {
-    setBusy(`plugin:${plugin.id}`);
+  const updatePlugin = async (origin: CapabilityIdentity, plugin: Plugin) => {
+    if (!isCurrentIdentity(origin)) return;
+    const busyKey = `plugin:${plugin.id}`;
+    setBusy({ generation: origin.generation, key: busyKey });
     try {
-      if (!taskId) throw new Error("Open a persisted task before changing plugins.");
       if (plugin.installed) {
         await nativeBridge.agentRequest(
           "plugin/uninstall",
           { pluginId: plugin.id },
-          { projectPath: workspace.path, taskId },
+          { projectPath: origin.projectPath, taskId: origin.taskId },
         );
       } else {
         await nativeBridge.agentRequest(
@@ -220,30 +286,52 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
             marketplacePath: plugin.marketplacePath,
             remoteMarketplaceName: plugin.marketplacePath ? null : plugin.marketplaceName,
           },
-          { projectPath: workspace.path, taskId },
+          { projectPath: origin.projectPath, taskId: origin.taskId },
         );
       }
-      await refresh();
+      if (!isCurrentIdentity(origin)) return;
+      await refresh(origin);
     } catch (reason) {
-      setError(conciseError(reason));
+      if (isCurrentIdentity(origin)) {
+        setError({ generation: origin.generation, message: conciseError(reason) });
+      }
     } finally {
-      setBusy(null);
+      if (isCurrentIdentity(origin)) {
+        setBusy((current) =>
+          current?.generation === origin.generation && current.key === busyKey ? null : current,
+        );
+      }
     }
   };
 
   const normalized = query.trim().toLowerCase();
+  const hasCurrentData = Boolean(identity && dataGeneration === identity.generation);
+  const scopedSkills = hasCurrentData ? skills : [];
+  const scopedPlugins = hasCurrentData ? plugins : [];
+  const scopedMcpServers = hasCurrentData ? mcpServers : [];
+  const scopedApps = hasCurrentData ? apps : [];
   const filter = <T extends { name: string }>(items: T[]) =>
     normalized ? items.filter((item) => item.name.toLowerCase().includes(normalized)) : items;
   const visible = useMemo(
-    () => ({ skills: filter(skills), plugins: filter(plugins), mcp: filter(mcpServers), apps: filter(apps) }),
-    [apps, mcpServers, normalized, plugins, skills],
+    () => ({
+      skills: filter(scopedSkills),
+      plugins: filter(scopedPlugins),
+      mcp: filter(scopedMcpServers),
+      apps: filter(scopedApps),
+    }),
+    [normalized, scopedApps, scopedMcpServers, scopedPlugins, scopedSkills],
   );
+  const loading = Boolean(identity && loadingGeneration === identity.generation);
+  const currentBusy = identity && busy?.generation === identity.generation ? busy.key : null;
+  const currentError = identity && error?.generation === identity.generation ? error.message : null;
+  const currentIssues = hasCurrentData ? issues : {};
 
   return (
     <section className="rail-section extensions-panel">
       <header className="rail-section__header">
         <div><span>Capabilities</span><h2>Skills, plugins, MCP, and apps</h2></div>
-        <button className="icon-button" type="button" disabled={loading} onClick={() => void refresh(true)} aria-label="Refresh capabilities">
+        <button className="icon-button" type="button" disabled={loading || !identity}
+          onClick={() => { if (identity) void refresh(identity, true); }} aria-label="Refresh capabilities">
           <XiaoIcon className={loading ? "spin" : undefined} name="refresh" size={17} />
         </button>
       </header>
@@ -251,32 +339,32 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
         <XiaoIcon name="search" size={15} />
         <input type="search" value={query} aria-label="Filter capabilities" placeholder="Filter capabilities" onChange={(event) => setQuery(event.target.value)} />
       </label>
-      {error && <p className="rail-error">{error}</p>}
+      {currentError && <p className="rail-error">{currentError}</p>}
       {loading ? <div className="file-skeleton"><span /><span /><span /></div> : (
         <>
-          <CapabilityGroup title={`Skills (${visible.skills.length})`} empty="No skills found." issue={issues.skills}>
+          <CapabilityGroup title={`Skills (${visible.skills.length})`} empty="No skills found." issue={currentIssues.skills}>
             {visible.skills.map((skill) => (
               <CapabilityRow key={skill.path} name={skill.name} description={skill.description} active={skill.enabled}
-                busy={busy === `skill:${skill.path}`} action={skill.enabled ? "Disable" : "Enable"}
-                onAction={() => void updateSkill(skill)} />
+                busy={currentBusy === `skill:${skill.path}`} action={identity ? (skill.enabled ? "Disable" : "Enable") : undefined}
+                onAction={identity ? () => void updateSkill(identity, skill) : undefined} />
             ))}
           </CapabilityGroup>
-          <CapabilityGroup title={`Plugins (${visible.plugins.length})`} empty="No plugins found." issue={issues.plugins}>
+          <CapabilityGroup title={`Plugins (${visible.plugins.length})`} empty="No plugins found." issue={currentIssues.plugins}>
             {visible.plugins.map((plugin) => (
               <CapabilityRow key={`${plugin.marketplaceName}:${plugin.id}`} name={plugin.interface?.displayName || plugin.name}
                 description={plugin.availability === "DISABLED_BY_ADMIN" ? "Disabled by administrator" : plugin.interface?.shortDescription ?? plugin.marketplaceName}
                 active={plugin.installed && plugin.enabled}
-                busy={busy === `plugin:${plugin.id}`} action={pluginAction(plugin)}
-                onAction={() => void updatePlugin(plugin)} />
+                busy={currentBusy === `plugin:${plugin.id}`} action={identity ? pluginAction(plugin) : undefined}
+                onAction={identity ? () => void updatePlugin(identity, plugin) : undefined} />
             ))}
           </CapabilityGroup>
-          <CapabilityGroup title={`MCP servers (${visible.mcp.length})`} empty="No MCP servers configured." issue={issues.mcp}>
+          <CapabilityGroup title={`MCP servers (${visible.mcp.length})`} empty="No MCP servers configured." issue={currentIssues.mcp}>
             {visible.mcp.map((server) => (
               <CapabilityRow key={server.name} name={server.displayName}
                 description={mcpDescription(server)} active={server.authStatus !== "notLoggedIn"} />
             ))}
           </CapabilityGroup>
-          <CapabilityGroup title={`Apps (${visible.apps.length})`} empty="No apps available." issue={issues.apps}>
+          <CapabilityGroup title={`Apps (${visible.apps.length})`} empty="No apps available." issue={currentIssues.apps}>
             {visible.apps.map((app) => (
               <CapabilityRow key={app.id} name={app.name} description={app.description ?? "Connected app"}
                 active={app.isAccessible && app.isEnabled} />

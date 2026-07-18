@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::verification::models::AcceptanceContractVersionSummary;
+
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 4;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +58,8 @@ pub struct XiaoTaskDocument {
     pub sandbox_mode: String,
     #[serde(default)]
     pub goal: Option<Value>,
+    #[serde(default)]
+    pub acceptance_contract: Option<AcceptanceContractVersionSummary>,
     #[serde(default)]
     pub timeline: Vec<Value>,
     #[serde(default = "default_true")]

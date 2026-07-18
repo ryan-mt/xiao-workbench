@@ -23,6 +23,10 @@ import { OpenFilePanel } from "./OpenFilePanel";
 import { PlanPanel } from "./PlanPanel";
 import { RuntimePanel } from "./RuntimePanel";
 import { SchedulePanel, type RoutineDraft } from "./SchedulePanel";
+import {
+  VerificationPanel,
+  type SavedAcceptanceContract,
+} from "./VerificationPanel";
 import "../styles/focus-rail.css";
 
 const TerminalPanel = lazy(() =>
@@ -45,6 +49,7 @@ type FocusRailProps = {
   task: WorkbenchTask;
   executionTaskId: string | null;
   executionTransitioning: boolean;
+  workspaceActionable: boolean;
   timeline: TimelineEntry[];
   models: AgentModelSummary[];
   contextUsage: ThreadTokenUsage | null;
@@ -69,6 +74,7 @@ type FocusRailProps = {
   onRunRoutineNow: (routineId: string) => Promise<void>;
   onDeleteRoutine: (routineId: string) => Promise<void>;
   onClearRoutineError: () => void;
+  onTaskAcceptanceContractSaved: (saved: SavedAcceptanceContract) => void;
   reviewContext: AgentAttachment[];
   onStageReviewContext: (attachment: AgentAttachment) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
@@ -83,11 +89,14 @@ const utilityViews: Array<{ id: FocusView; label: string; description: string; i
   { id: "run", label: "Xiao Break", description: "Play while Xiao works", icon: "game" },
   { id: "runtime", label: "Runtime", description: "Inspect Codex events", icon: "runtime" },
   { id: "schedule", label: "Schedule", description: "Queue work for later", icon: "routine" },
+  { id: "verification", label: "Acceptance", description: "Define deterministic run gates", icon: "check" },
   { id: "extensions", label: "Tools", description: "Skills, plugins, MCP, and apps", icon: "capability" },
 ];
 
 const baseViews = new Set<FocusView>(["changes", "context"]);
 const basename = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+const acceptanceUnavailableTitle = "Acceptance is unavailable until this task starts";
+const terminalUnavailableTitle = "Terminal is unavailable until this task starts";
 
 export function FocusRail({
   activeView,
@@ -99,6 +108,7 @@ export function FocusRail({
   task,
   executionTaskId,
   executionTransitioning,
+  workspaceActionable,
   timeline,
   models,
   contextUsage,
@@ -123,6 +133,7 @@ export function FocusRail({
   onRunRoutineNow,
   onDeleteRoutine,
   onClearRoutineError,
+  onTaskAcceptanceContractSaved,
   reviewContext,
   onStageReviewContext,
   onRemoveReviewContext,
@@ -138,17 +149,19 @@ export function FocusRail({
     (task.model ? models.find((model) => model.model === task.model) : models.find((model) => model.isDefault)) ??
     models.find((model) => model.isDefault);
   const usagePercent = contextUsedPercent(contextUsage, activeModel?.contextWindow) ?? 0;
+  const nativeTaskAvailable = executionTaskId !== null;
   const utility = utilityViews.find((view) => view.id === activeView);
   const utilityLabel = activeView === "files" && activeFile ? basename(activeFile) : utility?.label;
 
   useEffect(() => setActiveFile(null), [workspace.path]);
   useEffect(() => {
-    if (activeView === "terminal") setTerminalOpened(true);
+    if (activeView === "terminal" && nativeTaskAvailable) setTerminalOpened(true);
     if (activeView === "browser") setBrowserOpened(true);
     if (activeView === "run") setRunOpened(true);
-  }, [activeView]);
+  }, [activeView, nativeTaskAvailable]);
 
   const selectUtility = (view: FocusView) => {
+    if ((view === "terminal" || view === "verification") && !nativeTaskAvailable) return;
     if (view === "files") setActiveFile(null);
     onViewChange(view);
     setToolsMenuOpen(false);
@@ -217,13 +230,28 @@ export function FocusRail({
             </summary>
             <div role="menu" aria-label="Workspace tools">
               <header><span>Workspace tools</span><small>{workspace.name}</small></header>
-              {utilityViews.map((view) => (
-                <button className={activeView === view.id ? "is-active" : undefined} key={view.id} role="menuitem" title={view.description} onClick={() => selectUtility(view.id)}>
-                  <span><XiaoIcon name={view.icon} size={15} /></span>
-                  <div><strong>{view.label}</strong><small>{view.description}</small></div>
-                  {activeView === view.id ? <XiaoIcon name="check" size={13} /> : null}
-                </button>
-              ))}
+              {utilityViews.map((view) => {
+                const nativeTaskUnavailable =
+                  (view.id === "terminal" || view.id === "verification") && !nativeTaskAvailable;
+                const unavailableTitle = view.id === "terminal"
+                  ? terminalUnavailableTitle
+                  : acceptanceUnavailableTitle;
+                return (
+                  <button
+                    aria-label={nativeTaskUnavailable ? unavailableTitle : undefined}
+                    className={activeView === view.id ? "is-active" : undefined}
+                    disabled={nativeTaskUnavailable}
+                    key={view.id}
+                    role="menuitem"
+                    title={nativeTaskUnavailable ? unavailableTitle : view.description}
+                    onClick={() => selectUtility(view.id)}
+                  >
+                    <span><XiaoIcon name={view.icon} size={15} /></span>
+                    <div><strong>{view.label}</strong><small>{view.description}</small></div>
+                    {activeView === view.id ? <XiaoIcon name="check" size={13} /> : null}
+                  </button>
+                );
+              })}
             </div>
           </details>
           <button className="icon-button" type="button" onClick={onClose} aria-label="Close review panel">
@@ -235,9 +263,11 @@ export function FocusRail({
       <div className={`focus-panel focus-panel--${activeView}`}>
         {activeView === "changes" && (
           <ChangesPanel
+            key={`${workspace.path}\u0000${executionTaskId ?? ""}`}
             workspace={workspace}
             taskId={executionTaskId}
             transitioning={executionTransitioning}
+            workspaceActionable={workspaceActionable}
             onRefresh={onRefresh}
           />
         )}
@@ -270,7 +300,7 @@ export function FocusRail({
         {activeView === "extensions" && (
           <ExtensionsPanel workspace={workspace} taskId={executionTaskId} runtime={runtime} />
         )}
-        {(terminalOpened || activeView === "terminal") && (
+        {executionTaskId !== null && (terminalOpened || activeView === "terminal") && (
           <div className="focus-terminal-slot" hidden={activeView !== "terminal"}>
             <Suspense fallback={<div className="terminal-loading"><XiaoIcon name="pending" size={15} /> Starting terminal</div>}>
               <TerminalPanel
@@ -303,6 +333,7 @@ export function FocusRail({
         )}
         {activeView === "schedule" && (
           <SchedulePanel
+            projectPath={workspace.path}
             routines={routines}
             loading={routinesLoading}
             error={routinesError}
@@ -318,6 +349,15 @@ export function FocusRail({
             onRunNow={onRunRoutineNow}
             onDelete={onDeleteRoutine}
             onClearError={onClearRoutineError}
+          />
+        )}
+        {activeView === "verification" && executionTaskId !== null && (
+          <VerificationPanel
+            key={`${workspace.path}\u0000${executionTaskId}`}
+            projectPath={workspace.path}
+            taskId={executionTaskId}
+            contract={task.acceptanceContract}
+            onSaved={onTaskAcceptanceContractSaved}
           />
         )}
         {activeView === "runtime" && (

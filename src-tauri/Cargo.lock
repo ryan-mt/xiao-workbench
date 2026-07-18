@@ -5204,12 +5204,13 @@ dependencies = [
 
 [[package]]
 name = "xiao-workbench"
-version = "0.0.0-day07162026"
+version = "0.0.0-day07182026"
 dependencies = [
  "chrono",
  "chrono-tz",
  "notify-rust",
  "portable-pty",
+ "regex",
  "rusqlite",
  "semver",
  "serde",

@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 
 use crate::execution::service::{prepare_managed_task_environment, resolve_execution_context};
-use crate::runs::models::{PendingInputSnapshot, RunRecord, RunStatus};
+use crate::runs::models::{PendingInputSnapshot, RunRecord, RunStatus, VerificationOutcome};
 use crate::runs::repository::{new_uuid_v7, now_millis};
 use crate::runs::service::RunService;
 use crate::xiao::models::XiaoWorkspaceMode;
@@ -99,6 +99,7 @@ impl RoutineService {
             task_id: request.task_id,
             title,
             prompt,
+            acceptance_contract: request.acceptance_contract,
             schedule_kind: request.schedule_kind,
             timezone: request.timezone,
             schedule_payload,
@@ -161,6 +162,7 @@ impl RoutineService {
             task_id: current.task_id,
             title,
             prompt,
+            acceptance_contract: request.acceptance_contract,
             schedule_kind: request.schedule_kind,
             timezone: request.timezone,
             schedule_payload,
@@ -295,29 +297,14 @@ impl RoutineService {
                 None
             }
         } else {
-            match run.status {
-                RunStatus::Completed => Some((
-                    format!("terminal:completed:{}", run.version),
-                    "Xiao routine finished".to_owned(),
-                )),
-                RunStatus::Failed => Some((
-                    format!("terminal:failed:{}", run.version),
-                    "Xiao routine failed".to_owned(),
-                )),
-                RunStatus::Interrupted => Some((
-                    format!("terminal:interrupted:{}", run.version),
-                    "Xiao routine was interrupted".to_owned(),
-                )),
-                RunStatus::Cancelled => Some((
-                    format!("terminal:cancelled:{}", run.version),
-                    "Xiao routine was cancelled".to_owned(),
-                )),
-                RunStatus::NeedsAttention => Some((
-                    format!("terminal:attention:{}", run.version),
-                    "Xiao routine needs attention".to_owned(),
-                )),
-                _ => None,
-            }
+            routine_terminal_notification(run.status, run.verification_outcome).map(
+                |(status_key, title)| {
+                    (
+                        format!("terminal:{status_key}:{}", run.version),
+                        title.to_owned(),
+                    )
+                },
+            )
         };
         let Some((notification_key, title)) = notification else {
             return;
@@ -327,6 +314,36 @@ impl RoutineService {
             Ok(None) => {}
             Err(error) => emit_service_error(app, &error),
         }
+    }
+}
+
+fn routine_terminal_notification(
+    status: RunStatus,
+    verification_outcome: VerificationOutcome,
+) -> Option<(&'static str, &'static str)> {
+    match status {
+        RunStatus::Completed if verification_outcome == VerificationOutcome::Passed => {
+            Some(("verified", "Xiao routine is verified"))
+        }
+        RunStatus::Completed => Some(("done", "Xiao routine is done")),
+        RunStatus::Failed => Some(("failed", "Xiao routine failed")),
+        RunStatus::Interrupted if verification_outcome == VerificationOutcome::Blocked => Some((
+            "verification-blocked",
+            "Xiao routine verification was blocked",
+        )),
+        RunStatus::Interrupted => Some(("interrupted", "Xiao routine was interrupted")),
+        RunStatus::Cancelled => Some(("cancelled", "Xiao routine was cancelled")),
+        RunStatus::NeedsAttention if verification_outcome == VerificationOutcome::Failed => {
+            Some(("verification-failed", "Xiao routine verification failed"))
+        }
+        RunStatus::NeedsAttention if verification_outcome == VerificationOutcome::Blocked => {
+            Some((
+                "verification-blocked",
+                "Xiao routine verification was blocked",
+            ))
+        }
+        RunStatus::NeedsAttention => Some(("attention", "Xiao routine needs attention")),
+        _ => None,
     }
 }
 
@@ -462,12 +479,14 @@ fn summarize_routine(
     } else {
         XiaoWorkspaceMode::Local
     };
+    let acceptance_contract = repository.load_routine_acceptance_contract(&record.id)?;
     Ok(RoutineSummary {
         id: record.id,
         workspace_path: record.workspace_path,
         task_id: record.task_id,
         title: record.title,
         prompt: record.prompt,
+        acceptance_contract,
         schedule_kind: record.schedule_kind,
         timezone: record.timezone,
         scheduled_for: record.schedule_payload.scheduled_for,
@@ -635,6 +654,36 @@ mod tests {
         let truncated = truncate_text(&value, 160);
         assert_eq!(truncated.chars().count(), 161);
         assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn routine_notifications_distinguish_done_verified_failed_and_blocked() {
+        assert_eq!(
+            routine_terminal_notification(RunStatus::Completed, VerificationOutcome::NotRequested),
+            Some(("done", "Xiao routine is done")),
+        );
+        assert_eq!(
+            routine_terminal_notification(RunStatus::Completed, VerificationOutcome::Passed),
+            Some(("verified", "Xiao routine is verified")),
+        );
+        assert_eq!(
+            routine_terminal_notification(RunStatus::NeedsAttention, VerificationOutcome::Failed),
+            Some(("verification-failed", "Xiao routine verification failed")),
+        );
+        assert_eq!(
+            routine_terminal_notification(RunStatus::NeedsAttention, VerificationOutcome::Blocked),
+            Some((
+                "verification-blocked",
+                "Xiao routine verification was blocked"
+            )),
+        );
+        assert_eq!(
+            routine_terminal_notification(RunStatus::Interrupted, VerificationOutcome::Blocked),
+            Some((
+                "verification-blocked",
+                "Xiao routine verification was blocked"
+            )),
+        );
     }
 
     #[test]

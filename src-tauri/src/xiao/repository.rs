@@ -17,6 +17,10 @@ use crate::execution::models::{
     ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
     NewManagedWorktreeRecord, TaskExecutionBinding,
 };
+use crate::runs::repository::task_binding_has_run_owners;
+use crate::verification::artifacts::ArtifactStore;
+use crate::verification::models::AcceptanceContractVersionSummary;
+use crate::verification::repository::load_optional_acceptance_contract_version_from_connection;
 
 use super::models::{
     XiaoLegacyStore, XiaoProjectSummary, XiaoTaskDocument, XiaoThreadBinding,
@@ -339,6 +343,194 @@ CREATE UNIQUE INDEX runs_by_routine_occurrence
     ON runs(routine_occurrence_id) WHERE routine_occurrence_id IS NOT NULL;
 "#;
 
+const MIGRATION_5_SQL: &str = r#"
+CREATE TABLE acceptance_contract_versions (
+    version_id TEXT PRIMARY KEY,
+    contract_id TEXT NOT NULL,
+    workspace_id INTEGER NOT NULL,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    gates_json TEXT NOT NULL CHECK (
+        json_valid(gates_json)
+        AND json_type(gates_json) = 'array'
+        AND json_array_length(gates_json) BETWEEN 1 AND 32
+        AND length(gates_json) <= 262144
+    ),
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    UNIQUE (contract_id, version)
+);
+CREATE INDEX acceptance_contract_versions_by_workspace
+    ON acceptance_contract_versions(workspace_id, contract_id, version DESC);
+CREATE TRIGGER acceptance_contract_versions_require_next_version
+BEFORE INSERT ON acceptance_contract_versions
+WHEN NEW.version != COALESCE((
+    SELECT MAX(version) + 1 FROM acceptance_contract_versions
+    WHERE contract_id = NEW.contract_id
+), 1)
+BEGIN
+    SELECT RAISE(ABORT, 'acceptance contract versions must be inserted monotonically');
+END;
+CREATE TRIGGER acceptance_contract_versions_require_stable_workspace
+BEFORE INSERT ON acceptance_contract_versions
+WHEN EXISTS (
+    SELECT 1 FROM acceptance_contract_versions
+    WHERE contract_id = NEW.contract_id AND workspace_id != NEW.workspace_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'acceptance contract lineage workspace cannot change');
+END;
+CREATE TRIGGER acceptance_contract_versions_are_immutable
+BEFORE UPDATE ON acceptance_contract_versions
+BEGIN
+    SELECT RAISE(ABORT, 'acceptance contract versions are immutable');
+END;
+CREATE TRIGGER acceptance_contract_versions_cannot_be_deleted
+BEFORE DELETE ON acceptance_contract_versions
+WHEN EXISTS (
+    SELECT 1 FROM workspaces WHERE id = OLD.workspace_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'acceptance contract versions cannot be deleted');
+END;
+
+ALTER TABLE tasks ADD COLUMN acceptance_contract_version_id TEXT
+    REFERENCES acceptance_contract_versions(version_id);
+ALTER TABLE routines ADD COLUMN acceptance_contract_version_id TEXT
+    REFERENCES acceptance_contract_versions(version_id);
+
+ALTER TABLE runs ADD COLUMN acceptance_contract_snapshot_json TEXT CHECK (
+    acceptance_contract_snapshot_json IS NULL OR (
+        json_valid(acceptance_contract_snapshot_json)
+        AND length(acceptance_contract_snapshot_json) <= 262144
+    )
+);
+ALTER TABLE runs ADD COLUMN acceptance_contract_snapshot_sha256 TEXT CHECK (
+    (acceptance_contract_snapshot_json IS NULL) =
+        (acceptance_contract_snapshot_sha256 IS NULL)
+    AND (
+        acceptance_contract_snapshot_sha256 IS NULL
+        OR length(acceptance_contract_snapshot_sha256) = 64
+    )
+);
+ALTER TABLE runs ADD COLUMN acceptance_contract_source_version_id TEXT
+    REFERENCES acceptance_contract_versions(version_id)
+    CHECK (
+        (acceptance_contract_source_version_id IS NULL) =
+            (acceptance_contract_snapshot_json IS NULL)
+    );
+ALTER TABLE runs ADD COLUMN verification_baseline_state TEXT NOT NULL DEFAULT 'not_required'
+    CHECK (verification_baseline_state IN ('not_required', 'pending', 'ready', 'unavailable'));
+ALTER TABLE runs ADD COLUMN verification_baseline_artifact_id TEXT
+    REFERENCES artifacts(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE runs ADD COLUMN verification_baseline_diagnostic TEXT;
+ALTER TABLE runs ADD COLUMN latest_verification_attempt_id TEXT
+    REFERENCES verification_attempts(id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE verification_attempts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    request_key TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+    trigger TEXT NOT NULL CHECK (trigger IN ('initial', 'rerun')),
+    contract_snapshot_json TEXT NOT NULL CHECK (
+        json_valid(contract_snapshot_json)
+        AND length(contract_snapshot_json) <= 262144
+    ),
+    contract_snapshot_sha256 TEXT NOT NULL CHECK (length(contract_snapshot_sha256) = 64),
+    expected_gate_count INTEGER NOT NULL CHECK (expected_gate_count BETWEEN 1 AND 32),
+    status TEXT NOT NULL CHECK (status IN (
+        'running', 'passed', 'failed', 'blocked', 'cancelled', 'interrupted'
+    )),
+    diagnostic TEXT,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= started_at),
+    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE (run_id, request_key),
+    UNIQUE (run_id, attempt_number),
+    CHECK (
+        (status = 'running' AND finished_at IS NULL)
+        OR (status != 'running' AND finished_at IS NOT NULL)
+    ),
+    CHECK (finished_at IS NULL OR finished_at >= started_at)
+);
+CREATE UNIQUE INDEX verification_attempts_one_running_per_run
+    ON verification_attempts(run_id) WHERE status = 'running';
+CREATE INDEX verification_attempts_by_run_number
+    ON verification_attempts(run_id, attempt_number DESC);
+
+CREATE TABLE gate_results (
+    id TEXT PRIMARY KEY,
+    verification_attempt_id TEXT NOT NULL,
+    gate_index INTEGER NOT NULL CHECK (gate_index BETWEEN 0 AND 31),
+    gate_type TEXT NOT NULL CHECK (gate_type IN ('command', 'diff_scope', 'cleanliness')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('passed', 'failed', 'blocked', 'cancelled')),
+    duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+    exit_code INTEGER,
+    diagnostic TEXT,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL CHECK (finished_at >= started_at),
+    FOREIGN KEY (verification_attempt_id) REFERENCES verification_attempts(id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    UNIQUE (verification_attempt_id, gate_index)
+);
+CREATE INDEX gate_results_by_attempt
+    ON gate_results(verification_attempt_id, gate_index);
+
+CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    verification_attempt_id TEXT,
+    relative_storage_path TEXT NOT NULL CHECK (length(trim(relative_storage_path)) > 0),
+    media_type TEXT NOT NULL CHECK (length(trim(media_type)) > 0),
+    byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+    retention_class TEXT NOT NULL CHECK (
+        retention_class IN ('run_evidence', 'verification_baseline')
+    ),
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (verification_attempt_id) REFERENCES verification_attempts(id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX artifacts_by_run_time
+    ON artifacts(run_id, created_at, id);
+CREATE INDEX artifacts_by_attempt
+    ON artifacts(verification_attempt_id, created_at, id)
+    WHERE verification_attempt_id IS NOT NULL;
+
+CREATE TABLE evidence (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    verification_attempt_id TEXT,
+    gate_result_id TEXT,
+    evidence_type TEXT NOT NULL CHECK (length(trim(evidence_type)) > 0),
+    summary_json TEXT NOT NULL CHECK (json_valid(summary_json)),
+    artifact_id TEXT,
+    redaction_state TEXT NOT NULL CHECK (redaction_state IN ('safe', 'best_effort')),
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (verification_attempt_id) REFERENCES verification_attempts(id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (gate_result_id) REFERENCES gate_results(id)
+        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
+        ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX evidence_by_run_time
+    ON evidence(run_id, created_at, id);
+CREATE INDEX evidence_by_attempt_gate
+    ON evidence(verification_attempt_id, gate_result_id, created_at, id);
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -357,13 +549,16 @@ struct RepositoryOpenOptions {
 impl XiaoRepository {
     pub fn initialize(app_data_dir: PathBuf) -> Self {
         match open_connection(&app_data_dir, RepositoryOpenOptions::default()) {
-            Ok(connection) => Self {
-                app_data_dir,
-                state: Mutex::new(RepositoryState {
-                    connection: Some(connection),
-                    initialization_error: None,
-                }),
-            },
+            Ok(connection) => {
+                report_orphaned_artifact_cleanup(&app_data_dir, &connection);
+                Self {
+                    app_data_dir,
+                    state: Mutex::new(RepositoryState {
+                        connection: Some(connection),
+                        initialization_error: None,
+                    }),
+                }
+            }
             Err(error) => Self {
                 app_data_dir,
                 state: Mutex::new(RepositoryState {
@@ -385,6 +580,7 @@ impl XiaoRepository {
         options: RepositoryOpenOptions,
     ) -> Result<Self, String> {
         let connection = open_connection(app_data_dir, options)?;
+        report_orphaned_artifact_cleanup(app_data_dir, &connection);
         Ok(Self {
             app_data_dir: app_data_dir.to_path_buf(),
             state: Mutex::new(RepositoryState {
@@ -443,7 +639,10 @@ impl XiaoRepository {
     }
 
     pub fn save_workspace(&self, update: XiaoWorkspaceUpdate) -> Result<(), String> {
-        self.with_connection(|connection| save_workspace_update(connection, update, false))
+        let removed_run_ids =
+            self.with_connection(|connection| save_workspace_update(connection, update, false))?;
+        cleanup_removed_artifact_runs(&self.app_data_dir, &removed_run_ids);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -452,6 +651,7 @@ impl XiaoRepository {
         update: XiaoWorkspaceUpdate,
     ) -> Result<(), String> {
         self.with_connection(|connection| save_workspace_update(connection, update, true))
+            .map(|_| ())
     }
 
     pub fn list_projects(&self) -> Result<Vec<XiaoProjectSummary>, String> {
@@ -492,6 +692,12 @@ impl XiaoRepository {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|error| format!("Could not load task worktree binding: {error}"))?;
+            if task_binding_has_run_owners(&transaction, record.workspace_id, &record.task_id)? {
+                return Err(
+                    "Cancel queued or active Xiao runs before changing the task environment."
+                        .to_owned(),
+                );
+            }
             if workspace_mode != "local" || managed_worktree_id.is_some() {
                 return Err("The Xiao task already has an execution worktree.".to_owned());
             }
@@ -549,6 +755,12 @@ impl XiaoRepository {
                 .map_err(|error| format!("Could not load prepared worktree: {error}"))?;
             if status != "preparing" {
                 return Err("The managed worktree is not awaiting activation.".to_owned());
+            }
+            if task_binding_has_run_owners(&transaction, workspace_id, &task_id)? {
+                return Err(
+                    "Cancel queued or active Xiao runs before changing the task environment."
+                        .to_owned(),
+                );
             }
             let changed = transaction
                 .execute(
@@ -626,6 +838,16 @@ impl XiaoRepository {
             if record.id != worktree_id {
                 return Err("The managed worktree does not belong to this task.".to_owned());
             }
+            if task_binding_has_run_owners(
+                &transaction,
+                binding.workspace_id,
+                &binding.task_id,
+            )? {
+                return Err(
+                    "Cancel queued or active Xiao runs before changing the task environment."
+                        .to_owned(),
+                );
+            }
             match record.status {
                 ManagedWorktreeStatus::Active => {
                     let changed = transaction
@@ -665,6 +887,12 @@ impl XiaoRepository {
                 .map_err(|error| format!("Could not load removing worktree: {error}"))?;
             if status != "removing" {
                 return Err("The managed worktree is not reserved for removal.".to_owned());
+            }
+            if task_binding_has_run_owners(&transaction, workspace_id, &task_id)? {
+                return Err(
+                    "Cancel queued or active Xiao runs before changing the task environment."
+                        .to_owned(),
+                );
             }
             let environment_id: String = transaction
                 .query_row(
@@ -725,6 +953,72 @@ impl XiaoRepository {
             })
             .collect()
         })
+    }
+}
+pub(crate) fn task_execution_binding_matches(
+    connection: &Connection,
+    workspace_id: i64,
+    task_id: &str,
+    execution_environment_id: &str,
+    managed_worktree_id: Option<&str>,
+) -> Result<Option<bool>, String> {
+    connection
+        .query_row(
+            r#"SELECT t.execution_environment_id, t.managed_worktree_id, m.status
+             FROM tasks t
+             LEFT JOIN managed_worktrees m ON m.id = t.managed_worktree_id
+             WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
+            params![workspace_id, task_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map(|binding| {
+            binding.map(|(environment_id, worktree_id, worktree_status)| {
+                environment_id.as_deref() == Some(execution_environment_id)
+                    && worktree_id.as_deref() == managed_worktree_id
+                    && (worktree_id.is_none() || worktree_status.as_deref() == Some("active"))
+            })
+        })
+        .map_err(|error| format!("Could not validate task execution binding: {error}"))
+}
+
+fn report_orphaned_artifact_cleanup(app_data_dir: &Path, connection: &Connection) {
+    let owned_relative_paths = (|| {
+        let mut statement = connection
+            .prepare("SELECT relative_storage_path FROM artifacts")
+            .map_err(|error| format!("Could not prepare Xiao artifact cleanup: {error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not query Xiao artifact cleanup: {error}"))?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(|error| format!("Could not decode Xiao artifact cleanup: {error}"))
+    })();
+    let result = owned_relative_paths.and_then(|owned_relative_paths| {
+        ArtifactStore::open(app_data_dir)?.reconcile_owned_files(&owned_relative_paths)
+    });
+    if let Err(error) = result {
+        eprintln!("Xiao verification artifact cleanup failed: {error}");
+    }
+}
+
+fn cleanup_removed_artifact_runs(app_data_dir: &Path, run_ids: &[String]) {
+    if run_ids.is_empty() {
+        return;
+    }
+    let result = ArtifactStore::open(app_data_dir).and_then(|store| {
+        for run_id in run_ids {
+            store.remove_run(run_id)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        eprintln!("Xiao removed-run artifact cleanup failed: {error}");
     }
 }
 
@@ -828,6 +1122,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         ),
         (3_i64, "native_durable_run_queue", MIGRATION_3_SQL),
         (4_i64, "native_durable_routines", MIGRATION_4_SQL),
+        (5_i64, "native_verification_domain", MIGRATION_5_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -1255,6 +1550,7 @@ fn prepare_legacy_document(document: &mut XiaoWorkspaceDocument) {
         task.timeline_complete = true;
         task.timeline_start = 0;
         task.timeline_entry_count = task.timeline.len();
+        task.acceptance_contract = None;
         task.execution_environment_id = None;
         task.workspace_mode = XiaoWorkspaceMode::Local;
         task.managed_worktree_id = None;
@@ -1265,23 +1561,24 @@ fn save_workspace_update(
     connection: &mut Connection,
     update: XiaoWorkspaceUpdate,
     fail_before_commit: bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start Xiao workspace update: {error}"))?;
-    apply_workspace_update(&transaction, update)?;
+    let removed_run_ids = apply_workspace_update(&transaction, update)?;
     if fail_before_commit {
         return Err("Injected failure before Xiao workspace commit.".to_owned());
     }
     transaction
         .commit()
-        .map_err(|error| format!("Could not commit Xiao workspace update: {error}"))
+        .map_err(|error| format!("Could not commit Xiao workspace update: {error}"))?;
+    Ok(removed_run_ids)
 }
 
 fn apply_workspace_update(
     transaction: &Transaction<'_>,
     mut update: XiaoWorkspaceUpdate,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     update.workspace_path = normalize_workspace_path(&update.workspace_path);
     validate_update(&update)?;
 
@@ -1301,6 +1598,7 @@ fn apply_workspace_update(
     let workspace_id = workspace_id(transaction, &update.workspace_path)?;
     let environment = ensure_local_environment(transaction, workspace_id, &update.workspace_path)?;
     let existing_task_ids = task_ids(transaction, workspace_id)?;
+    let mut removed_run_ids = Vec::new();
 
     for task in &mut update.tasks {
         prepare_task_for_save(task)?;
@@ -1359,6 +1657,19 @@ fn apply_workspace_update(
                 "Clean up Xiao-managed worktrees before removing task `{existing_id}`."
             ));
         }
+        let mut statement = transaction
+            .prepare("SELECT id FROM runs WHERE workspace_id = ?1 AND task_id = ?2 ORDER BY id")
+            .map_err(|error| format!("Could not prepare removed Xiao runs: {error}"))?;
+        let rows = statement
+            .query_map(params![workspace_id, existing_id], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| format!("Could not query removed Xiao runs: {error}"))?;
+        removed_run_ids.extend(
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not decode removed Xiao runs: {error}"))?,
+        );
+        drop(statement);
         transaction
             .execute(
                 "DELETE FROM tasks WHERE workspace_id = ?1 AND task_id = ?2",
@@ -1411,7 +1722,7 @@ fn apply_workspace_update(
             ],
         )
         .map_err(|error| format!("Could not update Xiao workspace record: {error}"))?;
-    Ok(())
+    Ok(removed_run_ids)
 }
 
 fn validate_update(update: &XiaoWorkspaceUpdate) -> Result<(), String> {
@@ -1692,7 +2003,8 @@ fn load_task_metadata(
                 t.follow_ups_json, t.archived, t.pinned, t.unread, t.model,
                 t.reasoning_effort, t.thread_binding_json, t.mode, t.approval_policy,
                 t.sandbox_mode, t.goal_json, t.plan_json, t.timeline_entry_count,
-                t.execution_environment_id, t.workspace_mode, t.managed_worktree_id
+                t.execution_environment_id, t.workspace_mode, t.managed_worktree_id,
+                t.acceptance_contract_version_id
              FROM tasks t WHERE t.workspace_id = ?1 ORDER BY t.position ASC"#,
         )
         .map_err(|error| format!("Could not prepare Xiao task load: {error}"))?;
@@ -1720,15 +2032,27 @@ fn load_task_metadata(
                 execution_environment_id: row.get(18)?,
                 workspace_mode: row.get(19)?,
                 managed_worktree_id: row.get(20)?,
+                acceptance_contract_version_id: row.get(21)?,
             })
         })
         .map_err(|error| format!("Could not query Xiao tasks: {error}"))?;
 
-    rows.map(|row| {
-        row.map_err(|error| format!("Could not decode Xiao task row: {error}"))?
-            .into_document()
-    })
-    .collect()
+    let stored = rows
+        .map(|row| row.map_err(|error| format!("Could not decode Xiao task row: {error}")))
+        .collect::<Result<Vec<_>, String>>()?;
+    drop(statement);
+    stored
+        .into_iter()
+        .map(|row| {
+            let acceptance_contract = load_optional_acceptance_contract_version_from_connection(
+                connection,
+                workspace_id,
+                row.acceptance_contract_version_id.as_deref(),
+            )?
+            .map(|record| record.summary);
+            row.into_document(acceptance_contract)
+        })
+        .collect()
 }
 
 struct StoredTaskRow {
@@ -1753,10 +2077,14 @@ struct StoredTaskRow {
     execution_environment_id: Option<String>,
     workspace_mode: String,
     managed_worktree_id: Option<String>,
+    acceptance_contract_version_id: Option<String>,
 }
 
 impl StoredTaskRow {
-    fn into_document(self) -> Result<XiaoTaskDocument, String> {
+    fn into_document(
+        self,
+        acceptance_contract: Option<AcceptanceContractVersionSummary>,
+    ) -> Result<XiaoTaskDocument, String> {
         let timeline_entry_count = to_usize(self.timeline_entry_count, "timeline entry count")?;
         Ok(XiaoTaskDocument {
             id: self.id,
@@ -1779,6 +2107,7 @@ impl StoredTaskRow {
             approval_policy: self.approval_policy,
             sandbox_mode: self.sandbox_mode,
             goal: parse_optional_json(self.goal_json.as_deref(), "task goal")?,
+            acceptance_contract,
             timeline: Vec::new(),
             timeline_loaded: false,
             timeline_complete: false,
@@ -2170,6 +2499,7 @@ fn canonical_document_hash(document: &XiaoWorkspaceDocument) -> Result<String, S
         task.timeline_complete = true;
         task.timeline_start = 0;
         task.timeline_entry_count = task.timeline.len();
+        task.acceptance_contract = None;
         task.execution_environment_id = None;
         task.workspace_mode = XiaoWorkspaceMode::Local;
         task.managed_worktree_id = None;
@@ -2197,6 +2527,7 @@ fn remove_empty_bootstrap_tasks(document: &mut XiaoWorkspaceDocument) {
                 && task.approval_policy == "on-request"
                 && task.sandbox_mode == "workspace-write"
                 && task.goal.is_none()
+                && task.acceptance_contract.is_none()
                 && task.draft_text.trim().is_empty()
                 && task.follow_ups.is_empty()
                 && task.timeline.is_empty()
@@ -2370,6 +2701,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::verification::models::{AcceptanceContractDraft, AcceptanceGate};
 
     static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -2437,6 +2769,7 @@ mod tests {
             approval_policy: "on-request".to_owned(),
             sandbox_mode: "workspace-write".to_owned(),
             goal: None,
+            acceptance_contract: None,
             timeline,
             timeline_loaded: true,
             timeline_complete: true,
@@ -2477,6 +2810,7 @@ mod tests {
                 task.remove("timelineComplete");
                 task.remove("timelineStart");
                 task.remove("timelineEntryCount");
+                task.remove("acceptanceContract");
                 task.remove("executionEnvironmentId");
                 task.remove("workspaceMode");
                 task.remove("managedWorktreeId");
@@ -2510,6 +2844,102 @@ mod tests {
             })
             .unwrap()
             .unwrap()
+    }
+
+    #[test]
+    fn repository_startup_reconciles_persisted_artifact_paths() {
+        let directory = TestDirectory::new("artifact-startup-sweep");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let store = ArtifactStore::open(&directory.path).unwrap();
+        let retained_value = serde_json::json!({"retained": true});
+        let retained = store
+            .write_json("retained-run", None, "retained-artifact", &retained_value)
+            .unwrap();
+        let stray = store
+            .write_json(
+                "retained-run",
+                None,
+                "stray-artifact",
+                &serde_json::json!({"stray": true}),
+            )
+            .unwrap();
+        let orphaned = store
+            .write_json(
+                "orphaned-run",
+                None,
+                "orphaned-artifact",
+                &serde_json::json!({"orphaned": true}),
+            )
+            .unwrap();
+        let artifact_root = directory.path.join("verification-artifacts");
+        let retained_path = artifact_root.join(&retained.relative_storage_path);
+        let stray_path = artifact_root.join(&stray.relative_storage_path);
+        let orphaned_path = artifact_root.join(&orphaned.relative_storage_path);
+        let temporary_path = retained_path.parent().unwrap().join(".publish.tmp");
+        fs::write(&temporary_path, b"partial").unwrap();
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute_batch(
+                        r#"
+                        INSERT INTO workspaces(
+                            id, workspace_path, show_archived, updated_at
+                        ) VALUES (1, 'artifact-test-workspace', 0, 1);
+                        INSERT INTO tasks(
+                            workspace_id, task_id, position, title, created_at, updated_at,
+                            draft_text, follow_ups_json, archived, pinned, unread, mode,
+                            approval_policy, sandbox_mode
+                        ) VALUES (
+                            1, 'task', 0, 'Task', 1, 1, '', '[]', 0, 0, 0, 'default',
+                            'on-request', 'workspace-write'
+                        );
+                        INSERT INTO runs(
+                            id, workspace_id, task_id, idempotency_key, status, agent_outcome,
+                            verification_outcome, execution_root, queued_at
+                        ) VALUES (
+                            'retained-run', 1, 'task', 'artifact-startup-sweep', 'completed',
+                            'completed', 'passed', 'artifact-test-workspace', 1
+                        );
+                        "#,
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO artifacts(
+                            id, run_id, verification_attempt_id, relative_storage_path,
+                            media_type, byte_length, sha256, retention_class, created_at
+                        ) VALUES (?1, 'retained-run', NULL, ?2, 'application/json', ?3, ?4,
+                            'verification_baseline', 1)"#,
+                        params![
+                            "retained-artifact",
+                            retained.relative_storage_path,
+                            i64::try_from(retained.byte_length).unwrap(),
+                            retained.sha256,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        drop(repository);
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+
+        assert_eq!(
+            store
+                .read_json::<Value>(
+                    &retained.relative_storage_path,
+                    retained.byte_length,
+                    &retained.sha256,
+                )
+                .unwrap(),
+            retained_value
+        );
+        assert!(retained_path.is_file());
+        assert!(!stray_path.exists());
+        assert!(!temporary_path.exists());
+        assert!(!orphaned_path.exists());
+        drop(repository);
     }
 
     #[test]
@@ -2568,6 +2998,27 @@ mod tests {
                             |row| row.get(0),
                         )
                         .map_err(|error| error.to_string())?;
+                    let verification_tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('acceptance_contract_versions', 'verification_attempts', 'gate_results', 'artifacts', 'evidence')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let verification_run_columns: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('runs') WHERE name IN ('acceptance_contract_source_version_id', 'acceptance_contract_snapshot_json', 'acceptance_contract_snapshot_sha256', 'verification_baseline_state', 'verification_baseline_artifact_id', 'verification_baseline_diagnostic', 'latest_verification_attempt_id')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let contract_binding_columns: i64 = connection
+                        .query_row(
+                            "SELECT (SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'acceptance_contract_version_id') + (SELECT COUNT(*) FROM pragma_table_info('routines') WHERE name = 'acceptance_contract_version_id')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
                     assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
                     assert_eq!(foreign_keys, 1);
                     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
@@ -2577,6 +3028,9 @@ mod tests {
                     assert_eq!(run_generation_columns, 5);
                     assert_eq!(routine_tables, 2);
                     assert_eq!(routine_run_column, 1);
+                    assert_eq!(verification_tables, 5);
+                    assert_eq!(verification_run_columns, 7);
+                    assert_eq!(contract_binding_columns, 2);
                     Ok(())
                 })
                 .unwrap();
@@ -2591,6 +3045,221 @@ mod tests {
                     })
                     .map_err(|error| error.to_string())?;
                 assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn verification_schema_enforces_contract_and_attempt_invariants() {
+        let directory = TestDirectory::new("verification-invariants");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+
+        repository
+            .with_connection(|connection| {
+                let workspace_id = workspace_id(
+                    connection,
+                    &normalize_workspace_path(&workspace.to_string_lossy()),
+                )?;
+                let environment_id: String = connection
+                    .query_row(
+                        "SELECT execution_environment_id FROM tasks WHERE workspace_id = ?1 AND task_id = 'task'",
+                        [workspace_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let gates_json = serde_json::to_string(&serde_json::json!([{
+                    "type": "cleanliness",
+                    "allowStaged": false,
+                    "allowUnstaged": false,
+                    "allowUntracked": false
+                }]))
+                .unwrap();
+                let content_sha256 = "a".repeat(64);
+                connection
+                    .execute(
+                        r#"INSERT INTO acceptance_contract_versions(
+                            version_id, contract_id, workspace_id, version, schema_version,
+                            name, gates_json, content_sha256, created_at, updated_at
+                         ) VALUES ('contract-v1', 'contract', ?1, 1, 1, 'Verify', ?2, ?3, 1, 1)"#,
+                        params![workspace_id, gates_json, content_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert!(connection
+                    .execute(
+                        r#"INSERT INTO acceptance_contract_versions(
+                            version_id, contract_id, workspace_id, version, schema_version,
+                            name, gates_json, content_sha256, created_at, updated_at
+                         ) VALUES ('contract-v3', 'contract', ?1, 3, 1, 'Skipped', ?2, ?3, 1, 1)"#,
+                        params![workspace_id, gates_json, content_sha256],
+                    )
+                    .is_err());
+                connection
+                    .execute(
+                        r#"INSERT INTO acceptance_contract_versions(
+                            version_id, contract_id, workspace_id, version, schema_version,
+                            name, gates_json, content_sha256, created_at, updated_at
+                         ) VALUES ('contract-v2', 'contract', ?1, 2, 1, 'Verify again', ?2, ?3, 2, 2)"#,
+                        params![workspace_id, gates_json, content_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert!(connection
+                    .execute(
+                        "UPDATE acceptance_contract_versions SET name = 'Changed' WHERE version_id = 'contract-v1'",
+                        [],
+                    )
+                    .is_err());
+                assert!(connection
+                    .execute(
+                        "DELETE FROM acceptance_contract_versions WHERE version_id = 'contract-v2'",
+                        [],
+                    )
+                    .is_err());
+                connection
+                    .execute(
+                        "UPDATE tasks SET acceptance_contract_version_id = 'contract-v1' WHERE workspace_id = ?1 AND task_id = 'task'",
+                        [workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert!(connection
+                    .execute(
+                        "UPDATE tasks SET acceptance_contract_version_id = 'missing' WHERE workspace_id = ?1 AND task_id = 'task'",
+                        [workspace_id],
+                    )
+                    .is_err());
+
+                connection
+                    .execute(
+                        r#"INSERT INTO runs(
+                            id, workspace_id, task_id, idempotency_key, status,
+                            agent_outcome, verification_outcome, execution_root,
+                            queued_at, version, execution_environment_id
+                         ) VALUES (
+                            'run', ?1, 'task', 'run-key', 'completed', 'completed',
+                            'pending', ?2, 3, 0, ?3
+                         )"#,
+                        params![workspace_id, workspace.to_string_lossy(), environment_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let contract_snapshot = r#"{"schemaVersion":1,"name":"Verify","gates":[{"type":"cleanliness","allowStaged":false,"allowUnstaged":false,"allowUntracked":false}]}"#;
+                connection
+                    .execute(
+                        r#"INSERT INTO verification_attempts(
+                            id, run_id, request_key, attempt_number, trigger,
+                            contract_snapshot_json, contract_snapshot_sha256,
+                            expected_gate_count, status, diagnostic, started_at,
+                            finished_at, updated_at, version
+                         ) VALUES (
+                            'attempt-1', 'run', 'request-1', 1, 'initial', ?1, ?2,
+                            1, 'running', NULL, 10, NULL, 10, 0
+                         )"#,
+                        params![contract_snapshot, content_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert!(connection
+                    .execute(
+                        r#"INSERT INTO verification_attempts(
+                            id, run_id, request_key, attempt_number, trigger,
+                            contract_snapshot_json, contract_snapshot_sha256,
+                            expected_gate_count, status, diagnostic, started_at,
+                            finished_at, updated_at, version
+                         ) VALUES (
+                            'attempt-running-2', 'run', 'request-2', 2, 'rerun', ?1, ?2,
+                            1, 'running', NULL, 11, NULL, 11, 0
+                         )"#,
+                        params![contract_snapshot, content_sha256],
+                    )
+                    .is_err());
+                connection
+                    .execute(
+                        r#"INSERT INTO verification_attempts(
+                            id, run_id, request_key, attempt_number, trigger,
+                            contract_snapshot_json, contract_snapshot_sha256,
+                            expected_gate_count, status, diagnostic, started_at,
+                            finished_at, updated_at, version
+                         ) VALUES (
+                            'attempt-2', 'run', 'request-2', 2, 'rerun', ?1, ?2,
+                            1, 'failed', NULL, 11, 12, 12, 0
+                         )"#,
+                        params![contract_snapshot, content_sha256],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO gate_results(
+                            id, verification_attempt_id, gate_index, gate_type, outcome,
+                            duration_ms, exit_code, diagnostic, started_at, finished_at
+                         ) VALUES (
+                            'gate-result', 'attempt-2', 0, 'cleanliness', 'failed',
+                            1, NULL, NULL, 11, 12
+                         )"#,
+                        [],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO artifacts(
+                            id, run_id, verification_attempt_id, relative_storage_path,
+                            media_type, byte_length, sha256, retention_class, created_at
+                         ) VALUES (
+                            'baseline-artifact', 'run', 'attempt-1', 'runs/run/baseline.json',
+                            'application/json', 2, ?1, 'verification_baseline', 10
+                         )"#,
+                        [content_sha256.clone()],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO evidence(
+                            id, run_id, verification_attempt_id, gate_result_id,
+                            evidence_type, summary_json, artifact_id, redaction_state, created_at
+                         ) VALUES (
+                            'evidence', 'run', 'attempt-2', 'gate-result',
+                            'cleanliness', '{}', NULL, 'safe', 12
+                         )"#,
+                        [],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"UPDATE runs SET latest_verification_attempt_id = 'attempt-2',
+                            verification_baseline_state = 'ready',
+                            verification_baseline_artifact_id = 'baseline-artifact'
+                         WHERE id = 'run'"#,
+                        [],
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert!(connection
+                    .execute(
+                        "UPDATE runs SET latest_verification_attempt_id = 'missing' WHERE id = 'run'",
+                        [],
+                    )
+                    .is_err());
+                let foreign_key_errors: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(foreign_key_errors, 0);
+                connection
+                    .execute("DELETE FROM workspaces WHERE id = ?1", [workspace_id])
+                    .map_err(|error| error.to_string())?;
+                for table in [
+                    "acceptance_contract_versions",
+                    "verification_attempts",
+                    "gate_results",
+                    "artifacts",
+                    "evidence",
+                ] {
+                    let count: i64 = connection
+                        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                        .map_err(|error| error.to_string())?;
+                    assert_eq!(count, 0, "{table} should cascade with workspace deletion");
+                }
                 Ok(())
             })
             .unwrap();
@@ -2749,6 +3418,127 @@ mod tests {
     }
 
     #[test]
+    fn schema_v4_upgrade_adds_native_verification_state_to_existing_runs() {
+        let directory = TestDirectory::new("schema-v4-verification-upgrade");
+        let workspace = directory.workspace("workspace");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO workspaces(
+                        id, workspace_path, active_task_id, show_archived, updated_at
+                     ) VALUES (1, ?1, 'task', 0, 2)"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO tasks(
+                        workspace_id, task_id, position, title, created_at, updated_at,
+                        draft_text, follow_ups_json, archived, pinned, unread, model,
+                        reasoning_effort, thread_binding_json, mode, approval_policy,
+                        sandbox_mode, goal_json, plan_json, timeline_sha256,
+                        timeline_entry_count
+                     ) VALUES (
+                        1, 'task', 0, 'Task', 1, 2, '', '[]', 0, 0, 0,
+                        NULL, NULL, NULL, 'default', 'on-request', 'workspace-write',
+                        NULL, NULL, NULL, 0
+                     )"#,
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            connection.execute_batch(MIGRATION_3_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (3, 'v3', 3)",
+                    [],
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_4_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (4, 'v4', 4)",
+                    [],
+                )
+                .unwrap();
+            let environment_id: String = connection
+                .query_row("SELECT id FROM execution_environments", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO runs(
+                        id, workspace_id, task_id, idempotency_key, status,
+                        agent_outcome, verification_outcome, execution_root,
+                        queued_at, version, execution_environment_id
+                     ) VALUES (
+                        'existing-run', 1, 'task', 'existing-key', 'queued',
+                        'pending', 'not_requested', ?1, 3, 0, ?2
+                     )"#,
+                    params![workspace.to_string_lossy(), environment_id],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let run = repository.get_run("existing-run").unwrap();
+        assert_eq!(run.acceptance_contract_source_version_id, None);
+        assert_eq!(run.acceptance_contract_snapshot, None);
+        assert_eq!(run.acceptance_contract_snapshot_sha256, None);
+        assert_eq!(
+            run.verification_baseline_state,
+            crate::verification::models::VerificationBaselineState::NotRequired
+        );
+        assert_eq!(run.verification_baseline_artifact_id, None);
+        assert_eq!(run.verification_baseline_diagnostic, None);
+        assert_eq!(run.latest_verification_attempt_id, None);
+        repository
+            .with_connection(|connection| {
+                let versions: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                let foreign_key_errors: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                assert_eq!(foreign_key_errors, 0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn schema_v2_upgrade_preserves_existing_run_and_backfills_native_queue_fields() {
         let directory = TestDirectory::new("schema-v2-upgrade");
         let workspace = directory.path.join("workspace");
@@ -2842,6 +3632,14 @@ mod tests {
         assert_eq!(run.prompt, "");
         assert!(!run.cancel_requested);
         assert_eq!(run.routine_occurrence_id, None);
+        assert_eq!(run.acceptance_contract_source_version_id, None);
+        assert_eq!(run.acceptance_contract_snapshot, None);
+        assert_eq!(run.acceptance_contract_snapshot_sha256, None);
+        assert_eq!(
+            run.verification_baseline_state,
+            crate::verification::models::VerificationBaselineState::NotRequired
+        );
+        assert_eq!(run.latest_verification_attempt_id, None);
         assert_eq!(
             repository
                 .allocate_runtime_generation(&environment_id)
@@ -2968,6 +3766,7 @@ mod tests {
         assert_eq!(loaded_task.approval_policy, "untrusted");
         assert_eq!(loaded_task.sandbox_mode, "read-only");
         assert!(loaded_task.goal.is_some());
+        assert_eq!(loaded_task.acceptance_contract, None);
         assert!(loaded_task.plan.is_some());
         assert_eq!(loaded_task.timeline.len(), 3);
         assert!(loaded_task.timeline_complete);
@@ -2975,6 +3774,64 @@ mod tests {
         assert!(loaded_task.execution_environment_id.is_some());
         assert_eq!(loaded_task.workspace_mode, XiaoWorkspaceMode::Local);
         assert_eq!(loaded_task.managed_worktree_id, None);
+    }
+
+    #[test]
+    fn stale_generic_workspace_save_preserves_native_task_contract_pointer() {
+        let directory = TestDirectory::new("stale-task-contract");
+        let workspace = directory.workspace("workspace");
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        let original = AcceptanceContractDraft {
+            name: "Verify".to_owned(),
+            gates: vec![AcceptanceGate::Cleanliness {
+                allow_staged: false,
+                allow_unstaged: false,
+                allow_untracked: false,
+            }],
+        };
+        let version_one = repository
+            .save_task_acceptance_contract(&workspace_path, "task", None, Some(&original))
+            .unwrap()
+            .unwrap();
+        let stale = full_workspace(&repository, &workspace);
+        assert_eq!(
+            stale.tasks[0].acceptance_contract.as_ref(),
+            Some(&version_one)
+        );
+
+        let changed = AcceptanceContractDraft {
+            name: "Verify changed".to_owned(),
+            gates: original.gates.clone(),
+        };
+        let version_two = repository
+            .save_task_acceptance_contract(
+                &workspace_path,
+                "task",
+                Some(&version_one.version_id),
+                Some(&changed),
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(version_two.version_id, version_one.version_id);
+
+        repository.save_workspace(update(stale)).unwrap();
+        let mut cleared = full_workspace(&repository, &workspace);
+        assert_eq!(
+            cleared.tasks[0].acceptance_contract.as_ref(),
+            Some(&version_two)
+        );
+        cleared.tasks[0].acceptance_contract = None;
+        repository.save_workspace(update(cleared)).unwrap();
+        assert_eq!(
+            full_workspace(&repository, &workspace).tasks[0]
+                .acceptance_contract
+                .as_ref(),
+            Some(&version_two)
+        );
     }
 
     #[test]

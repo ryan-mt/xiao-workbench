@@ -9,6 +9,7 @@ type ChangesPanelProps = {
   workspace: WorkspaceSnapshot;
   taskId: string | null;
   transitioning: boolean;
+  workspaceActionable: boolean;
   onRefresh: () => void;
 };
 
@@ -21,6 +22,7 @@ export function ChangesPanel({
   workspace,
   taskId,
   transitioning,
+  workspaceActionable,
   onRefresh,
 }: ChangesPanelProps) {
   const git = workspace.git;
@@ -37,7 +39,7 @@ export function ChangesPanel({
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const blocked = busy || transitioning;
+  const blocked = busy || transitioning || !workspaceActionable;
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<string | null>(null);
   const visibleGit = baseBranch ? comparison : git;
@@ -60,18 +62,18 @@ export function ChangesPanel({
     setBaseBranch("");
     setComparison(null);
     setBranchError(null);
-    if (!git) return;
+    if (!git || !workspaceActionable) return;
     void nativeBridge.getGitBranches(workspace.path, taskId).then((items) => {
       if (!cancelled) setBranches(items);
     }).catch((reason) => {
       if (!cancelled) setBranchError(reason instanceof Error ? reason.message : String(reason));
     });
     return () => { cancelled = true; };
-  }, [git?.branch, taskId, workspace.path]);
+  }, [git?.branch, taskId, workspace.path, workspaceActionable]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!git || !baseBranch) {
+    if (!git || !baseBranch || !workspaceActionable) {
       setComparison(null);
       setComparisonLoading(false);
       setComparisonError(null);
@@ -90,10 +92,10 @@ export function ChangesPanel({
       if (!cancelled) setComparisonLoading(false);
     });
     return () => { cancelled = true; };
-  }, [baseBranch, git, taskId, workspace.path]);
+  }, [baseBranch, git, taskId, workspace.path, workspaceActionable]);
 
   const refreshWorktrees = async () => {
-    if (!git) return;
+    if (!git || !workspaceActionable) return;
     try {
       setWorktrees(await nativeBridge.getGitWorktrees(workspace.path, taskId));
     } catch (reason) {
@@ -101,14 +103,20 @@ export function ChangesPanel({
     }
   };
 
-  useEffect(() => { void refreshWorktrees(); }, [workspace.path, taskId, Boolean(git)]);
+  useEffect(() => {
+    if (!workspaceActionable) {
+      setWorktrees([]);
+      return;
+    }
+    void refreshWorktrees();
+  }, [workspace.path, taskId, Boolean(git), workspaceActionable]);
 
   const runAction = async (
     action: "commit" | "discard" | "stage" | "stage-all" | "switch" | "unstage",
     paths: string[] = [],
     message?: string,
   ) => {
-    if (transitioning) return;
+    if (blocked) return;
     setBusy(true);
     setActionError(null);
     setActionResult(null);
@@ -137,7 +145,7 @@ export function ChangesPanel({
   };
 
   const createWorktree = async () => {
-    if (transitioning) return;
+    if (blocked) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -154,7 +162,7 @@ export function ChangesPanel({
   };
 
   const createDraftPr = async () => {
-    if (transitioning) return;
+    if (blocked) return;
     if (!window.confirm("Create a draft pull request for the current branch using GitHub CLI?")) return;
     setBusy(true);
     setActionError(null);
@@ -206,7 +214,7 @@ export function ChangesPanel({
           <span className="is-add">+{visibleGit?.changes.reduce((sum, change) => sum + change.additions, 0) ?? 0}</span>
           <span className="is-delete">-{visibleGit?.changes.reduce((sum, change) => sum + change.deletions, 0) ?? 0}</span>
         </div>
-        <button className="icon-button" type="button" aria-label="Refresh changes" disabled={blocked} onClick={onRefresh}><XiaoIcon name="refresh" size={14} /></button>
+        <button className="icon-button" type="button" aria-label="Refresh changes" disabled={blocked} onClick={() => { if (!blocked) onRefresh(); }}><XiaoIcon name="refresh" size={14} /></button>
       </header>
 
       {comparisonLoading ? (
@@ -216,10 +224,10 @@ export function ChangesPanel({
       ) : visibleGit?.changes.length ? (
         <div className="changes-review__workspace">
           <aside className="change-file-browser">
-            <label><XiaoIcon name="search" size={14} /><input value={query} placeholder="Filter changed files" onChange={(event) => setQuery(event.target.value)} />{query && <button type="button" onClick={() => setQuery("")} aria-label="Clear change filter"><XiaoIcon name="close" size={11} /></button>}</label>
+            <label><XiaoIcon name="search" size={14} /><input value={query} placeholder="Filter changed files" disabled={blocked} onChange={(event) => setQuery(event.target.value)} />{query && <button type="button" disabled={blocked} onClick={() => setQuery("")} aria-label="Clear change filter"><XiaoIcon name="close" size={11} /></button>}</label>
             <div className="change-file-browser__list">
               {filteredChanges.map((change) => (
-                <button className={change.path === selectedChange?.path ? "is-active" : undefined} key={change.path} title={change.path} onClick={() => setSelectedPath(change.path)}>
+                <button className={change.path === selectedChange?.path ? "is-active" : undefined} key={change.path} title={change.path} disabled={blocked} onClick={() => setSelectedPath(change.path)}>
                   <span className={`change-file-browser__status is-${change.status}`}>{change.status[0].toUpperCase()}</span>
                   <FileTypeIcon path={change.path} size={15} />
                   <span className="change-file-browser__path"><small>{directory(change.path)}</small><strong>{fileName(change.path)}</strong></span>
@@ -267,8 +275,8 @@ export function ChangesPanel({
       <details className="repository-drawer">
         <summary><span><XiaoIcon name="branch" size={14} /><strong>Repository actions</strong></span><small>{worktrees.length} {worktrees.length === 1 ? "worktree" : "worktrees"}</small><XiaoIcon name="caret" size={12} /></summary>
         <div>
-          <section><label htmlFor="xiao-commit-message">Commit staged changes</label><div><input id="xiao-commit-message" value={commitMessage} placeholder="Commit message" onChange={(event) => setCommitMessage(event.target.value)} /><button className="button button--primary" disabled={blocked || !commitMessage.trim()} onClick={() => void runAction("commit", [], commitMessage)}>Commit</button></div></section>
-          <section><label htmlFor="xiao-branch-name">Branch or manual worktree (not Xiao-managed)</label><div><input id="xiao-branch-name" value={branchName} placeholder="Branch name" onChange={(event) => setBranchName(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || workspace.execution.workspaceMode === "managed-worktree"} title={workspace.execution.workspaceMode === "managed-worktree" ? "Branch switching is disabled in Xiao-managed worktrees" : undefined} onClick={() => void runAction("switch", [], branchName)}>Switch</button></div><div><input value={worktreePath} placeholder="New worktree path" onChange={(event) => setWorktreePath(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || !worktreePath.trim()} onClick={() => void createWorktree()}>Add</button></div></section>
+          <section><label htmlFor="xiao-commit-message">Commit staged changes</label><div><input id="xiao-commit-message" value={commitMessage} placeholder="Commit message" disabled={blocked} onChange={(event) => setCommitMessage(event.target.value)} /><button className="button button--primary" disabled={blocked || !commitMessage.trim()} onClick={() => void runAction("commit", [], commitMessage)}>Commit</button></div></section>
+          <section><label htmlFor="xiao-branch-name">Branch or manual worktree (not Xiao-managed)</label><div><input id="xiao-branch-name" value={branchName} placeholder="Branch name" disabled={blocked} onChange={(event) => setBranchName(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || workspace.execution.workspaceMode === "managed-worktree"} title={workspace.execution.workspaceMode === "managed-worktree" ? "Branch switching is disabled in Xiao-managed worktrees" : undefined} onClick={() => void runAction("switch", [], branchName)}>Switch</button></div><div><input value={worktreePath} placeholder="New worktree path" disabled={blocked} onChange={(event) => setWorktreePath(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || !worktreePath.trim()} onClick={() => void createWorktree()}>Add</button></div></section>
           <button
             className="repository-drawer__pr"
             disabled={blocked || !taskId}

@@ -86,8 +86,10 @@ pub fn prepare_managed_task_environment(
     task_id: &str,
 ) -> Result<ExecutionContext, String> {
     let binding = repository.task_execution_binding(project_path, task_id)?;
-    if repository.task_has_active_runs(project_path, task_id)? {
-        return Err("Cancel active Xiao runs before changing the task environment.".to_owned());
+    if repository.task_has_run_owners(project_path, task_id)? {
+        return Err(
+            "Cancel queued or active Xiao runs before changing the task environment.".to_owned(),
+        );
     }
     if binding.workspace_mode != XiaoWorkspaceMode::Local || binding.managed_worktree.is_some() {
         return Err("The task already uses a managed worktree.".to_owned());
@@ -106,12 +108,7 @@ pub fn prepare_managed_task_environment(
         }
     }
     let common_hash = path_sha256(&git.common_dir);
-    let managed_root = repository.app_data_dir().join("managed-worktrees");
-    fs::create_dir_all(&managed_root)
-        .map_err(|error| format!("Could not create managed worktree root: {error}"))?;
-    let managed_root = managed_root
-        .canonicalize()
-        .map_err(|error| format!("Could not canonicalize managed worktree root: {error}"))?;
+    let managed_root = managed_worktree_root(repository, true)?;
     let worktree_id = Uuid::now_v7().to_string();
     let workspace_key = sha256_hex(
         format!(
@@ -121,9 +118,20 @@ pub fn prepare_managed_task_environment(
         )
         .as_bytes(),
     );
-    let ownership_directory = managed_root.join(&workspace_key[..16]).join(&worktree_id);
-    if ownership_directory.exists() {
-        return Err("The generated managed worktree path already exists.".to_owned());
+    let workspace_directory = ensure_safe_managed_directory_components(
+        &managed_root,
+        Path::new(&workspace_key[..16]),
+        true,
+    )?;
+    let ownership_directory = workspace_directory.join(&worktree_id);
+    match fs::symlink_metadata(&ownership_directory) {
+        Ok(_) => return Err("The generated managed worktree path already exists.".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect generated managed worktree path: {error}"
+            ));
+        }
     }
     let checkout_path = ownership_directory.join("checkout");
     let execution_root = checkout_path.join(&git.workspace_relative);
@@ -137,11 +145,6 @@ pub fn prepare_managed_task_environment(
         execution_root: execution_root.clone(),
         marker_path: marker_path.clone(),
     };
-    let ownership_parent = ownership_directory
-        .parent()
-        .ok_or("Managed worktree ownership path has no parent.")?;
-    fs::create_dir_all(ownership_parent)
-        .map_err(|error| format!("Could not create managed workspace directory: {error}"))?;
     repository.begin_managed_worktree(NewManagedWorktreeRecord {
         id: worktree_id.clone(),
         workspace_id: binding.workspace_id,
@@ -226,8 +229,10 @@ pub fn remove_managed_task_environment(
     if !confirmed {
         return Err("Managed worktree cleanup requires explicit confirmation.".to_owned());
     }
-    if repository.task_has_active_runs(project_path, task_id)? {
-        return Err("Cancel active Xiao runs before changing the task environment.".to_owned());
+    if repository.task_has_run_owners(project_path, task_id)? {
+        return Err(
+            "Cancel queued or active Xiao runs before changing the task environment.".to_owned(),
+        );
     }
     let record = repository.begin_managed_worktree_removal(project_path, task_id, worktree_id)?;
     let binding = repository.task_execution_binding(project_path, task_id)?;
@@ -282,10 +287,7 @@ fn finalize_interrupted_removal(
     binding: &TaskExecutionBinding,
     record: &ManagedWorktreeRecord,
 ) -> Result<(), String> {
-    let managed_root = repository.app_data_dir().join("managed-worktrees");
-    let managed_root = managed_root
-        .canonicalize()
-        .map_err(|error| format!("Could not canonicalize managed root: {error}"))?;
+    let managed_root = managed_worktree_root(repository, false)?;
     let repository_root = canonical_directory(&record.repository_root, "repository")?;
     let git = inspect_git_repository(&repository_root)?;
     if path_sha256(&git.common_dir) != record.repository_common_dir_sha256 {
@@ -344,10 +346,7 @@ fn resume_or_clear_preparing(
     git: &GitRepositoryIdentity,
     record: &ManagedWorktreeRecord,
 ) -> Result<bool, String> {
-    let managed_root = repository.app_data_dir().join("managed-worktrees");
-    let managed_root = managed_root
-        .canonicalize()
-        .map_err(|error| format!("Could not canonicalize managed root: {error}"))?;
+    let managed_root = managed_worktree_root(repository, false)?;
     let checkout_path = PathBuf::from(&record.checkout_path);
     if !checkout_path.exists() {
         let ownership_path = PathBuf::from(&record.owner_marker_path)
@@ -639,10 +638,7 @@ fn expected_ownership_directory(
     repository: &XiaoRepository,
     record: &ManagedWorktreeRecord,
 ) -> Result<PathBuf, String> {
-    let managed_root = repository.app_data_dir().join("managed-worktrees");
-    let managed_root = managed_root
-        .canonicalize()
-        .map_err(|error| format!("Could not canonicalize managed root: {error}"))?;
+    let managed_root = managed_worktree_root(repository, false)?;
     let marker = PathBuf::from(&record.owner_marker_path);
     let ownership = marker
         .parent()
@@ -734,6 +730,85 @@ fn short_identifier(value: &str) -> String {
         "task".to_owned()
     } else {
         filtered
+    }
+}
+
+fn managed_worktree_root(
+    repository: &XiaoRepository,
+    create_missing: bool,
+) -> Result<PathBuf, String> {
+    let app_data_dir = repository
+        .app_data_dir()
+        .canonicalize()
+        .map_err(|error| format!("Could not canonicalize Xiao app data: {error}"))?;
+    if !app_data_dir.is_dir() {
+        return Err("The Xiao app-data path is not a directory.".to_owned());
+    }
+    ensure_safe_managed_directory_components(
+        &app_data_dir,
+        Path::new("managed-worktrees"),
+        create_missing,
+    )
+}
+
+fn ensure_safe_managed_directory_components(
+    root: &Path,
+    relative: &Path,
+    create_missing: bool,
+) -> Result<PathBuf, String> {
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|error| format!("Could not inspect managed directory root: {error}"))?;
+    if is_link_or_reparse(&root_metadata) || !root_metadata.is_dir() {
+        return Err("The managed directory root is unsafe.".to_owned());
+    }
+
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err("A managed directory path is unsafe.".to_owned());
+        }
+        current.push(component);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_missing => {
+                fs::create_dir(&current).map_err(|error| {
+                    format!("Could not create managed directory component: {error}")
+                })?;
+                fs::symlink_metadata(&current).map_err(|error| {
+                    format!("Could not inspect created managed directory component: {error}")
+                })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect managed directory component: {error}"
+                ));
+            }
+        };
+        if is_link_or_reparse(&metadata) || !metadata.is_dir() {
+            return Err("A managed directory component is a link or reparse point.".to_owned());
+        }
+    }
+
+    let canonical = current
+        .canonicalize()
+        .map_err(|error| format!("Could not canonicalize managed directory: {error}"))?;
+    ensure_canonical_below(root, &canonical)?;
+    Ok(canonical)
+}
+
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -836,6 +911,8 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    #[cfg(windows)]
+    use std::process::Stdio;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use serde_json::json;
@@ -892,6 +969,7 @@ mod tests {
             approval_policy: "on-request".to_owned(),
             sandbox_mode: "workspace-write".to_owned(),
             goal: None,
+            acceptance_contract: None,
             timeline: vec![json!({ "id": "entry", "kind": "user", "title": "test" })],
             timeline_loaded: true,
             timeline_complete: true,
@@ -932,6 +1010,35 @@ mod tests {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    struct WindowsJunction(PathBuf);
+
+    #[cfg(windows)]
+    impl WindowsJunction {
+        fn create(link: PathBuf, target: &Path) -> Self {
+            let status = Command::new("cmd")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(target)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "could not create Windows junction fixture"
+            );
+            Self(link)
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for WindowsJunction {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir(&self.0);
+        }
     }
 
     fn initialize_git(root: &Path, nested: &Path) {
@@ -1322,6 +1429,33 @@ mod tests {
             "outside baseline\n"
         );
         fs::remove_dir(&checkout).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn prepare_rejects_preexisting_managed_root_junction_without_touching_target() {
+        let directory = TestDirectory::new("managed-root-junction");
+        let repository_root = directory.0.join("repository");
+        let state = directory.0.join("state");
+        initialize_git(&repository_root, &repository_root);
+        let repository = XiaoRepository::open(&state).unwrap();
+        repository
+            .save_workspace(task_update(&repository_root, "task"))
+            .unwrap();
+
+        let outside = directory.0.join("outside-app-data");
+        fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel.txt");
+        fs::write(&sentinel, "outside sentinel").unwrap();
+        let _junction = WindowsJunction::create(state.join("managed-worktrees"), &outside);
+
+        let error =
+            prepare_managed_task_environment(&repository, &display_path(&repository_root), "task")
+                .unwrap_err();
+
+        assert!(error.contains("link or reparse point"), "{error}");
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "outside sentinel");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
     }
 
     #[test]

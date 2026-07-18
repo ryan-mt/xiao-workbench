@@ -1,5 +1,9 @@
 import type { RunSnapshot, RunStatus } from "./run";
 import type { XiaoWorkspaceMode } from "./xiao";
+import type {
+  AcceptanceContractDraft,
+  AcceptanceContractVersionSummary,
+} from "./verification";
 
 export type RoutineScheduleKind = "one_shot" | "daily";
 export type MissedRunPolicy = "skip" | "run_once";
@@ -20,6 +24,7 @@ export type RoutineSummary = {
   taskId: string;
   title: string;
   prompt: string;
+  acceptanceContract: AcceptanceContractVersionSummary | null;
   scheduleKind: RoutineScheduleKind;
   timezone: string;
   scheduledFor: number | null;
@@ -52,6 +57,7 @@ export type CreateRoutineRequest = {
   taskId: string;
   title: string;
   prompt: string;
+  acceptanceContract: AcceptanceContractDraft | null;
   scheduleKind: RoutineScheduleKind;
   timezone: string;
   scheduledFor: number | null;

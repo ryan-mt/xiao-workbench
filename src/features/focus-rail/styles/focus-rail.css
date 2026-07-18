@@ -310,12 +310,17 @@
 .routine-state--queued { background: var(--info); }
 .routine-state--preparing,
 .routine-state--running,
-.routine-state--verifying { background: var(--warning); }
+.routine-state--verifying,
+.routine-state--working,
+.routine-state--waiting { background: var(--warning); }
 .routine-state--waiting_for_input,
 .routine-state--needs_attention,
+.routine-state--attention,
 .routine-state--failed,
 .routine-state--interrupted { background: var(--danger); }
-.routine-state--completed { background: var(--success); }
+.routine-state--completed,
+.routine-state--verified { background: var(--success); }
+.routine-state--done,
 .routine-state--disabled,
 .routine-state--cancelled { background: var(--muted); }
 
@@ -356,11 +361,13 @@
 .routine-history { display: grid; gap: 7px; }
 .routine-history > strong { color: var(--text-soft); font-size: var(--text-micro); font-weight: 590; }
 .routine-history ol { display: grid; margin: 0; padding: 0; list-style: none; }
-.routine-history li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 7px 6px; border-bottom: 1px solid var(--line); }
+.routine-history li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 7px 6px; border-bottom: 1px solid var(--line); }
 .routine-history li:last-child { border-bottom: 0; }
 .routine-history li.is-target { border-radius: 6px; background: color-mix(in srgb, var(--info) 10%, transparent); }
 .routine-history li span { overflow: hidden; color: var(--text-soft); font-size: var(--text-micro); text-overflow: ellipsis; white-space: nowrap; }
 .routine-history li small { color: var(--muted); font-size: var(--text-micro); text-align: right; }
+.routine-history li > button { padding: 2px 0; border: 0; background: transparent; color: var(--muted-strong); font-size: var(--text-micro); }
+.routine-history li > button:hover { color: var(--text); text-decoration: underline; }
 .routine-history__empty { margin: 0 !important; color: var(--muted) !important; font-size: var(--text-micro) !important; }
 
 .routine-delete { justify-self: start; padding: 2px 0; border: 0; background: transparent; color: var(--danger); font-size: var(--text-micro); }
@@ -377,6 +384,407 @@
   .routine-card__actions { grid-template-columns: minmax(0, 1fr); }
   .routine-delete-confirm { align-items: stretch; flex-direction: column; }
   .routine-delete-confirm > div { justify-content: flex-end; }
+}
+
+.verification-panel {
+  gap: 0;
+}
+
+.acceptance-version {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--success) 30%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--success) 7%, var(--surface));
+}
+
+.acceptance-version > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--success);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+
+.acceptance-version > strong {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: var(--text-label);
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acceptance-version > small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  white-space: nowrap;
+}
+
+.acceptance-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.routine-form > .acceptance-editor {
+  margin-top: 2px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.acceptance-editor__heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acceptance-editor__heading > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.acceptance-editor__heading strong {
+  color: var(--text-soft);
+  font-size: var(--text-label);
+  font-weight: 610;
+}
+
+.acceptance-editor__heading small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.acceptance-editor__heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.acceptance-editor__heading-actions .button {
+  min-height: 27px;
+  padding: 0 8px;
+  font-size: var(--text-micro);
+}
+
+.acceptance-editor input:not([type="checkbox"]),
+.acceptance-editor textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-label);
+}
+
+.acceptance-editor textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  line-height: 1.45;
+}
+
+.acceptance-editor input::placeholder,
+.acceptance-editor textarea::placeholder {
+  color: var(--muted);
+}
+
+.acceptance-editor input:focus-visible,
+.acceptance-editor textarea:focus-visible {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 20%, transparent);
+}
+
+.acceptance-editor__name,
+.acceptance-gate__fields > label,
+.acceptance-gate__row > label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.acceptance-editor__name > span,
+.acceptance-gate__fields label > span,
+.acceptance-gate__row label > span {
+  color: var(--muted-strong);
+  font-size: var(--text-micro);
+  font-weight: 560;
+}
+
+.acceptance-gate__fields label > span small {
+  margin-left: 3px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.acceptance-editor__empty {
+  display: grid;
+  min-height: 82px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+}
+
+.acceptance-editor__empty > div {
+  display: grid;
+  gap: 3px;
+}
+
+.acceptance-editor__empty strong {
+  color: var(--text-soft);
+  font-size: var(--text-label);
+  font-weight: 590;
+}
+
+.acceptance-editor__empty small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.acceptance-editor__empty .button {
+  min-height: 29px;
+  padding: 0 9px;
+  font-size: var(--text-micro);
+}
+
+.acceptance-presets {
+  display: grid;
+  gap: 6px;
+}
+
+.acceptance-presets > span {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-weight: 560;
+}
+
+.acceptance-presets > div {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.acceptance-presets button {
+  display: grid;
+  min-height: 34px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--muted);
+  text-align: left;
+}
+
+.acceptance-presets button:last-child {
+  border-bottom: 0;
+}
+
+.acceptance-presets button:hover {
+  background: var(--surface-hover);
+}
+
+.acceptance-presets button strong {
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acceptance-presets button small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+}
+
+.acceptance-gates {
+  display: grid;
+  gap: 8px;
+}
+
+.acceptance-gate {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.acceptance-gate > header {
+  display: grid;
+  min-height: 36px;
+  grid-template-columns: auto minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 7px 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-deep);
+}
+
+.acceptance-gate > header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.acceptance-gate > header > strong {
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+
+.acceptance-gate > header > button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.acceptance-gate > header > button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.acceptance-gate__fields {
+  display: grid;
+  gap: 10px;
+  padding: 11px;
+}
+
+.acceptance-gate__row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 8px;
+}
+
+.acceptance-cleanliness {
+  display: grid;
+  gap: 1px;
+  padding: 7px;
+}
+
+.acceptance-cleanliness label {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 5px;
+  border-radius: 6px;
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+}
+
+.acceptance-cleanliness label:hover {
+  background: var(--surface-hover);
+}
+
+.acceptance-cleanliness input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.acceptance-editor__hint,
+.acceptance-editor__error,
+.acceptance-editor__confirmation {
+  margin: 0;
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.acceptance-editor__hint {
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+  color: var(--warning);
+}
+
+.acceptance-editor__error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.acceptance-editor__confirmation {
+  margin-top: 10px;
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+  color: var(--success);
+}
+
+.acceptance-editor__add {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.acceptance-editor__add .button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 7px;
+  font-size: var(--text-micro);
+}
+
+.acceptance-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 520px) {
+  .acceptance-version {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .acceptance-version > small {
+    grid-column: 1 / -1;
+  }
+  .acceptance-editor__heading,
+  .acceptance-editor__empty {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column;
+  }
+  .acceptance-editor__heading-actions {
+    justify-content: flex-start;
+  }
+  .acceptance-editor__empty > svg {
+    display: none;
+  }
+  .acceptance-gate__row,
+  .acceptance-editor__add {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .focus-tabs button {

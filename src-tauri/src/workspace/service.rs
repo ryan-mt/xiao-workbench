@@ -190,8 +190,14 @@ mod tests {
 
     #[test]
     fn snapshots_an_existing_workspace() {
-        let snapshot = snapshot_workspace(local_context()).unwrap();
-        assert_eq!(snapshot.name, "xiao");
+        let context = local_context();
+        let expected_name = std::path::Path::new(&context.project_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .to_owned();
+        let snapshot = snapshot_workspace(context).unwrap();
+        assert_eq!(snapshot.name, expected_name);
         assert!(!snapshot.files.is_empty());
     }
 

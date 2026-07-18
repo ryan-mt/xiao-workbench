@@ -3,7 +3,10 @@ use serde_json::{json, Value};
 
 use crate::runs::models::NewRun;
 use crate::runs::repository::{bounded_diagnostic, new_uuid_v7};
-use crate::xiao::repository::{normalize_workspace_path, XiaoRepository};
+use crate::verification::repository::save_or_clear_acceptance_contract_in_transaction;
+use crate::xiao::repository::{
+    normalize_workspace_path, task_execution_binding_matches, XiaoRepository,
+};
 
 use super::models::{
     MissedRunPolicy, NewRoutine, RoutineNotificationTarget, RoutineOccurrenceRecord,
@@ -26,7 +29,7 @@ SELECT
     r.sandbox_mode, r.goal_json, r.execution_environment_id, r.execution_root,
     r.managed_worktree_id, r.enabled, r.next_run_at, r.last_run_at,
     r.last_error, r.isolation_warning, r.version, r.created_at, r.updated_at,
-    r.deleted_at
+    r.deleted_at, r.acceptance_contract_version_id
 FROM routines r
 JOIN workspaces w ON w.id = r.workspace_id
 "#;
@@ -39,6 +42,16 @@ impl XiaoRepository {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| format!("Could not start Xiao routine creation: {error}"))?;
             validate_new_routine_task(&transaction, &routine)?;
+            let acceptance_contract = save_or_clear_acceptance_contract_in_transaction(
+                &transaction,
+                routine.workspace_id,
+                None,
+                routine.acceptance_contract.as_ref(),
+                routine.created_at,
+            )?;
+            let acceptance_contract_version_id = acceptance_contract
+                .as_ref()
+                .map(|record| record.summary.version_id.as_str());
             let payload = json_string(&routine.schedule_payload, "routine schedule")?;
             let goal = optional_json_string(routine.goal.as_ref(), "routine goal")?;
             transaction
@@ -50,11 +63,12 @@ impl XiaoRepository {
                         sandbox_mode, goal_json, execution_environment_id,
                         execution_root, managed_worktree_id, enabled, next_run_at,
                         last_run_at, last_error, isolation_warning, version,
-                        created_at, updated_at, deleted_at
+                        created_at, updated_at, deleted_at,
+                        acceptance_contract_version_id
                      ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1, ?20,
-                        NULL, NULL, ?21, 0, ?22, ?22, NULL
+                        NULL, NULL, ?21, 0, ?22, ?22, NULL, ?23
                      )"#,
                     params![
                         routine.id,
@@ -79,6 +93,7 @@ impl XiaoRepository {
                         routine.next_run_at,
                         routine.isolation_warning,
                         routine.created_at,
+                        acceptance_contract_version_id,
                     ],
                 )
                 .map_err(|error| format!("Could not create Xiao routine: {error}"))?;
@@ -104,6 +119,16 @@ impl XiaoRepository {
                 return Err("The Xiao routine task binding cannot be changed.".to_owned());
             }
             validate_new_routine_task(&transaction, &routine)?;
+            let acceptance_contract = save_or_clear_acceptance_contract_in_transaction(
+                &transaction,
+                routine.workspace_id,
+                current.acceptance_contract_version_id.as_deref(),
+                routine.acceptance_contract.as_ref(),
+                routine.created_at,
+            )?;
+            let acceptance_contract_version_id = acceptance_contract
+                .as_ref()
+                .map(|record| record.summary.version_id.as_str());
             let payload = json_string(&routine.schedule_payload, "routine schedule")?;
             let goal = optional_json_string(routine.goal.as_ref(), "routine goal")?;
             transaction
@@ -116,8 +141,9 @@ impl XiaoRepository {
                         goal_json = ?13, execution_environment_id = ?14,
                         execution_root = ?15, managed_worktree_id = ?16,
                         next_run_at = ?17, last_error = NULL, isolation_warning = ?18,
-                        version = version + 1, updated_at = ?19
-                     WHERE id = ?20 AND deleted_at IS NULL"#,
+                        acceptance_contract_version_id = ?19,
+                        version = version + 1, updated_at = ?20
+                     WHERE id = ?21 AND deleted_at IS NULL"#,
                     params![
                         routine.title,
                         routine.prompt,
@@ -137,6 +163,7 @@ impl XiaoRepository {
                         routine.managed_worktree_id,
                         routine.next_run_at,
                         routine.isolation_warning,
+                        acceptance_contract_version_id,
                         routine.created_at,
                         routine.id,
                     ],
@@ -664,26 +691,28 @@ fn validate_new_routine_task(
     transaction: &Transaction<'_>,
     routine: &NewRoutine,
 ) -> Result<(), String> {
-    let binding = transaction
+    let workspace_path = transaction
         .query_row(
-            r#"SELECT w.workspace_path, t.execution_environment_id, t.managed_worktree_id
+            r#"SELECT w.workspace_path
              FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
              WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
             params![routine.workspace_id, routine.task_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|error| format!("Could not validate Xiao routine task: {error}"))?
         .ok_or("The Xiao routine task does not exist.")?;
-    if normalize_workspace_path(&binding.0) != normalize_workspace_path(&routine.workspace_path)
-        || binding.1.as_deref() != Some(routine.execution_environment_id.as_str())
-        || binding.2 != routine.managed_worktree_id
+    let binding_matches = task_execution_binding_matches(
+        transaction,
+        routine.workspace_id,
+        &routine.task_id,
+        &routine.execution_environment_id,
+        routine.managed_worktree_id.as_deref(),
+    )?
+    .unwrap_or(false);
+    if normalize_workspace_path(&workspace_path)
+        != normalize_workspace_path(&routine.workspace_path)
+        || !binding_matches
     {
         return Err("The Xiao routine execution binding changed before save.".to_owned());
     }
@@ -694,26 +723,14 @@ fn routine_binding_matches(
     transaction: &Transaction<'_>,
     routine: &RoutineRecord,
 ) -> Result<bool, String> {
-    transaction
-        .query_row(
-            r#"SELECT execution_environment_id, managed_worktree_id FROM tasks
-             WHERE workspace_id = ?1 AND task_id = ?2"#,
-            params![routine.workspace_id, routine.task_id],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| format!("Could not validate routine dispatch binding: {error}"))
-        .map(|binding| {
-            binding.is_some_and(|binding| {
-                binding.0.as_deref() == Some(routine.execution_environment_id.as_str())
-                    && binding.1 == routine.managed_worktree_id
-            })
-        })
+    task_execution_binding_matches(
+        transaction,
+        routine.workspace_id,
+        &routine.task_id,
+        &routine.execution_environment_id,
+        routine.managed_worktree_id.as_deref(),
+    )
+    .map(|binding| binding.unwrap_or(false))
 }
 
 fn disable_routine_for_binding_change(
@@ -959,6 +976,7 @@ struct StoredRoutineRow {
     created_at: i64,
     updated_at: i64,
     deleted_at: Option<i64>,
+    acceptance_contract_version_id: Option<String>,
 }
 
 impl StoredRoutineRow {
@@ -970,6 +988,7 @@ impl StoredRoutineRow {
             task_id: self.task_id,
             title: self.title,
             prompt: self.prompt,
+            acceptance_contract_version_id: self.acceptance_contract_version_id,
             schedule_kind: RoutineScheduleKind::from_database(&self.schedule_kind)?,
             timezone: self.timezone,
             schedule_payload: parse_json(&self.schedule_payload_json, "routine schedule")?,
@@ -1028,6 +1047,7 @@ fn routine_from_row(row: &Row<'_>) -> rusqlite::Result<StoredRoutineRow> {
         created_at: row.get(26)?,
         updated_at: row.get(27)?,
         deleted_at: row.get(28)?,
+        acceptance_contract_version_id: row.get(29)?,
     })
 }
 
@@ -1102,7 +1122,10 @@ mod tests {
 
     use super::*;
     use crate::routines::models::RoutineSchedulePayload;
-    use crate::runs::models::RunStatus;
+    use crate::runs::models::{RunStatus, VerificationOutcome};
+    use crate::verification::models::{
+        AcceptanceContractDraft, AcceptanceGate, VerificationBaselineState,
+    };
     use crate::xiao::models::{
         XiaoTaskDocument, XiaoWorkspaceMode, XiaoWorkspaceUpdate, XIAO_SCHEMA_VERSION,
     };
@@ -1150,6 +1173,7 @@ mod tests {
             approval_policy: "on-request".to_owned(),
             sandbox_mode: "workspace-write".to_owned(),
             goal: None,
+            acceptance_contract: None,
             timeline: Vec::new(),
             timeline_loaded: true,
             timeline_complete: true,
@@ -1201,6 +1225,7 @@ mod tests {
             task_id: "routine-task".to_owned(),
             title: "Routine".to_owned(),
             prompt: "Inspect the workspace".to_owned(),
+            acceptance_contract: None,
             schedule_kind,
             timezone: "UTC".to_owned(),
             schedule_payload: match schedule_kind {
@@ -1266,6 +1291,224 @@ mod tests {
             goal: defaults.goal,
             queued_at: DUE_AT - 1,
         }
+    }
+
+    fn acceptance_contract(name: &str) -> AcceptanceContractDraft {
+        AcceptanceContractDraft {
+            name: name.to_owned(),
+            gates: vec![AcceptanceGate::Cleanliness {
+                allow_staged: false,
+                allow_unstaged: false,
+                allow_untracked: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn routine_contract_lineage_is_independent_versioned_reused_and_clearable() {
+        let directory = TestDirectory::new("contract-lineage");
+        let (repository, workspace_path) = repository_with_task(&directory.0);
+        let task_contract = repository
+            .save_task_acceptance_contract(
+                &workspace_path,
+                "routine-task",
+                None,
+                Some(&acceptance_contract("Task verify")),
+            )
+            .unwrap()
+            .unwrap();
+
+        let mut routine = new_routine(
+            &repository,
+            &workspace_path,
+            "routine-contract",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT,
+        );
+        routine.acceptance_contract = Some(acceptance_contract("Routine verify"));
+        let created = repository.create_routine(routine).unwrap();
+        let version_one = repository
+            .load_routine_acceptance_contract(&created.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(version_one.version, 1);
+        assert_ne!(version_one.contract_id, task_contract.contract_id);
+        assert_ne!(version_one.version_id, task_contract.version_id);
+
+        let mut identical = new_routine(
+            &repository,
+            &workspace_path,
+            "routine-contract",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT,
+        );
+        identical.acceptance_contract = Some(acceptance_contract(" Routine verify "));
+        let identical = repository.update_routine(identical).unwrap();
+        assert_eq!(
+            identical.acceptance_contract_version_id.as_deref(),
+            Some(version_one.version_id.as_str())
+        );
+
+        let mut changed = new_routine(
+            &repository,
+            &workspace_path,
+            "routine-contract",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT,
+        );
+        changed.acceptance_contract = Some(acceptance_contract("Routine verify changed"));
+        let changed = repository.update_routine(changed).unwrap();
+        let version_two = repository
+            .load_routine_acceptance_contract(&changed.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(version_two.version, 2);
+        assert_eq!(version_two.contract_id, version_one.contract_id);
+        assert_ne!(version_two.version_id, version_one.version_id);
+
+        let cleared = repository
+            .update_routine(new_routine(
+                &repository,
+                &workspace_path,
+                "routine-contract",
+                RoutineScheduleKind::OneShot,
+                MissedRunPolicy::RunOnce,
+                DUE_AT,
+            ))
+            .unwrap();
+        assert_eq!(cleared.acceptance_contract_version_id, None);
+        assert_eq!(
+            repository
+                .load_routine_acceptance_contract(&cleared.id)
+                .unwrap(),
+            None
+        );
+        let historical_versions = repository
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM acceptance_contract_versions WHERE contract_id = ?1",
+                        [&version_two.contract_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(historical_versions, 2);
+
+        let inherited = repository
+            .create_routine(new_routine(
+                &repository,
+                &workspace_path,
+                "routine-without-contract",
+                RoutineScheduleKind::OneShot,
+                MissedRunPolicy::RunOnce,
+                DUE_AT + 1,
+            ))
+            .unwrap();
+        assert_eq!(inherited.acceptance_contract_version_id, None);
+    }
+
+    #[test]
+    fn scheduled_and_run_now_occurrences_snapshot_exact_routine_contract() {
+        let directory = TestDirectory::new("contract-snapshots");
+        let (repository, workspace_path) = repository_with_task(&directory.0);
+        let diff_contract = AcceptanceContractDraft {
+            name: "Scheduled diff".to_owned(),
+            gates: vec![AcceptanceGate::DiffScope {
+                allowed_patterns: vec!["src/**".to_owned()],
+                denied_patterns: Vec::new(),
+            }],
+        };
+        let mut scheduled = new_routine(
+            &repository,
+            &workspace_path,
+            "scheduled-contract",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT,
+        );
+        scheduled.acceptance_contract = Some(diff_contract);
+        let scheduled = repository.create_routine(scheduled).unwrap();
+        let scheduled_version = scheduled.acceptance_contract_version_id.unwrap();
+        let reservation = repository
+            .reserve_due_routine(DUE_AT, 60_000)
+            .unwrap()
+            .unwrap();
+        let RoutineReservation::Dispatched { run, .. } = reservation else {
+            panic!("expected scheduled contract dispatch");
+        };
+        let scheduled_run = run.run;
+        assert_eq!(
+            scheduled_run
+                .acceptance_contract_source_version_id
+                .as_deref(),
+            Some(scheduled_version.as_str())
+        );
+        assert_eq!(
+            scheduled_run.verification_baseline_state,
+            VerificationBaselineState::Pending
+        );
+        assert_eq!(
+            scheduled_run.verification_outcome,
+            VerificationOutcome::Pending
+        );
+
+        let mut changed = new_routine(
+            &repository,
+            &workspace_path,
+            "scheduled-contract",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT + 1,
+        );
+        changed.acceptance_contract = Some(acceptance_contract("Scheduled changed"));
+        let changed = repository.update_routine(changed).unwrap();
+        assert_ne!(
+            changed.acceptance_contract_version_id.as_deref(),
+            Some(scheduled_version.as_str())
+        );
+        let reloaded = repository.get_run(&scheduled_run.id).unwrap();
+        assert_eq!(
+            reloaded.acceptance_contract_source_version_id,
+            scheduled_run.acceptance_contract_source_version_id
+        );
+        assert_eq!(
+            reloaded.acceptance_contract_snapshot,
+            scheduled_run.acceptance_contract_snapshot
+        );
+
+        let mut manual = new_routine(
+            &repository,
+            &workspace_path,
+            "manual-contract",
+            RoutineScheduleKind::Daily,
+            MissedRunPolicy::RunOnce,
+            DUE_AT + 86_400_000,
+        );
+        manual.acceptance_contract = Some(acceptance_contract("Manual verify"));
+        let manual = repository.create_routine(manual).unwrap();
+        let manual_version = manual.acceptance_contract_version_id.unwrap();
+        let reservation = repository
+            .run_routine_now("manual-contract", "contract-request", DUE_AT)
+            .unwrap();
+        let RoutineReservation::Dispatched { run, .. } = reservation else {
+            panic!("expected run-now contract dispatch");
+        };
+        assert_eq!(
+            run.run.acceptance_contract_source_version_id.as_deref(),
+            Some(manual_version.as_str())
+        );
+        assert_eq!(
+            run.run
+                .acceptance_contract_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.name.as_str()),
+            Some("Manual verify")
+        );
     }
 
     #[test]
@@ -1589,6 +1832,80 @@ mod tests {
             .is_empty());
         assert!(!routine.enabled);
         assert_eq!(routine.next_run_at, None);
+    }
+
+    #[test]
+    fn removing_worktree_invalidates_routine_save_and_dispatch_bindings() {
+        let directory = TestDirectory::new("removing-routine-binding");
+        let (repository, workspace_path) = repository_with_task(&directory.0);
+        let binding = repository
+            .task_execution_binding(&workspace_path, "routine-task")
+            .unwrap();
+        let worktree_id = new_uuid_v7();
+        let execution_root = directory
+            .0
+            .join("managed-execution")
+            .to_string_lossy()
+            .into_owned();
+        repository
+            .begin_managed_worktree(crate::execution::models::NewManagedWorktreeRecord {
+                id: worktree_id.clone(),
+                workspace_id: binding.workspace_id,
+                task_id: "routine-task".to_owned(),
+                repository_root: workspace_path.clone(),
+                repository_common_dir_sha256: "common".to_owned(),
+                checkout_path: execution_root.clone(),
+                execution_root: execution_root.clone(),
+                branch: "xiao/routine-task".to_owned(),
+                base_commit: "base".to_owned(),
+                owner_marker_path: directory
+                    .0
+                    .join("ownership.json")
+                    .to_string_lossy()
+                    .into_owned(),
+                created_at: DUE_AT - 2,
+            })
+            .unwrap();
+        repository
+            .activate_managed_worktree(
+                &worktree_id,
+                &execution_root,
+                &execution_root,
+                &directory.0.join("ownership.json").to_string_lossy(),
+            )
+            .unwrap();
+        let mut routine = new_routine(
+            &repository,
+            &workspace_path,
+            "routine-removing",
+            RoutineScheduleKind::OneShot,
+            MissedRunPolicy::RunOnce,
+            DUE_AT,
+        );
+        routine.execution_root = execution_root;
+        routine.managed_worktree_id = Some(worktree_id.clone());
+        repository.create_routine(routine.clone()).unwrap();
+
+        repository
+            .begin_managed_worktree_removal(&workspace_path, "routine-task", &worktree_id)
+            .unwrap();
+        routine.id = "routine-removing-save".to_owned();
+        let save_error = repository.create_routine(routine).unwrap_err();
+        assert!(save_error.contains("execution binding changed"));
+
+        let reservation = repository
+            .reserve_due_routine(DUE_AT, 60_000)
+            .unwrap()
+            .unwrap();
+        let RoutineReservation::Disabled { routine } = reservation else {
+            panic!("expected the routine with a removing worktree to be disabled")
+        };
+        assert_eq!(routine.id, "routine-removing");
+        assert!(!routine.enabled);
+        assert!(repository
+            .list_routine_occurrences("routine-removing", None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -33,6 +33,12 @@ import type {
   RoutineSummary,
   UpdateRoutineRequest,
 } from "../models/routine";
+import type {
+  AcceptanceContractPreset,
+  AcceptanceContractVersionSummary,
+  SaveTaskAcceptanceContractRequest,
+  VerificationEvidencePage,
+} from "../models/verification";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -124,6 +130,35 @@ export const nativeBridge = {
 
   resolveXiaoRunInput(pendingInputId: string, result: Record<string, unknown>) {
     return invoke<RunSnapshot>("resolve_xiao_run_input", { pendingInputId, result });
+  },
+
+  saveXiaoTaskAcceptanceContract(request: SaveTaskAcceptanceContractRequest) {
+    return invoke<AcceptanceContractVersionSummary | null>(
+      "save_xiao_task_acceptance_contract",
+      { request },
+    );
+  },
+
+  discoverXiaoAcceptancePresets(projectPath: string, taskId: string | null) {
+    return invoke<AcceptanceContractPreset[]>("discover_xiao_acceptance_presets", {
+      projectPath,
+      taskId,
+    });
+  },
+
+  rerunXiaoVerification(runId: string, requestKey: string) {
+    return invoke<RunSnapshot>("rerun_xiao_verification", { runId, requestKey });
+  },
+
+  listXiaoVerificationEvidence(runId: string, limit = 10) {
+    return invoke<VerificationEvidencePage>("list_xiao_verification_evidence", {
+      runId,
+      limit,
+    });
+  },
+
+  readXiaoVerificationArtifact(runId: string, artifactId: string) {
+    return invoke<unknown>("read_xiao_verification_artifact", { runId, artifactId });
   },
 
   createXiaoRoutine(request: CreateRoutineRequest) {

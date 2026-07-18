@@ -64,7 +64,7 @@ type ComposerProps = {
   followUps: AgentFollowUp[];
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
-  restoredAttachments: AgentAttachment[];
+  attachments: AgentAttachment[];
   canCompact: boolean;
   compacting: boolean;
   hasThread: boolean;
@@ -86,12 +86,14 @@ type ComposerProps = {
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
-  onRestoredAttachmentsConsumed: () => void;
+  onAttachmentsChange: (attachments: AgentAttachment[]) => void;
   onCompact: () => Promise<boolean>;
   onUndo: () => void;
   onRemoveReviewContext: (attachmentId: string) => void;
-  onReviewContextSent: () => void;
+  onReviewContextSent: (attachments: AgentAttachment[]) => void;
   onDraftChange: (draftText: string) => void;
+  onSubmissionStart: () => number;
+  onSubmissionSucceeded: (revision: number) => Promise<boolean>;
   onResolveQuestion: (
     requestId: number | string,
     answers: Record<string, string[]>,
@@ -131,6 +133,28 @@ const dataUrlAttachment = (file: File) =>
     reader.readAsDataURL(file);
   });
 
+type ComposerSubmissionResult = {
+  submitted: boolean;
+  cleared: boolean;
+};
+
+export const runComposerSubmission = async (
+  submit: () => Promise<boolean>,
+  onSucceeded: () => boolean | Promise<boolean>,
+): Promise<ComposerSubmissionResult> => {
+  if (!(await submit())) return { submitted: false, cleared: false };
+  return { submitted: true, cleared: await onSucceeded() };
+};
+
+export const navigateComposerPromptHistory = (
+  input: Parameters<typeof navigatePromptHistory>[0],
+  onDraftChange: (draftText: string) => void,
+) => {
+  const result = navigatePromptHistory(input);
+  if (result.handled) onDraftChange(result.value);
+  return result;
+};
+
 export function Composer({
   taskId,
   executionTaskId,
@@ -157,7 +181,7 @@ export function Composer({
   followUps,
   sendingFollowUpId,
   failedFollowUpId,
-  restoredAttachments,
+  attachments,
   canCompact,
   compacting,
   hasThread,
@@ -179,12 +203,14 @@ export function Composer({
   onRemoveFollowUp,
   onSendFollowUpNow,
   onRetryFollowUp,
-  onRestoredAttachmentsConsumed,
+  onAttachmentsChange,
   onCompact,
   onUndo,
   onRemoveReviewContext,
   onReviewContextSent,
   onDraftChange,
+  onSubmissionStart,
+  onSubmissionSucceeded,
   onResolveQuestion,
   disabled = false,
   disabledPlaceholder = "Restore this task to continue",
@@ -192,7 +218,7 @@ export function Composer({
   autoFocus = false,
 }: ComposerProps) {
   const [value, setValue] = useState(draftText);
-  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [submitting, setSubmitting] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [selectingAttachments, setSelectingAttachments] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -214,12 +240,15 @@ export function Composer({
   const addMenu = useRef<HTMLDivElement>(null);
   const addMenuTrigger = useRef<HTMLButtonElement>(null);
   const fileSearchRequest = useRef(0);
+  const submittingRef = useRef(false);
+  const mounted = useRef(true);
   const slashMenu = useRef<HTMLDivElement>(null);
   const slashCommandOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const currentTaskWorking = runtime.phase === "working" && runtime.taskId === taskId;
   const activeQuestionRequest = questionRequest?.taskId === taskId ? questionRequest : null;
   const canSteer = currentTaskWorking && Boolean(runtime.threadId && runtime.turnId);
   const canSubmit =
+    !submitting &&
     !disabled &&
     !compacting &&
     !undoing &&
@@ -342,18 +371,17 @@ export function Composer({
   }, [slashMenuOpen]);
 
   const appendAttachments = (items: AgentAttachment[]) => {
-    setAttachments((current) => {
-      const next = new Map(current.map((attachment) => [attachment.path, attachment]));
-      items.forEach((attachment) => next.set(attachment.path, attachment));
-      return [...next.values()];
-    });
+    const next = new Map(attachments.map((attachment) => [attachment.path, attachment]));
+    items.forEach((attachment) => next.set(attachment.path, attachment));
+    onAttachmentsChange([...next.values()]);
   };
 
   useEffect(() => {
-    if (!restoredAttachments.length) return;
-    appendAttachments(restoredAttachments);
-    onRestoredAttachmentsConsumed();
-  }, [restoredAttachments]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const updateValue = (next: string) => {
     setValue(next);
@@ -404,13 +432,13 @@ export function Composer({
 
   const moveThroughPromptHistory = (direction: "up" | "down") => {
     if (promptHistoryIndex.current === -1) promptHistory.current = readPromptHistory();
-    const result = navigatePromptHistory({
+    const result = navigateComposerPromptHistory({
       direction,
       entries: promptHistory.current,
       historyIndex: promptHistoryIndex.current,
       currentDraft: value,
       savedDraft: promptHistoryDraft.current,
-    });
+    }, onDraftChange);
     if (!result.handled) return false;
 
     promptHistoryIndex.current = result.historyIndex;
@@ -561,44 +589,38 @@ export function Composer({
   };
 
   const submit = async (delivery: "queue" | "send" = currentTaskWorking ? "queue" : "send") => {
-    if (!canSubmit) return;
+    if (!canSubmit || submittingRef.current) return;
     const historyValue = value.trim();
     const submittedValue = historyValue || (reviewContext.length
       ? "Address these review comments."
       : "Review the attached context.");
-    const submittedAttachments = [...attachments, ...reviewContext];
+    const submittedReviewContext = [...reviewContext];
+    const submittedAttachments = [...attachments, ...submittedReviewContext];
+    const submissionRevision = onSubmissionStart();
 
-    resetPromptHistoryNavigation();
-    updateValue("");
-    setAttachments([]);
-    setSlashQuery(null);
-    if (textarea.current) textarea.current.style.height = "auto";
-
-    const submitted = delivery === "queue"
-      ? await onQueueFollowUp(submittedValue, submittedAttachments)
-      : await onSubmit(submittedValue, submittedAttachments);
-    if (submitted) {
-      savePromptToHistory(historyValue);
-      onReviewContextSent();
-      return;
-    }
-
-    setValue((current) => {
-      const restored = current ? `${submittedValue}\n\n${current}` : submittedValue;
-      onDraftChange(restored);
-      return restored;
-    });
-    setAttachments((current) => {
-      const restored = new Map(
-        [...attachments, ...current].map((attachment) => [attachment.path, attachment]),
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      const result = await runComposerSubmission(
+        () => delivery === "queue"
+          ? onQueueFollowUp(submittedValue, submittedAttachments)
+          : onSubmit(submittedValue, submittedAttachments),
+        () => onSubmissionSucceeded(submissionRevision),
       );
-      return [...restored.values()];
-    });
-    window.requestAnimationFrame(() => {
-      if (!textarea.current) return;
-      textarea.current.style.height = "auto";
-      textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
-    });
+      if (!result.submitted) return;
+
+      savePromptToHistory(historyValue);
+      onReviewContextSent(submittedReviewContext);
+      if (!result.cleared || !mounted.current) return;
+
+      resetPromptHistoryNavigation();
+      setValue("");
+      setSlashQuery(null);
+      if (textarea.current) textarea.current.style.height = "auto";
+    } finally {
+      submittingRef.current = false;
+      if (mounted.current) setSubmitting(false);
+    }
   };
 
   const saveGoal = async () => {
@@ -955,8 +977,8 @@ export function Composer({
                       type="button"
                       aria-label={`Remove ${attachment.name}`}
                       onClick={() =>
-                        setAttachments((current) =>
-                          current.filter((item) => item.path !== attachment.path),
+                        onAttachmentsChange(
+                          attachments.filter((item) => item.path !== attachment.path),
                         )
                       }
                     >

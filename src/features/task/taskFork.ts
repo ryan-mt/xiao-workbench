@@ -44,6 +44,7 @@ export const forkTaskFromEntry = (
       workspaceMode: "local",
       managedWorktreeId: null,
       goal: source.goal ? { ...source.goal } : null,
+      acceptanceContract: null,
       timeline,
       plan: null,
     }),

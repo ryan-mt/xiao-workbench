@@ -1,11 +1,13 @@
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, RuntimePhase } from "../../../core/models/agent";
-import type { RunSnapshot, RunStatus } from "../../../core/models/run";
+import type { RunSnapshot } from "../../../core/models/run";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
+import { runPresentation } from "../../verification/runPresentation";
 
 type TaskHeaderProps = {
   taskId: string;
+  executionTaskId: string | null;
   taskTitle: string;
   taskArchived: boolean;
   workspace: WorkspaceSnapshot;
@@ -21,6 +23,41 @@ type TaskHeaderProps = {
   onUndo: () => void;
 };
 
+type TaskAcceptanceActionProps = {
+  executionTaskId: string | null;
+  label: string;
+  iconSize: number;
+  className?: string;
+  onOpen: () => void;
+};
+
+export function TaskAcceptanceAction({
+  executionTaskId,
+  label,
+  iconSize,
+  className,
+  onOpen,
+}: TaskAcceptanceActionProps) {
+  const unavailable = executionTaskId === null;
+  const title = unavailable
+    ? "Acceptance is unavailable until this task starts"
+    : "Acceptance contract";
+
+  return (
+    <button
+      aria-label={title}
+      className={className}
+      type="button"
+      disabled={unavailable}
+      title={title}
+      onClick={unavailable ? undefined : onOpen}
+    >
+      <XiaoIcon name="check" size={iconSize} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
 const runtimeLabels: Record<RuntimePhase, string> = {
   offline: "Offline",
   starting: "Connecting",
@@ -29,21 +66,10 @@ const runtimeLabels: Record<RuntimePhase, string> = {
   error: "Needs attention",
 };
 
-const runLabels: Partial<Record<RunStatus, string>> = {
-  queued: "Queued",
-  preparing: "Preparing",
-  running: "Working",
-  waiting_for_input: "Waiting for input",
-  verifying: "Verifying",
-  completed: "Done",
-  needs_attention: "Needs attention",
-  failed: "Failed",
-  cancelled: "Cancelled",
-  interrupted: "Interrupted",
-};
 
 export function TaskHeader({
   taskId,
+  executionTaskId,
   taskTitle,
   taskArchived,
   workspace,
@@ -60,12 +86,15 @@ export function TaskHeader({
 }: TaskHeaderProps) {
   const branch = workspace.git?.branch ?? "No Git branch";
   const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
-  const runtimeLabel = latestRun?.status && runLabels[latestRun.status]
-    ? runLabels[latestRun.status]
-    : runtime.phase === "working" && !taskWorking
+  const presentedRun = latestRun ? runPresentation(latestRun) : null;
+  const runtimeLabel = presentedRun?.label ?? (
+    runtime.phase === "working" && !taskWorking
       ? "Busy in another task"
-      : runtimeLabels[runtime.phase];
-  const canRetry = latestRun?.status === "failed" || latestRun?.status === "interrupted";
+      : runtimeLabels[runtime.phase]
+  );
+  const runtimeTone = presentedRun?.kind ?? runtime.phase;
+  const canRetry = latestRun?.status === "failed"
+    || (latestRun?.status === "interrupted" && latestRun.agentOutcome !== "completed");
 
   return (
     <header className="task-header">
@@ -88,10 +117,10 @@ export function TaskHeader({
 
       <div className="task-header__actions">
         <span
-          className={`task-header__runtime task-header__runtime--${runtime.phase}`}
+          className={`task-header__runtime task-header__runtime--${runtimeTone}`}
           role="status"
           aria-live="polite"
-          title={runtime.error ?? undefined}
+          title={runtime.error ?? presentedRun?.description}
         >
           <i />
           {runtimeLabel}
@@ -106,6 +135,13 @@ export function TaskHeader({
           <i style={{ "--usage": `${contextPercent ?? 0}%` } as React.CSSProperties} />
           <span>{contextPercent === null ? "Context" : `${contextPercent}%`}</span>
         </button>
+        <TaskAcceptanceAction
+          className="button button--quiet"
+          executionTaskId={executionTaskId}
+          iconSize={15}
+          label="Contract"
+          onOpen={() => onFocusView("verification")}
+        />
         {canRetry ? (
           <button
             className="button button--quiet"

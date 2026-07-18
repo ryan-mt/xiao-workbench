@@ -22,7 +22,7 @@ import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
-import { TaskHeader } from "./TaskHeader";
+import { TaskAcceptanceAction, TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
 
 type TaskWorkspaceProps = {
@@ -54,7 +54,7 @@ type TaskWorkspaceProps = {
   followUps: AgentFollowUp[];
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
-  restoredAttachments: AgentAttachment[];
+  attachments: AgentAttachment[];
   canCompact: boolean;
   compacting: boolean;
   hasThread: boolean;
@@ -70,13 +70,15 @@ type TaskWorkspaceProps = {
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
-  onRestoredAttachmentsConsumed: () => void;
+  onAttachmentsChange: (attachments: AgentAttachment[]) => void;
   onCompact: () => Promise<boolean>;
   onUndo: () => void;
   onForkTask: (entryId: string) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
-  onReviewContextSent: () => void;
+  onReviewContextSent: (attachments: AgentAttachment[]) => void;
   onDraftChange: (draftText: string) => void;
+  onSubmissionStart: () => number;
+  onSubmissionSucceeded: (revision: number) => Promise<boolean>;
   onResolveQuestion: (
     requestId: number | string,
     answers: Record<string, string[]>,
@@ -131,7 +133,7 @@ export function TaskWorkspace({
   followUps,
   sendingFollowUpId,
   failedFollowUpId,
-  restoredAttachments,
+  attachments,
   canCompact,
   compacting,
   hasThread,
@@ -147,13 +149,15 @@ export function TaskWorkspace({
   onRemoveFollowUp,
   onSendFollowUpNow,
   onRetryFollowUp,
-  onRestoredAttachmentsConsumed,
+  onAttachmentsChange,
   onCompact,
   onUndo,
   onForkTask,
   onRemoveReviewContext,
   onReviewContextSent,
   onDraftChange,
+  onSubmissionStart,
+  onSubmissionSucceeded,
   onResolveQuestion,
   onModelChange,
   onReasoningEffortChange,
@@ -226,7 +230,7 @@ export function TaskWorkspace({
       followUps={followUps}
       sendingFollowUpId={sendingFollowUpId}
       failedFollowUpId={failedFollowUpId}
-      restoredAttachments={restoredAttachments}
+      attachments={attachments}
       canCompact={canCompact}
       compacting={compacting}
       hasThread={hasThread}
@@ -249,12 +253,14 @@ export function TaskWorkspace({
       onRemoveFollowUp={onRemoveFollowUp}
       onSendFollowUpNow={onSendFollowUpNow}
       onRetryFollowUp={onRetryFollowUp}
-      onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
+      onAttachmentsChange={onAttachmentsChange}
       onCompact={onCompact}
       onUndo={onUndo}
       onRemoveReviewContext={onRemoveReviewContext}
       onReviewContextSent={onReviewContextSent}
       onDraftChange={onDraftChange}
+      onSubmissionStart={onSubmissionStart}
+      onSubmissionSucceeded={onSubmissionSucceeded}
       onResolveQuestion={onResolveQuestion}
       disabled={
         taskArchived || taskStateLoading || environmentBusy || Boolean(taskStateError)
@@ -291,6 +297,13 @@ export function TaskWorkspace({
                 <XiaoIcon name="branch" size={13} />
                 <span>{branch}</span>
               </button>
+              <i aria-hidden="true">/</i>
+              <TaskAcceptanceAction
+                executionTaskId={executionTaskId}
+                iconSize={13}
+                label="Acceptance"
+                onOpen={() => onFocusView("verification")}
+              />
             </div>
           </div>
         </div>
@@ -302,6 +315,7 @@ export function TaskWorkspace({
     <section className="task-workspace">
       <TaskHeader
         taskId={taskId}
+        executionTaskId={executionTaskId}
         taskTitle={taskTitle}
         taskArchived={taskArchived}
         workspace={workspace}
@@ -328,6 +342,7 @@ export function TaskWorkspace({
           taskId={taskId}
           timeline={timeline}
           runtime={runtime}
+          latestRun={latestRun}
           showReasoningSummaries={showReasoningSummaries}
           expandToolOutput={expandToolOutput}
           historyLoading={taskStateLoading}

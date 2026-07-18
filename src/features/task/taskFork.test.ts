@@ -29,6 +29,17 @@ const sourceTask = (): WorkbenchTask => ({
   approvalPolicy: "untrusted",
   sandboxMode: "read-only",
   goal: { objective: "Ship safely", status: "active" },
+  acceptanceContract: {
+    versionId: "contract-version-source",
+    contractId: "contract-source",
+    version: 2,
+    schema: 1,
+    name: "Source acceptance",
+    gates: [],
+    hash: "contract-hash-source",
+    createdAt: 12,
+    updatedAt: 18,
+  },
   timeline: [
     {
       id: "user-1",
@@ -121,6 +132,7 @@ describe("forkTaskFromEntry", () => {
       approvalPolicy: "untrusted",
       sandboxMode: "read-only",
       goal: { objective: "Ship safely", status: "active" },
+      acceptanceContract: null,
       plan: null,
     });
     expect(fork?.task.timeline.map((entry) => entry.id)).toEqual(["user-1", "agent-1"]);

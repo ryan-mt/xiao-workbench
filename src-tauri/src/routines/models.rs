@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::runs::models::{RunSnapshot, RunStatus};
+use crate::verification::models::{AcceptanceContractDraft, AcceptanceContractVersionSummary};
 use crate::xiao::models::XiaoWorkspaceMode;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
@@ -123,6 +124,7 @@ pub struct CreateRoutineRequest {
     pub task_id: String,
     pub title: String,
     pub prompt: String,
+    pub acceptance_contract: Option<AcceptanceContractDraft>,
     pub schedule_kind: RoutineScheduleKind,
     pub timezone: String,
     pub scheduled_for: Option<i64>,
@@ -141,6 +143,7 @@ pub struct UpdateRoutineRequest {
     pub routine_id: String,
     pub title: String,
     pub prompt: String,
+    pub acceptance_contract: Option<AcceptanceContractDraft>,
     pub schedule_kind: RoutineScheduleKind,
     pub timezone: String,
     pub scheduled_for: Option<i64>,
@@ -161,6 +164,7 @@ pub(crate) struct NewRoutine {
     pub task_id: String,
     pub title: String,
     pub prompt: String,
+    pub acceptance_contract: Option<AcceptanceContractDraft>,
     pub schedule_kind: RoutineScheduleKind,
     pub timezone: String,
     pub schedule_payload: RoutineSchedulePayload,
@@ -188,6 +192,7 @@ pub(crate) struct RoutineRecord {
     pub task_id: String,
     pub title: String,
     pub prompt: String,
+    pub acceptance_contract_version_id: Option<String>,
     pub schedule_kind: RoutineScheduleKind,
     pub timezone: String,
     pub schedule_payload: RoutineSchedulePayload,
@@ -240,6 +245,7 @@ pub struct RoutineSummary {
     pub task_id: String,
     pub title: String,
     pub prompt: String,
+    pub acceptance_contract: Option<AcceptanceContractVersionSummary>,
     pub schedule_kind: RoutineScheduleKind,
     pub timezone: String,
     pub scheduled_for: Option<i64>,

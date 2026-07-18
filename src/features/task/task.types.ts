@@ -8,6 +8,7 @@ import type {
   TimelineEntry,
 } from "../../core/models/agent";
 import type { XiaoThreadBinding, XiaoWorkspaceMode } from "../../core/models/xiao";
+import type { AcceptanceContractVersionSummary } from "../../core/models/verification";
 
 export type TaskGroup = "Active" | "Recent" | "Yesterday" | "This week";
 
@@ -31,6 +32,7 @@ export type WorkbenchTask = {
   approvalPolicy: AgentApprovalPolicy;
   sandboxMode: AgentSandboxMode;
   goal: AgentGoal | null;
+  acceptanceContract: AcceptanceContractVersionSummary | null;
   timeline: TimelineEntry[];
   timelineLoaded: boolean;
   timelineComplete: boolean;

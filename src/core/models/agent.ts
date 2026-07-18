@@ -99,6 +99,8 @@ export type AgentFollowUp = {
 export type AgentUndoResult = {
   prompt: string;
   attachments: AgentAttachment[];
+  timeline?: TimelineEntry[];
+  resetTitle?: boolean;
 };
 
 export type AgentMode = "default" | "plan";

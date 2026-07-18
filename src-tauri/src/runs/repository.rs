@@ -1,11 +1,23 @@
+use std::path::{Component, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::verification::lifecycle::{
+    cancel_running_verification_attempt_in_transaction,
+    interrupt_running_verification_attempts_in_transaction,
+};
+use crate::verification::models::{VerificationAttemptStatus, VerificationBaselineState};
+use crate::verification::repository::{
+    decode_optional_contract_snapshot, encode_optional_contract_snapshot,
+    load_optional_acceptance_contract_version_from_connection,
+};
 use crate::xiao::models::{XiaoThreadBinding, XiaoThreadPersistence};
-use crate::xiao::repository::{normalize_workspace_path, XiaoRepository};
+use crate::xiao::repository::{
+    normalize_workspace_path, task_execution_binding_matches, XiaoRepository,
+};
 
 use super::models::{
     AgentOutcome, NewPendingInput, NewRun, PendingInputKind, PendingInputSnapshot, RunEventRecord,
@@ -23,8 +35,39 @@ const MAX_EVENT_PAGE_SIZE: usize = 200;
 const DEFAULT_RUN_PAGE_SIZE: usize = 50;
 const MAX_RUN_PAGE_SIZE: usize = 100;
 
-const ACTIVE_STATUSES_SQL: &str = "'preparing', 'running', 'waiting_for_input', 'verifying'";
-const TERMINAL_STATUSES_SQL: &str = "'completed', 'failed', 'cancelled', 'interrupted'";
+pub(crate) const ACTIVE_STATUSES_SQL: &str =
+    "'preparing', 'running', 'waiting_for_input', 'verifying'";
+const RUN_OWNERSHIP_STATUSES_SQL: &str =
+    "'queued', 'preparing', 'running', 'waiting_for_input', 'verifying'";
+const TERMINAL_STATUSES_SQL: &str =
+    "'completed', 'needs_attention', 'failed', 'cancelled', 'interrupted'";
+const RUNTIME_ACTIVE_STATUSES_SQL: &str = "'preparing', 'running', 'waiting_for_input'";
+
+pub(crate) fn execution_roots_overlap(left: &str, right: &str) -> bool {
+    execution_root_starts_with(left, right) || execution_root_starts_with(right, left)
+}
+
+fn execution_root_starts_with(path: &str, ancestor: &str) -> bool {
+    let mut path_components = Path::new(path).components();
+    Path::new(ancestor).components().all(|ancestor_component| {
+        path_components
+            .next()
+            .is_some_and(|path_component| path_components_equal(path_component, ancestor_component))
+    })
+}
+
+fn path_components_equal(left: Component<'_>, right: Component<'_>) -> bool {
+    #[cfg(windows)]
+    {
+        left.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
 
 pub(crate) struct CorrelatedRunEvent<'a> {
     pub generation: u64,
@@ -44,7 +87,11 @@ SELECT
     r.reasoning_effort, r.service_tier, r.mode, r.approval_policy,
     r.sandbox_mode, r.goal_json, r.thread_id, r.thread_source, r.cli_version,
     r.runtime_generation, r.turn_id, r.cancel_requested, r.queued_at,
-    r.started_at, r.finished_at, r.version, r.routine_occurrence_id
+    r.started_at, r.finished_at, r.version, r.routine_occurrence_id,
+    r.acceptance_contract_source_version_id, r.acceptance_contract_snapshot_json,
+    r.acceptance_contract_snapshot_sha256, r.verification_baseline_state,
+    r.verification_baseline_artifact_id, r.verification_baseline_diagnostic,
+    r.latest_verification_attempt_id
 FROM runs r
 JOIN workspaces w ON w.id = r.workspace_id
 "#;
@@ -62,6 +109,29 @@ pub(crate) enum CancelDisposition {
         run: RunRecord,
         event: Option<RunEventRecord>,
     },
+    Verification {
+        run: RunRecord,
+        event: Option<RunEventRecord>,
+    },
+}
+
+pub(crate) fn task_binding_has_run_owners(
+    connection: &Connection,
+    workspace_id: i64,
+    task_id: &str,
+) -> Result<bool, String> {
+    let count: i64 = connection
+        .query_row(
+            &format!(
+                r#"SELECT COUNT(*) FROM runs
+                   WHERE workspace_id = ?1 AND task_id = ?2
+                     AND status IN ({RUN_OWNERSHIP_STATUSES_SQL})"#
+            ),
+            params![workspace_id, task_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Xiao run binding ownership: {error}"))?;
+    Ok(count != 0)
 }
 
 impl XiaoRepository {
@@ -95,7 +165,7 @@ impl XiaoRepository {
         })
     }
 
-    pub(crate) fn task_has_active_runs(
+    pub(crate) fn task_has_run_owners(
         &self,
         workspace_path: &str,
         task_id: &str,
@@ -108,12 +178,14 @@ impl XiaoRepository {
                         r#"SELECT COUNT(*) FROM runs r
                            JOIN workspaces w ON w.id = r.workspace_id
                            WHERE w.workspace_path = ?1 AND r.task_id = ?2
-                             AND r.status IN ({ACTIVE_STATUSES_SQL})"#
+                             AND r.status IN ({RUN_OWNERSHIP_STATUSES_SQL})"#
                     ),
                     params![workspace_path, task_id],
                     |row| row.get(0),
                 )
-                .map_err(|error| format!("Could not inspect active Xiao runs: {error}"))?;
+                .map_err(|error| {
+                    format!("Could not inspect Xiao run binding ownership: {error}")
+                })?;
             Ok(count != 0)
         })
     }
@@ -207,30 +279,56 @@ impl XiaoRepository {
             });
         }
 
-        let binding = transaction
-            .query_row(
-                r#"SELECT t.execution_environment_id, t.managed_worktree_id
-                 FROM tasks t WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
-                params![run.workspace_id, run.task_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| format!("Could not validate Xiao run task: {error}"))?
-            .ok_or("The Xiao run task no longer exists.")?;
-        if binding.0.as_deref() != Some(run.execution_environment_id.as_str())
-            || binding.1 != run.managed_worktree_id
-        {
+        let binding_matches = task_execution_binding_matches(
+            transaction,
+            run.workspace_id,
+            &run.task_id,
+            &run.execution_environment_id,
+            run.managed_worktree_id.as_deref(),
+        )?
+        .ok_or("The Xiao run task no longer exists.")?;
+        if !binding_matches {
             return Err("The Xiao run execution binding changed before enqueue.".to_owned());
         }
-
+        let contract = resolve_run_acceptance_contract(transaction, run)?;
+        let (
+            contract_source_version_id,
+            contract_snapshot,
+            contract_snapshot_sha256,
+            verification_outcome,
+            verification_baseline_state,
+        ) = match contract {
+            Some(record) => {
+                let summary = record.summary;
+                let snapshot = summary.snapshot();
+                let baseline_state = if snapshot.requires_diff_baseline() {
+                    VerificationBaselineState::Pending
+                } else {
+                    VerificationBaselineState::NotRequired
+                };
+                (
+                    Some(summary.version_id),
+                    Some(snapshot),
+                    Some(summary.hash),
+                    VerificationOutcome::Pending,
+                    baseline_state,
+                )
+            }
+            None => (
+                None,
+                None,
+                None,
+                VerificationOutcome::NotRequested,
+                VerificationBaselineState::NotRequired,
+            ),
+        };
         let input_json = json_string(&run.input, "run input")?;
         let history_json = json_string(&run.history, "run history")?;
         let goal_json = optional_json_string(run.goal.as_ref(), "run goal")?;
+        let contract_snapshot_json = encode_optional_contract_snapshot(
+            contract_snapshot.as_ref(),
+            contract_snapshot_sha256.as_deref(),
+        )?;
         transaction
             .execute(
                 r#"INSERT INTO runs(
@@ -241,12 +339,15 @@ impl XiaoRepository {
                     history_json, prompt, model, reasoning_effort, service_tier,
                     mode, approval_policy, sandbox_mode, goal_json, thread_id,
                     thread_source, cli_version, runtime_generation, turn_id,
-                    cancel_requested, routine_occurrence_id
+                    cancel_requested, routine_occurrence_id,
+                    acceptance_contract_source_version_id,
+                    acceptance_contract_snapshot_json,
+                    acceptance_contract_snapshot_sha256, verification_baseline_state
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, 'queued', 'pending',
-                    'not_requested', ?7, ?8, NULL, NULL, 0, ?9, ?10, ?11,
+                    ?26, ?7, ?8, NULL, NULL, 0, ?9, ?10, ?11,
                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                    NULL, NULL, NULL, NULL, NULL, 0, ?21
+                    NULL, NULL, NULL, NULL, NULL, 0, ?21, ?22, ?23, ?24, ?25
                  )"#,
                 params![
                     run.id,
@@ -270,6 +371,11 @@ impl XiaoRepository {
                     run.sandbox_mode,
                     goal_json,
                     run.routine_occurrence_id,
+                    contract_source_version_id,
+                    contract_snapshot_json,
+                    contract_snapshot_sha256,
+                    verification_baseline_state.as_database(),
+                    verification_outcome.as_database(),
                 ],
             )
             .map_err(|error| format!("Could not enqueue Xiao run: {error}"))?;
@@ -428,24 +534,50 @@ impl XiaoRepository {
                 })?;
                 return Ok(None);
             }
-            let run_id = transaction
-                .query_row(
-                    &format!(
-                        r#"SELECT queued.id FROM runs queued
-                         WHERE queued.status = 'queued'
-                           AND NOT EXISTS (
-                             SELECT 1 FROM runs active
-                             WHERE active.workspace_id = queued.workspace_id
-                               AND active.task_id = queued.task_id
-                               AND active.status IN ({ACTIVE_STATUSES_SQL})
-                           )
-                         ORDER BY queued.queued_at ASC, queued.id ASC LIMIT 1"#
-                    ),
-                    [],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|error| format!("Could not select the next Xiao run: {error}"))?;
+            let active_roots = {
+                let mut statement = transaction
+                    .prepare(&format!(
+                        "SELECT execution_root FROM runs WHERE status IN ({ACTIVE_STATUSES_SQL})"
+                    ))
+                    .map_err(|error| {
+                        format!("Could not prepare active Xiao execution roots: {error}")
+                    })?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| {
+                        format!("Could not query active Xiao execution roots: {error}")
+                    })?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+                    format!("Could not decode active Xiao execution roots: {error}")
+                })?
+            };
+            let run_id = {
+                let mut statement = transaction
+                    .prepare(
+                        r#"SELECT id, execution_root FROM runs
+                           WHERE status = 'queued'
+                           ORDER BY queued_at ASC, id ASC"#,
+                    )
+                    .map_err(|error| format!("Could not prepare the Xiao run queue: {error}"))?;
+                let candidates = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .map_err(|error| format!("Could not query the Xiao run queue: {error}"))?;
+                let mut eligible = None;
+                for candidate in candidates {
+                    let (candidate_id, candidate_root) = candidate
+                        .map_err(|error| format!("Could not decode a queued Xiao run: {error}"))?;
+                    if active_roots
+                        .iter()
+                        .all(|active_root| !execution_roots_overlap(active_root, &candidate_root))
+                    {
+                        eligible = Some(candidate_id);
+                        break;
+                    }
+                }
+                eligible
+            };
             let Some(run_id) = run_id else {
                 transaction
                     .commit()
@@ -667,11 +799,16 @@ impl XiaoRepository {
             }
             let target = if current.cancel_requested {
                 RunStatus::Cancelled
+            } else if runtime_status == RunStatus::Completed
+                && current.acceptance_contract_snapshot.is_some()
+            {
+                RunStatus::Verifying
             } else {
                 runtime_status
             };
             let event_type = match target {
                 RunStatus::Completed => "run.completed",
+                RunStatus::Verifying => "run.verifying",
                 RunStatus::Cancelled => "run.cancelled",
                 RunStatus::Interrupted => "run.interrupted",
                 _ => "run.failed",
@@ -1039,6 +1176,38 @@ impl XiaoRepository {
                     event: None,
                 }));
             }
+            if current.status == RunStatus::Verifying {
+                let event = if current.cancel_requested {
+                    None
+                } else {
+                    let changed = transaction
+                        .execute(
+                            r#"UPDATE runs SET cancel_requested = 1, version = version + 1
+                             WHERE id = ?1 AND version = ?2 AND status = 'verifying'"#,
+                            params![run_id, current.version],
+                        )
+                        .map_err(|error| {
+                            format!("Could not record verification cancellation: {error}")
+                        })?;
+                    if changed != 1 {
+                        return Err(
+                            "The Xiao run changed during verification cancellation.".to_owned()
+                        );
+                    }
+                    Some(append_event(
+                        &transaction,
+                        run_id,
+                        "run.cancel_requested",
+                        Some("lifecycle:cancel-requested"),
+                        &json!({ "verification": true }),
+                    )?)
+                };
+                let run = load_run(&transaction, run_id)?;
+                transaction.commit().map_err(|error| {
+                    format!("Could not commit verification cancellation intent: {error}")
+                })?;
+                return Ok(CancelDisposition::Verification { run, event });
+            }
             if matches!(current.status, RunStatus::Queued | RunStatus::Preparing) {
                 let mutation = transition(
                     &transaction,
@@ -1086,23 +1255,122 @@ impl XiaoRepository {
     }
 
     pub(crate) fn finish_run_cancel(&self, run_id: &str) -> Result<RunMutation, String> {
-        let current = self.get_run(run_id)?;
-        if current.status == RunStatus::Cancelled || current.status.is_terminal() {
-            return Ok(RunMutation {
-                run: current,
-                event: None,
-            });
-        }
-        if !current.cancel_requested {
-            return Err("The Xiao run has no cancellation intent.".to_owned());
-        }
-        self.transition_run(
-            run_id,
-            RunStatus::Cancelled,
-            "run.cancelled",
-            Some("lifecycle:cancelled"),
-            &json!({ "interruptedRuntime": true }),
-        )
+        self.finish_run_cancel_inner(run_id, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_run_cancel_with_failpoint(
+        &self,
+        run_id: &str,
+    ) -> Result<RunMutation, String> {
+        self.finish_run_cancel_inner(run_id, true)
+    }
+
+    fn finish_run_cancel_inner(
+        &self,
+        run_id: &str,
+        fail_before_commit: bool,
+    ) -> Result<RunMutation, String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Xiao cancellation settlement: {error}"))?;
+            let current = load_run(&transaction, run_id)?;
+            if current.status.is_terminal() {
+                transaction.commit().map_err(|error| {
+                    format!("Could not finish idempotent Xiao cancellation settlement: {error}")
+                })?;
+                return Ok(RunMutation {
+                    run: current,
+                    event: None,
+                });
+            }
+            if !current.cancel_requested {
+                return Err("The Xiao run has no cancellation intent.".to_owned());
+            }
+            let mut mutation = if current.status == RunStatus::Verifying {
+                let timestamp = now_millis()?;
+                let cancellation_settlement =
+                    cancel_running_verification_attempt_in_transaction(
+                        &transaction,
+                        run_id,
+                        timestamp,
+                    )?;
+                let payload = json!({
+                    "verification": true,
+                    "attemptId": cancellation_settlement
+                        .as_ref()
+                        .map(|settlement| settlement.attempt_id.as_str()),
+                    "status": cancellation_settlement
+                        .as_ref()
+                        .map(|settlement| settlement.status),
+                });
+                match cancellation_settlement.as_ref() {
+                    Some(settlement)
+                        if settlement.status == VerificationAttemptStatus::Failed =>
+                    {
+                        transition_failed_verification(
+                            &transaction,
+                            &current,
+                            &settlement.attempt_id,
+                            &payload,
+                        )?
+                    }
+                    _ => {
+                        let event_key = cancellation_settlement
+                            .as_ref()
+                            .map(|settlement| {
+                                format!("verification:{}:settled", settlement.attempt_id)
+                            })
+                            .unwrap_or_else(|| "verification:cancelled".to_owned());
+                        transition(
+                            &transaction,
+                            run_id,
+                            Some(current.version),
+                            RunStatus::NeedsAttention,
+                            "verification.cancelled",
+                            Some(&event_key),
+                            &payload,
+                        )?
+                    }
+                }
+            } else {
+                transition(
+                    &transaction,
+                    run_id,
+                    Some(current.version),
+                    RunStatus::Cancelled,
+                    "run.cancelled",
+                    Some("lifecycle:cancelled"),
+                    &json!({ "interruptedRuntime": true }),
+                )?
+            };
+            if mutation.run.cancel_requested {
+                let cleared = transaction
+                    .execute(
+                        "UPDATE runs SET cancel_requested = 0, version = version + 1 WHERE id = ?1 AND version = ?2",
+                        params![run_id, mutation.run.version],
+                    )
+                    .map_err(|error| {
+                        format!("Could not clear settled Xiao cancellation intent: {error}")
+                    })?;
+                if cleared != 1 {
+                    return Err(
+                        "The Xiao run changed while cancellation settlement completed.".to_owned(),
+                    );
+                }
+                mutation.run = load_run(&transaction, run_id)?;
+            }
+            if fail_before_commit {
+                return Err(
+                    "Injected failure before Xiao cancellation settlement commit.".to_owned(),
+                );
+            }
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Xiao cancellation settlement: {error}"))?;
+            Ok(mutation)
+        })
     }
 
     pub(crate) fn retry_run(
@@ -1133,6 +1401,17 @@ impl XiaoRepository {
             if !matches!(source.status, RunStatus::Failed | RunStatus::Interrupted) {
                 return Err("Only failed or interrupted Xiao runs can be retried.".to_owned());
             }
+            let binding_matches = task_execution_binding_matches(
+                &transaction,
+                source.workspace_id,
+                &source.task_id,
+                &source.execution_environment_id,
+                source.managed_worktree_id.as_deref(),
+            )?
+            .unwrap_or(false);
+            if !binding_matches {
+                return Err("The Xiao retry execution binding is no longer available.".to_owned());
+            }
             let id = new_uuid_v7();
             transaction
                 .execute(
@@ -1144,14 +1423,27 @@ impl XiaoRepository {
                         history_json, prompt, model, reasoning_effort, service_tier,
                         mode, approval_policy, sandbox_mode, goal_json, thread_id,
                         thread_source, cli_version, runtime_generation, turn_id,
-                        cancel_requested, routine_occurrence_id
+                        cancel_requested, routine_occurrence_id,
+                        acceptance_contract_source_version_id,
+                        acceptance_contract_snapshot_json,
+                        acceptance_contract_snapshot_sha256, verification_baseline_state,
+                        verification_baseline_artifact_id, verification_baseline_diagnostic,
+                        latest_verification_attempt_id
                      ) SELECT
                         ?1, workspace_id, task_id, ?2, id, candidate_group_id,
-                        'queued', 'pending', 'not_requested', execution_root, ?3,
-                        NULL, NULL, 0, execution_environment_id, managed_worktree_id,
-                        input_json, history_json, prompt, model, reasoning_effort,
-                        service_tier, mode, approval_policy, sandbox_mode, goal_json,
-                        NULL, NULL, NULL, NULL, NULL, 0, NULL
+                        'queued', 'pending',
+                        CASE WHEN acceptance_contract_snapshot_json IS NULL
+                            THEN 'not_requested' ELSE 'pending' END,
+                        execution_root, ?3, NULL, NULL, 0, execution_environment_id,
+                        managed_worktree_id, input_json, history_json, prompt, model,
+                        reasoning_effort, service_tier, mode, approval_policy,
+                        sandbox_mode, goal_json, NULL, NULL, NULL, NULL, NULL, 0, NULL,
+                        acceptance_contract_source_version_id,
+                        acceptance_contract_snapshot_json,
+                        acceptance_contract_snapshot_sha256,
+                        CASE WHEN verification_baseline_state = 'not_required'
+                            THEN 'not_required' ELSE 'pending' END,
+                        NULL, NULL, NULL
                      FROM runs WHERE id = ?4"#,
                     params![id, idempotency_key, now_millis()?, source_run_id],
                 )
@@ -1192,6 +1484,10 @@ impl XiaoRepository {
                     .map_err(|error| format!("Could not decode Xiao reconciliation: {error}"))?
             };
             let timestamp = now_millis()?;
+            interrupt_running_verification_attempts_in_transaction(
+                &transaction,
+                timestamp,
+            )?;
             transaction
                 .execute(
                     r#"UPDATE pending_inputs SET invalidated_at = ?1
@@ -1201,15 +1497,74 @@ impl XiaoRepository {
                 .map_err(|error| format!("Could not invalidate stale Xiao inputs: {error}"))?;
             let mut mutations = Vec::with_capacity(run_ids.len());
             for run_id in run_ids {
-                mutations.push(transition(
-                    &transaction,
-                    &run_id,
-                    None,
-                    RunStatus::Interrupted,
-                    "run.interrupted",
-                    Some("reconciliation:interrupted"),
-                    &json!({ "reason": "process_restart" }),
-                )?);
+                let current = load_run(&transaction, &run_id)?;
+                let failed_attempt_id = if current.status == RunStatus::Verifying {
+                    current
+                        .latest_verification_attempt_id
+                        .as_deref()
+                        .map(|attempt_id| {
+                            transaction
+                                .query_row(
+                                    r#"SELECT id FROM verification_attempts
+                                       WHERE id = ?1 AND run_id = ?2 AND status = 'failed'"#,
+                                    params![attempt_id, run_id],
+                                    |row| row.get::<_, String>(0),
+                                )
+                                .optional()
+                                .map_err(|error| {
+                                    format!(
+                                        "Could not inspect failed verification recovery: {error}"
+                                    )
+                                })
+                        })
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                let mutation = if let Some(attempt_id) = failed_attempt_id {
+                    transition_failed_verification(
+                        &transaction,
+                        &current,
+                        &attempt_id,
+                        &json!({
+                            "reason": "process_restart",
+                            "attemptId": attempt_id,
+                            "status": VerificationAttemptStatus::Failed,
+                        }),
+                    )?
+                } else {
+                    transition(
+                        &transaction,
+                        &run_id,
+                        Some(current.version),
+                        RunStatus::Interrupted,
+                        "run.interrupted",
+                        Some("reconciliation:interrupted"),
+                        &json!({ "reason": "process_restart" }),
+                    )?
+                };
+                let mut mutation = mutation;
+                if mutation.run.cancel_requested {
+                    let cleared = transaction
+                        .execute(
+                            "UPDATE runs SET cancel_requested = 0, version = version + 1 WHERE id = ?1 AND version = ?2",
+                            params![run_id, mutation.run.version],
+                        )
+                        .map_err(|error| {
+                            format!(
+                                "Could not clear reconciled Xiao cancellation intent: {error}"
+                            )
+                        })?;
+                    if cleared != 1 {
+                        return Err(
+                            "The Xiao run changed while restart reconciliation completed."
+                                .to_owned(),
+                        );
+                    }
+                    mutation.run = load_run(&transaction, &run_id)?;
+                }
+                mutations.push(mutation);
             }
             transaction
                 .commit()
@@ -1232,7 +1587,7 @@ impl XiaoRepository {
             let run_ids = {
                 let mut statement = transaction
                     .prepare(&format!(
-                        "SELECT id FROM runs WHERE execution_environment_id = ?1 AND runtime_generation = ?2 AND status IN ({ACTIVE_STATUSES_SQL}) ORDER BY queued_at, id"
+                        "SELECT id FROM runs WHERE execution_environment_id = ?1 AND runtime_generation = ?2 AND status IN ({RUNTIME_ACTIVE_STATUSES_SQL}) ORDER BY queued_at, id"
                     ))
                     .map_err(|error| format!("Could not prepare runtime interruption: {error}"))?;
                 let rows = statement
@@ -1284,6 +1639,50 @@ impl XiaoRepository {
             Ok(mutations)
         })
     }
+}
+
+fn resolve_run_acceptance_contract(
+    connection: &Connection,
+    run: &NewRun,
+) -> Result<Option<crate::verification::models::AcceptanceContractVersionRecord>, String> {
+    let version_id = match run.routine_occurrence_id.as_deref() {
+        Some(occurrence_id) => {
+            let (workspace_id, task_id, version_id) = connection
+                .query_row(
+                    r#"SELECT r.workspace_id, r.task_id, r.acceptance_contract_version_id
+                     FROM routine_occurrences o JOIN routines r ON r.id = o.routine_id
+                     WHERE o.id = ?1"#,
+                    [occurrence_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| format!("Could not load routine run contract: {error}"))?
+                .ok_or("The Xiao routine occurrence no longer exists.")?;
+            if workspace_id != run.workspace_id || task_id != run.task_id {
+                return Err("The Xiao routine occurrence belongs to another task.".to_owned());
+            }
+            version_id
+        }
+        None => connection
+            .query_row(
+                r#"SELECT acceptance_contract_version_id FROM tasks
+                 WHERE workspace_id = ?1 AND task_id = ?2"#,
+                params![run.workspace_id, run.task_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|error| format!("Could not load task run contract: {error}"))?,
+    };
+    load_optional_acceptance_contract_version_from_connection(
+        connection,
+        run.workspace_id,
+        version_id.as_deref(),
+    )
 }
 
 fn validate_new_run(run: &NewRun) -> Result<(), String> {
@@ -1372,8 +1771,12 @@ fn transition(
     } else {
         None
     };
-    let (agent_outcome, verification_outcome) =
-        outcomes_for_transition(target, current.agent_outcome, current.verification_outcome);
+    let (agent_outcome, verification_outcome) = outcomes_for_transition(
+        current.status,
+        target,
+        current.agent_outcome,
+        current.verification_outcome,
+    );
     if target.is_terminal() {
         transaction
             .execute(
@@ -1408,6 +1811,36 @@ fn transition(
         run: load_run(transaction, run_id)?,
         event: Some(event),
     })
+}
+
+fn transition_failed_verification(
+    transaction: &Transaction<'_>,
+    current: &RunRecord,
+    attempt_id: &str,
+    payload: &Value,
+) -> Result<RunMutation, String> {
+    let event_key = format!("verification:{attempt_id}:settled");
+    let mut mutation = transition(
+        transaction,
+        &current.id,
+        Some(current.version),
+        RunStatus::NeedsAttention,
+        "verification.failed",
+        Some(&event_key),
+        payload,
+    )?;
+    let changed = transaction
+        .execute(
+            r#"UPDATE runs SET verification_outcome = 'failed', version = version + 1
+               WHERE id = ?1 AND version = ?2 AND status = 'needs_attention'"#,
+            params![current.id, mutation.run.version],
+        )
+        .map_err(|error| format!("Could not preserve failed verification: {error}"))?;
+    if changed != 1 {
+        return Err("The Xiao run changed while failed verification settled.".to_owned());
+    }
+    mutation.run = load_run(transaction, &current.id)?;
+    Ok(mutation)
 }
 
 fn can_transition(from: RunStatus, to: RunStatus) -> bool {
@@ -1447,6 +1880,7 @@ fn can_transition(from: RunStatus, to: RunStatus) -> bool {
 }
 
 fn outcomes_for_transition(
+    source: RunStatus,
     target: RunStatus,
     current_agent: AgentOutcome,
     current_verification: VerificationOutcome,
@@ -1454,14 +1888,21 @@ fn outcomes_for_transition(
     match target {
         RunStatus::Completed => (AgentOutcome::Completed, current_verification),
         RunStatus::Failed => (AgentOutcome::Failed, current_verification),
+        RunStatus::Cancelled if source == RunStatus::Verifying => {
+            (AgentOutcome::Completed, VerificationOutcome::Blocked)
+        }
         RunStatus::Cancelled => (AgentOutcome::Cancelled, current_verification),
+        RunStatus::Interrupted if source == RunStatus::Verifying => {
+            (AgentOutcome::Completed, VerificationOutcome::Blocked)
+        }
         RunStatus::Interrupted => (AgentOutcome::Interrupted, current_verification),
+        RunStatus::NeedsAttention => (AgentOutcome::Completed, VerificationOutcome::Blocked),
         RunStatus::Verifying => (AgentOutcome::Completed, VerificationOutcome::Pending),
         _ => (current_agent, current_verification),
     }
 }
 
-fn append_event(
+pub(crate) fn append_event(
     transaction: &Transaction<'_>,
     run_id: &str,
     event_type: &str,
@@ -1599,7 +2040,7 @@ fn mark_task_thread_materialized(
     Ok(())
 }
 
-fn load_run(connection: &Connection, run_id: &str) -> Result<RunRecord, String> {
+pub(crate) fn load_run(connection: &Connection, run_id: &str) -> Result<RunRecord, String> {
     let sql = format!("{RUN_SELECT} WHERE r.id = ?1");
     connection
         .query_row(&sql, [run_id], run_from_row)
@@ -1657,10 +2098,28 @@ struct StoredRunRow {
     finished_at: Option<i64>,
     version: i64,
     routine_occurrence_id: Option<String>,
+    acceptance_contract_source_version_id: Option<String>,
+    acceptance_contract_snapshot_json: Option<String>,
+    acceptance_contract_snapshot_sha256: Option<String>,
+    verification_baseline_state: String,
+    verification_baseline_artifact_id: Option<String>,
+    verification_baseline_diagnostic: Option<String>,
+    latest_verification_attempt_id: Option<String>,
 }
 
 impl StoredRunRow {
     fn decode(self) -> Result<RunRecord, String> {
+        let acceptance_contract_snapshot = decode_optional_contract_snapshot(
+            self.acceptance_contract_snapshot_json.as_deref(),
+            self.acceptance_contract_snapshot_sha256.as_deref(),
+        )?;
+        if self.acceptance_contract_source_version_id.is_some()
+            != acceptance_contract_snapshot.is_some()
+        {
+            return Err(
+                "The stored Xiao run contract source and snapshot are inconsistent.".to_owned(),
+            );
+        }
         Ok(RunRecord {
             id: self.id,
             workspace_id: self.workspace_id,
@@ -1704,6 +2163,15 @@ impl StoredRunRow {
             finished_at: self.finished_at,
             version: self.version,
             routine_occurrence_id: self.routine_occurrence_id,
+            acceptance_contract_source_version_id: self.acceptance_contract_source_version_id,
+            acceptance_contract_snapshot,
+            acceptance_contract_snapshot_sha256: self.acceptance_contract_snapshot_sha256,
+            verification_baseline_state: VerificationBaselineState::from_database(
+                &self.verification_baseline_state,
+            )?,
+            verification_baseline_artifact_id: self.verification_baseline_artifact_id,
+            verification_baseline_diagnostic: self.verification_baseline_diagnostic,
+            latest_verification_attempt_id: self.latest_verification_attempt_id,
         })
     }
 }
@@ -1744,6 +2212,13 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<StoredRunRow> {
         finished_at: row.get(31)?,
         version: row.get(32)?,
         routine_occurrence_id: row.get(33)?,
+        acceptance_contract_source_version_id: row.get(34)?,
+        acceptance_contract_snapshot_json: row.get(35)?,
+        acceptance_contract_snapshot_sha256: row.get(36)?,
+        verification_baseline_state: row.get(37)?,
+        verification_baseline_artifact_id: row.get(38)?,
+        verification_baseline_diagnostic: row.get(39)?,
+        latest_verification_attempt_id: row.get(40)?,
     })
 }
 
@@ -1930,6 +2405,11 @@ mod tests {
 
     use super::*;
     use crate::agent::models::XiaoHistoryItem;
+    use crate::verification::models::{
+        AcceptanceContractDraft, AcceptanceGate, ArtifactRecord, ArtifactRetentionClass,
+        EvidenceRecord, EvidenceRedactionState, GateResultRecord, VerificationAttemptStatus,
+        VerificationAttemptTrigger, VerificationBaselineState, VerificationGateOutcome,
+    };
     use crate::xiao::models::{
         XiaoTaskDocument, XiaoWorkspaceDocument, XiaoWorkspaceMode, XiaoWorkspaceUpdate,
         XIAO_SCHEMA_VERSION,
@@ -1977,6 +2457,7 @@ mod tests {
             approval_policy: "on-request".to_owned(),
             sandbox_mode: "workspace-write".to_owned(),
             goal: None,
+            acceptance_contract: None,
             timeline: Vec::new(),
             timeline_loaded: true,
             timeline_complete: true,
@@ -2011,6 +2492,12 @@ mod tests {
         normalize_workspace_path(&directory.join("workspace").to_string_lossy())
     }
 
+    fn isolated_execution_root(directory: &Path, label: &str) -> String {
+        let root = directory.join(label);
+        fs::create_dir_all(&root).unwrap();
+        normalize_workspace_path(&root.to_string_lossy())
+    }
+
     fn new_run(repository: &XiaoRepository, workspace: &str, task_id: &str, key: &str) -> NewRun {
         let defaults = repository.run_task_defaults(workspace, task_id).unwrap();
         let binding = repository
@@ -2042,6 +2529,162 @@ mod tests {
             goal: defaults.goal,
             queued_at: now_millis().unwrap(),
         }
+    }
+
+    fn verifying_run_with_gates(
+        repository: &XiaoRepository,
+        workspace: &str,
+        task_id: &str,
+        key: &str,
+        gates: Vec<AcceptanceGate>,
+    ) -> RunRecord {
+        verifying_run_with_gates_at_root(repository, workspace, task_id, key, workspace, gates)
+    }
+
+    fn verifying_run_with_gates_at_root(
+        repository: &XiaoRepository,
+        workspace: &str,
+        task_id: &str,
+        key: &str,
+        execution_root: &str,
+        gates: Vec<AcceptanceGate>,
+    ) -> RunRecord {
+        repository
+            .save_task_acceptance_contract(
+                workspace,
+                task_id,
+                None,
+                Some(&AcceptanceContractDraft {
+                    name: "Verification lifecycle".to_owned(),
+                    gates,
+                }),
+            )
+            .unwrap();
+        let mut input = new_run(repository, workspace, task_id, key);
+        input.execution_root = execution_root.to_owned();
+        let run = repository.enqueue_run(input).unwrap().run;
+        let thread_id = format!("verification-thread-{}", run.id);
+        let turn_id = format!("verification-turn-{}", run.id);
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 1,
+                    thread_id: thread_id.clone(),
+                    thread_source: "xiao-workbench".to_owned(),
+                    cli_version: "test".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 1, &thread_id, &turn_id)
+            .unwrap();
+        repository
+            .settle_runtime_turn(
+                &run.id,
+                1,
+                &thread_id,
+                &turn_id,
+                RunStatus::Completed,
+                &json!({ "protocol": { "method": "turn/completed" } }),
+            )
+            .unwrap()
+            .run
+    }
+
+    fn persist_gate_outcome(
+        repository: &XiaoRepository,
+        run_id: &str,
+        attempt_id: &str,
+        gate_index: usize,
+        gate: &AcceptanceGate,
+        outcome: VerificationGateOutcome,
+    ) {
+        let gate_result_id = new_uuid_v7();
+        let artifact_id = new_uuid_v7();
+        let artifact = ArtifactRecord {
+            id: artifact_id.clone(),
+            run_id: run_id.to_owned(),
+            verification_attempt_id: Some(attempt_id.to_owned()),
+            relative_storage_path: format!(
+                "runs/{run_id}/attempts/{attempt_id}/{artifact_id}.json"
+            ),
+            media_type: "application/vnd.xiao.verification-gate+json".to_owned(),
+            byte_length: 2,
+            sha256: "a".repeat(64),
+            retention_class: ArtifactRetentionClass::RunEvidence,
+            created_at: 2,
+        };
+        let gate_result = GateResultRecord {
+            id: gate_result_id.clone(),
+            verification_attempt_id: attempt_id.to_owned(),
+            gate_index,
+            gate_type: gate.gate_type(),
+            outcome,
+            duration_ms: 1,
+            exit_code: None,
+            diagnostic: None,
+            started_at: 1,
+            finished_at: 2,
+        };
+        let evidence = EvidenceRecord {
+            id: new_uuid_v7(),
+            run_id: run_id.to_owned(),
+            verification_attempt_id: Some(attempt_id.to_owned()),
+            gate_result_id: Some(gate_result_id),
+            evidence_type: gate.gate_type().as_database().to_owned(),
+            summary: json!({ "outcome": outcome }),
+            artifact_id: Some(artifact_id),
+            redaction_state: EvidenceRedactionState::Safe,
+            created_at: 2,
+        };
+        repository
+            .persist_verification_gate(&gate_result, &artifact, &evidence)
+            .unwrap();
+    }
+
+    fn failed_verification_run_at_root(
+        repository: &XiaoRepository,
+        workspace: &str,
+        task_id: &str,
+        key: &str,
+        execution_root: &str,
+    ) -> RunRecord {
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates_at_root(
+            repository,
+            workspace,
+            task_id,
+            key,
+            execution_root,
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "overlap-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Failed,
+        );
+        repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap()
+            .mutation
+            .run
     }
 
     #[test]
@@ -2102,6 +2745,144 @@ mod tests {
     }
 
     #[test]
+    fn run_contract_snapshot_round_trips_with_hash_and_safe_verification_metadata() {
+        let directory = TestDirectory::new("contract-snapshot");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let draft = AcceptanceContractDraft {
+            name: "Verify".to_owned(),
+            gates: vec![AcceptanceGate::Cleanliness {
+                allow_staged: false,
+                allow_unstaged: false,
+                allow_untracked: false,
+            }],
+        };
+        let normalized = draft.normalize().unwrap();
+        let saved = repository
+            .save_task_acceptance_contract(&workspace, "task-a", None, Some(&draft))
+            .unwrap()
+            .unwrap();
+
+        let stored = repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "contract-run"))
+            .unwrap()
+            .run;
+        assert_eq!(
+            stored.acceptance_contract_source_version_id.as_deref(),
+            Some(saved.version_id.as_str())
+        );
+        assert_eq!(
+            stored.acceptance_contract_snapshot.as_ref(),
+            Some(&normalized.snapshot)
+        );
+        assert_eq!(
+            stored.acceptance_contract_snapshot_sha256.as_deref(),
+            Some(normalized.content_sha256.as_str())
+        );
+        assert_eq!(
+            stored.verification_baseline_state,
+            VerificationBaselineState::NotRequired
+        );
+        assert_eq!(stored.verification_outcome, VerificationOutcome::Pending);
+        assert_eq!(stored.latest_verification_attempt_id, None);
+        let snapshot = stored.snapshot();
+        assert_eq!(
+            snapshot.acceptance_contract_source_version_id.as_deref(),
+            Some(saved.version_id.as_str())
+        );
+        assert_eq!(
+            snapshot.acceptance_contract_snapshot,
+            Some(normalized.snapshot.clone())
+        );
+        assert_eq!(snapshot.verification_baseline_artifact_id, None);
+
+        let changed = AcceptanceContractDraft {
+            name: "Verify changed".to_owned(),
+            gates: draft.gates.clone(),
+        };
+        let changed = repository
+            .save_task_acceptance_contract(
+                &workspace,
+                "task-a",
+                Some(&saved.version_id),
+                Some(&changed),
+            )
+            .unwrap()
+            .unwrap();
+        assert_ne!(changed.version_id, saved.version_id);
+        let reloaded = repository.get_run(&stored.id).unwrap();
+        assert_eq!(
+            reloaded.acceptance_contract_source_version_id,
+            stored.acceptance_contract_source_version_id
+        );
+        assert_eq!(
+            reloaded.acceptance_contract_snapshot,
+            stored.acceptance_contract_snapshot
+        );
+        assert_eq!(
+            reloaded.acceptance_contract_snapshot_sha256,
+            stored.acceptance_contract_snapshot_sha256
+        );
+    }
+
+    #[test]
+    fn enqueue_derives_verification_state_from_native_task_contract() {
+        let directory = TestDirectory::new("contract-state");
+        let repository = repository_with_tasks(&directory.0, &["plain", "diff"]);
+        let workspace = workspace_path(&directory.0);
+
+        let plain = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "plain",
+                "plain-contract-state",
+            ))
+            .unwrap()
+            .run;
+        assert_eq!(
+            plain.verification_outcome,
+            VerificationOutcome::NotRequested
+        );
+        assert_eq!(
+            plain.verification_baseline_state,
+            VerificationBaselineState::NotRequired
+        );
+        assert_eq!(plain.acceptance_contract_source_version_id, None);
+        assert_eq!(plain.acceptance_contract_snapshot, None);
+
+        let draft = AcceptanceContractDraft {
+            name: "Diff scope".to_owned(),
+            gates: vec![AcceptanceGate::DiffScope {
+                allowed_patterns: vec!["src/**".to_owned()],
+                denied_patterns: Vec::new(),
+            }],
+        };
+        let saved = repository
+            .save_task_acceptance_contract(&workspace, "diff", None, Some(&draft))
+            .unwrap()
+            .unwrap();
+        let diff = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "diff",
+                "diff-contract-state",
+            ))
+            .unwrap()
+            .run;
+        assert_eq!(diff.verification_outcome, VerificationOutcome::Pending);
+        assert_eq!(
+            diff.verification_baseline_state,
+            VerificationBaselineState::Pending
+        );
+        assert_eq!(
+            diff.acceptance_contract_source_version_id.as_deref(),
+            Some(saved.version_id.as_str())
+        );
+    }
+
+    #[test]
     fn run_listing_keeps_all_nonterminal_runs_beyond_the_history_limit() {
         let directory = TestDirectory::new("run-list-active");
         let repository = repository_with_tasks(&directory.0, &["task-a"]);
@@ -2155,9 +2936,6 @@ mod tests {
             .unwrap()
             .run;
         assert_eq!(running.status, RunStatus::Running);
-        assert!(repository
-            .task_has_active_runs(&workspace, "task-a")
-            .unwrap());
 
         let (waiting, pending) = repository
             .open_pending_input(NewPendingInput {
@@ -2187,9 +2965,6 @@ mod tests {
             .unwrap();
         assert_eq!(completed.run.status, RunStatus::Completed);
         assert_eq!(completed.run.agent_outcome, AgentOutcome::Completed);
-        assert!(!repository
-            .task_has_active_runs(&workspace, "task-a")
-            .unwrap());
         assert!(repository
             .transition_run(&queued.id, RunStatus::Running, "invalid", None, &json!({}))
             .is_err());
@@ -2252,7 +3027,137 @@ mod tests {
     }
 
     #[test]
-    fn queue_is_bounded_fifo_and_serial_per_task() {
+    fn queued_runs_own_task_bindings_without_consuming_claim_capacity() {
+        let directory = TestDirectory::new("queued-binding-owner");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let queued = repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "local-owner"))
+            .unwrap()
+            .run;
+
+        assert!(repository
+            .task_has_run_owners(&workspace, "task-a")
+            .unwrap());
+        let binding = repository
+            .task_execution_binding(&workspace, "task-a")
+            .unwrap();
+        let worktree_id = new_uuid_v7();
+        let record = crate::execution::models::NewManagedWorktreeRecord {
+            id: worktree_id.clone(),
+            workspace_id: binding.workspace_id,
+            task_id: "task-a".to_owned(),
+            repository_root: workspace.clone(),
+            repository_common_dir_sha256: "common".to_owned(),
+            checkout_path: isolated_execution_root(&directory.0, "checkout"),
+            execution_root: isolated_execution_root(&directory.0, "execution"),
+            branch: "xiao/task-a".to_owned(),
+            base_commit: "base".to_owned(),
+            owner_marker_path: isolated_execution_root(&directory.0, "marker"),
+            created_at: now_millis().unwrap(),
+        };
+        let blocked = repository
+            .begin_managed_worktree(record.clone())
+            .unwrap_err();
+        assert!(blocked.contains("queued or active"));
+        assert_eq!(
+            repository
+                .claim_next_eligible_run(1)
+                .unwrap()
+                .unwrap()
+                .run
+                .id,
+            queued.id
+        );
+        repository.request_run_cancel(&queued.id).unwrap();
+        assert!(!repository
+            .task_has_run_owners(&workspace, "task-a")
+            .unwrap());
+
+        repository.begin_managed_worktree(record).unwrap();
+        let local_snapshot = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "activation-owner",
+            ))
+            .unwrap()
+            .run;
+        let blocked = repository
+            .activate_managed_worktree(
+                &worktree_id,
+                &isolated_execution_root(&directory.0, "checkout"),
+                &isolated_execution_root(&directory.0, "execution"),
+                &isolated_execution_root(&directory.0, "marker"),
+            )
+            .unwrap_err();
+        assert!(blocked.contains("queued or active"));
+        let unchanged = repository
+            .task_execution_binding(&workspace, "task-a")
+            .unwrap();
+        assert_eq!(unchanged.workspace_mode, XiaoWorkspaceMode::Local);
+        assert_eq!(local_snapshot.execution_root, workspace);
+        assert!(local_snapshot.managed_worktree_id.is_none());
+        repository.request_run_cancel(&local_snapshot.id).unwrap();
+
+        let checkout = isolated_execution_root(&directory.0, "checkout");
+        let execution = isolated_execution_root(&directory.0, "execution");
+        let marker = isolated_execution_root(&directory.0, "marker");
+        repository
+            .activate_managed_worktree(&worktree_id, &checkout, &execution, &marker)
+            .unwrap();
+        let mut managed_input = new_run(&repository, &workspace, "task-a", "removal-owner");
+        managed_input.execution_root = execution.clone();
+        managed_input.managed_worktree_id = Some(worktree_id.clone());
+        let managed_snapshot = repository.enqueue_run(managed_input).unwrap().run;
+        let blocked = repository
+            .begin_managed_worktree_removal(&workspace, "task-a", &worktree_id)
+            .unwrap_err();
+        assert!(blocked.contains("queued or active"));
+        assert_eq!(managed_snapshot.execution_root, execution);
+        assert_eq!(
+            managed_snapshot.managed_worktree_id.as_deref(),
+            Some(worktree_id.as_str())
+        );
+        assert_eq!(
+            repository
+                .claim_next_eligible_run(1)
+                .unwrap()
+                .unwrap()
+                .run
+                .id,
+            managed_snapshot.id
+        );
+        repository
+            .transition_run(
+                &managed_snapshot.id,
+                RunStatus::Interrupted,
+                "run.interrupted",
+                Some("test:managed-settled"),
+                &json!({}),
+            )
+            .unwrap();
+
+        repository
+            .begin_managed_worktree_removal(&workspace, "task-a", &worktree_id)
+            .unwrap();
+        let retry_error = repository
+            .retry_run(&managed_snapshot.id, "stale-managed-retry")
+            .unwrap_err();
+        assert!(retry_error.contains("binding is no longer available"));
+        repository
+            .finish_managed_worktree_removal(&worktree_id)
+            .unwrap();
+        let restored = repository
+            .task_execution_binding(&workspace, "task-a")
+            .unwrap();
+        assert_eq!(restored.workspace_mode, XiaoWorkspaceMode::Local);
+        assert!(restored.managed_worktree.is_none());
+    }
+
+    #[test]
+    fn queue_is_fifo_and_serial_per_execution_root() {
         let directory = TestDirectory::new("queue");
         let repository = repository_with_tasks(&directory.0, &["task-a", "task-b", "task-c"]);
         let workspace = workspace_path(&directory.0);
@@ -2265,7 +3170,7 @@ mod tests {
         repository.enqueue_run(second_a).unwrap();
         let mut second = new_run(&repository, &workspace, "task-b", "b-1");
         second.queued_at += 2;
-        let second = repository.enqueue_run(second).unwrap().run;
+        repository.enqueue_run(second).unwrap();
         let mut third = new_run(&repository, &workspace, "task-c", "c-1");
         third.queued_at += 3;
         repository.enqueue_run(third).unwrap();
@@ -2279,16 +3184,90 @@ mod tests {
                 .id,
             first.id
         );
-        assert_eq!(
-            repository
-                .claim_next_eligible_run(2)
-                .unwrap()
-                .unwrap()
-                .run
-                .id,
-            second.id
-        );
         assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn execution_root_overlap_is_component_and_host_case_aware() {
+        assert!(execution_roots_overlap("C:/repo", "C:/repo/sub"));
+        assert!(execution_roots_overlap("C:/repo/sub", "C:/repo"));
+        assert!(!execution_roots_overlap("C:/repo", "C:/repo2"));
+
+        #[cfg(windows)]
+        assert!(execution_roots_overlap("C:/Repo", "c:/repo/sub"));
+        #[cfg(not(windows))]
+        assert!(!execution_roots_overlap("/repo", "/Repo/sub"));
+    }
+
+    #[test]
+    fn queue_serializes_ancestor_roots_and_skips_to_the_first_fifo_sibling() {
+        for child_is_active in [false, true] {
+            let label = if child_is_active {
+                "queue-child-active"
+            } else {
+                "queue-parent-active"
+            };
+            let directory = TestDirectory::new(label);
+            let repository =
+                repository_with_tasks(&directory.0, &["task-a", "task-b", "task-c", "task-d"]);
+            let workspace = workspace_path(&directory.0);
+            let parent_root = isolated_execution_root(&directory.0, "repo");
+            let child_root = isolated_execution_root(&directory.0, "repo/sub");
+            let sibling_root = isolated_execution_root(&directory.0, "repo2");
+            let (active_root, blocked_root) = if child_is_active {
+                (&child_root, &parent_root)
+            } else {
+                (&parent_root, &child_root)
+            };
+
+            let mut active_input = new_run(&repository, &workspace, "task-a", "active");
+            active_input.execution_root = active_root.clone();
+            active_input.queued_at = 1;
+            let active = repository.enqueue_run(active_input).unwrap().run;
+
+            let mut blocked_input = new_run(&repository, &workspace, "task-b", "blocked");
+            blocked_input.execution_root = blocked_root.clone();
+            blocked_input.queued_at = 2;
+            let blocked = repository.enqueue_run(blocked_input).unwrap().run;
+
+            let mut exact_input = new_run(&repository, &workspace, "task-c", "exact");
+            exact_input.execution_root = active_root.clone();
+            exact_input.queued_at = 3;
+            let exact = repository.enqueue_run(exact_input).unwrap().run;
+
+            let mut sibling_input = new_run(&repository, &workspace, "task-d", "sibling");
+            sibling_input.execution_root = sibling_root.clone();
+            sibling_input.queued_at = 4;
+            let sibling = repository.enqueue_run(sibling_input).unwrap().run;
+
+            assert_eq!(
+                repository
+                    .claim_next_eligible_run(2)
+                    .unwrap()
+                    .unwrap()
+                    .run
+                    .id,
+                active.id
+            );
+            assert_eq!(
+                repository
+                    .claim_next_eligible_run(2)
+                    .unwrap()
+                    .unwrap()
+                    .run
+                    .id,
+                sibling.id
+            );
+            assert_eq!(
+                repository.get_run(&blocked.id).unwrap().status,
+                RunStatus::Queued
+            );
+            assert_eq!(
+                repository.get_run(&exact.id).unwrap().status,
+                RunStatus::Queued
+            );
+            assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+        }
     }
 
     #[test]
@@ -2301,10 +3280,12 @@ mod tests {
             .unwrap()
             .run;
         let mut run_b_input = new_run(&repository, &workspace, "task-b", "fake-b");
+        run_b_input.execution_root = isolated_execution_root(&directory.0, "root-b");
         run_b_input.queued_at += 1;
         let run_b = repository.enqueue_run(run_b_input).unwrap().run;
         let mut run_c_input = new_run(&repository, &workspace, "task-c", "fake-c");
         run_c_input.queued_at += 2;
+        run_c_input.execution_root = isolated_execution_root(&directory.0, "root-c");
         let run_c = repository.enqueue_run(run_c_input).unwrap().run;
 
         assert_eq!(
@@ -2636,6 +3617,7 @@ mod tests {
             .run;
         let mut run_b_input = new_run(&repository, &workspace, "task-b", "cancel-b");
         run_b_input.queued_at += 1;
+        run_b_input.execution_root = isolated_execution_root(&directory.0, "cancel-root-b");
         let run_b = repository.enqueue_run(run_b_input).unwrap().run;
         for (run, thread, turn) in [
             (&run_a, "thread-a", "turn-a"),
@@ -2660,7 +3642,35 @@ mod tests {
         }
 
         let requested = repository.request_run_cancel(&run_a.id).unwrap();
-        assert!(matches!(requested, CancelDisposition::Interrupt { .. }));
+        let CancelDisposition::Interrupt { run, event } = requested else {
+            panic!("running cancellation must request a runtime interrupt");
+        };
+        assert!(run.cancel_requested);
+        assert!(event.is_some());
+        for _failed_stage in ["task_lookup", "generation_lookup", "interrupt_request"] {
+            let replay = repository.request_run_cancel(&run_a.id).unwrap();
+            let CancelDisposition::Interrupt { run, event } = replay else {
+                panic!("runtime cancellation intent must remain replayable");
+            };
+            assert!(run.cancel_requested);
+            assert!(event.is_none());
+        }
+        assert_eq!(
+            repository
+                .list_run_events(&run_a.id, None, None)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.event_type == "run.cancel_requested")
+                .count(),
+            1
+        );
+        let error = repository
+            .finish_run_cancel_with_failpoint(&run_a.id)
+            .unwrap_err();
+        assert!(error.contains("Injected failure"));
+        let unsettled = repository.get_run(&run_a.id).unwrap();
+        assert_eq!(unsettled.status, RunStatus::Running);
+        assert!(unsettled.cancel_requested);
         repository.finish_run_cancel(&run_a.id).unwrap();
         let repeated = repository.request_run_cancel(&run_a.id).unwrap();
         assert!(matches!(repeated, CancelDisposition::Settled(_)));
@@ -2815,6 +3825,104 @@ mod tests {
     }
 
     #[test]
+    fn retry_preserves_the_source_contract_and_resets_its_diff_baseline() {
+        let directory = TestDirectory::new("contracted-retry");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        repository
+            .save_task_acceptance_contract(
+                &workspace,
+                "task-a",
+                None,
+                Some(&AcceptanceContractDraft {
+                    name: "Original contract".to_owned(),
+                    gates: vec![AcceptanceGate::DiffScope {
+                        allowed_patterns: vec!["src/**".to_owned()],
+                        denied_patterns: Vec::new(),
+                    }],
+                }),
+            )
+            .unwrap();
+        let source = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "contracted-source",
+            ))
+            .unwrap()
+            .run;
+        assert_eq!(
+            source.verification_baseline_state,
+            VerificationBaselineState::Pending
+        );
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        let baseline = ArtifactRecord {
+            id: new_uuid_v7(),
+            run_id: source.id.clone(),
+            verification_attempt_id: None,
+            relative_storage_path: format!("runs/{}/baseline.json", source.id),
+            media_type: "application/vnd.xiao.git-state+json".to_owned(),
+            byte_length: 2,
+            sha256: "b".repeat(64),
+            retention_class: ArtifactRetentionClass::VerificationBaseline,
+            created_at: 1,
+        };
+        repository
+            .persist_verification_baseline(&source.id, &baseline)
+            .unwrap();
+        repository
+            .transition_run(
+                &source.id,
+                RunStatus::Failed,
+                "run.failed",
+                Some("contracted-source-failed"),
+                &json!({}),
+            )
+            .unwrap();
+        repository
+            .save_task_acceptance_contract(
+                &workspace,
+                "task-a",
+                source.acceptance_contract_source_version_id.as_deref(),
+                Some(&AcceptanceContractDraft {
+                    name: "New task contract".to_owned(),
+                    gates: vec![AcceptanceGate::Cleanliness {
+                        allow_staged: true,
+                        allow_unstaged: true,
+                        allow_untracked: true,
+                    }],
+                }),
+            )
+            .unwrap();
+
+        let retry = repository
+            .retry_run(&source.id, "contracted-retry")
+            .unwrap()
+            .run;
+        assert_eq!(
+            retry.acceptance_contract_source_version_id,
+            source.acceptance_contract_source_version_id
+        );
+        assert_eq!(
+            retry.acceptance_contract_snapshot,
+            source.acceptance_contract_snapshot
+        );
+        assert_eq!(
+            retry.acceptance_contract_snapshot_sha256,
+            source.acceptance_contract_snapshot_sha256
+        );
+        assert_eq!(retry.verification_outcome, VerificationOutcome::Pending);
+        assert_eq!(
+            retry.verification_baseline_state,
+            VerificationBaselineState::Pending
+        );
+        assert_eq!(retry.verification_baseline_artifact_id, None);
+        assert_eq!(retry.verification_baseline_diagnostic, None);
+        assert_eq!(retry.latest_verification_attempt_id, None);
+    }
+
+    #[test]
     fn persistent_native_binding_survives_stale_workspace_save() {
         let directory = TestDirectory::new("thread-authority");
         let repository = repository_with_tasks(&directory.0, &["task-a"]);
@@ -2860,5 +3968,1078 @@ mod tests {
             .unwrap();
         let defaults = repository.run_task_defaults(&workspace, "task-a").unwrap();
         assert_eq!(defaults.thread_binding.unwrap().thread_id, "persistent");
+    }
+
+    #[test]
+    fn verification_baseline_is_attached_once_before_the_agent_turn() {
+        let directory = TestDirectory::new("verification-baseline");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        repository
+            .save_task_acceptance_contract(
+                &workspace,
+                "task-a",
+                None,
+                Some(&AcceptanceContractDraft {
+                    name: "Diff verification".to_owned(),
+                    gates: vec![AcceptanceGate::DiffScope {
+                        allowed_patterns: vec!["src/**".to_owned()],
+                        denied_patterns: Vec::new(),
+                    }],
+                }),
+            )
+            .unwrap();
+        let run = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "verification-baseline",
+            ))
+            .unwrap()
+            .run;
+        assert_eq!(
+            run.verification_baseline_state,
+            VerificationBaselineState::Pending
+        );
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        let artifact = ArtifactRecord {
+            id: new_uuid_v7(),
+            run_id: run.id.clone(),
+            verification_attempt_id: None,
+            relative_storage_path: format!("runs/{}/baseline.json", run.id),
+            media_type: "application/vnd.xiao.git-state+json".to_owned(),
+            byte_length: 2,
+            sha256: "b".repeat(64),
+            retention_class: ArtifactRetentionClass::VerificationBaseline,
+            created_at: 1,
+        };
+        let attached = repository
+            .persist_verification_baseline(&run.id, &artifact)
+            .unwrap();
+        assert_eq!(
+            attached.run.verification_baseline_state,
+            VerificationBaselineState::Ready
+        );
+        assert_eq!(
+            attached.run.verification_baseline_artifact_id.as_deref(),
+            Some(artifact.id.as_str())
+        );
+        assert!(attached.event.is_some());
+        let duplicate = repository
+            .persist_verification_baseline(&run.id, &artifact)
+            .unwrap();
+        assert!(duplicate.event.is_none());
+        assert_eq!(
+            repository
+                .load_verification_baseline_artifact(&run.id)
+                .unwrap(),
+            Some(artifact)
+        );
+    }
+
+    #[test]
+    fn verification_pass_requires_a_complete_atomic_gate_set_and_reruns_without_a_model_turn() {
+        let directory = TestDirectory::new("verification-settlement");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gates = vec![
+            AcceptanceGate::Cleanliness {
+                allow_staged: true,
+                allow_unstaged: true,
+                allow_untracked: true,
+            },
+            AcceptanceGate::Cleanliness {
+                allow_staged: true,
+                allow_unstaged: true,
+                allow_untracked: true,
+            },
+        ];
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-settlement",
+            gates.clone(),
+        );
+        assert_eq!(verifying.status, RunStatus::Verifying);
+        assert_eq!(verifying.agent_outcome, AgentOutcome::Completed);
+
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "initial-request",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gates[0],
+            VerificationGateOutcome::Passed,
+        );
+        let incomplete = repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+        assert_eq!(
+            incomplete.attempt.status,
+            VerificationAttemptStatus::Blocked
+        );
+        assert_eq!(incomplete.mutation.run.status, RunStatus::NeedsAttention);
+        assert_eq!(
+            incomplete.mutation.run.verification_outcome,
+            VerificationOutcome::Blocked
+        );
+
+        let rerun = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "rerun-request",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        let duplicate = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "rerun-request",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        assert!(rerun.created);
+        assert!(!duplicate.created);
+        assert_eq!(rerun.attempt.id, duplicate.attempt.id);
+        assert_eq!(rerun.mutation.run.thread_id, verifying.thread_id);
+        assert_eq!(rerun.mutation.run.turn_id, verifying.turn_id);
+
+        for (index, gate) in gates.iter().enumerate() {
+            persist_gate_outcome(
+                &repository,
+                &verifying.id,
+                &rerun.attempt.id,
+                index,
+                gate,
+                VerificationGateOutcome::Passed,
+            );
+        }
+        let passed = repository
+            .settle_verification_attempt(&rerun.attempt.id)
+            .unwrap();
+        assert_eq!(passed.attempt.status, VerificationAttemptStatus::Passed);
+        assert_eq!(passed.mutation.run.status, RunStatus::Completed);
+        assert_eq!(
+            passed.mutation.run.verification_outcome,
+            VerificationOutcome::Passed
+        );
+        assert_eq!(passed.mutation.run.agent_outcome, AgentOutcome::Completed);
+        let history = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(history.attempts.len(), 2);
+        assert!(!history.has_more);
+        assert_eq!(history.attempts[0].attempt.id, rerun.attempt.id);
+        assert_eq!(history.attempts[0].gates.len(), 2);
+        assert!(history.attempts[0]
+            .gates
+            .iter()
+            .all(|gate| gate.evidence.len() == 1 && gate.evidence[0].artifact.is_some()));
+    }
+
+    #[test]
+    fn deleting_a_task_removes_its_cascaded_run_artifact_files() {
+        let directory = TestDirectory::new("artifact-cascade-cleanup");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "artifact-cascade",
+            vec![gate.clone()],
+        );
+        let attempt = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "artifact-cascade-attempt",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &attempt.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Failed,
+        );
+        repository
+            .settle_verification_attempt(&attempt.attempt.id)
+            .unwrap();
+        let relative_storage_path = repository
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT relative_storage_path FROM artifacts WHERE run_id = ?1",
+                        [&verifying.id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let artifact_path = directory
+            .0
+            .join("verification-artifacts")
+            .join(relative_storage_path);
+        fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        fs::write(&artifact_path, b"{}").unwrap();
+
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace,
+                active_task_id: None,
+                show_archived: false,
+                task_ids: Vec::new(),
+                tasks: Vec::new(),
+            })
+            .unwrap();
+
+        assert!(!artifact_path.exists());
+        assert!(repository.get_run(&verifying.id).is_err());
+    }
+
+    #[test]
+    fn verification_attempt_history_is_bounded_per_run() {
+        let directory = TestDirectory::new("verification-attempt-bound");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-attempt-bound",
+            vec![gate.clone()],
+        );
+
+        for attempt_index in 0..20 {
+            let request_key = format!("bounded-attempt-{attempt_index}");
+            let trigger = if attempt_index == 0 {
+                VerificationAttemptTrigger::Initial
+            } else {
+                VerificationAttemptTrigger::Rerun
+            };
+            let attempt = repository
+                .begin_verification_attempt(&verifying.id, &request_key, trigger)
+                .unwrap();
+            persist_gate_outcome(
+                &repository,
+                &verifying.id,
+                &attempt.attempt.id,
+                0,
+                &gate,
+                VerificationGateOutcome::Failed,
+            );
+            let failed = repository
+                .settle_verification_attempt(&attempt.attempt.id)
+                .unwrap();
+            assert_eq!(failed.attempt.status, VerificationAttemptStatus::Failed);
+            if attempt_index == 9 {
+                let page = repository
+                    .list_verification_evidence(&verifying.id, Some(10))
+                    .unwrap();
+                assert_eq!(page.attempts.len(), 10);
+                assert!(!page.has_more);
+            } else if attempt_index == 10 {
+                let page = repository
+                    .list_verification_evidence(&verifying.id, Some(10))
+                    .unwrap();
+                assert_eq!(page.attempts.len(), 10);
+                assert!(page.has_more);
+            }
+        }
+
+        let idempotent = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "bounded-attempt-19",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        assert!(!idempotent.created);
+        assert_eq!(idempotent.attempt.status, VerificationAttemptStatus::Failed);
+        let error = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "bounded-attempt-overflow",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap_err();
+        assert!(error.contains("bounded history limit of 20"));
+        let page = repository
+            .list_verification_evidence(&verifying.id, Some(usize::MAX))
+            .unwrap();
+        assert_eq!(page.attempts.len(), 20);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn verification_rerun_respects_global_run_capacity() {
+        let directory = TestDirectory::new("verification-rerun-capacity");
+        let repository = repository_with_tasks(&directory.0, &["task-a", "task-b", "task-c"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-rerun-capacity",
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "capacity-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Failed,
+        );
+        repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+
+        for (task_id, key, root) in [
+            ("task-b", "capacity-b", "capacity-root-b"),
+            ("task-c", "capacity-c", "capacity-root-c"),
+        ] {
+            let mut run = new_run(&repository, &workspace, task_id, key);
+            run.execution_root = isolated_execution_root(&directory.0, root);
+            repository.enqueue_run(run).unwrap();
+            repository.claim_next_eligible_run(2).unwrap().unwrap();
+        }
+        let error = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "capacity-rerun",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap_err();
+        assert!(error.contains("global run capacity"));
+        assert_eq!(
+            repository.get_run(&verifying.id).unwrap().status,
+            RunStatus::NeedsAttention
+        );
+    }
+
+    #[test]
+    fn verification_rerun_admission_uses_component_overlap_in_both_directions() {
+        for scenario in 0..4 {
+            let directory = TestDirectory::new(&format!("verification-rerun-overlap-{scenario}"));
+            let repository = repository_with_tasks(&directory.0, &["task-a", "task-b"]);
+            let workspace = workspace_path(&directory.0);
+            let parent_root = isolated_execution_root(&directory.0, "repo");
+            let child_root = isolated_execution_root(&directory.0, "repo/sub");
+            let sibling_root = isolated_execution_root(&directory.0, "repo2");
+            let (verification_root, active_root, should_conflict) = match scenario {
+                0 => (&parent_root, &child_root, true),
+                1 => (&child_root, &parent_root, true),
+                2 => (&parent_root, &parent_root, true),
+                _ => (&parent_root, &sibling_root, false),
+            };
+            let gate = AcceptanceGate::Cleanliness {
+                allow_staged: true,
+                allow_unstaged: true,
+                allow_untracked: true,
+            };
+            let verifying = verifying_run_with_gates_at_root(
+                &repository,
+                &workspace,
+                "task-a",
+                "verification-rerun-overlap",
+                verification_root,
+                vec![gate.clone()],
+            );
+            let initial = repository
+                .begin_verification_attempt(
+                    &verifying.id,
+                    "overlap-initial",
+                    VerificationAttemptTrigger::Initial,
+                )
+                .unwrap();
+            persist_gate_outcome(
+                &repository,
+                &verifying.id,
+                &initial.attempt.id,
+                0,
+                &gate,
+                VerificationGateOutcome::Failed,
+            );
+            let failed = repository
+                .settle_verification_attempt(&initial.attempt.id)
+                .unwrap();
+            assert_eq!(failed.mutation.run.status, RunStatus::NeedsAttention);
+
+            let mut active_input = new_run(&repository, &workspace, "task-b", "overlapping-run");
+            active_input.execution_root = active_root.clone();
+            let active = repository.enqueue_run(active_input).unwrap().run;
+            assert_eq!(
+                repository
+                    .claim_next_eligible_run(2)
+                    .unwrap()
+                    .unwrap()
+                    .run
+                    .id,
+                active.id
+            );
+
+            let rerun = repository.begin_verification_attempt(
+                &verifying.id,
+                "overlap-rerun",
+                VerificationAttemptTrigger::Rerun,
+            );
+            if should_conflict {
+                let error = rerun.unwrap_err();
+                assert!(error.contains("already owns this execution root"));
+                let unchanged = repository.get_run(&verifying.id).unwrap();
+                assert_eq!(unchanged.status, RunStatus::NeedsAttention);
+                assert_eq!(unchanged.verification_outcome, VerificationOutcome::Failed);
+                assert_eq!(
+                    unchanged.latest_verification_attempt_id,
+                    Some(initial.attempt.id)
+                );
+            } else {
+                let admitted = rerun.unwrap();
+                assert!(admitted.created);
+                assert_eq!(admitted.mutation.run.status, RunStatus::Verifying);
+                assert_eq!(
+                    repository.get_run(&active.id).unwrap().status,
+                    RunStatus::Preparing
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn admitted_verification_reruns_reserve_overlapping_trees() {
+        for child_is_admitted in [false, true] {
+            let label = if child_is_admitted {
+                "rerun-reservation-child"
+            } else {
+                "rerun-reservation-parent"
+            };
+            let directory = TestDirectory::new(label);
+            let repository = repository_with_tasks(&directory.0, &["task-a", "task-b", "task-c"]);
+            let workspace = workspace_path(&directory.0);
+            let parent_root = isolated_execution_root(&directory.0, "repo");
+            let child_root = isolated_execution_root(&directory.0, "repo/sub");
+            let sibling_root = isolated_execution_root(&directory.0, "repo2");
+            let (admitted_root, blocked_root) = if child_is_admitted {
+                (&child_root, &parent_root)
+            } else {
+                (&parent_root, &child_root)
+            };
+            let admitted = failed_verification_run_at_root(
+                &repository,
+                &workspace,
+                "task-a",
+                "admitted",
+                admitted_root,
+            );
+            let blocked = failed_verification_run_at_root(
+                &repository,
+                &workspace,
+                "task-b",
+                "blocked",
+                blocked_root,
+            );
+            let sibling = failed_verification_run_at_root(
+                &repository,
+                &workspace,
+                "task-c",
+                "sibling",
+                &sibling_root,
+            );
+
+            let first = repository
+                .begin_verification_attempt(
+                    &admitted.id,
+                    "admitted-rerun",
+                    VerificationAttemptTrigger::Rerun,
+                )
+                .unwrap();
+            assert_eq!(first.mutation.run.status, RunStatus::Verifying);
+            let error = repository
+                .begin_verification_attempt(
+                    &blocked.id,
+                    "blocked-rerun",
+                    VerificationAttemptTrigger::Rerun,
+                )
+                .unwrap_err();
+            assert!(error.contains("already owns this execution root"));
+            let concurrent = repository
+                .begin_verification_attempt(
+                    &sibling.id,
+                    "sibling-rerun",
+                    VerificationAttemptTrigger::Rerun,
+                )
+                .unwrap();
+            assert_eq!(concurrent.mutation.run.status, RunStatus::Verifying);
+        }
+    }
+
+    #[test]
+    fn verification_settlement_failpoint_rolls_back_attempt_run_and_event() {
+        let directory = TestDirectory::new("verification-settlement-failpoint");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-settlement-failpoint",
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "failpoint-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Passed,
+        );
+
+        let error = repository
+            .settle_verification_attempt_with_failpoint(&initial.attempt.id)
+            .unwrap_err();
+        assert!(error.contains("Injected failure"));
+        let unchanged = repository.get_run(&verifying.id).unwrap();
+        assert_eq!(unchanged.status, RunStatus::Verifying);
+        assert_eq!(unchanged.verification_outcome, VerificationOutcome::Pending);
+        let duplicate = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "failpoint-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        assert!(!duplicate.created);
+        assert_eq!(duplicate.attempt.status, VerificationAttemptStatus::Running);
+        let evidence = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(evidence.attempts.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].attempt.status,
+            VerificationAttemptStatus::Running
+        );
+        assert_eq!(evidence.attempts[0].gates.len(), 1);
+
+        let passed = repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+        assert_eq!(passed.attempt.status, VerificationAttemptStatus::Passed);
+        assert_eq!(passed.mutation.run.status, RunStatus::Completed);
+        assert_eq!(
+            passed.mutation.run.verification_outcome,
+            VerificationOutcome::Passed
+        );
+    }
+
+    #[test]
+    fn verification_failure_wins_over_late_cancellation() {
+        let directory = TestDirectory::new("verification-failure-cancel-race");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-failure-cancel-race",
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "failure-cancel-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Failed,
+        );
+
+        let requested = repository.request_run_cancel(&verifying.id).unwrap();
+        let CancelDisposition::Verification { run, event } = requested else {
+            panic!("verification cancellation must remain active until its worker stops");
+        };
+        assert_eq!(run.status, RunStatus::Verifying);
+        assert!(run.cancel_requested);
+        assert_eq!(
+            event.as_ref().map(|event| event.event_type.as_str()),
+            Some("run.cancel_requested")
+        );
+        let deferred = repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+        assert_eq!(deferred.attempt.status, VerificationAttemptStatus::Running);
+        assert_eq!(deferred.mutation.run.status, RunStatus::Verifying);
+        assert!(deferred.mutation.event.is_none());
+
+        let cancelled = repository.finish_run_cancel(&verifying.id).unwrap();
+        assert_eq!(cancelled.run.status, RunStatus::NeedsAttention);
+        assert_eq!(cancelled.run.agent_outcome, AgentOutcome::Completed);
+        assert_eq!(
+            cancelled.run.verification_outcome,
+            VerificationOutcome::Failed
+        );
+        assert_eq!(
+            cancelled
+                .event
+                .as_ref()
+                .map(|event| event.event_type.as_str()),
+            Some("verification.failed")
+        );
+        let settled = repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+        assert_eq!(settled.attempt.status, VerificationAttemptStatus::Failed);
+        assert!(settled.mutation.event.is_none());
+        let evidence = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(evidence.attempts.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].attempt.status,
+            VerificationAttemptStatus::Failed
+        );
+        assert_eq!(evidence.attempts[0].gates.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].gates[0].result.outcome,
+            VerificationGateOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn verification_cancel_holds_root_replays_and_cannot_race_to_passed() {
+        let directory = TestDirectory::new("verification-cancel");
+        let repository = repository_with_tasks(&directory.0, &["task-a", "task-b"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-cancel",
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "cancel-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        let queued = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-b",
+                "same-root-after-cancel",
+            ))
+            .unwrap()
+            .run;
+
+        let requested = repository.request_run_cancel(&verifying.id).unwrap();
+        let CancelDisposition::Verification { run, event } = requested else {
+            panic!("verification cancellation must remain active until its worker stops");
+        };
+        assert_eq!(run.status, RunStatus::Verifying);
+        assert!(run.cancel_requested);
+        assert!(event.is_some());
+
+        for _failed_stage in ["worker_stop_signal", "worker_stop_timeout"] {
+            let replay = repository.request_run_cancel(&verifying.id).unwrap();
+            let CancelDisposition::Verification { run, event } = replay else {
+                panic!("durable cancellation intent must remain replayable");
+            };
+            assert_eq!(run.status, RunStatus::Verifying);
+            assert!(run.cancel_requested);
+            assert!(event.is_none());
+        }
+        let cancel_request_events = repository
+            .list_run_events(&verifying.id, None, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "run.cancel_requested")
+            .count();
+        assert_eq!(cancel_request_events, 1);
+        assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Passed,
+        );
+        let deferred = repository
+            .settle_verification_attempt(&initial.attempt.id)
+            .unwrap();
+        assert_eq!(deferred.attempt.status, VerificationAttemptStatus::Running);
+        assert_eq!(deferred.mutation.run.status, RunStatus::Verifying);
+        assert!(deferred.mutation.event.is_none());
+        assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+
+        let error = repository
+            .finish_run_cancel_with_failpoint(&verifying.id)
+            .unwrap_err();
+        assert!(error.contains("Injected failure"));
+        let still_stopping = repository.get_run(&verifying.id).unwrap();
+        assert_eq!(still_stopping.status, RunStatus::Verifying);
+        assert!(still_stopping.cancel_requested);
+        assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+
+        let cancelled = repository.finish_run_cancel(&verifying.id).unwrap();
+        assert_eq!(cancelled.run.status, RunStatus::NeedsAttention);
+        assert_eq!(
+            cancelled.run.verification_outcome,
+            VerificationOutcome::Blocked
+        );
+        assert!(!cancelled.run.cancel_requested);
+        assert_eq!(
+            cancelled
+                .event
+                .as_ref()
+                .map(|event| event.event_type.as_str()),
+            Some("verification.cancelled")
+        );
+        let repeated = repository.finish_run_cancel(&verifying.id).unwrap();
+        assert_eq!(repeated.run.status, RunStatus::NeedsAttention);
+        assert!(repeated.event.is_none());
+        assert_eq!(
+            repository
+                .claim_next_eligible_run(2)
+                .unwrap()
+                .unwrap()
+                .run
+                .id,
+            queued.id
+        );
+
+        let duplicate = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "cancel-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        assert_eq!(
+            duplicate.attempt.status,
+            VerificationAttemptStatus::Cancelled
+        );
+        assert_eq!(duplicate.attempt.id, initial.attempt.id);
+    }
+
+    #[test]
+    fn persisted_verification_failure_wins_over_process_restart() {
+        let directory = TestDirectory::new("verification-failure-restart");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-failure-restart",
+            vec![gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "failure-restart-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Failed,
+        );
+
+        let reconciled = repository.reconcile_in_flight_runs().unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].run.status, RunStatus::NeedsAttention);
+        assert_eq!(reconciled[0].run.agent_outcome, AgentOutcome::Completed);
+        assert_eq!(
+            reconciled[0].run.verification_outcome,
+            VerificationOutcome::Failed
+        );
+        assert_eq!(
+            reconciled[0]
+                .event
+                .as_ref()
+                .map(|event| event.event_type.as_str()),
+            Some("verification.failed")
+        );
+        let evidence = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(evidence.attempts.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].attempt.status,
+            VerificationAttemptStatus::Failed
+        );
+        assert_eq!(evidence.attempts[0].gates.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].gates[0].result.outcome,
+            VerificationGateOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn restart_interrupts_verification_attempt_and_preserves_verification_only_rerun() {
+        let directory = TestDirectory::new("verification-restart");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-restart",
+            vec![gate.clone(), gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "restart-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Passed,
+        );
+        let reconciled = repository.reconcile_in_flight_runs().unwrap();
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].run.status, RunStatus::Interrupted);
+        assert_eq!(reconciled[0].run.agent_outcome, AgentOutcome::Completed);
+        assert_eq!(
+            reconciled[0].run.verification_outcome,
+            VerificationOutcome::Blocked
+        );
+        let interrupted = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "restart-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        assert_eq!(interrupted.attempt.id, initial.attempt.id);
+        assert_eq!(
+            interrupted.attempt.status,
+            VerificationAttemptStatus::Interrupted
+        );
+        let evidence = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(evidence.attempts.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].attempt.status,
+            VerificationAttemptStatus::Interrupted
+        );
+        assert_eq!(evidence.attempts[0].gates.len(), 1);
+        assert!(evidence.attempts[0].gates[0].evidence[0].artifact.is_some());
+        assert!(repository
+            .list_run_events(&verifying.id, None, None)
+            .unwrap()
+            .iter()
+            .all(|event| event.event_type != "verification.passed"));
+        let rerun = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "restart-rerun",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        assert!(rerun.created);
+        assert_eq!(rerun.mutation.run.thread_id, verifying.thread_id);
+        assert_eq!(rerun.mutation.run.turn_id, verifying.turn_id);
+    }
+
+    #[test]
+    fn restart_consumes_verification_cancel_intent_and_allows_rerun() {
+        let directory = TestDirectory::new("verification-cancel-restart");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "verification-cancel-restart",
+            vec![gate.clone(), gate.clone()],
+        );
+        let initial = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "cancel-restart-initial",
+                VerificationAttemptTrigger::Initial,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &verifying.id,
+            &initial.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Passed,
+        );
+
+        let requested = repository.request_run_cancel(&verifying.id).unwrap();
+        let CancelDisposition::Verification { run, event } = requested else {
+            panic!("verification cancellation must persist until its worker stops");
+        };
+        assert!(run.cancel_requested);
+        assert_eq!(
+            event.as_ref().map(|event| event.event_type.as_str()),
+            Some("run.cancel_requested")
+        );
+
+        let first = repository.reconcile_in_flight_runs().unwrap();
+        let second = repository.reconcile_in_flight_runs().unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+        assert_eq!(first[0].run.status, RunStatus::Interrupted);
+        assert_eq!(first[0].run.agent_outcome, AgentOutcome::Completed);
+        assert_eq!(
+            first[0].run.verification_outcome,
+            VerificationOutcome::Blocked
+        );
+        assert!(!first[0].run.cancel_requested);
+
+        let recovered = repository.get_run(&verifying.id).unwrap();
+        assert_eq!(recovered.status, RunStatus::Interrupted);
+        assert_eq!(recovered.verification_outcome, VerificationOutcome::Blocked);
+        assert!(!recovered.cancel_requested);
+        let evidence = repository
+            .list_verification_evidence(&verifying.id, None)
+            .unwrap();
+        assert_eq!(evidence.attempts.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].attempt.status,
+            VerificationAttemptStatus::Interrupted
+        );
+        assert_eq!(evidence.attempts[0].gates.len(), 1);
+        assert_eq!(
+            evidence.attempts[0].gates[0].result.outcome,
+            VerificationGateOutcome::Passed
+        );
+        assert!(evidence.attempts[0].gates[0].evidence[0].artifact.is_some());
+
+        let events = repository
+            .list_run_events(&verifying.id, None, None)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "run.interrupted")
+                .count(),
+            1
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.event_type != "verification.passed"));
+
+        let terminal_cancel = repository.request_run_cancel(&verifying.id).unwrap();
+        let CancelDisposition::Settled(terminal_cancel) = terminal_cancel else {
+            panic!("terminal cancellation must remain idempotent");
+        };
+        assert_eq!(terminal_cancel.run.status, RunStatus::Interrupted);
+        assert!(!terminal_cancel.run.cancel_requested);
+        assert!(terminal_cancel.event.is_none());
+
+        let rerun = repository
+            .begin_verification_attempt(
+                &verifying.id,
+                "cancel-restart-rerun",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        assert!(rerun.created);
+        assert_eq!(rerun.mutation.run.status, RunStatus::Verifying);
+        assert_eq!(
+            rerun.mutation.run.verification_outcome,
+            VerificationOutcome::Pending
+        );
+        assert_eq!(rerun.mutation.run.thread_id, verifying.thread_id);
+        assert_eq!(rerun.mutation.run.turn_id, verifying.turn_id);
     }
 }

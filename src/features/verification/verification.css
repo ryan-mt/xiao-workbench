@@ -1,0 +1,360 @@
+.verification-card {
+  margin-top: 22px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.verification-card--verified { border-left-color: var(--success); }
+.verification-card--working,
+.verification-card--queued,
+.verification-card--waiting { border-left-color: var(--warning); }
+.verification-card--attention,
+.verification-card--failed,
+.verification-card--interrupted { border-left-color: var(--danger); }
+.verification-card--done,
+.verification-card--cancelled { border-left-color: var(--muted); }
+
+.verification-card--compact {
+  margin-top: 7px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.verification-card__header {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.verification-card__mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-deep);
+  color: var(--muted-strong);
+}
+
+.verification-card--verified .verification-card__mark { color: var(--success); }
+.verification-card--attention .verification-card__mark,
+.verification-card--failed .verification-card__mark { color: var(--danger); }
+
+.verification-card__header > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.verification-card__header strong {
+  color: var(--text);
+  font-size: var(--text-label);
+  font-weight: 620;
+}
+
+.verification-card__header small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.verification-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.verification-card__actions .button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: var(--text-micro);
+}
+
+.verification-card__diagnostic {
+  margin: 9px 10px 0;
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--text-micro);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.verification-attempts {
+  display: grid;
+}
+
+.verification-card__loading,
+.verification-card__empty {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.verification-attempt {
+  border-bottom: 1px solid var(--line);
+}
+
+.verification-attempt:last-child {
+  border-bottom: 0;
+}
+
+.verification-attempt > summary,
+.verification-gate-result > details > summary {
+  display: grid;
+  cursor: pointer;
+  list-style: none;
+}
+
+.verification-attempt > summary::-webkit-details-marker,
+.verification-gate-result > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.verification-attempt > summary {
+  min-height: 42px;
+  grid-template-columns: auto minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.verification-attempt > summary > span {
+  color: var(--text-soft);
+  font-weight: 590;
+}
+
+.verification-attempt > summary > small {
+  white-space: nowrap;
+}
+
+.verification-attempt > summary > svg,
+.verification-gate-result summary > svg {
+  transition: transform 150ms ease;
+}
+
+.verification-attempt[open] > summary > svg,
+.verification-gate-result details[open] > summary > svg {
+  transform: rotate(90deg);
+}
+
+.verification-outcome {
+  justify-self: start;
+  color: var(--muted-strong) !important;
+  font-size: var(--text-micro) !important;
+  font-weight: 560 !important;
+  text-transform: capitalize;
+}
+
+.verification-outcome--passed { color: var(--success) !important; }
+.verification-outcome--failed,
+.verification-outcome--blocked,
+.verification-outcome--interrupted { color: var(--danger) !important; }
+.verification-outcome--running { color: var(--warning) !important; }
+
+.verification-attempt__body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.verification-attempt__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.verification-gates {
+  display: grid;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  list-style: none;
+}
+
+.verification-gate-result {
+  border-bottom: 1px solid var(--line);
+}
+
+.verification-gate-result:last-child {
+  border-bottom: 0;
+}
+
+.verification-gate-result > details > summary {
+  min-height: 38px;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  background: var(--surface);
+}
+
+.verification-gate-result__index {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+}
+
+.verification-gate-result summary > strong {
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+  font-weight: 590;
+}
+
+.verification-gate-result summary > small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  white-space: nowrap;
+}
+
+.verification-gate-result summary > b {
+  color: var(--muted-strong);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.verification-gate-result--passed summary > b { color: var(--success); }
+.verification-gate-result--failed summary > b,
+.verification-gate-result--blocked summary > b { color: var(--danger); }
+.verification-gate-result--cancelled summary > b { color: var(--muted); }
+
+.verification-gate-result__body {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-deep);
+}
+
+.verification-gate-result__body .verification-card__diagnostic,
+.verification-artifact .verification-card__diagnostic {
+  margin: 0;
+}
+
+.verification-evidence {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.verification-evidence__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.verification-evidence__meta > span {
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+  font-weight: 590;
+  text-transform: capitalize;
+}
+
+.verification-evidence__meta > small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.verification-evidence pre,
+.verification-artifact pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.verification-artifact {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+
+.verification-artifact .button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: var(--text-micro);
+}
+
+.verification-artifact pre {
+  width: 100%;
+  max-height: 360px;
+}
+
+.verification-card--compact .verification-card__header {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  padding: 7px 8px;
+}
+
+.verification-card--compact .verification-card__mark {
+  width: 24px;
+  height: 24px;
+}
+
+.verification-card--compact .verification-card__actions .button {
+  padding: 0 6px;
+}
+
+@media (max-width: 620px) {
+  .verification-card__header,
+  .verification-card--compact .verification-card__header {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+  .verification-card__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .verification-attempt > summary {
+    grid-template-columns: auto minmax(0, 1fr) 16px;
+  }
+  .verification-attempt > summary > small {
+    display: none;
+  }
+  .verification-gate-result > details > summary {
+    grid-template-columns: 22px minmax(0, 1fr) auto 14px;
+  }
+  .verification-gate-result summary > small {
+    display: none;
+  }
+}

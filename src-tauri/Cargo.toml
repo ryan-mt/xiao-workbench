@@ -1,6 +1,6 @@
 [package]
 name = "xiao-workbench"
-version = "0.0.0-day07162026"
+version = "0.0.0-day07182026"
 description = "A focused desktop workbench for coding agents"
 authors = ["Xiao"]
 license = "MIT"
@@ -20,6 +20,7 @@ semver = "1"
 chrono = "0.4"
 chrono-tz = "0.10"
 portable-pty = "0.9"
+regex = "1"
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 sha2 = "0.11.0"
 tauri = { version = "2.8", features = ["protocol-asset", "tray-icon", "unstable"] }

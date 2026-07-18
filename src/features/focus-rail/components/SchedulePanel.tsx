@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type {
@@ -6,10 +6,18 @@ import type {
   RoutineScheduleKind,
   RoutineSummary,
 } from "../../../core/models/routine";
+import type { AcceptanceContractDraft } from "../../../core/models/verification";
+import { runPresentation } from "../../verification/runPresentation";
+import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
+import {
+  AcceptanceContractEditor,
+  contractDraftFromVersion,
+} from "./AcceptanceContractEditor";
 
 export type RoutineDraft = {
   title: string;
   prompt: string;
+  acceptanceContract: AcceptanceContractDraft | null;
   scheduleKind: RoutineScheduleKind;
   timezone: string;
   scheduledFor: number | null;
@@ -20,6 +28,7 @@ export type RoutineDraft = {
 };
 
 type SchedulePanelProps = {
+  projectPath: string;
   routines: RoutineSummary[];
   loading: boolean;
   error: string | null;
@@ -41,6 +50,7 @@ type FormState = {
   title: string;
   prompt: string;
   scheduleKind: RoutineScheduleKind;
+  acceptanceContract: AcceptanceContractDraft | null;
   runAt: string;
   dailyTime: string;
   timezone: string;
@@ -54,6 +64,7 @@ const localTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 
 const emptyForm = (): FormState => ({
   title: "",
   prompt: "",
+  acceptanceContract: null,
   scheduleKind: "one_shot",
   runAt: "",
   dailyTime: "09:00",
@@ -94,9 +105,14 @@ const routineState = (routine: RoutineSummary) => {
   return routine.enabled ? "scheduled" : "disabled";
 };
 
+export const routinePresetTaskId = (
+  editingRoutine: Pick<RoutineSummary, "taskId"> | null,
+) => editingRoutine?.taskId ?? null;
+
 const formFromRoutine = (routine: RoutineSummary): FormState => ({
   title: routine.title,
   prompt: routine.prompt,
+  acceptanceContract: contractDraftFromVersion(routine.acceptanceContract),
   scheduleKind: routine.scheduleKind,
   runAt: toLocalDateTimeInput(routine.scheduledFor),
   dailyTime: routine.dailyTime ?? "09:00",
@@ -106,7 +122,12 @@ const formFromRoutine = (routine: RoutineSummary): FormState => ({
   dangerousAccessConfirmed: false,
 });
 
-export function SchedulePanel({
+export function SchedulePanel(props: SchedulePanelProps) {
+  return <SchedulePanelWorkspace key={props.projectPath} {...props} />;
+}
+
+function SchedulePanelWorkspace({
+  projectPath,
   routines,
   loading,
   error,
@@ -127,7 +148,9 @@ export function SchedulePanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [evidenceRunId, setEvidenceRunId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const formGeneration = useRef(0);
   const editingRoutine = useMemo(
     () => routines.find((routine) => routine.id === editingId) ?? null,
     [editingId, routines],
@@ -153,7 +176,13 @@ export function SchedulePanel({
     return () => window.cancelAnimationFrame(frame);
   }, [expandedId, openRunId, routines]);
 
+  const changeForm = (update: (current: FormState) => FormState) => {
+    formGeneration.current += 1;
+    setForm(update);
+  };
+
   const resetForm = () => {
+    formGeneration.current += 1;
     setForm(emptyForm());
     setEditingId(null);
     setFormError(null);
@@ -199,6 +228,7 @@ export function SchedulePanel({
     const draft: RoutineDraft = {
       title: form.title.trim(),
       prompt,
+      acceptanceContract: form.acceptanceContract,
       scheduleKind: form.scheduleKind,
       timezone,
       scheduledFor,
@@ -207,17 +237,19 @@ export function SchedulePanel({
       preferIsolation: form.preferIsolation,
       dangerousAccessConfirmed: form.dangerousAccessConfirmed,
     };
+    const submissionGeneration = formGeneration.current;
     setFormError(null);
     try {
       if (editingId) await onUpdate(editingId, draft);
       else await onCreate(draft);
-      resetForm();
+      if (formGeneration.current === submissionGeneration) resetForm();
     } catch {
       // Native operation errors are rendered from the routine controller.
     }
   };
 
   const startEdit = (routine: RoutineSummary) => {
+    formGeneration.current += 1;
     onClearError();
     setEditingId(routine.id);
     setForm(formFromRoutine(routine));
@@ -269,7 +301,7 @@ export function SchedulePanel({
           <input
             value={form.title}
             placeholder="Daily code review"
-            onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+            onChange={(event) => changeForm((current) => ({ ...current, title: event.target.value }))}
           />
         </label>
         <label>
@@ -278,16 +310,24 @@ export function SchedulePanel({
             rows={4}
             value={form.prompt}
             placeholder="What should Xiao do?"
-            onChange={(event) => setForm((current) => ({ ...current, prompt: event.target.value }))}
+            onChange={(event) => changeForm((current) => ({ ...current, prompt: event.target.value }))}
           />
         </label>
+
+        <AcceptanceContractEditor
+          projectPath={projectPath}
+          taskId={routinePresetTaskId(editingRoutine)}
+          value={form.acceptanceContract}
+          disabled={!nativeAvailable || creating || Boolean(editingId && busyIds.has(editingId))}
+          onChange={(acceptanceContract) => changeForm((current) => ({ ...current, acceptanceContract }))}
+        />
 
         <div className="routine-form__row">
           <label>
             <span>Repeats</span>
             <select
               value={form.scheduleKind}
-              onChange={(event) => setForm((current) => {
+              onChange={(event) => changeForm((current) => {
                 const scheduleKind = event.target.value as RoutineScheduleKind;
                 return {
                   ...current,
@@ -306,13 +346,13 @@ export function SchedulePanel({
               <input
                 type="datetime-local"
                 value={form.runAt}
-                onChange={(event) => setForm((current) => ({ ...current, runAt: event.target.value }))}
+                onChange={(event) => changeForm((current) => ({ ...current, runAt: event.target.value }))}
               />
             ) : (
               <input
                 type="time"
                 value={form.dailyTime}
-                onChange={(event) => setForm((current) => ({ ...current, dailyTime: event.target.value }))}
+                onChange={(event) => changeForm((current) => ({ ...current, dailyTime: event.target.value }))}
               />
             )}
           </label>
@@ -325,14 +365,14 @@ export function SchedulePanel({
               value={form.timezone}
               disabled={form.scheduleKind === "one_shot"}
               spellCheck={false}
-              onChange={(event) => setForm((current) => ({ ...current, timezone: event.target.value }))}
+              onChange={(event) => changeForm((current) => ({ ...current, timezone: event.target.value }))}
             />
           </label>
           <label>
             <span>If Xiao was closed</span>
             <select
               value={form.missedRunPolicy}
-              onChange={(event) => setForm((current) => ({
+              onChange={(event) => changeForm((current) => ({
                 ...current,
                 missedRunPolicy: event.target.value as MissedRunPolicy,
               }))}
@@ -348,7 +388,7 @@ export function SchedulePanel({
             type="checkbox"
             checked={form.preferIsolation}
             disabled={editingRoutine?.workspaceMode === "managed-worktree"}
-            onChange={(event) => setForm((current) => ({ ...current, preferIsolation: event.target.checked }))}
+            onChange={(event) => changeForm((current) => ({ ...current, preferIsolation: event.target.checked }))}
           />
           <span>
             <strong>Prefer an isolated worktree</strong>
@@ -362,7 +402,7 @@ export function SchedulePanel({
             <input
               type="checkbox"
               checked={form.dangerousAccessConfirmed}
-              onChange={(event) => setForm((current) => ({
+              onChange={(event) => changeForm((current) => ({
                 ...current,
                 dangerousAccessConfirmed: event.target.checked,
               }))}
@@ -396,12 +436,15 @@ export function SchedulePanel({
         ) : null}
         {!loading && routines.map((routine) => {
           const state = routineState(routine);
+          const latestRun = routine.history.find((occurrence) => occurrence.run)?.run ?? null;
+          const presentedRun = latestRun ? runPresentation(latestRun) : null;
+          const evidenceRun = routine.history.find((occurrence) => occurrence.run?.id === evidenceRunId)?.run ?? null;
           const expanded = expandedId === routine.id;
           const busy = busyIds.has(routine.id);
           return (
             <article className={`routine-card ${expanded ? "is-expanded" : ""}`} key={routine.id}>
               <header>
-                <span className={`routine-state routine-state--${state}`} aria-label={readableStatus(state)} />
+                <span className={`routine-state routine-state--${presentedRun?.kind ?? state}`} aria-label={presentedRun?.label ?? readableStatus(state)} />
                 <button
                   className="routine-card__summary"
                   type="button"
@@ -412,7 +455,7 @@ export function SchedulePanel({
                   <small>
                     {routine.enabled
                       ? `Next: ${formatTimestamp(routine.nextRunAt, routine.timezone)}`
-                      : `Disabled, last status: ${readableStatus(routine.lastStatus ?? "not run")}`}
+                      : `Disabled, last status: ${presentedRun?.label ?? readableStatus(routine.lastStatus ?? "not run")}`}
                   </small>
                 </button>
                 <button
@@ -430,6 +473,7 @@ export function SchedulePanel({
                   <p>{routine.prompt}</p>
                   <dl>
                     <div><dt>Schedule</dt><dd>{routine.scheduleKind === "daily" ? `Daily at ${routine.dailyTime}` : formatTimestamp(routine.scheduledFor, routine.timezone)}</dd></div>
+                    <div><dt>Contract</dt><dd>{routine.acceptanceContract ? `${routine.acceptanceContract.name} v${routine.acceptanceContract.version}` : "None"}</dd></div>
                     <div><dt>Timezone</dt><dd>{routine.timezone}</dd></div>
                     <div><dt>Missed work</dt><dd>{routine.missedRunPolicy === "run_once" ? "Run once" : "Skip"}</dd></div>
                     <div><dt>Workspace</dt><dd>{routine.workspaceMode === "managed-worktree" ? "Isolated worktree" : "Local workspace"}</dd></div>
@@ -459,20 +503,34 @@ export function SchedulePanel({
                       <strong>Recent runs</strong>
                       <ol>
                         {routine.history.map((occurrence) => {
-                          const status = occurrence.run?.status ?? occurrence.status;
+                          const status = occurrence.run
+                            ? runPresentation(occurrence.run).label
+                            : readableStatus(occurrence.status);
                           const target = occurrence.run?.id === openRunId;
                           return (
                             <li
-                              className={target ? "is-target" : undefined}
+                              className={target || occurrence.run?.id === evidenceRunId ? "is-target" : undefined}
                               id={occurrence.run ? `routine-run-${occurrence.run.id}` : undefined}
                               key={occurrence.id}
                             >
                               <span>{formatTimestamp(occurrence.scheduledFor, routine.timezone)}</span>
-                              <small>{occurrence.triggerKind === "manual" ? "Manual" : "Scheduled"}, {readableStatus(status)}</small>
+                              <small>{occurrence.triggerKind === "manual" ? "Manual" : "Scheduled"}, {status}</small>
+                              {occurrence.run && (
+                                occurrence.run.acceptanceContractSnapshot ||
+                                occurrence.run.latestVerificationAttemptId
+                              ) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setEvidenceRunId((current) => current === occurrence.run?.id ? null : occurrence.run?.id ?? null)}
+                                >
+                                  {evidenceRunId === occurrence.run.id ? "Hide" : "Evidence"}
+                                </button>
+                              ) : null}
                             </li>
                           );
                         })}
                       </ol>
+                      {evidenceRun ? <VerificationEvidenceCard run={evidenceRun} compact /> : null}
                     </div>
                   ) : <p className="routine-history__empty">No runs yet.</p>}
 

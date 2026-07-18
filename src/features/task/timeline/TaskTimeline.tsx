@@ -1,12 +1,15 @@
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
+import type { RunSnapshot } from "../../../core/models/run";
 import { ActivityItem } from "./ActivityItem";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
+import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
 
 type TaskTimelineProps = {
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
+  latestRun: RunSnapshot | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
   historyLoading: boolean;
@@ -70,6 +73,7 @@ const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
 export function TaskTimeline({
   timeline,
   runtime,
+  latestRun,
   showReasoningSummaries,
   expandToolOutput,
   historyLoading,
@@ -116,6 +120,9 @@ export function TaskTimeline({
         ),
       )}
       <LiveTurnStatus taskId={taskId} runtime={runtime} timeline={timeline} />
+      {latestRun ? (
+        <VerificationEvidenceCard run={latestRun} onReviewChanges={onReviewChanges} />
+      ) : null}
     </div>
   );
 }

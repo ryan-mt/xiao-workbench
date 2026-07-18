@@ -1,4 +1,8 @@
 import type { AgentMessage, XiaoHistoryItem } from "./agent";
+import type {
+  AcceptanceContractSnapshot,
+  VerificationBaselineState,
+} from "./verification";
 
 export type RunStatus =
   | "queued"
@@ -23,6 +27,13 @@ export type RunSnapshot = {
   parentRunId: string | null;
   candidateGroupId: string | null;
   routineOccurrenceId: string | null;
+  acceptanceContractSourceVersionId: string | null;
+  acceptanceContractSnapshot: AcceptanceContractSnapshot | null;
+  acceptanceContractSnapshotSha256: string | null;
+  verificationBaselineState: VerificationBaselineState;
+  verificationBaselineArtifactId: string | null;
+  verificationBaselineDiagnostic: string | null;
+  latestVerificationAttemptId: string | null;
   status: RunStatus;
   agentOutcome: RunAgentOutcome;
   verificationOutcome: RunVerificationOutcome;

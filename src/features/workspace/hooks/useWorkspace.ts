@@ -30,10 +30,23 @@ const browserWorkspace: WorkspaceSnapshot = {
   git: null,
 };
 
+type WorkspaceRequestIdentity = {
+  projectPath: string | undefined;
+  taskId: string | null | undefined;
+};
+
+type LoadedWorkspace = {
+  snapshot: WorkspaceSnapshot;
+  identity: WorkspaceRequestIdentity | null;
+};
+
 export function useWorkspace(path?: string, taskId?: string | null) {
-  const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(browserWorkspace);
+  const [loadedWorkspace, setLoadedWorkspace] = useState<LoadedWorkspace>({
+    snapshot: browserWorkspace,
+    identity: null,
+  });
   const [system, setSystem] = useState<SystemInfo>(browserSystem);
-  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refreshId = useRef(0);
   const requestedPath = useRef(path);
@@ -52,11 +65,15 @@ export function useWorkspace(path?: string, taskId?: string | null) {
       requestedPath.current === path &&
       requestedTaskId.current === taskId;
     if (!isTauriHost()) {
-      setLoading(false);
+      setLoadedWorkspace({
+        snapshot: browserWorkspace,
+        identity: { projectPath: path, taskId },
+      });
+      setRefreshing(false);
       return;
     }
 
-    setLoading(true);
+    setRefreshing(true);
     setError(null);
 
     try {
@@ -65,19 +82,30 @@ export function useWorkspace(path?: string, taskId?: string | null) {
         nativeBridge.getSystemInfo(),
       ]);
       if (!isCurrentRequest()) return;
-      setWorkspace(nextWorkspace);
+      setLoadedWorkspace({
+        snapshot: nextWorkspace,
+        identity: { projectPath: path, taskId },
+      });
       setSystem(nextSystem);
     } catch (reason) {
       if (!isCurrentRequest()) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      if (isCurrentRequest()) setLoading(false);
+      if (isCurrentRequest()) setRefreshing(false);
     }
   }, [path, taskId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const workspace = loadedWorkspace.snapshot;
+  const identityStale =
+    loadedWorkspace.identity === null ||
+    loadedWorkspace.identity.projectPath !== path ||
+    loadedWorkspace.identity.taskId !== taskId;
+  const loading = refreshing || identityStale;
+  const actionable = !loading && error === null;
 
   const loadDirectory = useCallback(
     (relativePath: string) => {
@@ -89,5 +117,16 @@ export function useWorkspace(path?: string, taskId?: string | null) {
     [taskId, workspace.path],
   );
 
-  return { workspace, system, loading, error, refresh, loadDirectory };
+  return {
+    workspace,
+    system,
+    loading,
+    error,
+    refresh,
+    loadDirectory,
+    loadedProjectPath: loadedWorkspace.identity?.projectPath,
+    loadedTaskId: loadedWorkspace.identity?.taskId,
+    identityStale,
+    actionable,
+  };
 }

@@ -381,12 +381,21 @@ mod tests {
         };
         command.cwd(std::env::temp_dir());
         let mut reader = pair.master.try_clone_reader().unwrap();
+        let mut writer = pair.master.take_writer().unwrap();
         let mut child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
-        let status = child.wait().unwrap();
+        #[cfg(windows)]
+        writer.write_all(b"\x1b[1;1R").unwrap();
+        drop(writer);
+        let reader_thread = thread::spawn(move || {
+            let mut output = String::new();
+            reader.read_to_string(&mut output).unwrap();
+            output
+        });
+        let status = child.wait();
         drop(pair.master);
-        let mut output = String::new();
-        reader.read_to_string(&mut output).unwrap();
+        let output = reader_thread.join().unwrap();
+        let status = status.unwrap();
 
         assert!(status.success());
         assert!(

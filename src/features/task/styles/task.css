@@ -255,6 +255,31 @@
   animation: live-pulse 1.4s ease infinite;
 }
 
+.task-header__runtime--verified i {
+  background: var(--success);
+}
+
+.task-header__runtime--queued i {
+  background: var(--info);
+}
+
+.task-header__runtime--working i,
+.task-header__runtime--waiting i {
+  background: var(--warning);
+  animation: live-pulse 1.4s ease infinite;
+}
+
+.task-header__runtime--attention i,
+.task-header__runtime--failed i,
+.task-header__runtime--interrupted i {
+  background: var(--danger);
+}
+
+.task-header__runtime--done i,
+.task-header__runtime--cancelled i {
+  background: var(--muted);
+}
+
 .task-header__context {
   display: inline-flex;
   height: 30px;

@@ -7,6 +7,7 @@ import type {
   AgentSandboxMode,
   TimelineEntry,
 } from "./agent";
+import type { AcceptanceContractVersionSummary } from "./verification";
 
 export type XiaoThreadPersistence = "ephemeral" | "persistent" | "legacy-untrusted";
 export type XiaoWorkspaceMode = "local" | "managed-worktree";
@@ -38,6 +39,7 @@ export type XiaoTaskDocument = {
   approvalPolicy?: AgentApprovalPolicy;
   sandboxMode?: AgentSandboxMode;
   goal?: AgentGoal | null;
+  acceptanceContract?: AcceptanceContractVersionSummary | null;
   timeline: TimelineEntry[];
   timelineLoaded: boolean;
   timelineComplete: boolean;
