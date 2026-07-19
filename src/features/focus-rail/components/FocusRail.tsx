@@ -47,6 +47,7 @@ type FocusRailProps = {
   resourceRequest?: FocusResourceRequest | null;
   onViewChange: (view: FocusView) => void;
   onClose: () => void;
+  onBrowserNavigationStart: () => void;
   workspace: WorkspaceSnapshot;
   system: SystemInfo;
   runtime: AgentRuntimeState;
@@ -113,6 +114,7 @@ export function FocusRail({
   resourceRequest = null,
   onViewChange,
   onClose,
+  onBrowserNavigationStart,
   workspace,
   system,
   runtime,
@@ -339,6 +341,7 @@ export function FocusRail({
               <BrowserPanel
                 active={activeView === "browser" && !toolsMenuOpen && !obscured}
                 navigationRequest={resourceRequest?.kind === "browser" ? resourceRequest : null}
+                onNavigationStart={onBrowserNavigationStart}
               />
             </Suspense>
           </div>

@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
 import type {
@@ -330,6 +330,16 @@ export const applyCurrentWorkspaceSaveCompletion = (
   return true;
 };
 
+export const applyCurrentFocusResourceCompletion = (
+  currentRequestId: number,
+  requestId: number,
+  apply: () => void,
+) => {
+  if (requestId !== currentRequestId) return false;
+  apply();
+  return true;
+};
+
 export const applyCurrentWorkspaceArchiveCompletion = (
   current: ConfirmedNativeTaskState,
   scope: ConfirmedNativeTaskScope,
@@ -401,6 +411,43 @@ export const shouldAutoConnectAgentRuntime = (
   workspaceActionable &&
   comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
   Boolean(workspacePath)
+);
+
+export const isTaskWorkspaceStateLoading = (
+  workspaceLoading: boolean,
+  taskStateReady: boolean,
+  taskWorkspacePath: string,
+  workspacePath: string,
+  taskHistoryLoading: boolean,
+) => (
+  workspaceLoading ||
+  !taskStateReady ||
+  comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(workspacePath) ||
+  taskHistoryLoading
+);
+
+export const shouldLoadTaskWorkspaceState = (
+  loading: boolean,
+  taskStateReady: boolean,
+  taskLoadError: string | null,
+  taskWorkspacePath: string,
+  workspacePath: string,
+) => (
+  !loading &&
+  Boolean(workspacePath) &&
+  (
+    comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(workspacePath) ||
+    (!taskStateReady && taskLoadError === null)
+  )
+);
+
+export const shouldInvalidateTaskWorkspaceState = (
+  requestedWorkspacePath: string | undefined,
+  taskWorkspacePath: string,
+) => (
+  Boolean(requestedWorkspacePath) &&
+  comparableWorkspacePath(requestedWorkspacePath ?? "") !==
+    comparableWorkspacePath(taskWorkspacePath)
 );
 
 const readActiveProjectPath = () => {
@@ -1138,6 +1185,8 @@ export const createContinuationTask = (
 export function App() {
   const { profile, saveProfile } = useLocalProfile();
   const [activeProjectPath, setActiveProjectPath] = useState<string | undefined>(readActiveProjectPath);
+  const activeProjectPathRef = useRef(activeProjectPath);
+  activeProjectPathRef.current = activeProjectPath;
   const { theme, setTheme } = useTheme();
   const { preferences, updatePreferences, updateTaskRunDefaults } = useAppPreferences();
   const codexUpdate = useCodexUpdate();
@@ -1146,7 +1195,16 @@ export function App() {
   const [focusView, setFocusView] = useState<FocusView>("changes");
   const [focusResourceRequest, setFocusResourceRequest] = useState<FocusResourceRequest | null>(null);
   const focusResourceRequestId = useRef(0);
+  const focusResourceContextRef = useRef("");
   const [focusPanelOpen, setFocusPanelOpen] = useState(false);
+  const invalidateFocusResourceRequest = () => {
+    focusResourceRequestId.current += 1;
+    setFocusResourceRequest(null);
+  };
+  const closeFocusPanel = () => {
+    invalidateFocusResourceRequest();
+    setFocusPanelOpen(false);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(
     () => !window.matchMedia("(max-width: 760px)").matches,
   );
@@ -1155,7 +1213,11 @@ export function App() {
   const taskWorkspacePathRef = useRef(taskWorkspacePath);
   taskWorkspacePathRef.current = taskWorkspacePath;
   const [taskStateReady, setTaskStateReady] = useState(!isTauriHost());
+  const taskStateReadyRef = useRef(taskStateReady);
+  taskStateReadyRef.current = taskStateReady;
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
+  const taskLoadErrorRef = useRef(taskLoadError);
+  taskLoadErrorRef.current = taskLoadError;
   const [confirmedNativeTasks, setConfirmedNativeTasks] = useState<ConfirmedNativeTaskState>({
     workspacePath: "",
     generation: 0,
@@ -1225,8 +1287,32 @@ export function App() {
     loadDirectory,
   } = useWorkspace(activeProjectPath, executionTaskId);
   const routineController = useRoutines(workspace.path);
+  useLayoutEffect(() => {
+    if (!shouldInvalidateTaskWorkspaceState(activeProjectPath, taskWorkspacePath)) return;
+    taskStateReadyRef.current = false;
+    setTaskStateReady(false);
+    taskLoadErrorRef.current = null;
+    setTaskLoadError(null);
+  }, [activeProjectPath, taskWorkspacePath]);
+  const focusResourceContext = JSON.stringify([
+    comparableWorkspacePath(activeProjectPath ?? ""),
+    workspaceTaskKey(workspace.path, activeTask.id),
+  ]);
+  useLayoutEffect(() => {
+    if (focusResourceContextRef.current === focusResourceContext) return;
+    focusResourceContextRef.current = focusResourceContext;
+    focusResourceRequestId.current += 1;
+    setFocusResourceRequest(null);
+  }, [focusResourceContext]);
   const activeTaskHistoryLoading = Boolean(
     selectedTask && !selectedTask.timelineComplete && !taskHistoryError,
+  );
+  const taskWorkspaceStateLoading = isTaskWorkspaceStateLoading(
+    loading,
+    taskStateReady,
+    taskWorkspacePath,
+    workspace.path,
+    activeTaskHistoryLoading,
   );
   const activeEnvironmentBusy = environmentBusyTaskId === activeTask.id;
   const taskStateError = taskLoadError ?? taskHistoryError ?? taskSaveError;
@@ -1269,7 +1355,7 @@ export function App() {
     if (focusedLaunchTaskRef.current === taskKey) return;
     focusedLaunchTaskRef.current = taskKey;
     setSidebarOpen(false);
-    setFocusPanelOpen(false);
+    closeFocusPanel();
   }, [activeTask.id, focusedLaunch, preferences.focusNewTasks, workspace.path]);
 
   const enqueueWorkspaceSave = useCallback((update: XiaoWorkspaceUpdate) => {
@@ -1397,8 +1483,7 @@ export function App() {
       ? current
       : [...current, routineOpenTarget.taskId]);
     setActivePage("tasks");
-    setFocusView("schedule");
-    setFocusPanelOpen(true);
+    openFocusView("schedule");
   }, [routineOpenTarget, taskStateReady, taskWorkspacePath, tasks]);
 
   useEffect(() => {
@@ -1417,7 +1502,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (loading || taskWorkspacePath === workspace.path) return;
+    if (!shouldLoadTaskWorkspaceState(
+      loading,
+      taskStateReadyRef.current,
+      taskLoadErrorRef.current,
+      taskWorkspacePath,
+      workspace.path,
+    )) return;
     const outgoingSave = taskSaveDebouncer.flushBeforeWorkspaceTransition(
       taskWorkspacePath,
       workspace.path,
@@ -1425,6 +1516,9 @@ export function App() {
     );
     if (outgoingSave) void outgoingSave.catch(() => undefined);
     let cancelled = false;
+    const requestStillCurrent = () =>
+      !isTauriHost() ||
+      !shouldInvalidateTaskWorkspaceState(activeProjectPathRef.current, workspace.path);
     const nextConfirmation = beginNativeTaskConfirmation(
       confirmedNativeTasksRef.current,
       workspace.path,
@@ -1435,7 +1529,9 @@ export function App() {
     };
     confirmedNativeTasksRef.current = nextConfirmation;
     setConfirmedNativeTasks(nextConfirmation);
+    taskStateReadyRef.current = false;
     setTaskStateReady(false);
+    taskLoadErrorRef.current = null;
     setTaskLoadError(null);
     setTaskHistoryError(null);
     setEnvironmentError(null);
@@ -1450,7 +1546,7 @@ export function App() {
               .then((document) => (document ? stateFromDocument(document) : defaultTaskState()))
           : readBrowserTaskState(workspace.path);
         const nextState = ensureValidActiveTask(saveBarrier?.snapshot.state ?? loadedState);
-        if (cancelled) return;
+        if (cancelled || !requestStillCurrent()) return;
         if (isTauriHost()) {
           persistedWorkspaceSnapshotsRef.current.set(
             workspace.path,
@@ -1481,6 +1577,7 @@ export function App() {
                 : String(saveBarrier.error),
           );
         }
+        taskStateReadyRef.current = true;
         setTaskStateReady(true);
         setProjects((current) =>
           applyProjectPreferences(
@@ -1496,7 +1593,7 @@ export function App() {
           ),
         );
       } catch (reason) {
-        if (cancelled) return;
+        if (cancelled || !requestStillCurrent()) return;
         replaceConfirmedNativeTaskIds(confirmationScope, []);
         taskWorkspacePathRef.current = workspace.path;
         setTasks([]);
@@ -1506,7 +1603,9 @@ export function App() {
         setDraftTabOpen(true);
         setTaskHistoryLoadingId(null);
         setTaskWorkspacePath(workspace.path);
-        setTaskLoadError(reason instanceof Error ? reason.message : String(reason));
+        const message = reason instanceof Error ? reason.message : String(reason);
+        taskLoadErrorRef.current = message;
+        setTaskLoadError(message);
       }
     };
 
@@ -2196,6 +2295,7 @@ export function App() {
   };
 
   const undoTaskTurn = async () => {
+    if (taskWorkspaceStateLoading || taskStateError) return;
     if (!window.confirm("Undo the last turn and revert its captured workspace changes?")) return;
     const operationScope = captureTaskOperationScope(
       confirmedNativeTasksRef.current,
@@ -2352,14 +2452,15 @@ export function App() {
     );
   };
 
-  const openFocusView = (view: FocusView) => {
+  const openFocusView = (view: FocusView, preserveResourceRequest = false) => {
+    if (!preserveResourceRequest) invalidateFocusResourceRequest();
     setFocusView(view);
     setFocusPanelOpen(true);
     closeSidebarOnNarrow();
   };
 
   const jumpToTimelineEntry = (entryId: string) => {
-    setFocusPanelOpen(false);
+    closeFocusPanel();
     window.requestAnimationFrame(() => {
       const anchor = document.getElementById(`timeline-entry-${entryId}`);
       (anchor?.firstElementChild ?? anchor)?.scrollIntoView({
@@ -2375,28 +2476,32 @@ export function App() {
     const id = ++focusResourceRequestId.current;
     if (resource.kind === "browser") {
       setFocusResourceRequest({ id, kind: "browser", url: resource.url });
-      openFocusView("browser");
+      openFocusView("browser", true);
       return true;
     }
     if (resource.kind === "file") {
       setFocusResourceRequest({ id, kind: "file", path: resource.relativePath });
-      openFocusView("files");
+      openFocusView("files", true);
       return true;
     }
 
     void nativeBridge
       .openWorkspacePreview(workspace.path, executionTaskId, resource.relativePath)
       .then((url) => {
-        setFocusResourceRequest({
-          id,
-          kind: "browser",
-          url: `${url}${resource.fragment}`,
+        applyCurrentFocusResourceCompletion(focusResourceRequestId.current, id, () => {
+          setFocusResourceRequest({
+            id,
+            kind: "browser",
+            url: `${url}${resource.fragment}`,
+          });
+          openFocusView("browser", true);
         });
-        openFocusView("browser");
       })
       .catch(() => {
-        setFocusResourceRequest({ id, kind: "file", path: resource.relativePath });
-        openFocusView("files");
+        applyCurrentFocusResourceCompletion(focusResourceRequestId.current, id, () => {
+          setFocusResourceRequest({ id, kind: "file", path: resource.relativePath });
+          openFocusView("files", true);
+        });
       });
     return true;
   };
@@ -2449,7 +2554,7 @@ export function App() {
 
   const openNewTaskTab = () => {
     if (!createTask("New task")) return;
-    setFocusPanelOpen(false);
+    closeFocusPanel();
   };
 
   const applyRoutineBinding = (
@@ -2763,7 +2868,7 @@ export function App() {
     if (workspace.path === path && fallback) {
       setActiveProjectPath(fallback.path);
       setActivePage("tasks");
-      setFocusPanelOpen(false);
+      closeFocusPanel();
     }
   };
 
@@ -2878,7 +2983,7 @@ export function App() {
     );
     setActiveProjectPath(selected);
     setActivePage("tasks");
-    setFocusPanelOpen(false);
+    closeFocusPanel();
   };
 
   useEffect(() => {
@@ -2911,7 +3016,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePage, activeTaskId, draftTask.id, draftTabOpen, openTaskIds]);
+  }, [activePage, activeTaskId, draftTask.id, draftTabOpen, openTaskIds, taskStateReady]);
 
   return (
     <>
@@ -2957,12 +3062,12 @@ export function App() {
             onOpenMenu={() => setCommandMenuOpen(true)}
             onOpenProfile={() => {
               setActivePage("profile");
-              setFocusPanelOpen(false);
+              closeFocusPanel();
               closeSidebarOnNarrow();
             }}
             onOpenSettings={() => {
               setActivePage("settings");
-              setFocusPanelOpen(false);
+              closeFocusPanel();
               closeSidebarOnNarrow();
             }}
             onOpenTasks={() => {
@@ -2974,7 +3079,7 @@ export function App() {
               if (agent.hasActiveRuns) return;
               setActiveProjectPath(path);
               setActivePage("tasks");
-              setFocusPanelOpen(false);
+              closeFocusPanel();
               closeSidebarOnNarrow();
             }}
             onCreateTask={createTask}
@@ -3043,7 +3148,7 @@ export function App() {
               taskArchived={activeTask.archived}
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
-              taskStateLoading={activeTaskHistoryLoading}
+              taskStateLoading={taskWorkspaceStateLoading}
               timeline={agent.timeline}
               runtime={agent.runtime}
               latestRun={agent.latestRun}
@@ -3102,7 +3207,10 @@ export function App() {
               onGoalSet={agent.setGoal}
               onGoalClear={agent.clearGoal}
               onInterrupt={agent.interrupt}
-              onRetryRun={(runId) => { void agent.retryRun(runId); }}
+              onRetryRun={(runId) => {
+                if (taskWorkspaceStateLoading || taskStateError) return;
+                void agent.retryRun(runId);
+              }}
               onSubmit={submitTask}
               onQueueFollowUp={queueTaskFollowUp}
               onRemoveFollowUp={removeTaskFollowUp}
@@ -3142,8 +3250,9 @@ export function App() {
             <FocusRail
               activeView={focusView}
               resourceRequest={focusResourceRequest}
-              onViewChange={setFocusView}
-              onClose={() => setFocusPanelOpen(false)}
+              onViewChange={(view) => openFocusView(view)}
+              onClose={closeFocusPanel}
+              onBrowserNavigationStart={invalidateFocusResourceRequest}
               workspace={workspace}
               system={system}
               runtime={agent.runtime}

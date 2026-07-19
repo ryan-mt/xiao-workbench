@@ -180,6 +180,8 @@ export function TaskWorkspace({
   const followLiveOutput = useRef(true);
   const previousWorking = useRef(false);
   const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
+  const taskActionsDisabled =
+    environmentBusy || taskStateLoading || Boolean(taskStateError);
   const canFork =
     runtime.phase === "ready" &&
     !taskArchived &&
@@ -324,7 +326,8 @@ export function TaskWorkspace({
         runtime={runtime}
         latestRun={latestRun}
         contextPercent={contextPercent}
-        archiveDisabled={environmentBusy || taskStateLoading || Boolean(taskStateError)}
+        actionsDisabled={taskActionsDisabled}
+        archiveDisabled={taskActionsDisabled}
         canUndo={canUndo}
         undoing={undoing}
         onFocusView={onFocusView}

@@ -5,7 +5,11 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
-import { BROWSER_HOME_URL, toBrowserUrl } from "./browserNavigation";
+import {
+  BROWSER_HOME_URL,
+  shouldHandleBrowserNavigationRequest,
+  toBrowserUrl,
+} from "./browserNavigation";
 
 const BROWSER_WEBVIEW_LABEL = "xiao-browser";
 
@@ -25,6 +29,7 @@ type BrowserPanelProps = {
   placeholder?: BrowserPlaceholder;
   webviewLabel?: string;
   navigationRequest?: { id: number; url: string } | null;
+  onNavigationStart?: () => void;
 };
 
 const defaultPlaceholder: BrowserPlaceholder = {
@@ -52,6 +57,7 @@ export function BrowserPanel({
   placeholder = defaultPlaceholder,
   webviewLabel = BROWSER_WEBVIEW_LABEL,
   navigationRequest = null,
+  onNavigationStart,
 }: BrowserPanelProps) {
   const host = isTauriHost();
   const viewport = useRef<HTMLDivElement>(null);
@@ -234,7 +240,11 @@ export function BrowserPanel({
     }, 700);
   };
 
-  const runBrowserCommand = async (command: () => Promise<void>) => {
+  const runBrowserCommand = async (
+    command: () => Promise<void>,
+    notifyNavigationStart = true,
+  ) => {
+    if (notifyNavigationStart) onNavigationStart?.();
     setError(null);
     setLoading(true);
     try {
@@ -246,18 +256,24 @@ export function BrowserPanel({
     }
   };
 
-  const navigate = async (input: string) => {
+  const navigate = async (input: string, notifyNavigationStart = true) => {
     const url = toBrowserUrl(input);
     setAddress(url);
     setCurrentUrl(url);
-    await runBrowserCommand(() => nativeBridge.navigateBrowser(url, webviewLabel));
+    await runBrowserCommand(
+      () => nativeBridge.navigateBrowser(url, webviewLabel),
+      notifyNavigationStart,
+    );
   };
 
   useEffect(() => {
     if (!active || !ready || !navigationRequest) return;
-    if (handledNavigationRequest.current === navigationRequest.id) return;
+    if (!shouldHandleBrowserNavigationRequest(
+      handledNavigationRequest.current,
+      navigationRequest.id,
+    )) return;
     handledNavigationRequest.current = navigationRequest.id;
-    void navigate(navigationRequest.url);
+    void navigate(navigationRequest.url, false);
   }, [active, navigationRequest, ready]);
 
   const submitAddress = (event: FormEvent<HTMLFormElement>) => {
