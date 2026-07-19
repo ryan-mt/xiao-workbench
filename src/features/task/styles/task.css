@@ -1988,7 +1988,10 @@
   white-space: pre-wrap;
 }
 
-.markdown-body.is-streaming > p:last-child::after {
+.markdown-body.is-streaming > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+.markdown-body.is-streaming > :is(ul, ol):last-child > li:last-child::after,
+.markdown-body.is-streaming > blockquote:last-child > :last-child::after,
+.markdown-body.is-streaming > .markdown-code:last-child code::after {
   display: inline-block;
   width: 5px;
   height: 0.9em;
@@ -3844,7 +3847,10 @@
     animation: none;
   }
 
-  .markdown-body.is-streaming > p:last-child::after {
+  .markdown-body.is-streaming > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
+  .markdown-body.is-streaming > :is(ul, ol):last-child > li:last-child::after,
+  .markdown-body.is-streaming > blockquote:last-child > :last-child::after,
+  .markdown-body.is-streaming > .markdown-code:last-child code::after {
     animation: none;
   }
 

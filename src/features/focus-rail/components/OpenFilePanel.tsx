@@ -358,7 +358,7 @@ export function OpenFilePanel({
                         type="button"
                         aria-label={`Comment on line ${lineNumber}`}
                         onClick={() => selectLine(lineNumber, false)}
-                      >+</button>
+                      ><XiaoIcon name="add" size={12} /></button>
                       <button
                         className="code-reader__number"
                         type="button"

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import {
@@ -24,6 +24,16 @@ import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskAcceptanceAction, TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
+
+const useEventCallback = <Args extends unknown[], Result>(
+  callback: (...args: Args) => Result,
+) => {
+  const callbackRef = useRef(callback);
+  useLayoutEffect(() => {
+    callbackRef.current = callback;
+  }, [callback]);
+  return useCallback((...args: Args) => callbackRef.current(...args), []);
+};
 
 type TaskWorkspaceProps = {
   taskId: string;
@@ -195,6 +205,10 @@ export function TaskWorkspace({
     (selectedModel ? models.find((model) => model.model === selectedModel) : models.find((model) => model.isDefault)) ??
     models.find((model) => model.isDefault);
   const contextPercent = contextUsedPercent(contextUsage, activeModel?.contextWindow);
+  const openTimelineResource = useEventCallback(onOpenResource);
+  const forkTimelineTask = useEventCallback(onForkTask);
+  const resolveTimelineApproval = useEventCallback(onResolveApproval);
+  const reviewTimelineChanges = useEventCallback(() => onFocusView("changes"));
 
   useLayoutEffect(() => {
     const node = scrollArea.current;
@@ -351,12 +365,12 @@ export function TaskWorkspace({
           showReasoningSummaries={showReasoningSummaries}
           expandToolOutput={expandToolOutput}
           workspacePath={workspace.path}
-          onOpenResource={onOpenResource}
+          onOpenResource={openTimelineResource}
           historyLoading={taskStateLoading}
           canFork={canFork}
-          onForkTask={onForkTask}
-          onResolveApproval={onResolveApproval}
-          onReviewChanges={() => onFocusView("changes")}
+          onForkTask={forkTimelineTask}
+          onResolveApproval={resolveTimelineApproval}
+          onReviewChanges={reviewTimelineChanges}
         />
       </div>
       {composer}

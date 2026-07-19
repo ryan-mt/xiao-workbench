@@ -3,16 +3,23 @@ import {
   isValidElement,
   memo,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   type ComponentProps,
   type ReactElement,
   type ReactNode,
 } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
-import remend from "remend";
 import remarkGfm from "remark-gfm";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
+import {
+  projectStreamingMarkdown,
+  type MarkdownStreamProjection,
+} from "./markdownStream";
+
+const markdownPlugins = [remarkGfm];
 
 const copyText = async (text: string) => {
   if (navigator.clipboard?.writeText) {
@@ -175,13 +182,15 @@ function InlineCode({
   );
 }
 
-function CodeBlock({ children, streaming }: { children: ReactNode; streaming: boolean }) {
-  const child = Children.toArray(children).find(isValidElement);
-  const element = isValidElement(child)
-    ? (child as ReactElement<{ className?: string; children?: ReactNode }>)
-    : null;
-  const code = childText(element?.props.children ?? child);
-  const language = element?.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1]?.toLowerCase() ?? "text";
+const CodeCard = memo(function CodeCard({
+  code,
+  language = "text",
+  streaming,
+}: {
+  code: string;
+  language?: string;
+  streaming: boolean;
+}) {
   const normalizedLanguage = languageAliases[language] ?? language;
   const label = languageLabels[normalizedLanguage] ?? normalizedLanguage.toUpperCase();
   const lineCount = code ? code.split("\n").length : 0;
@@ -230,11 +239,70 @@ function CodeBlock({ children, streaming }: { children: ReactNode; streaming: bo
       {highlightedHtml ? (
         <div className="markdown-code__highlight" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
       ) : (
-        <pre><code className={element?.props.className}>{code}</code></pre>
+        <pre><code className={language === "text" ? undefined : `language-${language}`}>{code}</code></pre>
       )}
     </div>
   );
+});
+
+function CodeBlock({ children, streaming }: { children: ReactNode; streaming: boolean }) {
+  const child = Children.toArray(children).find(isValidElement);
+  const element = isValidElement(child)
+    ? (child as ReactElement<{ className?: string; children?: ReactNode }>)
+    : null;
+  const code = childText(element?.props.children ?? child);
+  const language = element?.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1]?.toLowerCase() ?? "text";
+  return <CodeCard code={code} language={language} streaming={streaming} />;
 }
+
+const MarkdownChunk = memo(function MarkdownChunk({
+  source,
+  streaming,
+  onOpenResource,
+}: {
+  source: string;
+  streaming: boolean;
+  onOpenResource?: (target: string) => boolean;
+}) {
+  const components = useMemo(() => ({
+    pre: ({ children }: ComponentProps<"pre">) => <CodeBlock streaming={streaming}>{children}</CodeBlock>,
+    code: (props: ComponentProps<"code"> & { node?: unknown }) => (
+      <InlineCode {...props} onOpenResource={onOpenResource} />
+    ),
+    table: ({ children, node: _node, ...props }: ComponentProps<"table"> & { node?: unknown }) => (
+      <div className="markdown-table" role="region" aria-label="Scrollable table" tabIndex={0}>
+        <table {...props}>{children}</table>
+      </div>
+    ),
+    a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => (
+      <a
+        {...props}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => {
+          onClick?.(event);
+          if (!event.defaultPrevented && href && onOpenResource) {
+            const handled = onOpenResource(href);
+            if (handled || workspacePathHref(href)) event.preventDefault();
+          } else if (!event.defaultPrevented && href && workspacePathHref(href)) {
+            event.preventDefault();
+          }
+        }}
+      >{children}</a>
+    ),
+  }), [onOpenResource, streaming]);
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={markdownPlugins}
+      urlTransform={(value) => markdownUrlTransform(value, Boolean(onOpenResource))}
+      components={components}
+    >
+      {source}
+    </ReactMarkdown>
+  );
+});
 
 export const MarkdownBody = memo(function MarkdownBody({
   content,
@@ -245,42 +313,32 @@ export const MarkdownBody = memo(function MarkdownBody({
   streaming?: boolean;
   onOpenResource?: (target: string) => boolean;
 }) {
-  const rendered = streaming ? remend(content, { linkMode: "text-only" }) : content;
+  const projectionRef = useRef<MarkdownStreamProjection | undefined>(undefined);
+  const projection = useMemo(
+    () => projectStreamingMarkdown(projectionRef.current, content, streaming),
+    [content, streaming],
+  );
+  projectionRef.current = projection;
 
   return (
     <div className={`markdown-body ${streaming ? "is-streaming" : ""}`} aria-busy={streaming}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={(value) => markdownUrlTransform(value, Boolean(onOpenResource))}
-        components={{
-          pre: ({ children }) => <CodeBlock streaming={streaming}>{children}</CodeBlock>,
-          code: (props) => <InlineCode {...props} onOpenResource={onOpenResource} />,
-          table: ({ children, node: _node, ...props }) => (
-            <div className="markdown-table" role="region" aria-label="Scrollable table" tabIndex={0}>
-              <table {...props}>{children}</table>
-            </div>
-          ),
-          a: ({ children, node: _node, href, onClick, ...props }) => (
-            <a
-              {...props}
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(event) => {
-                onClick?.(event);
-                if (!event.defaultPrevented && href && onOpenResource) {
-                  const handled = onOpenResource(href);
-                  if (handled || workspacePathHref(href)) event.preventDefault();
-                } else if (!event.defaultPrevented && href && workspacePathHref(href)) {
-                  event.preventDefault();
-                }
-              }}
-            >{children}</a>
-          ),
-        }}
-      >
-        {rendered}
-      </ReactMarkdown>
+      {projection.blocks.map((block, index) =>
+        block.mode === "code" ? (
+          <CodeCard
+            code={block.source}
+            key={`${index}:code`}
+            language={block.language}
+            streaming={streaming && !block.complete}
+          />
+        ) : (
+          <MarkdownChunk
+            key={`${index}:${block.mode}`}
+            source={block.source}
+            streaming={streaming && block.mode === "live"}
+            onOpenResource={onOpenResource}
+          />
+        ),
+      )}
     </div>
   );
 });

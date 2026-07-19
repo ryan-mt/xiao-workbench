@@ -37,6 +37,7 @@ import {
 } from "./slashCommands";
 
 const promptHistoryStorageKey = "xiao.prompt-history.v1";
+const runtimeErrorRevealDelayMs = 160;
 
 type ComposerProps = {
   taskId: string;
@@ -220,6 +221,7 @@ export function Composer({
   const [value, setValue] = useState(draftText);
   const [submitting, setSubmitting] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [revealedRuntimeError, setRevealedRuntimeError] = useState<string | null>(null);
   const [selectingAttachments, setSelectingAttachments] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [goalEditorOpen, setGoalEditorOpen] = useState(false);
@@ -295,6 +297,14 @@ export function Composer({
     slashCommandDisabledReason(command, { canCompact, compacting, hasThread });
 
   useEffect(() => setGoalValue(goal?.objective ?? ""), [goal?.objective]);
+
+  useEffect(() => {
+    setRevealedRuntimeError(null);
+    if (!runtime.error) return;
+    const error = runtime.error;
+    const timer = window.setTimeout(() => setRevealedRuntimeError(error), runtimeErrorRevealDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [runtime.error]);
 
   useEffect(() => {
     if (!showRunDeck) return;
@@ -654,8 +664,9 @@ export function Composer({
     if (await onGoalSet(goalValue, goal?.status ?? "active")) setGoalEditorOpen(false);
   };
 
-  const visibleError = attachmentError ?? storageError ?? runtime.error;
-  const showOfflineNotice = runtime.phase === "offline" && !visibleError;
+  const visibleRuntimeError = runtime.error === revealedRuntimeError ? runtime.error : null;
+  const visibleError = attachmentError ?? storageError ?? visibleRuntimeError;
+  const showOfflineNotice = runtime.phase === "offline" && !attachmentError && !storageError && !runtime.error;
   const offlineMessage = isTauriHost()
     ? "Xiao is offline. Check the Codex connection before sending this task."
     : "Task execution needs the native Xiao app; this browser view is for previewing the interface.";

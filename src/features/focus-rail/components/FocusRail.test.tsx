@@ -173,8 +173,8 @@ describe("FocusRail context thread", () => {
       },
     });
 
-    expect(markup).toContain("<div><span>Thread</span><strong>binding-thre</strong></div>");
-    expect(markup).not.toContain("<div><span>Thread</span><strong>Not started</strong></div>");
+    expect(markup).toContain('<div><dt>Thread</dt><dd title="binding-thread-id">binding-thre</dd></div>');
+    expect(markup).not.toContain("<div><dt>Thread</dt><dd>Not started</dd></div>");
   });
 });
 

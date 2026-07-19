@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import type { TimelineEntry } from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
@@ -101,7 +103,7 @@ const reasoningHeading = (body?: string) =>
     ?.match(/(?:^|\n)\s*(?:#{1,6}\s+|\*\*|__)?([^\n*_]{3,80})/)?.[1]
     ?.trim();
 
-export function ActivityItem({
+export const ActivityItem = memo(function ActivityItem({
   entry,
   index,
   showReasoningSummaries,
@@ -509,4 +511,4 @@ export function ActivityItem({
       </div>
     </article>
   );
-}
+});
