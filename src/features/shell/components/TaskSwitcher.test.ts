@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkbenchTask } from "../../task/task.types";
-import { orderTaskSwitcherTasks } from "./TaskSwitcher";
+import {
+  orderTaskSwitcherTasks,
+  resolveTaskSwitcherSelection,
+} from "./TaskSwitcher";
 
 const task = (id: string, patch: Partial<WorkbenchTask> = {}): WorkbenchTask => ({
   id,
@@ -52,5 +55,17 @@ describe("task switcher ordering", () => {
       "unread",
       "recent",
     ]);
+  });
+
+  it("preserves the keyboard selection when runtime updates reorder tasks", () => {
+    const reordered = orderTaskSwitcherTasks([
+      task("open", { updatedAt: 30 }),
+      task("highlighted", { updatedAt: 20 }),
+      task("running", { updatedAt: 10 }),
+    ], ["running"]);
+
+    expect(resolveTaskSwitcherSelection(reordered, "highlighted", "open")).toBe(
+      "highlighted",
+    );
   });
 });
