@@ -41,6 +41,18 @@ export const orderTaskSwitcherTasks = (
     );
 };
 
+export const resolveTaskSwitcherSelection = (
+  tasks: readonly WorkbenchTask[],
+  highlightedTaskId: string | null,
+  activeTaskId: string | null,
+) => {
+  if (highlightedTaskId && tasks.some((task) => task.id === highlightedTaskId)) {
+    return highlightedTaskId;
+  }
+  if (activeTaskId && tasks.some((task) => task.id === activeTaskId)) return activeTaskId;
+  return tasks[0]?.id ?? null;
+};
+
 export function TaskSwitcher({
   tasks,
   activeTaskId,
@@ -61,15 +73,20 @@ export function TaskSwitcher({
         .some((value) => value.toLocaleLowerCase().includes(normalized)),
     );
   }, [orderedTasks, query]);
-  const initialIndex = Math.max(0, visibleTasks.findIndex((task) => task.id === activeTaskId));
-  const [activeIndex, setActiveIndex] = useState(initialIndex);
+  const initialTaskId = resolveTaskSwitcherSelection(visibleTasks, null, activeTaskId);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(initialTaskId);
+  const selectedTaskId = resolveTaskSwitcherSelection(
+    visibleTasks,
+    highlightedTaskId,
+    activeTaskId,
+  );
+  const activeIndex = visibleTasks.findIndex((task) => task.id === selectedTaskId);
   const listRef = useRef<HTMLDivElement>(null);
   const working = new Set(workingTaskIds);
 
   useEffect(() => {
-    const selectedIndex = visibleTasks.findIndex((task) => task.id === activeTaskId);
-    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
-  }, [activeTaskId, query, visibleTasks]);
+    setHighlightedTaskId(selectedTaskId);
+  }, [selectedTaskId]);
 
   useEffect(() => {
     listRef.current
@@ -92,13 +109,17 @@ export function TaskSwitcher({
         if (!visibleTasks.length) return;
         event.preventDefault();
         const direction = event.key === "ArrowUp" || event.shiftKey ? -1 : 1;
-        setActiveIndex((current) =>
-          (current + direction + visibleTasks.length) % visibleTasks.length,
+        const currentIndex = Math.max(
+          0,
+          visibleTasks.findIndex((task) => task.id === selectedTaskId),
         );
+        const nextIndex =
+          (currentIndex + direction + visibleTasks.length) % visibleTasks.length;
+        setHighlightedTaskId(visibleTasks[nextIndex].id);
         return;
       }
       if (event.key === "Enter") {
-        const task = visibleTasks[activeIndex];
+        const task = visibleTasks.find((task) => task.id === selectedTaskId);
         if (!task) return;
         event.preventDefault();
         onSelect(task.id);
@@ -106,7 +127,7 @@ export function TaskSwitcher({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeIndex, onClose, onSelect, visibleTasks]);
+  }, [onClose, onSelect, selectedTaskId, visibleTasks]);
 
   return (
     <div
@@ -132,7 +153,7 @@ export function TaskSwitcher({
         <div className="task-switcher__list" ref={listRef} role="listbox" aria-label="Tasks">
           {visibleTasks.map((task, index) => {
             const taskWorking = working.has(task.id);
-            const active = index === activeIndex;
+            const active = task.id === selectedTaskId;
             const selected = task.id === activeTaskId;
             const state = taskWorking ? "Running" : task.unread ? "Unread" : relativeTaskTime(task.updatedAt);
             return (
@@ -143,7 +164,7 @@ export function TaskSwitcher({
                 role="option"
                 aria-selected={active}
                 key={task.id}
-                onMouseEnter={() => setActiveIndex(index)}
+                onMouseEnter={() => setHighlightedTaskId(task.id)}
                 onClick={() => onSelect(task.id)}
               >
                 <span className="task-switcher__mark" aria-hidden="true">
