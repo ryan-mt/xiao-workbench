@@ -120,6 +120,7 @@ const renderFocusView = (
     activeView={activeView}
     onViewChange={() => undefined}
     onClose={() => undefined}
+    onBrowserNavigationStart={() => undefined}
     workspace={currentWorkspace}
     system={{ platform: "Windows", shell: "PowerShell", codexVersion: null }}
     runtime={runtime}

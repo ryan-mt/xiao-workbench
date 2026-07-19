@@ -79,7 +79,11 @@ const run = (patch: Partial<RunSnapshot>): RunSnapshot => ({
   ...patch,
 });
 
-const renderHeader = (latestRun: RunSnapshot) => renderToStaticMarkup(
+const renderHeader = (
+  latestRun: RunSnapshot,
+  actionsDisabled = false,
+  canUndo = false,
+) => renderToStaticMarkup(
   <TaskHeader
     taskId="task-a"
     executionTaskId="task-a"
@@ -89,8 +93,9 @@ const renderHeader = (latestRun: RunSnapshot) => renderToStaticMarkup(
     runtime={runtime}
     latestRun={latestRun}
     contextPercent={null}
-    archiveDisabled={false}
-    canUndo={false}
+    actionsDisabled={actionsDisabled}
+    archiveDisabled={actionsDisabled}
+    canUndo={canUndo}
     undoing={false}
     onFocusView={vi.fn()}
     onRetryRun={vi.fn()}
@@ -176,5 +181,16 @@ describe("TaskHeader retry action", () => {
     }));
 
     expect(markup).toContain(retryLabel);
+  });
+
+  it("disables Retry and Undo while task state is unavailable", () => {
+    const markup = renderHeader(run({
+      status: "failed",
+      agentOutcome: "failed",
+    }), true, true);
+
+    expect(markup).toContain(retryLabel);
+    expect(markup).toContain("<span>Undo</span>");
+    expect(markup.match(/disabled=""/g)).toHaveLength(3);
   });
 });

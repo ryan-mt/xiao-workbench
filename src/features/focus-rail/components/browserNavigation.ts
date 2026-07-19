@@ -24,6 +24,11 @@ const parseInternalPreviewUrl = (value: string) => {
   }
 };
 
+export const shouldHandleBrowserNavigationRequest = (
+  lastHandledId: number | null,
+  incomingId: number,
+) => lastHandledId === null || incomingId > lastHandledId;
+
 export function toBrowserUrl(input: string): string {
   const value = input.trim();
   if (!value) return BROWSER_HOME_URL;

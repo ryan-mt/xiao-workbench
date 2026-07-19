@@ -14,6 +14,7 @@ type TaskHeaderProps = {
   runtime: AgentRuntimeState;
   latestRun: RunSnapshot | null;
   contextPercent: number | null;
+  actionsDisabled: boolean;
   archiveDisabled: boolean;
   canUndo: boolean;
   undoing: boolean;
@@ -76,6 +77,7 @@ export function TaskHeader({
   runtime,
   latestRun,
   contextPercent,
+  actionsDisabled,
   archiveDisabled,
   canUndo,
   undoing,
@@ -146,6 +148,7 @@ export function TaskHeader({
           <button
             className="button button--quiet"
             type="button"
+            disabled={actionsDisabled}
             onClick={() => onRetryRun(latestRun.id)}
           >
             <XiaoIcon name="refresh" size={15} />
@@ -160,7 +163,7 @@ export function TaskHeader({
           <button
             className="button button--quiet task-header__undo"
             type="button"
-            disabled={!canUndo || undoing}
+            disabled={actionsDisabled || !canUndo || undoing}
             title="Remove the last turn and safely revert its workspace patch"
             onClick={onUndo}
           >

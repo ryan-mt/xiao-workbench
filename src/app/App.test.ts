@@ -13,6 +13,7 @@ import type {
 } from "../core/models/verification";
 import {
   applyTaskAcceptanceContractSave,
+  applyCurrentFocusResourceCompletion,
   applyCurrentWorkspaceArchiveCompletion,
   applyCurrentWorkspaceSaveCompletion,
   applyCurrentTaskOperationCompletion,
@@ -24,10 +25,13 @@ import {
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
   createContinuationTask,
+  isTaskWorkspaceStateLoading,
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
   shouldAutoConnectAgentRuntime,
+  shouldInvalidateTaskWorkspaceState,
+  shouldLoadTaskWorkspaceState,
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
   taskReviewContext,
@@ -864,6 +868,117 @@ describe("follow-up task persistence barrier", () => {
       submitTaskFollowUpAfterPersistence(snapshot, persist, submit),
     ).resolves.toBe(false);
     expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("task workspace hydration readiness", () => {
+  it("keeps task actions disabled until the visible workspace is fully hydrated", () => {
+    expect(isTaskWorkspaceStateLoading(true, true, workspacePath, workspacePath, false)).toBe(true);
+    expect(isTaskWorkspaceStateLoading(false, false, workspacePath, workspacePath, false)).toBe(true);
+    expect(
+      isTaskWorkspaceStateLoading(false, true, "D:/projects/other", workspacePath, false),
+    ).toBe(true);
+    expect(isTaskWorkspaceStateLoading(false, true, workspacePath, workspacePath, true)).toBe(true);
+  });
+
+  it("accepts equivalent Windows workspace paths once history is ready", () => {
+    expect(
+      isTaskWorkspaceStateLoading(
+        false,
+        true,
+        "C:\\PROJECTS\\contract-validation\\",
+        workspacePath,
+        false,
+      ),
+    ).toBe(false);
+  });
+
+  it("invalidates ready state as soon as another project is requested", () => {
+    expect(shouldInvalidateTaskWorkspaceState("D:/projects/other", workspacePath)).toBe(true);
+    expect(
+      shouldInvalidateTaskWorkspaceState("C:\\PROJECTS\\contract-validation\\", workspacePath),
+    ).toBe(false);
+    expect(shouldInvalidateTaskWorkspaceState(undefined, workspacePath)).toBe(false);
+  });
+
+  it("reloads a retained workspace after an intervening hydration is cancelled", () => {
+    expect(shouldLoadTaskWorkspaceState(false, false, null, workspacePath, workspacePath)).toBe(true);
+    expect(shouldLoadTaskWorkspaceState(false, true, null, workspacePath, workspacePath)).toBe(false);
+  });
+
+  it("allows a failed workspace to retry after a project round trip clears its error", () => {
+    expect(shouldInvalidateTaskWorkspaceState("D:/projects/other", workspacePath)).toBe(true);
+    expect(shouldLoadTaskWorkspaceState(false, false, null, workspacePath, workspacePath)).toBe(true);
+  });
+
+  it("does not loop a failed load or hydrate before the workspace is available", () => {
+    expect(
+      shouldLoadTaskWorkspaceState(false, false, "load failed", workspacePath, workspacePath),
+    ).toBe(false);
+    expect(
+      shouldLoadTaskWorkspaceState(false, false, "old load failed", workspacePath, "D:/new"),
+    ).toBe(true);
+    expect(shouldLoadTaskWorkspaceState(true, false, null, workspacePath, workspacePath)).toBe(false);
+    expect(shouldLoadTaskWorkspaceState(false, false, null, "", "")).toBe(false);
+  });
+});
+
+describe("focus resource completion identity", () => {
+  it("ignores a stale preview success after newer browser navigation", async () => {
+    const preview = deferred<string>();
+    let currentRequestId = 1;
+    let visible = { id: 1, view: "preview" };
+    const completion = preview.promise.then((url) =>
+      applyCurrentFocusResourceCompletion(currentRequestId, 1, () => {
+        visible = { id: 1, view: url };
+      })
+    );
+
+    currentRequestId = 2;
+    visible = { id: 2, view: "https://example.com/" };
+    preview.resolve("xiao-preview://localhost/old/index.html");
+
+    await expect(completion).resolves.toBe(false);
+    expect(visible).toEqual({ id: 2, view: "https://example.com/" });
+  });
+
+  it("ignores a stale preview failure after newer file navigation", async () => {
+    const preview = deferred<string>();
+    let currentRequestId = 1;
+    let visible = { id: 1, view: "preview" };
+    const completion = preview.promise.catch(() =>
+      applyCurrentFocusResourceCompletion(currentRequestId, 1, () => {
+        visible = { id: 1, view: "old.html" };
+      })
+    );
+
+    currentRequestId = 2;
+    visible = { id: 2, view: "src/current.ts" };
+    preview.reject(new Error("preview failed"));
+
+    await expect(completion).resolves.toBe(false);
+    expect(visible).toEqual({ id: 2, view: "src/current.ts" });
+  });
+
+  it("keeps a routine schedule open after invalidating a pending preview", () => {
+    const previewRequestId = 7;
+    const currentRequestId = previewRequestId + 1;
+    let view = "schedule";
+
+    expect(
+      applyCurrentFocusResourceCompletion(currentRequestId, previewRequestId, () => {
+        view = "browser";
+      }),
+    ).toBe(false);
+    expect(view).toBe("schedule");
+  });
+
+  it("applies success and fallback for the current request", () => {
+    let view = "pending";
+    expect(applyCurrentFocusResourceCompletion(3, 3, () => { view = "browser"; })).toBe(true);
+    expect(view).toBe("browser");
+    expect(applyCurrentFocusResourceCompletion(4, 4, () => { view = "files"; })).toBe(true);
+    expect(view).toBe("files");
   });
 });
 

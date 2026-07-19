@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { BROWSER_HOME_URL, toBrowserUrl } from "./browserNavigation";
+import {
+  BROWSER_HOME_URL,
+  shouldHandleBrowserNavigationRequest,
+  toBrowserUrl,
+} from "./browserNavigation";
+
+describe("browser navigation request ordering", () => {
+  it("accepts only the first request or a strictly newer request", () => {
+    expect(shouldHandleBrowserNavigationRequest(null, 1)).toBe(true);
+    expect(shouldHandleBrowserNavigationRequest(4, 5)).toBe(true);
+    expect(shouldHandleBrowserNavigationRequest(4, 4)).toBe(false);
+    expect(shouldHandleBrowserNavigationRequest(4, 3)).toBe(false);
+  });
+});
 
 describe("toBrowserUrl", () => {
   it("uses Google for an empty address", () => {
