@@ -7,6 +7,8 @@ type ActivityItemProps = {
   index: number;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
+  workspacePath: string;
+  onOpenResource: (target: string) => boolean;
   taskId: string;
   canFork: boolean;
   onForkTask: (entryId: string) => void;
@@ -104,6 +106,8 @@ export function ActivityItem({
   index,
   showReasoningSummaries,
   expandToolOutput,
+  workspacePath,
+  onOpenResource,
   taskId,
   canFork,
   onForkTask,
@@ -183,7 +187,7 @@ export function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__assistant-message">
-          {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} />}
+          {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
           {entry.body && (
             <div className="activity__assistant-actions">
               <CopyButton text={entry.body} />
@@ -239,7 +243,7 @@ export function ActivityItem({
             {entry.status === "active" ? <i className="activity__pulse" /> : null}
             {entry.body ? <XiaoIcon className="activity__reasoning-caret" name="caret" size={12} /> : null}
           </summary>
-          {entry.body && <div><MarkdownBody content={entry.body} streaming={entry.status === "active"} /></div>}
+          {entry.body && <div><MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} /></div>}
         </details>
       </article>
     );
@@ -335,7 +339,7 @@ export function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         {hasDetails ? (
-          <details className="activity__tool-disclosure" open={entry.status === "active" || expandToolOutput}>
+          <details className="activity__tool-disclosure" open={expandToolOutput}>
             <summary>{summary}</summary>
             <div className="activity__tool-details">
               {entry.meta && <div className="activity__tool-meta">{entry.meta}</div>}
@@ -383,16 +387,35 @@ export function ActivityItem({
         </div>
         <div className="patch-activity__files">
           {entry.files.map((file) => {
-            const directory = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
-            const filename = file.path.slice(file.path.lastIndexOf("/") + 1);
             const lines = file.patch ? patchLines(file.patch) : [];
+            const absolutePath = /^[A-Za-z]:[\\/]/.test(file.path)
+              ? file.path
+              : `${workspacePath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`;
+            const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
+            const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
             return (
-              <details key={file.path} open={entry.status === "active" || expandToolOutput}>
+              <details key={file.path} open={expandToolOutput}>
                 <summary>
                   <span className="patch-activity__file-icon"><XiaoIcon name="mutation" size={14} /></span>
-                  <span className="patch-activity__path">
-                    {directory && <small>{directory}/</small>}
-                    <strong>{filename}</strong>
+                  <span
+                    className="patch-activity__path"
+                    title={`Open ${absolutePath}`}
+                    role="link"
+                    tabIndex={0}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onOpenResource(absolutePath);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onOpenResource(absolutePath);
+                    }}
+                  >
+                    <strong>{absolutePath}</strong>
+                    {lineNumber && <small>line {lineNumber}</small>}
                   </span>
                   <span className="patch-activity__stats"><b>+{file.additions}</b><em>-{file.deletions}</em></span>
                   <XiaoIcon className="patch-activity__caret" name="caret" size={13} />
@@ -445,7 +468,7 @@ export function ActivityItem({
           )}
         </header>
         <h2>{entry.title}</h2>
-        {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} />}
+        {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
         {entry.files && (
           <div className="change-list">
             <header>

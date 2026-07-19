@@ -39,11 +39,7 @@ pub async fn agent_request(
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Value, String> {
-    if native_run_method(&method) {
-        return Err(format!(
-            "Agent method `{method}` is owned by the native Xiao RunService."
-        ));
-    }
+    validate_renderer_agent_request(&method, &params)?;
     let project_path = project_path
         .as_deref()
         .ok_or("This agent request requires a Xiao project context.")?;
@@ -57,10 +53,6 @@ pub async fn agent_request(
         }
         strip_execution_path_fields(&mut params);
         apply_execution_root(&method, &mut params, &context.execution_root)?;
-    } else if contains_execution_path_fields(&params) {
-        return Err(format!(
-            "Agent method `{method}` cannot accept frontend-provided execution paths."
-        ));
     }
     if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
         runtimes.require_thread_task(
@@ -74,6 +66,45 @@ pub async fn agent_request(
     runtimes
         .request(&context.environment.id, method, params)
         .await
+}
+
+fn validate_renderer_agent_request(method: &str, params: &Value) -> Result<(), String> {
+    if native_run_method(method) {
+        return Err(format!(
+            "Agent method `{method}` is owned by the native Xiao RunService."
+        ));
+    }
+    if !renderer_agent_method(method) {
+        return Err(format!(
+            "Agent method `{method}` is not available to the Xiao renderer."
+        ));
+    }
+    if !method_uses_execution_root(method) && contains_execution_path_fields(params) {
+        return Err(format!(
+            "Agent method `{method}` cannot accept frontend-provided execution paths."
+        ));
+    }
+    Ok(())
+}
+
+fn renderer_agent_method(method: &str) -> bool {
+    matches!(
+        method,
+        "app/list"
+            | "command/exec"
+            | "fuzzyFileSearch"
+            | "mcpServerStatus/list"
+            | "plugin/install"
+            | "plugin/list"
+            | "plugin/uninstall"
+            | "skills/config/write"
+            | "skills/list"
+            | "thread/compact/start"
+            | "thread/goal/clear"
+            | "thread/goal/set"
+            | "thread/rollback"
+            | "thread/settings/update"
+    )
 }
 
 fn native_run_method(method: &str) -> bool {
@@ -255,7 +286,8 @@ mod tests {
 
     use super::{
         apply_execution_root, contains_execution_path_fields, native_run_method,
-        strip_execution_path_fields, validate_direct_command,
+        renderer_agent_method, strip_execution_path_fields, validate_direct_command,
+        validate_renderer_agent_request,
     };
 
     #[test]
@@ -284,6 +316,58 @@ mod tests {
         }
         assert!(!native_run_method("thread/settings/update"));
         assert!(!native_run_method("thread/compact/start"));
+    }
+
+    #[test]
+    fn renderer_agent_method_allowlist_covers_current_frontend_calls() {
+        for method in [
+            "app/list",
+            "command/exec",
+            "fuzzyFileSearch",
+            "mcpServerStatus/list",
+            "plugin/install",
+            "plugin/list",
+            "plugin/uninstall",
+            "skills/config/write",
+            "skills/list",
+            "thread/compact/start",
+            "thread/goal/clear",
+            "thread/goal/set",
+            "thread/rollback",
+            "thread/settings/update",
+        ] {
+            assert!(renderer_agent_method(method), "{method} should be allowed");
+            assert!(
+                validate_renderer_agent_request(method, &json!({})).is_ok(),
+                "{method} should pass renderer validation"
+            );
+        }
+    }
+
+    #[test]
+    fn renderer_cannot_bypass_execution_root_with_filesystem_or_process_methods() {
+        for (method, params) in [
+            ("fs/readFile", json!({ "path": "C:/escape/secret.txt" })),
+            ("fs/writeFile", json!({ "path": "C:/escape/output.txt" })),
+            ("fs/remove", json!({ "path": "C:/escape" })),
+            (
+                "fs/copy",
+                json!({
+                    "sourcePath": "C:/escape/source.txt",
+                    "destinationPath": "C:/escape/destination.txt"
+                }),
+            ),
+            (
+                "process/spawn",
+                json!({ "command": ["cmd", "/c", "whoami"], "cwd": "C:/escape" }),
+            ),
+        ] {
+            let error = validate_renderer_agent_request(method, &params).unwrap_err();
+            assert!(
+                error.contains("not available to the Xiao renderer"),
+                "unexpected rejection for {method}: {error}"
+            );
+        }
     }
 
     #[test]

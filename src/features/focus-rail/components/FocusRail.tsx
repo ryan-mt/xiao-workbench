@@ -15,7 +15,7 @@ import {
 import type { RoutineSummary } from "../../../core/models/routine";
 import type { FileNode, SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { WorkbenchTask } from "../../task/task.types";
-import type { FocusView } from "../focus-rail.types";
+import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
 import { ChangesPanel } from "./ChangesPanel";
 import { ContextPanel } from "./ContextPanel";
 import { ExtensionsPanel } from "./ExtensionsPanel";
@@ -41,6 +41,7 @@ const XiaoRunPanel = lazy(() =>
 
 type FocusRailProps = {
   activeView: FocusView;
+  resourceRequest?: FocusResourceRequest | null;
   onViewChange: (view: FocusView) => void;
   onClose: () => void;
   workspace: WorkspaceSnapshot;
@@ -100,6 +101,7 @@ const terminalUnavailableTitle = "Terminal is unavailable until this task starts
 
 export function FocusRail({
   activeView,
+  resourceRequest = null,
   onViewChange,
   onClose,
   workspace,
@@ -154,6 +156,9 @@ export function FocusRail({
   const utilityLabel = activeView === "files" && activeFile ? basename(activeFile) : utility?.label;
 
   useEffect(() => setActiveFile(null), [workspace.path]);
+  useEffect(() => {
+    if (resourceRequest?.kind === "file") setActiveFile(resourceRequest.path);
+  }, [resourceRequest]);
   useEffect(() => {
     if (activeView === "terminal" && nativeTaskAvailable) setTerminalOpened(true);
     if (activeView === "browser") setBrowserOpened(true);
@@ -277,7 +282,7 @@ export function FocusRail({
             taskTitle={task.title}
             taskCreatedAt={task.createdAt}
             timeline={timeline}
-            threadId={task.threadId}
+            threadId={task.threadId ?? task.threadBinding?.threadId ?? null}
             models={models}
             selectedModel={task.model}
             usage={contextUsage}
@@ -316,7 +321,10 @@ export function FocusRail({
         {(browserOpened || activeView === "browser") && (
           <div className="focus-browser-slot" hidden={activeView !== "browser"}>
             <Suspense fallback={<div className="browser-loading"><XiaoIcon name="pending" size={15} /> Starting browser</div>}>
-              <BrowserPanel active={activeView === "browser" && !toolsMenuOpen && !obscured} />
+              <BrowserPanel
+                active={activeView === "browser" && !toolsMenuOpen && !obscured}
+                navigationRequest={resourceRequest?.kind === "browser" ? resourceRequest : null}
+              />
             </Suspense>
           </div>
         )}

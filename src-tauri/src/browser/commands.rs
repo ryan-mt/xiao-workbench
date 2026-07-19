@@ -15,6 +15,7 @@ fn parse_browser_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value.trim()).map_err(|_| "Enter a valid web address.".to_string())?;
     match url.scheme() {
         "http" | "https" => Ok(url),
+        "xiao-preview" if url.host_str() == Some("localhost") => Ok(url),
         _ => Err("Only HTTP and HTTPS pages can open in the Xiao browser.".to_string()),
     }
 }
@@ -110,6 +111,12 @@ mod tests {
     fn rejects_privileged_schemes() {
         assert!(parse_browser_url("file:///tmp/private").is_err());
         assert!(parse_browser_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn accepts_xiao_workspace_previews_only_on_the_internal_host() {
+        assert!(parse_browser_url("xiao-preview://localhost/token/index.html").is_ok());
+        assert!(parse_browser_url("xiao-preview://elsewhere/token/index.html").is_err());
     }
 
     #[test]

@@ -1003,22 +1003,31 @@
 
 .patch-activity__path {
   display: flex;
+  gap: 8px;
   min-width: 0;
   align-items: baseline;
-  overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--text-micro);
-  white-space: nowrap;
+  cursor: pointer;
 }
 
+.patch-activity__path:hover strong,
+.patch-activity__path:focus-visible strong {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.patch-activity__path:focus-visible { outline: 0; }
+
 .patch-activity__path small {
-  overflow: hidden;
+  flex: 0 0 auto;
   color: var(--muted);
-  text-overflow: ellipsis;
 }
 
 .patch-activity__path strong {
-  flex: 0 0 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-soft);
   font-weight: 540;
 }
@@ -1656,6 +1665,15 @@
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--accent) 28%, transparent);
   text-underline-offset: 3px;
+}
+
+.markdown-body :not(pre) > code[role="link"] { cursor: pointer; }
+
+.markdown-body :not(pre) > code[role="link"]:hover,
+.markdown-body :not(pre) > code[role="link"]:focus-visible {
+  color: var(--accent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 2px;
 }
 
 .markdown-table {

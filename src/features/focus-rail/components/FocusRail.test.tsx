@@ -110,10 +110,11 @@ const task: WorkbenchTask = {
 };
 
 const renderFocusView = (
-  activeView: "changes" | "terminal" | "verification",
+  activeView: "changes" | "context" | "terminal" | "verification",
   executionTaskId: string | null,
   workspaceActionable = true,
   currentWorkspace = workspace,
+  currentTask = task,
 ) => renderToStaticMarkup(
   <FocusRail
     activeView={activeView}
@@ -122,7 +123,7 @@ const renderFocusView = (
     workspace={currentWorkspace}
     system={{ platform: "Windows", shell: "PowerShell", codexVersion: null }}
     runtime={runtime}
-    task={task}
+    task={currentTask}
     executionTaskId={executionTaskId}
     executionTransitioning={false}
     workspaceActionable={workspaceActionable}
@@ -157,6 +158,24 @@ const renderFocusView = (
     obscured={false}
   />,
 );
+
+describe("FocusRail context thread", () => {
+  it("shows a persisted thread binding when no runtime thread is active", () => {
+    const markup = renderFocusView("context", null, true, workspace, {
+      ...task,
+      threadBinding: {
+        threadId: "binding-thread-id",
+        persistence: "persistent",
+        materialized: true,
+        threadSource: "xiao-workbench",
+        cliVersion: null,
+      },
+    });
+
+    expect(markup).toContain("<div><span>Thread</span><strong>binding-thre</strong></div>");
+    expect(markup).not.toContain("<div><span>Thread</span><strong>Not started</strong></div>");
+  });
+});
 
 describe("FocusRail acceptance availability", () => {
   it("disables the menu item and does not mount a restored verification view for a draft", () => {

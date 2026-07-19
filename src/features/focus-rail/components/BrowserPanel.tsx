@@ -24,6 +24,7 @@ type BrowserPanelProps = {
   muted?: boolean;
   placeholder?: BrowserPlaceholder;
   webviewLabel?: string;
+  navigationRequest?: { id: number; url: string } | null;
 };
 
 const defaultPlaceholder: BrowserPlaceholder = {
@@ -50,6 +51,7 @@ export function BrowserPanel({
   muted = false,
   placeholder = defaultPlaceholder,
   webviewLabel = BROWSER_WEBVIEW_LABEL,
+  navigationRequest = null,
 }: BrowserPanelProps) {
   const host = isTauriHost();
   const viewport = useRef<HTMLDivElement>(null);
@@ -59,6 +61,7 @@ export function BrowserPanel({
   const editingAddress = useRef(false);
   const boundsFrame = useRef(0);
   const loadingTimer = useRef<number | undefined>(undefined);
+  const handledNavigationRequest = useRef<number | null>(null);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(host);
   const [error, setError] = useState<string | null>(null);
@@ -249,6 +252,13 @@ export function BrowserPanel({
     setCurrentUrl(url);
     await runBrowserCommand(() => nativeBridge.navigateBrowser(url, webviewLabel));
   };
+
+  useEffect(() => {
+    if (!active || !ready || !navigationRequest) return;
+    if (handledNavigationRequest.current === navigationRequest.id) return;
+    handledNavigationRequest.current = navigationRequest.id;
+    void navigate(navigationRequest.url);
+  }, [active, navigationRequest, ready]);
 
   const submitAddress = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

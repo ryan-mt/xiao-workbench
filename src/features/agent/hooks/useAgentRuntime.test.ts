@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { AgentQuestionRequest } from "../../../core/models/agent";
-import type { RunSnapshot } from "../../../core/models/run";
+import type { AgentPlan, AgentQuestionRequest, TimelineEntry } from "../../../core/models/agent";
+import type { RunEventRecord, RunSnapshot } from "../../../core/models/run";
 import {
   advanceAgentRuntimeWorkspaceScope,
   agentRuntimeEnvelopeMatches,
@@ -11,10 +11,16 @@ import {
   agentRuntimeTaskWorkspaceScopeMatches,
   agentRuntimeWorkspaceScopeMatches,
   clearResolvedAgentQuestionRequest,
+  completedAgentPlan,
+  handleAgentApprovalRequest,
+  loadAllXiaoRunEvents,
+  normalizeFileChangeDiff,
+  restoredRunProtocolEnvelope,
   settleAutoTitleAfterUndo,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
 } from "./useAgentRuntime";
+import { latestUndoableTurn } from "./agentProtocol";
 import {
   emptyRunProjection,
   latestRunForTask,
@@ -27,6 +33,54 @@ const deferred = <T>() => {
   const promise = new Promise<T>((settle) => { resolve = settle; });
   return { promise, resolve };
 };
+
+describe("completedAgentPlan", () => {
+  it("settles every published step without mutating the live plan", () => {
+    const plan: AgentPlan = {
+      explanation: "Ship it",
+      steps: [
+        { step: "Build", status: "inProgress" },
+        { step: "Verify", status: "pending" },
+      ],
+    };
+
+    expect(completedAgentPlan(plan)).toEqual({
+      explanation: "Ship it",
+      steps: [
+        { step: "Build", status: "completed" },
+        { step: "Verify", status: "completed" },
+      ],
+    });
+    expect(plan.steps.map((step) => step.status)).toEqual(["inProgress", "pending"]);
+  });
+});
+
+describe("normalizeFileChangeDiff", () => {
+  it("projects raw new-file content as additions with usable line numbers", () => {
+    expect(normalizeFileChangeDiff("<html>\n\n</html>\n", "add")).toEqual({
+      additions: 3,
+      deletions: 0,
+      patch: "@@ -0,0 +1,3 @@\n+<html>\n+\n+</html>",
+    });
+  });
+
+  it("projects raw deleted-file content as deletions", () => {
+    expect(normalizeFileChangeDiff("one\ntwo\n", "delete")).toEqual({
+      additions: 0,
+      deletions: 2,
+      patch: "@@ -1,2 +0,0 @@\n-one\n-two",
+    });
+  });
+
+  it("preserves unified update diffs and counts their changed lines", () => {
+    const patch = "@@ -1 +1 @@\n-old\n+new";
+    expect(normalizeFileChangeDiff(patch, "update")).toEqual({
+      additions: 1,
+      deletions: 1,
+      patch,
+    });
+  });
+});
 
 const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapshot => ({
   id: `run-${workspacePath.at(-1)?.toLowerCase()}`,
@@ -70,6 +124,74 @@ const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapsh
 });
 
 describe("agent runtime workspace scope", () => {
+  it("restores every durable run event in sequence across pages", async () => {
+    const events = Array.from({ length: 450 }, (_, sequence): RunEventRecord => ({
+      runId: "run-a",
+      sequence,
+      timestamp: sequence,
+      eventType: "agent.fake",
+      eventKey: `event-${sequence}`,
+      safePayload: { sequence },
+    }));
+    const cursors: number[] = [];
+
+    const restored = await loadAllXiaoRunEvents(
+      "run-a",
+      async (runId, afterSequence, limit) => {
+        expect(runId).toBe("run-a");
+        expect(limit).toBe(200);
+        cursors.push(afterSequence ?? -2);
+        const pageEvents = events
+          .filter((event) => event.sequence > (afterSequence ?? -1))
+          .slice(0, limit);
+        return {
+          events: pageEvents,
+          nextSequence: pageEvents.at(-1)?.sequence ?? null,
+        };
+      },
+    );
+
+    expect(cursors).toEqual([-1, 199, 399]);
+    expect(restored.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 450 }, (_, sequence) => sequence),
+    );
+  });
+
+  it("restores a durable turn diff as undo metadata", () => {
+    const turnDiff = "diff --git a/file.txt b/file.txt\n+restored\n";
+    const snapshot = run("C:/A", {
+      id: "run-a",
+      taskId: "task-a",
+      status: "completed",
+      agentOutcome: "completed",
+      turnId: "turn-a",
+    });
+    const envelope = restoredRunProtocolEnvelope(snapshot, {
+      runId: snapshot.id,
+      sequence: 9,
+      timestamp: 10,
+      eventType: "run.completed",
+      eventKey: "completion",
+      safePayload: {
+        protocol: {
+          method: "turn/completed",
+          params: { turn: { id: "turn-a", status: "completed" } },
+        },
+        turnDiff,
+      },
+    });
+
+    expect(envelope?.turnDiff).toBe(turnDiff);
+    const restoredUser: TimelineEntry = {
+      id: snapshot.idempotencyKey,
+      kind: "user",
+      title: snapshot.prompt,
+      turnId: envelope?.turnId ?? undefined,
+      turnDiff: envelope?.turnDiff ?? undefined,
+    };
+    expect(latestUndoableTurn([restoredUser])?.turnDiff).toBe(turnDiff);
+  });
+
   it("rejects runtime events from other environments and stale generations", () => {
     expect(
       agentRuntimeEnvelopeMatches("environment-a", null, {
@@ -163,6 +285,54 @@ describe("agent runtime workspace scope", () => {
     expect(agentRuntimeApprovalRequestKey(first, "input-1")).not.toBe(
       agentRuntimeApprovalRequestKey(first, "input-2"),
     );
+  });
+
+  it("resolves one late approval after the local policy changes to Never ask", async () => {
+    let timeline: TimelineEntry[] = [];
+    const nativeResolution = vi.fn(async (pendingInputId: string) => pendingInputId);
+    const declineWithoutPrompt = vi.fn(async (
+      _taskId: string,
+      _requestId: number | string,
+      _approvalKind: TimelineEntry["approvalKind"],
+      entryId: string,
+    ) => {
+      const approval = timeline.find((entry) => entry.id === entryId);
+      await nativeResolution(approval?.pendingInputId ?? "");
+      return true;
+    });
+    const approval = {
+      id: "approval-input-late",
+      kind: "approval" as const,
+      title: "Command permission requested",
+      requestId: 7,
+      pendingInputId: "input-late",
+      approvalKind: "action" as const,
+      meta: "Waiting for your decision",
+      status: "warning" as const,
+    };
+    const updateTimeline = (
+      _taskId: string,
+      update: (current: typeof timeline) => typeof timeline,
+    ) => { timeline = update(timeline); };
+
+    await handleAgentApprovalRequest(
+      "task-a",
+      "never",
+      approval,
+      updateTimeline,
+      declineWithoutPrompt,
+    );
+
+    expect(timeline).toEqual([approval]);
+    expect(declineWithoutPrompt).toHaveBeenCalledOnce();
+    expect(declineWithoutPrompt).toHaveBeenCalledWith(
+      "task-a",
+      7,
+      "action",
+      "approval-input-late",
+    );
+    expect(nativeResolution).toHaveBeenCalledOnce();
+    expect(nativeResolution).toHaveBeenCalledWith("input-late");
   });
 
   it("matches resolved questions only across task, run, pending input, and request ID", () => {

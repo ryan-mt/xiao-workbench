@@ -13,12 +13,25 @@ const parseWebUrl = (value: string) => {
   }
 };
 
+const parseInternalPreviewUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "xiao-preview:" && url.hostname === "localhost"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 export function toBrowserUrl(input: string): string {
   const value = input.trim();
   if (!value) return BROWSER_HOME_URL;
 
   const directUrl = parseWebUrl(value);
   if (directUrl) return directUrl;
+  const previewUrl = parseInternalPreviewUrl(value);
+  if (previewUrl) return previewUrl;
 
   if (localHostPattern.test(value) || ipAddressPattern.test(value)) {
     const localUrl = parseWebUrl(`http://${value}`);

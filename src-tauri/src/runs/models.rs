@@ -140,6 +140,9 @@ pub struct EnqueueRunRequest {
     pub input: Vec<Value>,
     #[serde(default)]
     pub history: Vec<XiaoHistoryItem>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    pub default_reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
 }
 

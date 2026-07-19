@@ -79,6 +79,30 @@ pub fn read_workspace_text_file(
     String::from_utf8(bytes).map_err(|_| "Binary files cannot be previewed as text.".to_owned())
 }
 
+pub fn resolve_workspace_preview_file(
+    execution_root: &str,
+    relative_path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let root = resolve_workspace(Some(execution_root))?;
+    let relative = validate_relative_path(relative_path)?.to_path_buf();
+    let path = root.join(&relative).canonicalize().map_err(|error| {
+        format!("Could not open {}: {error}", root.join(&relative).display())
+    })?;
+    if !path.starts_with(&root) || !path.is_file() {
+        return Err("Preview file must stay inside the workspace.".to_owned());
+    }
+    if !matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("html" | "htm")
+    ) {
+        return Err("Only HTML files can open as workspace web previews.".to_owned());
+    }
+    Ok((root, relative))
+}
+
 fn validate_relative_path(path: &str) -> Result<&Path, String> {
     let relative = Path::new(path);
     if relative.is_absolute()

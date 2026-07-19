@@ -156,13 +156,17 @@ export function OpenFilePanel({
   const [stagedNotice, setStagedNotice] = useState<string | null>(null);
   const [visibleLines, setVisibleLines] = useState(1200);
   const executionRootRef = useRef(workspace.execution.executionRoot);
+  const fileScopeRef = useRef(`${taskId ?? ""}\u0000${workspace.execution.executionRoot}`);
   const fileRequestId = useRef(0);
 
   const lines = useMemo(() => content?.replace(/\r\n?/g, "\n").split("\n") ?? [], [content]);
   const extension = activeFile?.split(".").at(-1) ?? "text";
 
   useEffect(() => {
+    const nextScope = `${taskId ?? ""}\u0000${workspace.execution.executionRoot}`;
     executionRootRef.current = workspace.execution.executionRoot;
+    if (fileScopeRef.current === nextScope) return;
+    fileScopeRef.current = nextScope;
     fileRequestId.current += 1;
     setChildrenByPath(new Map());
     setLoadingPaths(new Set());
@@ -175,6 +179,36 @@ export function OpenFilePanel({
     setVisibleLines(1200);
     onActiveFileChange(null);
   }, [onActiveFileChange, taskId, workspace.execution.executionRoot]);
+
+  useEffect(() => {
+    if (!activeFile) return;
+    const requestId = ++fileRequestId.current;
+    const executionRoot = workspace.execution.executionRoot;
+    setFileLoading(true);
+    setContent(null);
+    setError(null);
+    setSelection(null);
+    setComment("");
+    setStagedNotice(null);
+    setVisibleLines(1200);
+
+    void nativeBridge.readWorkspaceFile(workspace.path, taskId, activeFile)
+      .then((nextContent) => {
+        if (requestId !== fileRequestId.current || executionRootRef.current !== executionRoot) return;
+        setContent(nextContent);
+      })
+      .catch((reason) => {
+        if (requestId !== fileRequestId.current || executionRootRef.current !== executionRoot) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (requestId === fileRequestId.current) setFileLoading(false);
+      });
+
+    return () => {
+      if (requestId === fileRequestId.current) fileRequestId.current += 1;
+    };
+  }, [activeFile, taskId, workspace.execution.executionRoot, workspace.path]);
 
   const loadNode = async (node: FileNode) => {
     if (childrenByPath.has(node.path) || loadingPaths.has(node.path)) return;
@@ -199,27 +233,8 @@ export function OpenFilePanel({
     }
   };
 
-  const openFile = async (node: FileNode) => {
-    const requestId = ++fileRequestId.current;
-    const executionRoot = workspace.execution.executionRoot;
+  const openFile = (node: FileNode) => {
     onActiveFileChange(node.path);
-    setFileLoading(true);
-    setContent(null);
-    setError(null);
-    setSelection(null);
-    setComment("");
-    setStagedNotice(null);
-    setVisibleLines(1200);
-    try {
-      const nextContent = await nativeBridge.readWorkspaceFile(workspace.path, taskId, node.path);
-      if (requestId !== fileRequestId.current || executionRootRef.current !== executionRoot) return;
-      setContent(nextContent);
-    } catch (reason) {
-      if (requestId !== fileRequestId.current || executionRootRef.current !== executionRoot) return;
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      if (requestId === fileRequestId.current) setFileLoading(false);
-    }
   };
 
   const closeFile = () => {

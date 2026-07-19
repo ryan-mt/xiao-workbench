@@ -300,6 +300,10 @@ export const nativeBridge = {
     return invoke<void>("set_browser_muted", { label, muted });
   },
 
+  openWorkspacePreview(projectPath: string, taskId: string | null, relativePath: string) {
+    return invoke<string>("open_workspace_preview", { projectPath, taskId, relativePath });
+  },
+
   getXiaoExecutionContext(projectPath: string, taskId: string | null) {
     return invoke<ExecutionContext>("get_xiao_execution_context", { projectPath, taskId });
   },

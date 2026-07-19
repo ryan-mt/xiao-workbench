@@ -225,6 +225,11 @@ impl RunService {
         let context =
             resolve_execution_context(&repository, &request.project_path, Some(&request.task_id))?;
         let defaults = repository.run_task_defaults(&context.project_path, &request.task_id)?;
+        let model = effective_model(defaults.model, request.default_model)?;
+        let reasoning_effort = effective_reasoning_effort(
+            defaults.reasoning_effort,
+            request.default_reasoning_effort,
+        )?;
         let mutation = repository.enqueue_run(NewRun {
             id: new_uuid_v7(),
             workspace_id: defaults.workspace_id,
@@ -239,8 +244,8 @@ impl RunService {
             prompt: clean_prompt.to_owned(),
             input: request.input,
             history: request.history,
-            model: defaults.model,
-            reasoning_effort: defaults.reasoning_effort,
+            model: Some(model),
+            reasoning_effort: Some(reasoning_effort),
             service_tier: request.service_tier,
             mode: defaults.mode,
             approval_policy: defaults.approval_policy,
@@ -620,14 +625,18 @@ async fn prepare_claimed_run(app: AppHandle, claimed: RunRecord) {
             return;
         }
     };
+    let turn_params = match turn_start_params(&run, &session) {
+        Ok(params) => params,
+        Err(error) => {
+            settle_preparation_failure(&app, &run.id, RunStatus::Failed, &error);
+            return;
+        }
+    };
     if let Err(error) = service.begin_checkpoint(&run) {
         emit_service_error(&app, &format!("Undo checkpoint unavailable: {error}"));
     }
     let turn_result = runtime
-        .request_turn_start(
-            run.runtime_generation.unwrap_or_default(),
-            turn_start_params(&run, &session),
-        )
+        .request_turn_start(run.runtime_generation.unwrap_or_default(), turn_params)
         .await;
     let result = match turn_result {
         Ok(result) => result,
@@ -775,7 +784,38 @@ async fn prepare_before_turn(
     Ok((run, runtime, session))
 }
 
-fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Value {
+fn effective_reasoning_effort(
+    selected: Option<String>,
+    advertised_default: Option<String>,
+) -> Result<String, String> {
+    if let Some(selected) = selected {
+        return Ok(selected);
+    }
+    advertised_default
+        .filter(|effort| !effort.trim().is_empty())
+        .ok_or_else(|| {
+            "Codex did not advertise a default reasoning effort for this model.".to_owned()
+        })
+}
+
+fn effective_model(
+    selected: Option<String>,
+    advertised_default: Option<String>,
+) -> Result<String, String> {
+    selected
+        .filter(|model| !model.trim().is_empty())
+        .or_else(|| advertised_default.filter(|model| !model.trim().is_empty()))
+        .ok_or_else(|| "Codex did not advertise a default model.".to_owned())
+}
+
+fn turn_model_override<'a>(
+    run_model: Option<&'a str>,
+    session_model: Option<&'a str>,
+) -> Option<&'a str> {
+    run_model.or(session_model)
+}
+
+fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Result<Value, String> {
     let sandbox_policy = match run.sandbox_mode.as_str() {
         "danger-full-access" => json!({ "type": "dangerFullAccess" }),
         "read-only" => json!({ "type": "readOnly" }),
@@ -795,21 +835,21 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Value
         ("approvalPolicy".to_owned(), json!(run.approval_policy)),
         ("sandboxPolicy".to_owned(), sandbox_policy),
     ]);
-    if run.mode == "plan" {
-        if let Some(model) = session.model.as_ref().or(run.model.as_ref()) {
-            params.insert(
-                "collaborationMode".to_owned(),
-                json!({
-                    "mode": "plan",
-                    "settings": {
-                        "model": model,
-                        "reasoning_effort": run.reasoning_effort,
-                        "developer_instructions": null,
-                    },
-                }),
-            );
-        }
-    } else {
+    let model = turn_model_override(run.model.as_deref(), session.model.as_deref())
+        .ok_or_else(|| "Cannot start a Codex turn without a model.".to_owned())?;
+    params.insert("model".to_owned(), json!(model));
+    params.insert(
+        "collaborationMode".to_owned(),
+        json!({
+            "mode": if run.mode == "plan" { "plan" } else { "default" },
+            "settings": {
+                "model": model,
+                "reasoning_effort": run.reasoning_effort,
+                "developer_instructions": null,
+            },
+        }),
+    );
+    if run.mode != "plan" {
         params.insert(
             "additionalContext".to_owned(),
             json!({
@@ -820,7 +860,7 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Value
             }),
         );
     }
-    Value::Object(params)
+    Ok(Value::Object(params))
 }
 
 fn settle_preparation_failure(app: &AppHandle, run_id: &str, target: RunStatus, error: &str) {
@@ -916,8 +956,15 @@ fn apply_runtime_message(
         let request_id = message
             .get("id")
             .ok_or("Codex input request did not include a request id.")?;
-        let turn_id = turn_id.ok_or("Codex input request did not include a turn id.")?;
-        let item_id = item_id.ok_or("Codex input request did not include an item id.")?;
+        let Some((turn_id, item_id)) = pending_input_route(kind, turn_id, item_id)? else {
+            app.state::<EnvironmentRuntimeRegistry>().reply(
+                &route.execution_environment_id,
+                generation,
+                request_id.clone(),
+                mcp_elicitation_decline_result(),
+            )?;
+            return Ok(());
+        };
         let request_id = serde_json::to_string(request_id)
             .map_err(|error| format!("Could not encode Codex request id: {error}"))?;
         let (mutation, pending) = {
@@ -984,7 +1031,10 @@ fn apply_runtime_message(
                 thread_id,
                 turn_id,
                 runtime_status,
-                &json!({ "protocol": safe_message }),
+                &json!({
+                    "protocol": safe_message,
+                    "turnDiff": turn_diff.as_deref(),
+                }),
             )?
         };
         emit_update(app, &mutation, None);
@@ -1056,13 +1106,7 @@ fn auto_decline_pending(
     }
     let request_id: Value = serde_json::from_str(&pending.request_id)
         .map_err(|_| "The pending Codex request id is invalid.".to_owned())?;
-    let result = match kind {
-        PendingInputKind::McpElicitation => {
-            json!({ "action": "decline", "content": null, "_meta": null })
-        }
-        PendingInputKind::Permissions => json!({ "permissions": {}, "scope": "turn" }),
-        _ => json!({ "decision": "decline" }),
-    };
+    let result = auto_decline_result(kind);
     let registry = app.state::<EnvironmentRuntimeRegistry>();
     registry.reply(
         &run.execution_environment_id,
@@ -1150,6 +1194,32 @@ fn pending_input_kind(method: &str) -> Option<PendingInputKind> {
         "item/tool/requestUserInput" => Some(PendingInputKind::Question),
         "mcpServer/elicitation/request" => Some(PendingInputKind::McpElicitation),
         _ => None,
+    }
+}
+
+fn pending_input_route<'a>(
+    kind: PendingInputKind,
+    turn_id: Option<&'a str>,
+    item_id: Option<&'a str>,
+) -> Result<Option<(&'a str, &'a str)>, String> {
+    if kind == PendingInputKind::McpElicitation {
+        return Ok(None);
+    }
+    let turn_id = turn_id.ok_or("Codex input request did not include a turn id.")?;
+    let item_id = item_id.ok_or("Codex input request did not include an item id.")?;
+    Ok(Some((turn_id, item_id)))
+}
+
+fn mcp_elicitation_decline_result() -> Value {
+    json!({ "action": "decline", "content": null, "_meta": null })
+}
+
+fn auto_decline_result(kind: PendingInputKind) -> Value {
+    match kind {
+        PendingInputKind::McpElicitation => mcp_elicitation_decline_result(),
+        PendingInputKind::Permissions => json!({ "permissions": {}, "scope": "turn" }),
+        PendingInputKind::Question => json!({ "answers": {} }),
+        _ => json!({ "decision": "decline" }),
     }
 }
 
@@ -1556,7 +1626,62 @@ mod tests {
     }
 
     #[test]
-    fn turn_parameters_are_native_scoped() {
+    fn mcp_elicitation_auto_decline_does_not_require_turn_or_item_ids() {
+        assert_eq!(
+            pending_input_route(PendingInputKind::McpElicitation, None, None),
+            Ok(None)
+        );
+        assert_eq!(
+            mcp_elicitation_decline_result(),
+            json!({ "action": "decline", "content": null, "_meta": null })
+        );
+        assert!(pending_input_route(PendingInputKind::Question, None, None).is_err());
+    }
+
+    #[test]
+    fn question_auto_decline_uses_request_user_input_response_schema() {
+        assert_eq!(
+            auto_decline_result(PendingInputKind::Question),
+            json!({ "answers": {} })
+        );
+    }
+
+    #[test]
+    fn default_reasoning_effort_becomes_an_explicit_turn_override() {
+        assert_eq!(
+            effective_reasoning_effort(None, Some("medium".to_owned())),
+            Ok("medium".to_owned())
+        );
+        assert_eq!(
+            effective_reasoning_effort(Some("high".to_owned()), Some("medium".to_owned()),),
+            Ok("high".to_owned())
+        );
+        assert!(effective_reasoning_effort(None, None).is_err());
+    }
+
+    #[test]
+    fn changed_model_overrides_the_model_stored_on_a_bound_thread() {
+        let selected =
+            effective_model(Some("model-b".to_owned()), Some("model-default".to_owned())).unwrap();
+
+        assert_eq!(
+            turn_model_override(Some(selected.as_str()), Some("model-a")),
+            Some("model-b")
+        );
+    }
+
+    #[test]
+    fn advertised_default_replaces_a_bound_threads_explicit_model() {
+        let selected = effective_model(None, Some("model-default".to_owned())).unwrap();
+
+        assert_eq!(
+            turn_model_override(Some(selected.as_str()), Some("model-a")),
+            Some("model-default")
+        );
+    }
+
+    #[test]
+    fn turn_parameters_are_native_scoped_and_emit_explicit_collaboration_modes() {
         let run = RunRecord {
             id: "run".to_owned(),
             workspace_id: 1,
@@ -1600,19 +1725,52 @@ mod tests {
             finished_at: None,
             version: 1,
         };
-        let params = turn_start_params(
-            &run,
-            &PersistentAgentSession {
-                thread_id: "thread".to_owned(),
-                model: Some("gpt-test".to_owned()),
-                materialized: false,
-            },
-        );
+        let session = PersistentAgentSession {
+            thread_id: "thread".to_owned(),
+            model: Some("gpt-test".to_owned()),
+            materialized: false,
+        };
+        let params = turn_start_params(&run, &session).unwrap();
         assert_eq!(
             params["sandboxPolicy"]["writableRoots"],
             json!(["C:/owned"])
         );
         assert_eq!(params["threadId"], "thread");
+        assert_eq!(params["model"], "gpt-test");
+        assert_eq!(params["collaborationMode"]["mode"], "default");
+        assert_eq!(params["collaborationMode"]["settings"]["model"], "gpt-test");
+        assert_eq!(
+            params["collaborationMode"]["settings"]["reasoning_effort"],
+            "medium"
+        );
+        assert!(params.get("additionalContext").is_some());
+
+        let mut plan_run = run.clone();
+        plan_run.mode = "plan".to_owned();
+        plan_run.model = Some("advertised-default".to_owned());
+        let unbound_session = PersistentAgentSession {
+            thread_id: "thread".to_owned(),
+            model: None,
+            materialized: false,
+        };
+        let plan_params = turn_start_params(&plan_run, &unbound_session).unwrap();
+        assert_eq!(plan_params["collaborationMode"]["mode"], "plan");
+        assert_eq!(
+            plan_params["collaborationMode"]["settings"]["model"],
+            "advertised-default"
+        );
+        assert!(plan_params.get("additionalContext").is_none());
+
+        plan_run.mode = "default".to_owned();
+        let default_params = turn_start_params(&plan_run, &unbound_session).unwrap();
+        assert_eq!(default_params["collaborationMode"]["mode"], "default");
+        assert!(default_params.get("additionalContext").is_some());
+
+        plan_run.model = None;
+        assert_eq!(
+            turn_start_params(&plan_run, &unbound_session).unwrap_err(),
+            "Cannot start a Codex turn without a model."
+        );
 
         let mut running = run;
         running.turn_id = Some("turn".to_owned());

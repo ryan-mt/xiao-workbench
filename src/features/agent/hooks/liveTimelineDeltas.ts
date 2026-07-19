@@ -148,7 +148,30 @@ export const applyLiveTimelineDeltas = (
   return next;
 };
 
+const COMPLETED_TEXT_BYTE_LIMIT = 16 * 1024;
+
+const matchesBackendTruncation = (streamedBody: string, completedBody: string) => {
+  if (!completedBody.endsWith("…")) return false;
+
+  const bytes = new TextEncoder().encode(streamedBody);
+  if (bytes.length <= COMPLETED_TEXT_BYTE_LIMIT) return false;
+
+  let end = COMPLETED_TEXT_BYTE_LIMIT;
+  while ((bytes[end] & 0xc0) === 0x80) end -= 1;
+  const prefix = new TextDecoder().decode(bytes.subarray(0, end));
+  return completedBody === `${prefix}…`;
+};
+
 export const reconcileCompletedStreamBody = (
   streamedBody: string | undefined,
   completedBody: string | undefined,
-) => completedBody ?? streamedBody;
+) => {
+  if (
+    streamedBody !== undefined &&
+    completedBody !== undefined &&
+    matchesBackendTruncation(streamedBody, completedBody)
+  ) {
+    return streamedBody;
+  }
+  return completedBody ?? streamedBody;
+};

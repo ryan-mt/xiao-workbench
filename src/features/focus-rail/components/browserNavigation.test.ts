@@ -11,6 +11,11 @@ describe("toBrowserUrl", () => {
     expect(toBrowserUrl("https://example.com/docs?q=x")).toBe("https://example.com/docs?q=x");
   });
 
+  it("keeps Xiao's scoped workspace preview addresses", () => {
+    expect(toBrowserUrl("xiao-preview://localhost/token/index.html"))
+      .toBe("xiao-preview://localhost/token/index.html");
+  });
+
   it("adds a scheme to domains and local development hosts", () => {
     expect(toBrowserUrl("youtube.com")).toBe("https://youtube.com/");
     expect(toBrowserUrl("localhost:1420/settings")).toBe("http://localhost:1420/settings");

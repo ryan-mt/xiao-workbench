@@ -233,7 +233,7 @@ export function SettingsPage({
                 <h3>Timeline</h3>
                 <div className="settings-list">
                   <SettingRow title="Reasoning summaries" description="Show the reasoning summaries Codex explicitly publishes. Hidden reasoning is never inferred."><Toggle label="Reasoning summaries" checked={preferences.showReasoningSummaries} onChange={(showReasoningSummaries) => onPreferencesChange({ showReasoningSummaries })} /></SettingRow>
-                  <SettingRow title="Expand tool output" description="Open command output and patch details by default. Active tools always stay visible."><Toggle label="Expand tool output" checked={preferences.expandToolOutput} onChange={(expandToolOutput) => onPreferencesChange({ expandToolOutput })} /></SettingRow>
+                  <SettingRow title="Expand tool output" description="Open command output and patch details by default, including while tools are running."><Toggle label="Expand tool output" checked={preferences.expandToolOutput} onChange={(expandToolOutput) => onPreferencesChange({ expandToolOutput })} /></SettingRow>
                 </div>
               </div>
               <div className="settings-block">

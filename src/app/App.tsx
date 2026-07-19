@@ -28,7 +28,10 @@ import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
 import type { RoutineDraft } from "../features/focus-rail/components/SchedulePanel";
 import type { SavedAcceptanceContract } from "../features/focus-rail/components/VerificationPanel";
-import type { FocusView } from "../features/focus-rail/focus-rail.types";
+import type {
+  FocusResourceRequest,
+  FocusView,
+} from "../features/focus-rail/focus-rail.types";
 import { useRoutines } from "../features/focus-rail/hooks/useRoutines";
 import { ProfilePage } from "../features/profile/components/ProfilePage";
 import { useLocalProfile } from "../features/profile/hooks/useLocalProfile";
@@ -59,6 +62,7 @@ import {
   toXiaoTaskDocument,
 } from "../features/task/taskPersistence";
 import type { TaskGroup, WorkbenchTask } from "../features/task/task.types";
+import { resolveTimelineResource } from "../features/task/timeline/resourceNavigation";
 import { TaskWorkspace } from "../features/task/workspace/TaskWorkspace";
 import { useWorkspace } from "../features/workspace/hooks/useWorkspace";
 
@@ -1065,6 +1069,19 @@ export class WorkspaceTaskSaveDebouncer {
   }
 }
 
+export const submitTaskFollowUpAfterPersistence = async (
+  snapshot: WorkspaceTaskStateSnapshot,
+  persist: (snapshot: WorkspaceTaskStateSnapshot) => Promise<void>,
+  submit: () => Promise<boolean>,
+) => {
+  try {
+    await persist(snapshot);
+  } catch {
+    return false;
+  }
+  return submit();
+};
+
 const mergeProject = (
   projects: XiaoProjectSummary[],
   project: XiaoProjectSummary,
@@ -1116,6 +1133,8 @@ export function App() {
   const [initialTaskState] = useState(defaultTaskState);
   const [activePage, setActivePage] = useState<AppPage>("tasks");
   const [focusView, setFocusView] = useState<FocusView>("changes");
+  const [focusResourceRequest, setFocusResourceRequest] = useState<FocusResourceRequest | null>(null);
+  const focusResourceRequestId = useRef(0);
   const [focusPanelOpen, setFocusPanelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => !window.matchMedia("(max-width: 760px)").matches,
@@ -1933,7 +1952,14 @@ export function App() {
       !cleanPrompt
     ) return false;
     setFailedFollowUpId(null);
-    return agent.submit(cleanPrompt, attachments);
+    return submitTaskFollowUpAfterPersistence(
+      {
+        path: taskWorkspacePath,
+        state: { tasks, activeTaskId, showArchived: false },
+      },
+      (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
+      () => agent.submit(cleanPrompt, attachments),
+    );
   };
 
   const removeTaskFollowUp = (followUpId: string) => {
@@ -1966,7 +1992,14 @@ export function App() {
     setSendingFollowUpId(followUp.id);
     setFailedFollowUpId(null);
     try {
-      const success = await agent.submit(followUp.prompt, followUp.attachments, followUp.id);
+      const success = await submitTaskFollowUpAfterPersistence(
+        {
+          path: operationScope.workspacePath,
+          state: { tasks, activeTaskId, showArchived: false },
+        },
+        (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
+        () => agent.submit(followUp.prompt, followUp.attachments, followUp.id),
+      );
       if (!success) {
         applyCurrentTaskOperationCompletion(
           confirmedNativeTasksRef.current,
@@ -2274,6 +2307,38 @@ export function App() {
     setFocusView(view);
     setFocusPanelOpen(true);
     closeSidebarOnNarrow();
+  };
+
+  const openTimelineResource = (target: string) => {
+    const resource = resolveTimelineResource(target, workspace.execution.executionRoot);
+    if (!resource) return false;
+    const id = ++focusResourceRequestId.current;
+    if (resource.kind === "browser") {
+      setFocusResourceRequest({ id, kind: "browser", url: resource.url });
+      openFocusView("browser");
+      return true;
+    }
+    if (resource.kind === "file") {
+      setFocusResourceRequest({ id, kind: "file", path: resource.relativePath });
+      openFocusView("files");
+      return true;
+    }
+
+    void nativeBridge
+      .openWorkspacePreview(workspace.path, executionTaskId, resource.relativePath)
+      .then((url) => {
+        setFocusResourceRequest({
+          id,
+          kind: "browser",
+          url: `${url}${resource.fragment}`,
+        });
+        openFocusView("browser");
+      })
+      .catch(() => {
+        setFocusResourceRequest({ id, kind: "file", path: resource.relativePath });
+        openFocusView("files");
+      });
+    return true;
   };
 
   const selectTaskTab = (tabId: string) => {
@@ -3005,6 +3070,7 @@ export function App() {
               }
               onResolveApproval={agent.resolveApproval}
               onFocusView={openFocusView}
+              onOpenResource={openTimelineResource}
               onToggleArchived={() => {
                 if (selectedTask) setTaskArchived(selectedTask.id, !selectedTask.archived);
               }}
@@ -3015,6 +3081,7 @@ export function App() {
           activePage === "tasks" && focusPanelOpen ? (
             <FocusRail
               activeView={focusView}
+              resourceRequest={focusResourceRequest}
               onViewChange={setFocusView}
               onClose={() => setFocusPanelOpen(false)}
               workspace={workspace}

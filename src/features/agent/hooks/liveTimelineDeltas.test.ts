@@ -72,4 +72,24 @@ describe("live timeline deltas", () => {
     expect(reconcileCompletedStreamBody("HelloHello", "Hello")).toBe("Hello");
     expect(reconcileCompletedStreamBody("Hello", undefined)).toBe("Hello");
   });
+
+  it("keeps a complete stream when the completed item is the backend's 16 KiB truncation", () => {
+    const streamedBody = `${"a".repeat(16 * 1024)}full tail`;
+    const completedBody = `${"a".repeat(16 * 1024)}…`;
+
+    expect(reconcileCompletedStreamBody(streamedBody, completedBody)).toBe(streamedBody);
+  });
+
+  it("matches backend truncation at a UTF-8 character boundary", () => {
+    const streamedBody = `${"a".repeat(16 * 1024 - 1)}éfull tail`;
+    const completedBody = `${"a".repeat(16 * 1024 - 1)}…`;
+
+    expect(reconcileCompletedStreamBody(streamedBody, completedBody)).toBe(streamedBody);
+  });
+
+  it("keeps a non-truncated completed item authoritative even when it ends in an ellipsis", () => {
+    const streamedBody = `${"a".repeat(16 * 1024)}duplicate tail`;
+
+    expect(reconcileCompletedStreamBody(streamedBody, "Corrected…")).toBe("Corrected…");
+  });
 });

@@ -25,6 +25,7 @@ use super::models::{
 };
 
 const MAX_SAFE_EVENT_BYTES: usize = 64 * 1024;
+const MAX_TURN_DIFF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
 const MAX_RUN_INPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_RUN_HISTORY_BYTES: usize = 8 * 1024 * 1024;
@@ -1989,6 +1990,23 @@ fn existing_event_by_key(
 }
 
 fn validate_safe_payload(payload: &Value) -> Result<(), String> {
+    if let Some(payload) = payload.as_object().filter(|payload| {
+        payload.len() == 2 && payload.contains_key("protocol") && payload.contains_key("turnDiff")
+    }) {
+        validate_safe_payload_size(&payload["protocol"])?;
+        return match &payload["turnDiff"] {
+            Value::Null => Ok(()),
+            Value::String(turn_diff) if turn_diff.len() <= MAX_TURN_DIFF_BYTES => Ok(()),
+            Value::String(_) => {
+                Err("Xiao turn diff exceeds the 8 MiB durability limit.".to_owned())
+            }
+            _ => Err("Xiao terminal run event has an invalid turn diff.".to_owned()),
+        };
+    }
+    validate_safe_payload_size(payload)
+}
+
+fn validate_safe_payload_size(payload: &Value) -> Result<(), String> {
     let bytes = serde_json::to_vec(payload)
         .map_err(|error| format!("Could not serialize safe Xiao run event: {error}"))?;
     if bytes.len() > MAX_SAFE_EVENT_BYTES {
@@ -3710,6 +3728,80 @@ mod tests {
             repository.get_run(&run_b.id).unwrap().status,
             RunStatus::Running
         );
+    }
+
+    #[test]
+    fn terminal_turn_event_persists_large_diff_without_relaxing_its_protocol_limit() {
+        let directory = TestDirectory::new("large-terminal-turn-diff");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let run = repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "large-diff"))
+            .unwrap()
+            .run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 1,
+                    thread_id: "thread".to_owned(),
+                    thread_source: "xiao-workbench".to_owned(),
+                    cli_version: "fake".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 1, "thread", "turn")
+            .unwrap();
+        let turn_diff = format!(
+            "diff --git a/large.txt b/large.txt\n{}",
+            "+durable undo line\n".repeat(4_096)
+        );
+        assert!(turn_diff.len() > MAX_SAFE_EVENT_BYTES);
+
+        repository
+            .settle_runtime_turn(
+                &run.id,
+                1,
+                "thread",
+                "turn",
+                RunStatus::Completed,
+                &json!({
+                    "protocol": { "method": "turn/completed" },
+                    "turnDiff": turn_diff,
+                }),
+            )
+            .unwrap();
+
+        let events = repository
+            .list_run_events(&run.id, None, Some(200))
+            .unwrap();
+        let completion = events
+            .iter()
+            .find(|event| event.event_type == "run.completed")
+            .unwrap();
+        assert_eq!(
+            completion.safe_payload["turnDiff"].as_str(),
+            Some(turn_diff.as_str())
+        );
+
+        let oversized = "x".repeat(MAX_TURN_DIFF_BYTES + 1);
+        let error = validate_safe_payload(&json!({
+            "protocol": { "method": "turn/completed" },
+            "turnDiff": oversized,
+        }))
+        .unwrap_err();
+        assert!(error.contains("8 MiB"));
+
+        let oversized_protocol = "x".repeat(MAX_SAFE_EVENT_BYTES + 1);
+        let error = validate_safe_payload(&json!({
+            "protocol": { "text": oversized_protocol },
+            "turnDiff": "",
+        }))
+        .unwrap_err();
+        assert!(error.contains("64 KiB"));
     }
 
     #[test]

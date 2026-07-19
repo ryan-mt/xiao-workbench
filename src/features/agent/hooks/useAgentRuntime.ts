@@ -25,6 +25,7 @@ import type {
   PendingInputSnapshot,
   RunEventRecord,
   RunProtocolEnvelope,
+  RunSnapshot,
   RunStatus,
   RunUpdateEnvelope,
 } from "../../../core/models/run";
@@ -65,6 +66,7 @@ import { collaborationTimelineEntry } from "./collaborationTimeline";
 const MAX_RUNTIME_LOGS = 240;
 const LIVE_DELTA_FLUSH_MS = 33;
 const SETTLED_PLAN_LINGER_MS = 4_000;
+const RUN_EVENT_PAGE_SIZE = 200;
 type LiveDeltaBatch = {
   deltas: LiveTimelineDelta[];
   eventCount: number;
@@ -143,6 +145,39 @@ export const agentRuntimeApprovalRequestKey = (
   pendingInputId: string,
 ) => [scope.workspacePath, scope.generation, scope.taskId, pendingInputId].join("\u0000");
 
+export const handleAgentApprovalRequest = (
+  taskId: string,
+  approvalPolicy: AgentApprovalPolicy | undefined,
+  approvalEntry: TimelineEntry,
+  updateTimeline: (
+    taskId: string,
+    update: (current: TimelineEntry[]) => TimelineEntry[],
+  ) => void,
+  declineWithoutPrompt: (
+    taskId: string,
+    requestId: number | string,
+    approvalKind: TimelineEntry["approvalKind"],
+    entryId: string,
+  ) => Promise<boolean>,
+) => {
+  updateTimeline(taskId, (current) =>
+    current.some((entry) => entry.id === approvalEntry.id)
+      ? current
+      : [...current, approvalEntry],
+  );
+  if (
+    approvalPolicy !== "never" ||
+    approvalEntry.requestId == null ||
+    !approvalEntry.pendingInputId
+  ) return null;
+  return declineWithoutPrompt(
+    taskId,
+    approvalEntry.requestId,
+    approvalEntry.approvalKind,
+    approvalEntry.id,
+  );
+};
+
 export const agentQuestionRequestMatches = (
   current: AgentQuestionRequest | null,
   expected: Pick<
@@ -169,6 +204,29 @@ export const settleAutoTitleAfterUndo = (
   resetTitle: boolean,
 ) => {
   if (resetTitle) autoTitledTaskIds.delete(taskId);
+};
+
+export const completedAgentPlan = (plan: AgentPlan): AgentPlan => ({
+  ...plan,
+  steps: plan.steps.map((step) => ({ ...step, status: "completed" })),
+});
+
+export const loadAllXiaoRunEvents = async (
+  runId: string,
+  loadPage: typeof nativeBridge.loadXiaoRunEvents = nativeBridge.loadXiaoRunEvents,
+) => {
+  const events: RunEventRecord[] = [];
+  let afterSequence = -1;
+
+  while (true) {
+    const page = await loadPage(runId, afterSequence, RUN_EVENT_PAGE_SIZE);
+    events.push(...page.events);
+    if (page.events.length < RUN_EVENT_PAGE_SIZE) return events;
+    if (page.nextSequence === null || page.nextSequence <= afterSequence) {
+      throw new Error("Xiao run event pagination did not advance.");
+    }
+    afterSequence = page.nextSequence;
+  }
 };
 
 const readMessageThreadId = (message: AgentMessage) => {
@@ -316,6 +374,29 @@ const messageFromRunEvent = (event: RunEventRecord): AgentMessage | null => {
   return protocol && typeof protocol === "object" ? protocol as AgentMessage : null;
 };
 
+export const restoredRunProtocolEnvelope = (
+  run: RunSnapshot,
+  event: RunEventRecord,
+): RunProtocolEnvelope | null => {
+  const message = messageFromRunEvent(event);
+  if (!message || run.runtimeGeneration == null || !run.threadId) return null;
+  const safePayload = event.safePayload as Record<string, unknown>;
+  const turnDiff = typeof safePayload.turnDiff === "string" ? safePayload.turnDiff : null;
+  return {
+    runId: run.id,
+    taskId: run.taskId,
+    executionEnvironmentId: run.executionEnvironmentId,
+    runtimeGeneration: run.runtimeGeneration,
+    threadId: run.threadId,
+    turnId: run.turnId,
+    itemId: null,
+    sequence: event.sequence,
+    message,
+    turnDiff,
+    pendingInput: null,
+  };
+};
+
 const timelineStatusForRun = (status: RunStatus): TimelineEntry["status"] => {
   if (status === "completed") return "success";
   if (status === "failed" || status === "cancelled") return "error";
@@ -331,6 +412,41 @@ const countDiffLines = (diff: string) => {
     if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
   }
   return { additions, deletions };
+};
+
+type FileChangeKind = "add" | "delete" | "update" | null;
+
+const textLines = (text: string) => {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  if (!normalized) return [];
+  return (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
+};
+
+export const normalizeFileChangeDiff = (diff: string, kind: FileChangeKind) => {
+  if (kind !== "add" && kind !== "delete") {
+    return { ...countDiffLines(diff), patch: diff };
+  }
+
+  const lines = textLines(diff);
+  if (!lines.length) return { additions: 0, deletions: 0, patch: "" };
+  if (kind === "add") {
+    return {
+      additions: lines.length,
+      deletions: 0,
+      patch: `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`,
+    };
+  }
+  return {
+    additions: 0,
+    deletions: lines.length,
+    patch: `@@ -1,${lines.length} +0,0 @@\n${lines.map((line) => `-${line}`).join("\n")}`,
+  };
+};
+
+const fileChangeKind = (value: unknown): FileChangeKind => {
+  if (!value || typeof value !== "object") return null;
+  const type = (value as Record<string, unknown>).type;
+  return type === "add" || type === "delete" || type === "update" ? type : null;
 };
 
 const readTokenUsage = (value: unknown): TokenUsageBreakdown | null => {
@@ -439,9 +555,9 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
       if (!change || typeof change !== "object") return [];
       const value = change as Record<string, unknown>;
       if (typeof value.path !== "string") return [];
-      const patch = typeof value.diff === "string" ? value.diff : undefined;
-      const stats = countDiffLines(patch ?? "");
-      return [{ path: value.path, ...stats, patch }];
+      const diff = typeof value.diff === "string" ? value.diff : "";
+      const normalized = normalizeFileChangeDiff(diff, fileChangeKind(value.kind));
+      return [{ path: value.path, ...normalized }];
     });
     if (!files.length) return null;
     const failed = item.status === "failed" || item.status === "declined";
@@ -612,6 +728,7 @@ export function useAgentRuntime(
   const liveDeltaBatches = useRef(new Map<string, LiveDeltaBatch>());
   const liveDeltaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const planClearTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const planCache = useRef(new Map<string, AgentPlan>());
   const onTimelineChangeRef = useRef(onTimelineChange);
   const onPlanChangeRef = useRef(onPlanChange);
   const onTaskTitleChangeRef = useRef(onTaskTitleChange);
@@ -1214,6 +1331,7 @@ export function useAgentRuntime(
 
       if (message.method === "turn/started") {
         cancelPlanClear(taskId);
+        planCache.current.delete(taskId);
         onPlanChangeRef.current(taskId, null);
         const turn = message.params?.turn;
         const turnId =
@@ -1311,13 +1429,15 @@ export function useAgentRuntime(
             status: value.status as "pending" | "inProgress" | "completed",
           }];
         });
-        onPlanChangeRef.current(taskId, {
+        const nextPlan: AgentPlan = {
           explanation:
             typeof message.params.explanation === "string"
               ? message.params.explanation
               : null,
           steps,
-        });
+        };
+        planCache.current.set(taskId, nextPlan);
+        onPlanChangeRef.current(taskId, nextPlan);
       }
 
       if (message.method === "item/started") {
@@ -1474,18 +1594,13 @@ export function useAgentRuntime(
           meta: "Waiting for your decision",
           status: "warning",
         };
-        if (taskApprovalPolicies.current.get(taskId) === "never") {
-          updateTimeline(taskId, (current) => [
-            ...current,
-            { ...approvalEntry, status: "error", meta: "Declined by Never ask" },
-          ]);
-        } else {
-          updateTimeline(taskId, (current) =>
-            current.some((entry) => entry.id === approvalEntry.id)
-              ? current
-              : [...current, approvalEntry],
-          );
-        }
+        void handleAgentApprovalRequest(
+          taskId,
+          taskApprovalPolicies.current.get(taskId),
+          approvalEntry,
+          updateTimeline,
+          declineWithoutPrompt,
+        );
       }
 
       if (message.method === "turn/completed") {
@@ -1500,7 +1615,15 @@ export function useAgentRuntime(
           if (outcome === "completed") {
             updateTimeline(taskId, invalidateUndoHistory);
           }
-        } else schedulePlanClear(taskId);
+        } else {
+          const currentPlan = planCache.current.get(taskId);
+          if (outcome === "completed" && currentPlan) {
+            const completedPlan = completedAgentPlan(currentPlan);
+            planCache.current.set(taskId, completedPlan);
+            onPlanChangeRef.current(taskId, completedPlan);
+          }
+          schedulePlanClear(taskId);
+        }
         const errorValue = turn?.error;
         const errorMessage = outcome === "failed"
           ? errorValue &&
@@ -1597,6 +1720,7 @@ export function useAgentRuntime(
     [
       appendRuntimeLog,
       cancelPlanClear,
+      declineWithoutPrompt,
       flushLiveDeltas,
       queueLiveDelta,
       recordUsage,
@@ -1967,32 +2091,20 @@ export function useAgentRuntime(
         if (!restoreIsCurrent()) return;
         if (run.runtimeGeneration == null || !run.threadId) continue;
         if (run.turnId) activeTurnIds.current.set(run.taskId, run.turnId);
-        const page = await nativeBridge.loadXiaoRunEvents(run.id, null, 200);
-        for (const event of page.events) {
+        const events = await loadAllXiaoRunEvents(run.id);
+        for (const event of events) {
           if (!restoreIsCurrent()) return;
-          const message = messageFromRunEvent(event);
-          if (!message) continue;
-          const envelope: RunProtocolEnvelope = {
-            runId: run.id,
-            taskId: run.taskId,
-            executionEnvironmentId: run.executionEnvironmentId,
-            runtimeGeneration: run.runtimeGeneration,
-            threadId: run.threadId,
-            turnId: run.turnId,
-            itemId: null,
-            sequence: event.sequence,
-            message,
-            turnDiff: null,
-            pendingInput: null,
-          };
+          const envelope = restoredRunProtocolEnvelope(run, event);
+          if (!envelope) continue;
           const accepted = acceptRunProtocol(runProjectionRef.current, envelope);
           if (!accepted.accepted) continue;
           publishRunProjection(accepted.projection);
           if (run.turnId) activeTurnIds.current.set(run.taskId, run.turnId);
-          await handleMessage(message, {
+          await handleMessage(envelope.message, {
             taskId: run.taskId,
             runId: run.id,
             pendingInput: null,
+            turnDiff: envelope.turnDiff,
             replayed: true,
           });
         }
@@ -2150,6 +2262,8 @@ export function useAgentRuntime(
           prompt: cleanPrompt,
           input: userInput(cleanPrompt, attachments),
           history: historyFromTimeline(currentTimeline),
+          defaultModel: requestedModel?.model ?? null,
+          defaultReasoningEffort: requestedModel?.defaultReasoningEffort ?? null,
           serviceTier: serviceTierForFastMode(requestedModel, fastMode),
         });
         if (run.workspacePath !== workspacePath || run.taskId !== scope.taskId) {

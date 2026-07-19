@@ -101,6 +101,7 @@ type TaskWorkspaceProps = {
     decision: "accept" | "decline",
   ) => Promise<void>;
   onFocusView: (view: FocusView) => void;
+  onOpenResource: (target: string) => boolean;
   onToggleArchived: () => void;
 };
 
@@ -172,6 +173,7 @@ export function TaskWorkspace({
   onRetryRun,
   onResolveApproval,
   onFocusView,
+  onOpenResource,
   onToggleArchived,
 }: TaskWorkspaceProps) {
   const scrollArea = useRef<HTMLDivElement>(null);
@@ -345,6 +347,8 @@ export function TaskWorkspace({
           latestRun={latestRun}
           showReasoningSummaries={showReasoningSummaries}
           expandToolOutput={expandToolOutput}
+          workspacePath={workspace.path}
+          onOpenResource={onOpenResource}
           historyLoading={taskStateLoading}
           canFork={canFork}
           onForkTask={onForkTask}

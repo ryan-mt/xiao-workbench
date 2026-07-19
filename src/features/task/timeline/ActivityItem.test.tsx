@@ -11,6 +11,8 @@ const renderCompaction = (entry: TimelineEntry) => renderToStaticMarkup(
     index={0}
     showReasoningSummaries
     expandToolOutput={false}
+    workspacePath={"C:\\work\\xiao"}
+    onOpenResource={() => true}
     taskId="task-1"
     canFork={false}
     onForkTask={() => undefined}
@@ -33,6 +35,8 @@ describe("ActivityItem user message", () => {
         index={0}
         showReasoningSummaries
         expandToolOutput={false}
+        workspacePath={"C:\\work\\xiao"}
+        onOpenResource={() => true}
         taskId="task-1"
         canFork={canFork}
         onForkTask={() => undefined}
@@ -83,6 +87,40 @@ describe("ActivityItem context compaction", () => {
     expect(markup).toContain("activity--context-compaction activity--success");
     expect(markup).toContain("context-compaction__state--success");
     expect(markup).toContain("Context compacted");
+  });
+});
+
+describe("ActivityItem timeline disclosures", () => {
+  it("keeps active tool output collapsed when the preference is off", () => {
+    const markup = renderCompaction({
+      id: "command-1",
+      kind: "command",
+      title: "Run checks",
+      command: "npm test",
+      status: "active",
+    });
+
+    expect(markup).toContain("activity__tool-disclosure");
+    expect(markup).not.toContain("<details class=\"activity__tool-disclosure\" open=\"\"");
+  });
+
+  it("shows an absolute patch path and first changed line", () => {
+    const markup = renderCompaction({
+      id: "patch-1",
+      kind: "change",
+      title: "Changed file",
+      status: "active",
+      files: [{
+        path: "src/index.html",
+        additions: 1,
+        deletions: 0,
+        patch: "@@ -9,0 +10,1 @@\n+<main />",
+      }],
+    });
+
+    expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
+    expect(markup).toContain("line 10");
+    expect(markup).not.toContain("<details open=\"\"");
   });
 });
 

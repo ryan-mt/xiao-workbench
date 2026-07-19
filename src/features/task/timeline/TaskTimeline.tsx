@@ -12,6 +12,8 @@ type TaskTimelineProps = {
   latestRun: RunSnapshot | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
+  workspacePath: string;
+  onOpenResource: (target: string) => boolean;
   historyLoading: boolean;
   canFork: boolean;
   onForkTask: (entryId: string) => void;
@@ -76,6 +78,8 @@ export function TaskTimeline({
   latestRun,
   showReasoningSummaries,
   expandToolOutput,
+  workspacePath,
+  onOpenResource,
   historyLoading,
   canFork,
   onForkTask,
@@ -110,6 +114,8 @@ export function TaskTimeline({
             index={row.index}
             showReasoningSummaries={showReasoningSummaries}
             expandToolOutput={expandToolOutput}
+            workspacePath={workspacePath}
+            onOpenResource={onOpenResource}
             key={row.entry.id}
             taskId={taskId}
             canFork={canFork}

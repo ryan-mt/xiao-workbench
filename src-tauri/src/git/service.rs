@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -737,7 +738,83 @@ fn checkpoint_directory(token: &str) -> Result<PathBuf, String> {
 }
 
 fn snapshot_workspace(directory: &Path, repository: &Path, workspace: &Path) -> Result<(), String> {
-    run_checkpoint_git(directory, repository, workspace, CHECKPOINT_ADD_ARGUMENTS).map(|_| ())
+    run_checkpoint_git(directory, repository, workspace, CHECKPOINT_ADD_ARGUMENTS)?;
+
+    let tracked_pathspecs = directory.join("tracked-pathspecs");
+    let mut tracked_paths = fs::read(&tracked_pathspecs).unwrap_or_default();
+    tracked_paths.extend(existing_tracked_workspace_paths(workspace)?);
+    if tracked_paths.is_empty() {
+        return Ok(());
+    }
+    fs::write(&tracked_pathspecs, tracked_paths).map_err(|error| error.to_string())?;
+
+    let pathspec_argument = format!(
+        "--pathspec-from-file={}",
+        tracked_pathspecs.to_string_lossy()
+    );
+    run_checkpoint_git(
+        directory,
+        repository,
+        workspace,
+        &[
+            "--literal-pathspecs",
+            "add",
+            "-A",
+            "-f",
+            &pathspec_argument,
+            "--pathspec-file-nul",
+        ],
+    )
+    .map(|_| ())
+}
+
+fn existing_tracked_workspace_paths(workspace: &Path) -> Result<Vec<u8>, String> {
+    let mut tracked_command = Command::new("git");
+    tracked_command
+        .arg("-C")
+        .arg(workspace)
+        .args(["ls-files", "-z", "--cached", "--", "."]);
+    hide_window(&mut tracked_command);
+    let tracked = tracked_command
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !tracked.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let mut deleted_command = Command::new("git");
+    deleted_command
+        .arg("-C")
+        .arg(workspace)
+        .args(["ls-files", "-z", "--deleted", "--", "."]);
+    hide_window(&mut deleted_command);
+    let deleted = deleted_command
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !deleted.status.success() {
+        return Err(command_error(
+            &deleted.stderr,
+            "Could not identify tracked workspace files.",
+        ));
+    }
+    let deleted_paths = deleted
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect::<HashSet<_>>();
+    let mut paths = Vec::with_capacity(tracked.stdout.len());
+    for path in tracked
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if !deleted_paths.contains(path) {
+            paths.extend_from_slice(path);
+            paths.push(0);
+        }
+    }
+    Ok(paths)
 }
 
 fn run_checkpoint_git(
@@ -1439,6 +1516,36 @@ mod tests {
         let discarded = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
         discard_workspace_checkpoint(&discarded).unwrap();
         assert!(finish_workspace_checkpoint(&root.to_string_lossy(), &discarded).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_checkpoints_capture_tracked_files_in_excluded_directories() {
+        let root = temporary_directory("checkpoint-tracked-exclusion");
+        fs::create_dir_all(root.join("build")).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("build/config.js"), "before\n").unwrap();
+        fs::write(root.join("build/removed.js"), "restore me\n").unwrap();
+        run(&root, &["add", "build/config.js", "build/removed.js"]);
+        run(&root, &["commit", "-m", "initial"]);
+        let checkpoint = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+
+        fs::write(root.join("build/config.js"), "after\n").unwrap();
+        fs::remove_file(root.join("build/removed.js")).unwrap();
+        fs::write(root.join("build/generated.js"), "untracked\n").unwrap();
+        let patch = finish_workspace_checkpoint(&root.to_string_lossy(), &checkpoint).unwrap();
+
+        assert!(patch.contains("build/config.js"));
+        assert!(patch.contains("build/removed.js"));
+        assert!(!patch.contains("build/generated.js"));
+        apply_workspace_patch(&root.to_string_lossy(), &patch, true, true).unwrap();
+        apply_workspace_patch(&root.to_string_lossy(), &patch, true, false).unwrap();
+        assert_eq!(read_text(&root.join("build/config.js")), "before\n");
+        assert_eq!(read_text(&root.join("build/removed.js")), "restore me\n");
+        assert_eq!(read_text(&root.join("build/generated.js")), "untracked\n");
+
         let _ = fs::remove_dir_all(root);
     }
 

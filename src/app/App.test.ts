@@ -29,6 +29,7 @@ import {
   restoreTaskAfterUndo,
   shouldAutoConnectAgentRuntime,
   stageTaskReviewContext,
+  submitTaskFollowUpAfterPersistence,
   taskReviewContext,
   isAcceptanceContractVersionSummary,
   readBrowserTaskState,
@@ -796,6 +797,45 @@ describe("workspace task persistence debounce", () => {
 
     expect(incomingError).toBe("incoming workspace load failed");
     expect(confirmedExecutionTaskId(confirmation, secondPath, "task-1")).toBeNull();
+  });
+});
+
+describe("follow-up task persistence barrier", () => {
+  it("waits for the current workspace snapshot before submitting", async () => {
+    const save = deferred<void>();
+    const snapshot = {
+      path: workspacePath,
+      state: { tasks: [], activeTaskId: null, showArchived: false },
+    };
+    const persist = vi.fn(() => save.promise);
+    const submit = vi.fn(async () => true);
+
+    const result = submitTaskFollowUpAfterPersistence(snapshot, persist, submit);
+
+    expect(persist).toHaveBeenCalledWith(snapshot);
+    expect(submit).not.toHaveBeenCalled();
+    save.resolve();
+    await expect(result).resolves.toBe(true);
+    expect(submit).toHaveBeenCalledOnce();
+    expect(persist.mock.invocationCallOrder[0]).toBeLessThan(
+      submit.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps submission blocked when task persistence fails", async () => {
+    const snapshot = {
+      path: workspacePath,
+      state: { tasks: [], activeTaskId: null, showArchived: false },
+    };
+    const persist = vi.fn(async () => {
+      throw new Error("task save failed");
+    });
+    const submit = vi.fn(async () => true);
+
+    await expect(
+      submitTaskFollowUpAfterPersistence(snapshot, persist, submit),
+    ).resolves.toBe(false);
+    expect(submit).not.toHaveBeenCalled();
   });
 });
 

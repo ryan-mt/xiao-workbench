@@ -122,5 +122,7 @@ export type EnqueueRunRequest = {
   prompt: string;
   input: Array<Record<string, unknown>>;
   history: XiaoHistoryItem[];
+  defaultModel: string | null;
+  defaultReasoningEffort: string | null;
   serviceTier: string | null;
 };

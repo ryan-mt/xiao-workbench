@@ -20,6 +20,7 @@ use browser::commands::{
     get_browser_url, go_back_browser, go_forward_browser, navigate_browser, reload_browser,
     set_browser_muted,
 };
+use browser::preview::PreviewRegistry;
 use execution::commands::{
     get_xiao_execution_context, list_xiao_managed_worktrees, prepare_xiao_managed_worktree,
     remove_xiao_managed_worktree,
@@ -46,7 +47,9 @@ use verification::commands::{
     read_xiao_verification_artifact, rerun_xiao_verification, save_xiao_task_acceptance_contract,
 };
 use verification::service::VerificationService;
-use workspace::commands::{get_workspace_snapshot, list_workspace_files, read_workspace_file};
+use workspace::commands::{
+    get_workspace_snapshot, list_workspace_files, open_workspace_preview, read_workspace_file,
+};
 use xiao::commands::{
     list_xiao_projects, load_xiao_timeline_page, load_xiao_workspace, open_xiao_project,
     save_xiao_workspace,
@@ -61,7 +64,12 @@ pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let preview_registry = PreviewRegistry::default();
+    let protocol_previews = preview_registry.clone();
+    let builder = tauri::Builder::default().register_uri_scheme_protocol(
+        "xiao-preview",
+        move |_context, request| protocol_previews.respond(&request),
+    );
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
@@ -106,6 +114,7 @@ pub fn run() {
             Ok(())
         })
         .manage(TerminalManager::default())
+        .manage(preview_registry)
         .invoke_handler(tauri::generate_handler![
             get_workspace_snapshot,
             get_xiao_execution_context,
@@ -114,6 +123,7 @@ pub fn run() {
             remove_xiao_managed_worktree,
             list_workspace_files,
             read_workspace_file,
+            open_workspace_preview,
             get_system_info,
             check_codex_update,
             update_codex_cli,

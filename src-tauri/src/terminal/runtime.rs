@@ -4,19 +4,31 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, BorrowedHandle, OwnedHandle};
+
+#[cfg(not(windows))]
+use portable_pty::ChildKiller;
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::TerminateProcess;
 
 const MIN_COLS: u16 = 20;
 const MIN_ROWS: u16 = 4;
+
+#[cfg(windows)]
+type TerminalKiller = OwnedHandle;
+#[cfg(not(windows))]
+type TerminalKiller = Box<dyn ChildKiller + Send + Sync>;
 
 struct TerminalSession {
     project_path: String,
     task_id: Option<String>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    killer: Mutex<TerminalKiller>,
 }
 
 #[derive(Default)]
@@ -152,12 +164,13 @@ impl TerminalManager {
             .master
             .take_writer()
             .map_err(|error| error.to_string())?;
+        let killer = clone_terminal_killer(child.as_ref())?;
         let session = Arc::new(TerminalSession {
             project_path,
             task_id,
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
-            killer: Mutex::new(child.clone_killer()),
+            killer: Mutex::new(killer),
         });
         self.sessions
             .lock()
@@ -276,12 +289,8 @@ impl TerminalManager {
             .map_err(|error| error.to_string())?
             .remove(session_id);
         if let Some(session) = session {
-            session
-                .killer
-                .lock()
-                .map_err(|error| error.to_string())?
-                .kill()
-                .map_err(|error| error.to_string())?;
+            let mut killer = session.killer.lock().map_err(|error| error.to_string())?;
+            kill_terminal(&mut killer)?;
         }
         Ok(())
     }
@@ -301,11 +310,40 @@ impl Drop for TerminalManager {
         if let Ok(mut sessions) = self.sessions.lock() {
             for (_, session) in sessions.drain() {
                 if let Ok(mut killer) = session.killer.lock() {
-                    let _ = killer.kill();
+                    let _ = kill_terminal(&mut killer);
                 }
             }
         }
     }
+}
+
+#[cfg(windows)]
+fn clone_terminal_killer(child: &dyn portable_pty::Child) -> Result<TerminalKiller, String> {
+    let handle = child
+        .as_raw_handle()
+        .ok_or_else(|| "The terminal process handle is unavailable.".to_owned())?;
+    unsafe { BorrowedHandle::borrow_raw(handle) }
+        .try_clone_to_owned()
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn clone_terminal_killer(child: &dyn portable_pty::Child) -> Result<TerminalKiller, String> {
+    Ok(child.clone_killer())
+}
+
+#[cfg(windows)]
+fn kill_terminal(killer: &mut TerminalKiller) -> Result<(), String> {
+    if unsafe { TerminateProcess(killer.as_raw_handle(), 1) } == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_terminal(killer: &mut TerminalKiller) -> Result<(), String> {
+    killer.kill().map_err(|error| error.to_string())
 }
 
 fn pty_size(cols: u16, rows: u16) -> PtySize {
@@ -344,6 +382,22 @@ mod tests {
     fn terminal_session_ids_are_restricted() {
         assert!(validate_session_id("terminal-123").is_ok());
         assert!(validate_session_id("../terminal").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_terminal_killer_terminates_the_pty_process() {
+        let pair = native_pty_system().openpty(PtySize::default()).unwrap();
+        let mut command =
+            CommandBuilder::new(std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_owned()));
+        command.args(["/D", "/Q", "/K"]);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        let mut killer = clone_terminal_killer(child.as_ref()).unwrap();
+        drop(pair.slave);
+
+        kill_terminal(&mut killer).unwrap();
+
+        assert_eq!(child.wait().unwrap().exit_code(), 1);
     }
 
     #[test]

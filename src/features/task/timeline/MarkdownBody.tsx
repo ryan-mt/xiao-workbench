@@ -8,7 +8,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remend from "remend";
 import remarkGfm from "remark-gfm";
 
@@ -133,6 +133,12 @@ const inlineCodeKind = (text: string): "path" | "url" | undefined => {
   return undefined;
 };
 
+const workspacePathHref = (value: string) =>
+  /^(?:[a-z]:[\\/]|file:\/\/\/[a-z]:[\\/])/i.test(value.trim());
+
+export const markdownUrlTransform = (value: string, allowWorkspacePaths: boolean) =>
+  allowWorkspacePaths && workspacePathHref(value) ? value : defaultUrlTransform(value);
+
 type HighlightedCode = {
   code: string;
   html: string;
@@ -143,11 +149,30 @@ function InlineCode({
   children,
   className,
   node: _node,
+  onOpenResource,
   ...props
-}: ComponentProps<"code"> & { node?: unknown }) {
+}: ComponentProps<"code"> & {
+  node?: unknown;
+  onOpenResource?: (target: string) => boolean;
+}) {
   const text = childText(children);
   const kind = className ? undefined : inlineCodeKind(text);
-  return <code {...props} className={className} data-inline-code-kind={kind}>{children}</code>;
+  const interactive = Boolean(kind && onOpenResource);
+  return (
+    <code
+      {...props}
+      className={className}
+      data-inline-code-kind={kind}
+      role={interactive ? "link" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      onClick={interactive ? () => onOpenResource?.(text) : undefined}
+      onKeyDown={interactive ? (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpenResource?.(text);
+      } : undefined}
+    >{children}</code>
+  );
 }
 
 function CodeBlock({ children, streaming }: { children: ReactNode; streaming: boolean }) {
@@ -214,9 +239,11 @@ function CodeBlock({ children, streaming }: { children: ReactNode; streaming: bo
 export const MarkdownBody = memo(function MarkdownBody({
   content,
   streaming = false,
+  onOpenResource,
 }: {
   content: string;
   streaming?: boolean;
+  onOpenResource?: (target: string) => boolean;
 }) {
   const rendered = streaming ? remend(content, { linkMode: "text-only" }) : content;
 
@@ -224,16 +251,31 @@ export const MarkdownBody = memo(function MarkdownBody({
     <div className={`markdown-body ${streaming ? "is-streaming" : ""}`} aria-busy={streaming}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={(value) => markdownUrlTransform(value, Boolean(onOpenResource))}
         components={{
           pre: ({ children }) => <CodeBlock streaming={streaming}>{children}</CodeBlock>,
-          code: InlineCode,
+          code: (props) => <InlineCode {...props} onOpenResource={onOpenResource} />,
           table: ({ children, node: _node, ...props }) => (
             <div className="markdown-table" role="region" aria-label="Scrollable table" tabIndex={0}>
               <table {...props}>{children}</table>
             </div>
           ),
-          a: ({ children, node: _node, ...props }) => (
-            <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+          a: ({ children, node: _node, href, onClick, ...props }) => (
+            <a
+              {...props}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(event) => {
+                onClick?.(event);
+                if (!event.defaultPrevented && href && onOpenResource) {
+                  const handled = onOpenResource(href);
+                  if (handled || workspacePathHref(href)) event.preventDefault();
+                } else if (!event.defaultPrevented && href && workspacePathHref(href)) {
+                  event.preventDefault();
+                }
+              }}
+            >{children}</a>
           ),
         }}
       >
