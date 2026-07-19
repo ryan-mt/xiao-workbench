@@ -486,6 +486,34 @@ describe("task workspace-mode completion identity", () => {
 });
 
 describe("workspace task persistence debounce", () => {
+  it("adopts an imported snapshot without replaying the stale pre-import state", async () => {
+    vi.useFakeTimers();
+    installStoredState(null);
+    const task = readBrowserTaskState(workspacePath).tasks[0]!;
+    const oldState: StoredTaskState = {
+      tasks: [task],
+      activeTaskId: task.id,
+      showArchived: false,
+    };
+    const imported = { ...task, id: "imported-task", title: "Imported task" };
+    const importedState: StoredTaskState = {
+      tasks: [task, imported],
+      activeTaskId: imported.id,
+      showArchived: false,
+    };
+    const persist = vi.fn(async () => undefined);
+    const debouncer = new WorkspaceTaskSaveDebouncer(persist);
+
+    debouncer.schedule({ path: workspacePath, state: oldState });
+    debouncer.adoptPersisted({ path: workspacePath, state: importedState });
+    vi.advanceTimersByTime(250);
+    debouncer.schedule({ path: workspacePath, state: importedState });
+    vi.advanceTimersByTime(250);
+
+    expect(persist).not.toHaveBeenCalled();
+    await expect(debouncer.waitForWorkspacePersistence(workspacePath)).resolves.toBeNull();
+  });
+
   it.each(["edit", "new task"] as const)(
     "flushes a pending %s once to the outgoing workspace",
     async (change) => {

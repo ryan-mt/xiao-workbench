@@ -2869,6 +2869,10 @@ export function useAgentRuntime(
     usage,
     activeRun,
     latestRun,
+    runs: Object.values(scopedRunProjection.runsById).sort(
+      (left, right) => right.queuedAt - left.queuedAt || right.id.localeCompare(left.id),
+    ),
+    pendingInputs: Object.values(scopedRunProjection.pendingInputsById),
     hasActiveRuns: Object.values(scopedRunProjection.runsById).some((run) =>
       runStatusIsActive(run.status)
     ),

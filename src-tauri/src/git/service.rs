@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::models::{
     GitBranch, GitFileChange, GitFileStatus, GitRepositoryIdentity, GitSummary, GitWorktree,
-    GitWorktreeEvidence,
+    GitWorktreeEvidence, WorkspaceCheckpointCapture, WorkspaceRestoreOutcome, WorkspaceRestoreStep,
 };
 
 const MAX_CHANGES: usize = 300;
@@ -676,7 +676,10 @@ pub fn create_workspace_checkpoint(workspace_path: &str) -> Result<String, Strin
     result
 }
 
-pub fn finish_workspace_checkpoint(workspace_path: &str, token: &str) -> Result<String, String> {
+pub(crate) fn finish_workspace_checkpoint_capture(
+    workspace_path: &str,
+    token: &str,
+) -> Result<WorkspaceCheckpointCapture, String> {
     let directory = checkpoint_directory(token)?;
     let result = (|| {
         let workspace = Path::new(workspace_path)
@@ -710,10 +713,191 @@ pub fn finish_workspace_checkpoint(workspace_path: &str, token: &str) -> Result<
         if patch.len() > MAX_APPLY_PATCH_BYTES {
             return Err("The turn patch is too large to undo safely.".to_owned());
         }
-        Ok(patch)
+        Ok(WorkspaceCheckpointCapture {
+            patch,
+            before_fingerprint: before.trim().to_owned(),
+            after_fingerprint: after.trim().to_owned(),
+        })
     })();
     let _ = fs::remove_dir_all(directory);
     result
+}
+
+pub fn finish_workspace_checkpoint(workspace_path: &str, token: &str) -> Result<String, String> {
+    finish_workspace_checkpoint_capture(workspace_path, token).map(|capture| capture.patch)
+}
+
+pub(crate) fn workspace_fingerprint(workspace_path: &str) -> Result<String, String> {
+    let token = create_workspace_checkpoint(workspace_path)?;
+    let directory = checkpoint_directory(&token)?;
+    let result = fs::read_to_string(directory.join("tree"))
+        .map(|fingerprint| fingerprint.trim().to_owned())
+        .map_err(|_| "The workspace fingerprint checkpoint is incomplete.".to_owned());
+    let _ = discard_workspace_checkpoint(&token);
+    result
+}
+
+#[cfg(test)]
+pub(crate) fn restore_workspace_checkpoints(
+    workspace_path: &str,
+    steps: &[WorkspaceRestoreStep],
+) -> Result<String, String> {
+    restore_workspace_checkpoints_with_rollback(workspace_path, steps)
+        .map(|outcome| outcome.target_fingerprint)
+}
+
+pub(crate) fn restore_workspace_checkpoints_with_rollback(
+    workspace_path: &str,
+    steps: &[WorkspaceRestoreStep],
+) -> Result<WorkspaceRestoreOutcome, String> {
+    if steps.is_empty() {
+        return Err("The restore plan is empty.".to_owned());
+    }
+    ensure_no_staged_workspace_changes(workspace_path)?;
+
+    let token = create_workspace_checkpoint(workspace_path)?;
+    let directory = checkpoint_directory(&token)?;
+    let preflight = (|| {
+        let workspace = Path::new(workspace_path)
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let expected_workspace = fs::read_to_string(directory.join("workspace"))
+            .map_err(|_| "The restore preflight checkpoint is unavailable.".to_owned())?;
+        if display_path(&workspace) != expected_workspace {
+            return Err("The restore preflight belongs to another workspace.".to_owned());
+        }
+        let repository = directory.join("repository.git");
+        let original = fs::read_to_string(directory.join("tree"))
+            .map_err(|_| "The restore preflight fingerprint is unavailable.".to_owned())?
+            .trim()
+            .to_owned();
+        let mut simulated = original.clone();
+
+        for step in steps {
+            if simulated != step.after_fingerprint {
+                return Err(
+                    "The workspace no longer matches the newest restorable turn fingerprint."
+                        .to_owned(),
+                );
+            }
+            if step.patch.trim().is_empty() {
+                if step.before_fingerprint != step.after_fingerprint {
+                    return Err("An empty turn patch has inconsistent fingerprints.".to_owned());
+                }
+            } else {
+                run_checkpoint_git_with_input(
+                    &directory,
+                    &repository,
+                    &workspace,
+                    &["apply", "--cached", "--reverse", "--whitespace=nowarn", "-"],
+                    step.patch.as_bytes(),
+                )?;
+            }
+            simulated = run_checkpoint_git(&directory, &repository, &workspace, &["write-tree"])?
+                .trim()
+                .to_owned();
+            if simulated != step.before_fingerprint {
+                return Err(
+                    "A turn patch did not reproduce its recorded before fingerprint.".to_owned(),
+                );
+            }
+        }
+
+        let combined = run_checkpoint_git(
+            &directory,
+            &repository,
+            &workspace,
+            &[
+                "diff",
+                "--binary",
+                "--full-index",
+                "--no-ext-diff",
+                "--no-renames",
+                &original,
+                &simulated,
+            ],
+        )?;
+        if combined.len() > MAX_APPLY_PATCH_BYTES {
+            return Err("The combined restore patch exceeds the 8 MiB safety limit.".to_owned());
+        }
+        Ok((original, simulated, combined))
+    })();
+    let _ = discard_workspace_checkpoint(&token);
+    let (original, target, combined) = preflight?;
+
+    if workspace_fingerprint(workspace_path)? != original {
+        return Err("The workspace changed while the restore plan was being checked.".to_owned());
+    }
+    if !combined.trim().is_empty() {
+        apply_workspace_patch(workspace_path, &combined, false, true)?;
+        apply_workspace_patch(workspace_path, &combined, false, false)?;
+    }
+
+    let restored = workspace_fingerprint(workspace_path)?;
+    if restored != target {
+        let rollback = apply_workspace_patch(workspace_path, &combined, true, true)
+            .and_then(|_| apply_workspace_patch(workspace_path, &combined, true, false));
+        return Err(match rollback {
+            Ok(()) => {
+                "The restore fingerprint did not match; Xiao restored the original workspace."
+                    .to_owned()
+            }
+            Err(error) => format!(
+                "The restore fingerprint did not match and the safety rollback failed: {error}"
+            ),
+        });
+    }
+    Ok(WorkspaceRestoreOutcome {
+        original_fingerprint: original,
+        target_fingerprint: target,
+        applied_patch: combined,
+    })
+}
+
+pub(crate) fn rollback_workspace_restore(
+    workspace_path: &str,
+    outcome: &WorkspaceRestoreOutcome,
+) -> Result<(), String> {
+    if workspace_fingerprint(workspace_path)? != outcome.target_fingerprint {
+        return Err(
+            "The workspace changed after restore; Xiao preserved the newer state.".to_owned(),
+        );
+    }
+    if !outcome.applied_patch.trim().is_empty() {
+        apply_workspace_patch(workspace_path, &outcome.applied_patch, true, true)?;
+        apply_workspace_patch(workspace_path, &outcome.applied_patch, true, false)?;
+    }
+    if workspace_fingerprint(workspace_path)? != outcome.original_fingerprint {
+        return Err("The restore rollback did not reproduce the original fingerprint.".to_owned());
+    }
+    Ok(())
+}
+
+fn ensure_no_staged_workspace_changes(workspace_path: &str) -> Result<(), String> {
+    let root = Path::new(workspace_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let Some(repository) = run_git(&root, &["rev-parse", "--show-toplevel"])
+        .and_then(|path| PathBuf::from(path.trim()).canonicalize().ok())
+    else {
+        return Ok(());
+    };
+    let scope = root
+        .strip_prefix(&repository)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| ".".to_owned());
+    let staged = run_git(
+        &repository,
+        &["diff", "--cached", "--name-only", "--", &scope],
+    )
+    .unwrap_or_default();
+    if staged.trim().is_empty() {
+        Ok(())
+    } else {
+        Err("Unstage workspace changes before restoring earlier turns.".to_owned())
+    }
 }
 
 pub fn discard_workspace_checkpoint(token: &str) -> Result<(), String> {
@@ -837,6 +1021,43 @@ fn run_checkpoint_git(
         Err(command_error(
             &output.stderr,
             "Could not capture the workspace checkpoint.",
+        ))
+    }
+}
+
+fn run_checkpoint_git_with_input(
+    directory: &Path,
+    repository: &Path,
+    workspace: &Path,
+    arguments: &[&str],
+    input: &[u8],
+) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command
+        .arg(format!("--git-dir={}", repository.to_string_lossy()))
+        .arg(format!("--work-tree={}", workspace.to_string_lossy()))
+        .args(arguments)
+        .env("GIT_INDEX_FILE", directory.join("index"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_window(&mut command);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("Could not open Git restore preflight input.")?
+        .write_all(input)
+        .map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(command_error(
+            &output.stderr,
+            "Git could not preflight the complete restore plan.",
         ))
     }
 }
@@ -1199,10 +1420,12 @@ fn hide_window(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
+    use super::super::models::WorkspaceRestoreStep;
     use super::{
         apply_workspace_patch, create_workspace_checkpoint, discard_workspace_checkpoint,
-        finish_workspace_checkpoint, list_branches, read_git_comparison, read_git_summary,
-        run_git_action,
+        finish_workspace_checkpoint, finish_workspace_checkpoint_capture, list_branches,
+        read_git_comparison, read_git_summary, restore_workspace_checkpoints,
+        restore_workspace_checkpoints_with_rollback, rollback_workspace_restore, run_git_action,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1546,6 +1769,185 @@ mod tests {
         assert_eq!(read_text(&root.join("build/removed.js")), "restore me\n");
         assert_eq!(read_text(&root.join("build/generated.js")), "untracked\n");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guarded_restore_preflights_and_reverses_multiple_turns_in_order() {
+        let root = temporary_directory("multi-turn-restore");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("note.txt"), "one\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+
+        let first = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "two\n").unwrap();
+        let first = finish_workspace_checkpoint_capture(&root.to_string_lossy(), &first).unwrap();
+        let second = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "three\n").unwrap();
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        let second = finish_workspace_checkpoint_capture(&root.to_string_lossy(), &second).unwrap();
+
+        let target = restore_workspace_checkpoints(
+            &root.to_string_lossy(),
+            &[
+                WorkspaceRestoreStep {
+                    patch: second.patch,
+                    before_fingerprint: second.before_fingerprint,
+                    after_fingerprint: second.after_fingerprint,
+                },
+                WorkspaceRestoreStep {
+                    patch: first.patch,
+                    before_fingerprint: first.before_fingerprint.clone(),
+                    after_fingerprint: first.after_fingerprint,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(target, first.before_fingerprint);
+        assert_eq!(read_text(&root.join("note.txt")), "one\n");
+        assert!(!root.join("new.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guarded_restore_aborts_without_mutation_when_any_preflight_step_fails() {
+        let root = temporary_directory("restore-no-partial");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("note.txt"), "one\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+
+        let first = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "two\n").unwrap();
+        let mut first =
+            finish_workspace_checkpoint_capture(&root.to_string_lossy(), &first).unwrap();
+        let second = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "three\n").unwrap();
+        let second = finish_workspace_checkpoint_capture(&root.to_string_lossy(), &second).unwrap();
+        first.patch = first.patch.replace("-one", "-not-the-recorded-content");
+
+        let result = restore_workspace_checkpoints(
+            &root.to_string_lossy(),
+            &[
+                WorkspaceRestoreStep {
+                    patch: second.patch,
+                    before_fingerprint: second.before_fingerprint,
+                    after_fingerprint: second.after_fingerprint,
+                },
+                WorkspaceRestoreStep {
+                    patch: first.patch,
+                    before_fingerprint: first.before_fingerprint,
+                    after_fingerprint: first.after_fingerprint,
+                },
+            ],
+        );
+
+        assert!(result.is_err());
+        assert_eq!(read_text(&root.join("note.txt")), "three\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guarded_restore_rejects_changes_created_after_the_latest_fingerprint() {
+        let root = temporary_directory("restore-fingerprint-conflict");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        fs::write(root.join("note.txt"), "before\n").unwrap();
+        let checkpoint = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "agent\n").unwrap();
+        let checkpoint =
+            finish_workspace_checkpoint_capture(&root.to_string_lossy(), &checkpoint).unwrap();
+        fs::write(root.join("note.txt"), "user edit\n").unwrap();
+
+        let result = restore_workspace_checkpoints(
+            &root.to_string_lossy(),
+            &[WorkspaceRestoreStep {
+                patch: checkpoint.patch,
+                before_fingerprint: checkpoint.before_fingerprint,
+                after_fingerprint: checkpoint.after_fingerprint,
+            }],
+        );
+
+        assert!(result.is_err());
+        assert_eq!(read_text(&root.join("note.txt")), "user edit\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guarded_restore_round_trips_binary_patches() {
+        let root = temporary_directory("restore-binary");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        let before = (0_u8..=255).collect::<Vec<_>>();
+        let after = before
+            .iter()
+            .map(|byte| byte ^ 0b1010_1010)
+            .collect::<Vec<_>>();
+        fs::write(root.join("image.bin"), &before).unwrap();
+        let checkpoint = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("image.bin"), &after).unwrap();
+        let checkpoint =
+            finish_workspace_checkpoint_capture(&root.to_string_lossy(), &checkpoint).unwrap();
+
+        restore_workspace_checkpoints(
+            &root.to_string_lossy(),
+            &[WorkspaceRestoreStep {
+                patch: checkpoint.patch,
+                before_fingerprint: checkpoint.before_fingerprint,
+                after_fingerprint: checkpoint.after_fingerprint,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(root.join("image.bin")).unwrap(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn guarded_restore_accepts_noop_turns_and_can_rollback_an_applied_restore() {
+        let root = temporary_directory("restore-noop-rollback");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        fs::write(root.join("note.txt"), "before\n").unwrap();
+
+        let noop = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        let noop = finish_workspace_checkpoint_capture(&root.to_string_lossy(), &noop).unwrap();
+        let target = restore_workspace_checkpoints(
+            &root.to_string_lossy(),
+            &[WorkspaceRestoreStep {
+                patch: noop.patch,
+                before_fingerprint: noop.before_fingerprint.clone(),
+                after_fingerprint: noop.after_fingerprint,
+            }],
+        )
+        .unwrap();
+        assert_eq!(target, noop.before_fingerprint);
+        assert_eq!(read_text(&root.join("note.txt")), "before\n");
+
+        let changed = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+        fs::write(root.join("note.txt"), "after\n").unwrap();
+        let changed =
+            finish_workspace_checkpoint_capture(&root.to_string_lossy(), &changed).unwrap();
+        let outcome = restore_workspace_checkpoints_with_rollback(
+            &root.to_string_lossy(),
+            &[WorkspaceRestoreStep {
+                patch: changed.patch,
+                before_fingerprint: changed.before_fingerprint,
+                after_fingerprint: changed.after_fingerprint,
+            }],
+        )
+        .unwrap();
+        assert_eq!(read_text(&root.join("note.txt")), "before\n");
+        rollback_workspace_restore(&root.to_string_lossy(), &outcome).unwrap();
+        assert_eq!(read_text(&root.join("note.txt")), "after\n");
         let _ = fs::remove_dir_all(root);
     }
 

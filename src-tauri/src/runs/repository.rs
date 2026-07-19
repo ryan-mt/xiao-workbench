@@ -5,6 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::git::models::WorkspaceCheckpointCapture;
+use crate::time_travel::repository::{insert_turn_checkpoint, TurnCheckpointOwner};
 use crate::verification::lifecycle::{
     cancel_running_verification_attempt_in_transaction,
     interrupt_running_verification_attempts_in_transaction,
@@ -783,6 +785,7 @@ impl XiaoRepository {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn settle_runtime_turn(
         &self,
         run_id: &str,
@@ -791,6 +794,27 @@ impl XiaoRepository {
         turn_id: &str,
         runtime_status: RunStatus,
         payload: &Value,
+    ) -> Result<RunMutation, String> {
+        self.settle_runtime_turn_with_checkpoint(
+            run_id,
+            generation,
+            thread_id,
+            turn_id,
+            runtime_status,
+            payload,
+            None,
+        )
+    }
+
+    pub(crate) fn settle_runtime_turn_with_checkpoint(
+        &self,
+        run_id: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: &str,
+        runtime_status: RunStatus,
+        payload: &Value,
+        checkpoint: Option<&WorkspaceCheckpointCapture>,
     ) -> Result<RunMutation, String> {
         if !matches!(
             runtime_status,
@@ -804,6 +828,19 @@ impl XiaoRepository {
                 .map_err(|error| format!("Could not start Xiao terminal settlement: {error}"))?;
             let current = load_run(&transaction, run_id)?;
             require_runtime_route(&current, generation, thread_id, Some(turn_id))?;
+            if let Some(checkpoint) = checkpoint {
+                insert_turn_checkpoint(
+                    &transaction,
+                    TurnCheckpointOwner {
+                        run_id: &current.id,
+                        workspace_id: current.workspace_id,
+                        task_id: &current.task_id,
+                        turn_id,
+                        execution_root: &current.execution_root,
+                    },
+                    checkpoint,
+                )?;
+            }
             if current.status.is_terminal() {
                 transaction.commit().map_err(|error| {
                     format!("Could not finish idempotent Xiao terminal settlement: {error}")

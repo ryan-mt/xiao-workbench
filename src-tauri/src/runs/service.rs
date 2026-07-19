@@ -10,8 +10,9 @@ use crate::agent::models::PersistentAgentSession;
 use crate::agent::runtime::EnvironmentRuntimeRegistry;
 use crate::agent::service::prepare_persistent_xiao_session;
 use crate::execution::service::resolve_execution_context;
+use crate::git::models::WorkspaceCheckpointCapture;
 use crate::git::service::{
-    create_workspace_checkpoint, discard_workspace_checkpoint, finish_workspace_checkpoint,
+    create_workspace_checkpoint, discard_workspace_checkpoint, finish_workspace_checkpoint_capture,
 };
 use crate::routines::service::RoutineService;
 #[cfg(test)]
@@ -378,11 +379,24 @@ impl RunService {
                         json!({ "threadId": thread_id, "turnId": turn_id }),
                     )
                     .await?;
-                if let Err(error) = self.finish_checkpoint(run_id) {
-                    emit_service_error(
+                match self.finish_checkpoint(run_id) {
+                    Ok(Some(checkpoint)) => {
+                        if let Err(error) = app.state::<XiaoRepository>().record_turn_checkpoint(
+                            run_id,
+                            turn_id,
+                            &checkpoint,
+                        ) {
+                            emit_service_error(
+                                app,
+                                &format!("Could not persist interrupted turn checkpoint: {error}"),
+                            );
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => emit_service_error(
                         app,
                         &format!("Could not finalize undo checkpoint: {error}"),
-                    );
+                    ),
                 }
                 let mutation = app.state::<XiaoRepository>().finish_run_cancel(run_id)?;
                 let snapshot = mutation.run.snapshot();
@@ -486,7 +500,10 @@ impl RunService {
         Ok(())
     }
 
-    fn finish_checkpoint(&self, run_id: &str) -> Result<Option<String>, String> {
+    fn finish_checkpoint(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<WorkspaceCheckpointCapture>, String> {
         let checkpoint = self
             .checkpoints
             .lock()
@@ -494,7 +511,7 @@ impl RunService {
             .remove(run_id);
         checkpoint
             .map(|checkpoint| {
-                finish_workspace_checkpoint(&checkpoint.execution_root, &checkpoint.token)
+                finish_workspace_checkpoint_capture(&checkpoint.execution_root, &checkpoint.token)
             })
             .transpose()
     }
@@ -540,11 +557,25 @@ impl RunService {
         match mutations {
             Ok(mutations) => {
                 for mutation in mutations {
-                    if let Err(error) = self.finish_checkpoint(&mutation.run.id) {
-                        emit_service_error(
+                    match self.finish_checkpoint(&mutation.run.id) {
+                        Ok(Some(checkpoint)) => {
+                            if let Some(turn_id) = mutation.run.turn_id.as_deref() {
+                                if let Err(error) = app
+                                    .state::<XiaoRepository>()
+                                    .record_turn_checkpoint(&mutation.run.id, turn_id, &checkpoint)
+                                {
+                                    emit_service_error(
+                                        app,
+                                        &format!("Could not persist interrupted turn checkpoint: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => emit_service_error(
                             app,
                             &format!("Could not finalize interrupted undo checkpoint: {error}"),
-                        );
+                        ),
                     }
                     emit_update(app, &mutation, None);
                 }
@@ -1016,16 +1047,19 @@ fn apply_runtime_message(
             "interrupted" => RunStatus::Interrupted,
             _ => RunStatus::Failed,
         };
-        let turn_diff = match app.state::<RunService>().finish_checkpoint(&route.id) {
-            Ok(turn_diff) => turn_diff,
+        let turn_checkpoint = match app.state::<RunService>().finish_checkpoint(&route.id) {
+            Ok(checkpoint) => checkpoint,
             Err(error) => {
                 emit_service_error(app, &format!("Could not finalize undo checkpoint: {error}"));
                 None
             }
         };
+        let turn_diff = turn_checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.patch.clone());
         let mutation = {
             let repository = app.state::<XiaoRepository>();
-            repository.settle_runtime_turn(
+            repository.settle_runtime_turn_with_checkpoint(
                 &route.id,
                 generation,
                 thread_id,
@@ -1035,6 +1069,7 @@ fn apply_runtime_message(
                     "protocol": safe_message,
                     "turnDiff": turn_diff.as_deref(),
                 }),
+                turn_checkpoint.as_ref(),
             )?
         };
         emit_update(app, &mutation, None);

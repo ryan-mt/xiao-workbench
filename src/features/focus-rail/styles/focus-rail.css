@@ -2209,3 +2209,450 @@
   .focus-rail,
   .focus-rail .is-spinning { animation: none; }
 }
+.observatory-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.observatory-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+  margin: 0 16px 12px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.observatory-tabs button,
+.observatory-filters button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-label);
+  cursor: pointer;
+}
+
+.observatory-tabs button {
+  min-height: 29px;
+}
+
+.observatory-tabs button:hover,
+.observatory-tabs button.is-active,
+.observatory-filters button:hover,
+.observatory-filters button.is-active {
+  background: var(--canvas);
+  color: var(--text);
+}
+
+.observatory-tabs button.is-active {
+  box-shadow: 0 0 0 1px var(--line);
+  font-weight: 650;
+}
+
+.observatory-run-state {
+  max-width: 120px;
+  overflow: hidden;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.observatory-run-state--running,
+.observatory-run-state--preparing,
+.observatory-run-state--verifying,
+.observatory-run-state--waiting_for_input {
+  color: var(--accent);
+}
+
+.observatory-run-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  margin: 0 16px 12px;
+  color: var(--muted);
+  font-size: var(--text-label);
+}
+
+.observatory-run-picker select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 28px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.observatory-agent-list,
+.observatory-history,
+.observatory-restore,
+.observatory-handoff {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px 18px;
+}
+
+.observatory-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.observatory-agent {
+  position: relative;
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 9px;
+  margin-left: calc(var(--agent-depth, 0) * 18px);
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+}
+
+.observatory-agent:not(:disabled) {
+  cursor: pointer;
+}
+
+.observatory-agent:not(:disabled):hover {
+  border-color: var(--line-strong);
+  background: var(--surface-strong);
+}
+
+.observatory-agent:disabled {
+  opacity: 1;
+}
+
+.observatory-agent__state,
+.observatory-activity__state {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.observatory-agent__state--running,
+.observatory-agent__state--pending,
+.observatory-activity__state--active {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.observatory-agent__state--completed,
+.observatory-activity__state--success {
+  background: var(--success);
+}
+
+.observatory-agent__state--waiting,
+.observatory-activity__state--warning {
+  background: var(--warning);
+}
+
+.observatory-agent__state--failed,
+.observatory-agent__state--interrupted,
+.observatory-activity__state--error {
+  background: var(--danger);
+}
+
+.observatory-agent__identity,
+.observatory-agent__facts {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.observatory-agent__identity strong,
+.observatory-agent__action,
+.observatory-activity-list strong,
+.observatory-restore li strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.observatory-agent__identity small,
+.observatory-agent__facts small,
+.observatory-activity-list small,
+.observatory-restore li small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.observatory-agent__facts {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.observatory-agent__facts strong {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.observatory-agent__action {
+  grid-column: 2 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.observatory-agent__pending {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 15%, var(--surface));
+  color: var(--warning);
+  font-size: 9px;
+}
+
+.observatory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 11px;
+}
+
+.observatory-filters button {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+}
+
+.observatory-filters button.is-active {
+  border-color: var(--line-strong);
+}
+
+.observatory-activity-list,
+.observatory-restore ol {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.observatory-activity-list li {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
+  gap: 9px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.observatory-activity-list li > div {
+  min-width: 0;
+}
+
+.observatory-activity-list p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 3px 0;
+  color: var(--muted);
+  font-size: 11px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.observatory-activity-list li > button {
+  width: 27px;
+  height: 27px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.observatory-activity-list li > button:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.observatory-restore__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 12px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.observatory-restore__notice > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--success);
+}
+
+.observatory-restore__notice p {
+  display: flex;
+  margin: 0;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.observatory-restore__notice span {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.observatory-restore li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.observatory-restore li > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.observatory-restore li.is-restored {
+  opacity: 0.55;
+}
+
+.observatory-restore li .button {
+  min-width: 76px;
+  flex: 0 0 auto;
+}
+
+.observatory-error,
+.observatory-empty {
+  margin: 0 16px 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.observatory-error {
+  color: var(--danger);
+}
+
+.observatory-empty {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.observatory-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.observatory-handoff > section {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.observatory-handoff h3,
+.observatory-handoff > section > p {
+  margin: 0;
+}
+
+.observatory-handoff h3 {
+  font-size: 12px;
+}
+
+.observatory-handoff > section > p,
+.observatory-handoff > section > small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.observatory-handoff > section > .button {
+  margin-top: 10px;
+}
+
+.observatory-handoff__attachments {
+  display: flex;
+  max-height: 160px;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 9px;
+  overflow: auto;
+}
+
+.observatory-handoff__attachments label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.observatory-handoff__attachments label:hover {
+  background: var(--canvas);
+}
+
+.observatory-handoff__attachments input {
+  margin-top: 2px;
+}
+
+.observatory-handoff__attachments span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.observatory-handoff__attachments strong,
+.observatory-handoff__attachments small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.observatory-handoff__attachments strong {
+  font-size: 11px;
+}
+
+.observatory-handoff__attachments small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.observatory-handoff__success {
+  margin: 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+  color: var(--success);
+  font-size: 11px;
+}

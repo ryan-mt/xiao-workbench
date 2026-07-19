@@ -13,7 +13,10 @@ import {
   type TimelineEntry,
 } from "../../../core/models/agent";
 import type { RoutineSummary } from "../../../core/models/routine";
+import type { PendingInputSnapshot, RunSnapshot } from "../../../core/models/run";
+import type { ImportHandoffResult } from "../../../core/models/observatory";
 import type { FileNode, SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspace";
+import { ObservatoryPanel } from "../../observatory/ObservatoryPanel";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
 import { ChangesPanel } from "./ChangesPanel";
@@ -56,6 +59,10 @@ type FocusRailProps = {
   contextUsage: ThreadTokenUsage | null;
   plan: AgentPlan | null;
   runtimeLogs: RuntimeLogEntry[];
+  runs?: RunSnapshot[];
+  pendingInputs?: PendingInputSnapshot[];
+  onJumpToTimeline?: (entryId: string) => void;
+  onImportHandoff?: (bundlePath: string) => Promise<ImportHandoffResult>;
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
@@ -89,6 +96,7 @@ const utilityViews: Array<{ id: FocusView; label: string; description: string; i
   { id: "browser", label: "Browser", description: "Research without leaving Xiao", icon: "browser" },
   { id: "run", label: "Xiao Break", description: "Play while Xiao works", icon: "game" },
   { id: "runtime", label: "Runtime", description: "Inspect Codex events", icon: "runtime" },
+  { id: "observatory", label: "Observatory", description: "Inspect agents, history, and recovery", icon: "approach" },
   { id: "schedule", label: "Schedule", description: "Queue work for later", icon: "routine" },
   { id: "verification", label: "Acceptance", description: "Define deterministic run gates", icon: "check" },
   { id: "extensions", label: "Tools", description: "Skills, plugins, MCP, and apps", icon: "capability" },
@@ -98,6 +106,7 @@ const baseViews = new Set<FocusView>(["changes", "context"]);
 const basename = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const acceptanceUnavailableTitle = "Acceptance is unavailable until this task starts";
 const terminalUnavailableTitle = "Terminal is unavailable until this task starts";
+const observatoryUnavailableTitle = "Observatory is unavailable until this task starts";
 
 export function FocusRail({
   activeView,
@@ -116,6 +125,10 @@ export function FocusRail({
   contextUsage,
   plan,
   runtimeLogs,
+  runs = [],
+  pendingInputs = [],
+  onJumpToTimeline = () => {},
+  onImportHandoff,
   loading,
   error,
   onRefresh,
@@ -166,7 +179,7 @@ export function FocusRail({
   }, [activeView, nativeTaskAvailable]);
 
   const selectUtility = (view: FocusView) => {
-    if ((view === "terminal" || view === "verification") && !nativeTaskAvailable) return;
+    if ((view === "terminal" || view === "verification" || view === "observatory") && !nativeTaskAvailable) return;
     if (view === "files") setActiveFile(null);
     onViewChange(view);
     setToolsMenuOpen(false);
@@ -237,10 +250,12 @@ export function FocusRail({
               <header><span>Workspace tools</span><small>{workspace.name}</small></header>
               {utilityViews.map((view) => {
                 const nativeTaskUnavailable =
-                  (view.id === "terminal" || view.id === "verification") && !nativeTaskAvailable;
+                  (view.id === "terminal" || view.id === "verification" || view.id === "observatory") && !nativeTaskAvailable;
                 const unavailableTitle = view.id === "terminal"
                   ? terminalUnavailableTitle
-                  : acceptanceUnavailableTitle;
+                  : view.id === "observatory"
+                    ? observatoryUnavailableTitle
+                    : acceptanceUnavailableTitle;
                 return (
                   <button
                     aria-label={nativeTaskUnavailable ? unavailableTitle : undefined}
@@ -366,6 +381,19 @@ export function FocusRail({
             taskId={executionTaskId}
             contract={task.acceptanceContract}
             onSaved={onTaskAcceptanceContractSaved}
+          />
+        )}
+        {activeView === "observatory" && executionTaskId !== null && (
+          <ObservatoryPanel
+            key={`${workspace.path}\u0000${executionTaskId}`}
+            projectPath={workspace.path}
+            taskId={executionTaskId}
+            liveRuns={runs}
+            livePendingInputs={pendingInputs}
+            timeline={timeline}
+            onJumpToTimeline={onJumpToTimeline}
+            onWorkspaceChange={onRefresh}
+            onImportHandoff={onImportHandoff}
           />
         )}
         {activeView === "runtime" && (

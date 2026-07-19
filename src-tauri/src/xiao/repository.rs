@@ -531,6 +531,56 @@ CREATE INDEX evidence_by_attempt_gate
     ON evidence(verification_attempt_id, gate_result_id, created_at, id);
 "#;
 
+const MIGRATION_6_SQL: &str = r#"
+CREATE TABLE turn_checkpoints (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    execution_root TEXT NOT NULL,
+    patch TEXT NOT NULL CHECK (length(patch) <= 8388608),
+    patch_sha256 TEXT NOT NULL CHECK (length(patch_sha256) = 64),
+    before_fingerprint TEXT NOT NULL CHECK (
+        length(before_fingerprint) BETWEEN 40 AND 64
+    ),
+    after_fingerprint TEXT NOT NULL CHECK (
+        length(after_fingerprint) BETWEEN 40 AND 64
+    ),
+    created_at INTEGER NOT NULL,
+    restored_at INTEGER,
+    restore_batch_id TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    CHECK (
+        (restored_at IS NULL AND restore_batch_id IS NULL)
+        OR (restored_at IS NOT NULL AND restore_batch_id IS NOT NULL)
+    )
+);
+CREATE INDEX turn_checkpoints_by_task_time
+    ON turn_checkpoints(workspace_id, task_id, created_at DESC, id DESC);
+
+CREATE TABLE handoff_imports (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    run_id TEXT NOT NULL UNIQUE,
+    bundle_sha256 TEXT NOT NULL CHECK (length(bundle_sha256) = 64),
+    source_task_id TEXT NOT NULL,
+    source_run_id TEXT,
+    source_schema_version INTEGER NOT NULL,
+    imported_at INTEGER NOT NULL,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+);
+CREATE INDEX handoff_imports_by_task_time
+    ON handoff_imports(workspace_id, task_id, imported_at DESC);
+CREATE UNIQUE INDEX handoff_imports_by_workspace_bundle
+    ON handoff_imports(workspace_id, bundle_sha256);
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -1153,6 +1203,11 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         (3_i64, "native_durable_run_queue", MIGRATION_3_SQL),
         (4_i64, "native_durable_routines", MIGRATION_4_SQL),
         (5_i64, "native_verification_domain", MIGRATION_5_SQL),
+        (
+            6_i64,
+            "observatory_time_travel_and_handoffs",
+            MIGRATION_6_SQL,
+        ),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection

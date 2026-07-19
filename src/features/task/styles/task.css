@@ -3533,3 +3533,16 @@
     transition: none;
   }
 }
+.timeline-entry-anchor {
+  display: contents;
+}
+
+.timeline-exploration-anchor {
+  display: contents;
+}
+
+.timeline-entry-anchor-target {
+  display: block;
+  height: 0;
+  scroll-margin-top: 24px;
+}

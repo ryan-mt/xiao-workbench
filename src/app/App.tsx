@@ -923,6 +923,17 @@ export class WorkspaceTaskSaveDebouncer {
     return this.request(snapshot);
   }
 
+  adoptPersisted(snapshot: WorkspaceTaskStateSnapshot) {
+    const key = comparableWorkspacePath(snapshot.path);
+    if (this.pending && comparableWorkspacePath(this.pending.path) === key) {
+      clearTimeout(this.pending.timer);
+      this.pending = null;
+    }
+    this.remember(snapshot);
+    this.lastSucceededByWorkspace.set(key, snapshot);
+    this.lastFailureByWorkspace.delete(key);
+  }
+
   flushBeforeWorkspaceTransition(
     currentPath: string,
     nextPath: string,
@@ -2046,6 +2057,44 @@ export function App() {
     );
   }, []);
 
+  const importTaskHandoff = useCallback(async (bundlePath: string) => {
+    if (!isTauriHost()) throw new Error("Handoff import requires the Xiao desktop app.");
+    const workspacePath = taskWorkspacePathRef.current;
+    const saveBarrier = await taskSaveDebouncer.waitForWorkspacePersistence(workspacePath);
+    if (saveBarrier?.error) {
+      throw saveBarrier.error instanceof Error
+        ? saveBarrier.error
+        : new Error(String(saveBarrier.error));
+    }
+    const result = await nativeBridge.importXiaoHandoff(workspacePath, bundlePath);
+    const document = await nativeBridge.loadXiaoWorkspace(workspacePath);
+    if (!document) throw new Error("The imported Xiao workspace could not be reloaded.");
+    const nextState = ensureValidActiveTask(stateFromDocument(document));
+    const snapshot = { path: workspacePath, state: nextState };
+    taskSaveDebouncer.adoptPersisted(snapshot);
+
+    if (comparableWorkspacePath(taskWorkspacePathRef.current) === comparableWorkspacePath(workspacePath)) {
+      persistedWorkspaceSnapshotsRef.current.set(workspacePath, snapshotFromState(nextState));
+      const confirmation = confirmedNativeTasksRef.current;
+      if (comparableWorkspacePath(confirmation.workspacePath) === comparableWorkspacePath(workspacePath)) {
+        replaceConfirmedNativeTaskIds(
+          { workspacePath: confirmation.workspacePath, generation: confirmation.generation },
+          nextState.tasks.map((task) => task.id),
+        );
+      }
+      setTasks(nextState.tasks);
+      setActiveTaskId(result.taskId);
+      setOpenTaskIds((current) => current.includes(result.taskId)
+        ? current
+        : [...current, result.taskId]);
+      setDraftTabOpen(false);
+      setTaskLoadError(null);
+      setTaskHistoryError(null);
+      setTaskSaveError(null);
+    }
+    return result;
+  }, [replaceConfirmedNativeTaskIds, taskSaveDebouncer]);
+
   const advanceComposerRevision = (workspacePath: string, taskId: string) => {
     const key = workspaceTaskKey(workspacePath, taskId);
     const revision = (composerRevisionByTaskRef.current[key] ?? 0) + 1;
@@ -2307,6 +2356,17 @@ export function App() {
     setFocusView(view);
     setFocusPanelOpen(true);
     closeSidebarOnNarrow();
+  };
+
+  const jumpToTimelineEntry = (entryId: string) => {
+    setFocusPanelOpen(false);
+    window.requestAnimationFrame(() => {
+      const anchor = document.getElementById(`timeline-entry-${entryId}`);
+      (anchor?.firstElementChild ?? anchor)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
   };
 
   const openTimelineResource = (target: string) => {
@@ -3096,6 +3156,10 @@ export function App() {
               contextUsage={agent.contextUsage}
               plan={activeTask.plan}
               runtimeLogs={agent.runtimeLogs}
+              runs={agent.runs}
+              pendingInputs={agent.pendingInputs}
+              onJumpToTimeline={jumpToTimelineEntry}
+              onImportHandoff={importTaskHandoff}
               loading={loading || activeEnvironmentBusy}
               error={workspaceError}
               onRefresh={refresh}

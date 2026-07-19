@@ -2,11 +2,13 @@ mod agent;
 mod browser;
 mod execution;
 mod git;
+mod handoff;
 mod process;
 mod routines;
 mod runs;
 mod system;
 mod terminal;
+mod time_travel;
 mod verification;
 mod workspace;
 mod xiao;
@@ -29,6 +31,7 @@ use git::commands::{
     add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
     discard_git_checkpoint, finish_git_checkpoint, get_git_branches, get_git_worktrees, mutate_git,
 };
+use handoff::commands::{export_xiao_handoff, import_xiao_handoff};
 use routines::commands::{
     create_xiao_routine, delete_xiao_routine, list_xiao_routines, run_xiao_routine_now,
     set_xiao_routine_enabled, update_xiao_routine,
@@ -42,6 +45,7 @@ use runs::service::RunService;
 use system::commands::{check_codex_update, get_system_info, update_codex_cli};
 use terminal::commands::{resize_terminal, start_terminal, stop_terminal, write_terminal};
 use terminal::runtime::TerminalManager;
+use time_travel::commands::{list_xiao_turn_checkpoints, restore_xiao_turns};
 use verification::commands::{
     discover_xiao_acceptance_presets, list_xiao_verification_evidence,
     read_xiao_verification_artifact, rerun_xiao_verification, save_xiao_task_acceptance_contract,
@@ -160,6 +164,10 @@ pub fn run() {
             create_git_checkpoint,
             finish_git_checkpoint,
             discard_git_checkpoint,
+            list_xiao_turn_checkpoints,
+            restore_xiao_turns,
+            export_xiao_handoff,
+            import_xiao_handoff,
             start_terminal,
             write_terminal,
             resize_terminal,

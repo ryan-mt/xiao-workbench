@@ -39,6 +39,12 @@ import type {
   SaveTaskAcceptanceContractRequest,
   VerificationEvidencePage,
 } from "../models/verification";
+import type {
+  ExportHandoffResult,
+  ImportHandoffResult,
+  RestoreTurnsResult,
+  TurnCheckpointSummary,
+} from "../models/observatory";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -118,6 +124,37 @@ export const nativeBridge = {
 
   loadXiaoRunEvents(runId: string, afterSequence: number | null = null, limit = 200) {
     return invoke<RunEventPage>("load_xiao_run_events", { runId, afterSequence, limit });
+  },
+
+  listXiaoTurnCheckpoints(projectPath: string, taskId: string, limit = 50) {
+    return invoke<TurnCheckpointSummary[]>("list_xiao_turn_checkpoints", {
+      projectPath,
+      taskId,
+      limit,
+    });
+  },
+
+  restoreXiaoTurns(projectPath: string, taskId: string, targetCheckpointId: string) {
+    return invoke<RestoreTurnsResult>("restore_xiao_turns", {
+      request: { projectPath, taskId, targetCheckpointId },
+    });
+  },
+
+  exportXiaoHandoff(
+    projectPath: string,
+    taskId: string,
+    destinationPath: string,
+    attachmentPaths: string[],
+  ) {
+    return invoke<ExportHandoffResult>("export_xiao_handoff", {
+      request: { projectPath, taskId, destinationPath, attachmentPaths },
+    });
+  },
+
+  importXiaoHandoff(projectPath: string, bundlePath: string) {
+    return invoke<ImportHandoffResult>("import_xiao_handoff", {
+      request: { projectPath, bundlePath },
+    });
   },
 
   cancelXiaoRun(runId: string) {

@@ -102,27 +102,44 @@ export function TaskTimeline({
       ) : null}
       {rows.map((row) =>
         row.kind === "exploration" ? (
-          <ExplorationGroup
-            entries={row.entries}
-            expandByDefault={expandToolOutput}
-            index={row.index}
+          <div
+            className="timeline-exploration-anchor"
             key={`exploration-${row.entries.map((entry) => entry.id).join("-")}`}
-          />
+          >
+            {row.entries.map((entry) => (
+              <span
+                aria-hidden="true"
+                className="timeline-entry-anchor-target"
+                id={`timeline-entry-${entry.id}`}
+                key={entry.id}
+              />
+            ))}
+            <ExplorationGroup
+              entries={row.entries}
+              expandByDefault={expandToolOutput}
+              index={row.index}
+            />
+          </div>
         ) : (
-          <ActivityItem
-            entry={row.entry}
-            index={row.index}
-            showReasoningSummaries={showReasoningSummaries}
-            expandToolOutput={expandToolOutput}
-            workspacePath={workspacePath}
-            onOpenResource={onOpenResource}
+          <div
+            className="timeline-entry-anchor"
+            id={`timeline-entry-${row.entry.id}`}
             key={row.entry.id}
-            taskId={taskId}
-            canFork={canFork}
-            onForkTask={onForkTask}
-            onResolveApproval={onResolveApproval}
-            onReviewChanges={onReviewChanges}
-          />
+          >
+            <ActivityItem
+              entry={row.entry}
+              index={row.index}
+              showReasoningSummaries={showReasoningSummaries}
+              expandToolOutput={expandToolOutput}
+              workspacePath={workspacePath}
+              onOpenResource={onOpenResource}
+              taskId={taskId}
+              canFork={canFork}
+              onForkTask={onForkTask}
+              onResolveApproval={onResolveApproval}
+              onReviewChanges={onReviewChanges}
+            />
+          </div>
         ),
       )}
       <LiveTurnStatus taskId={taskId} runtime={runtime} timeline={timeline} />

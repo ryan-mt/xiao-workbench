@@ -68,3 +68,24 @@ pub(crate) struct GitWorktreeEvidence {
     pub branch: String,
     pub head: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceCheckpointCapture {
+    pub patch: String,
+    pub before_fingerprint: String,
+    pub after_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceRestoreStep {
+    pub patch: String,
+    pub before_fingerprint: String,
+    pub after_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceRestoreOutcome {
+    pub original_fingerprint: String,
+    pub target_fingerprint: String,
+    pub applied_patch: String,
+}
