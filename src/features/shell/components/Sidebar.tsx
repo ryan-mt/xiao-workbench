@@ -26,14 +26,12 @@ type SidebarProps = {
   account: AgentAccountSummary | null;
   profile: LocalUserProfile;
   canOpenProjects: boolean;
-  onOpenSidebar: () => void;
   onOpenMenu: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
   onAddProject: () => void;
   onSelectProject: (path: string) => void;
-  onCreateTask: (title: string) => void;
   onSelectTask: (taskId: string) => void;
   onToggleTaskPinned: (taskId: string) => void;
   onSetTaskArchived: (taskId: string, archived: boolean) => void;
@@ -72,7 +70,7 @@ type RenamingTask = {
 };
 
 const projectMenuWidth = 218;
-const projectMenuHeight = 250;
+const projectMenuHeight = 214;
 const taskMenuHeight = 330;
 const taskGroupOrder: TaskGroup[] = ["Active", "Recent", "Yesterday", "This week"];
 const sidebarDateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -108,14 +106,12 @@ export function Sidebar({
   account,
   profile,
   canOpenProjects,
-  onOpenSidebar,
   onOpenMenu,
   onOpenProfile,
   onOpenSettings,
   onOpenTasks,
   onAddProject,
   onSelectProject,
-  onCreateTask,
   onSelectTask,
   onToggleTaskPinned,
   onSetTaskArchived,
@@ -128,8 +124,6 @@ export function Sidebar({
   onArchiveProjectTasks,
   onRemoveProject,
 }: SidebarProps) {
-  const [creatingTaskProjectPath, setCreatingTaskProjectPath] = useState<string | null>(null);
-  const [draftTitle, setDraftTitle] = useState("");
   const [expandedProjectPath, setExpandedProjectPath] = useState<string | null>(activeProjectPath);
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState | null>(null);
   const [renamingProject, setRenamingProject] = useState<RenamingProject | null>(null);
@@ -191,30 +185,6 @@ export function Sidebar({
               ? 0
               : activeIndex + 1;
     items[nextIndex]?.focus();
-  };
-
-  const createTask = () => {
-    const title = draftTitle.trim();
-    if (!title) return;
-    onCreateTask(title);
-    setDraftTitle("");
-    setCreatingTaskProjectPath(null);
-    onOpenTasks();
-  };
-
-  const cancelCreate = () => {
-    setDraftTitle("");
-    setCreatingTaskProjectPath(null);
-  };
-
-  const openTaskComposer = (projectPath: string) => {
-    if (projectSwitchLocked && projectPath !== activeProjectPath) return;
-    closeProjectMenu();
-    closeTaskMenu();
-    if (projectPath !== activeProjectPath) onSelectProject(projectPath);
-    setExpandedProjectPath(projectPath);
-    setCreatingTaskProjectPath(projectPath);
-    onOpenSidebar();
   };
 
   const toggleProjectMenu = (
@@ -334,19 +304,6 @@ export function Sidebar({
   }, []);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        setExpandedProjectPath(activeProjectPath);
-        setCreatingTaskProjectPath(activeProjectPath);
-        onOpenSidebar();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeProjectPath, onOpenSidebar]);
-
-  useEffect(() => {
     if (!projectMenu) return;
 
     const focusFrame = projectMenu.focusFirst
@@ -424,37 +381,30 @@ export function Sidebar({
     <>
       <aside className="sidebar" aria-label="Workspace navigation">
         <div className="sidebar__primary-nav">
-          <button
-            className="sidebar__new-task"
-            type="button"
-            aria-keyshortcuts="Control+N Meta+N"
-            onClick={() => openTaskComposer(activeProjectPath)}
-          >
-            <XiaoIcon name="add" size={18} />
-            <span>New task</span>
-            <kbd>Ctrl N</kbd>
-          </button>
-          <button className="sidebar__search" onClick={onOpenMenu}>
-            <XiaoIcon name="search" size={18} />
-            <span>Search</span>
+          <button className="sidebar__search" type="button" onClick={onOpenMenu}>
+            <XiaoIcon name="search" size={15} />
+            <span>Find anything</span>
             <kbd>Ctrl K</kbd>
           </button>
         </div>
 
         <div className="sidebar__projects-heading">
-          <span>Projects</span>
+          <div>
+            <span>Workspace index</span>
+            <small>{projects.length}</small>
+          </div>
           <button
             aria-label="Add project"
             disabled={projectSwitchLocked}
-            title={projectSwitchLocked ? "Wait for the active task to finish" : undefined}
+            title={projectSwitchLocked ? "Wait for the active task to finish" : "Add workspace"}
             onClick={onAddProject}
           >
-            <XiaoIcon name="add" size={15} />
+            <XiaoIcon name="add" size={14} />
           </button>
         </div>
 
         <div className="sidebar__projects">
-          {projects.map((project) => {
+          {projects.map((project, projectIndex) => {
             const active = project.path === activeProjectPath;
             const expanded = active && expandedProjectPath === project.path;
             const menuOpen = projectMenu?.projectPath === project.path;
@@ -519,9 +469,11 @@ export function Sidebar({
                         }}
                       >
                         <span className={`sidebar-project__chevron ${expanded ? "is-expanded" : ""}`}>
-                          <XiaoIcon name="caret" size={13} />
+                          <XiaoIcon name="caret" size={12} />
                         </span>
-                        <XiaoIcon name={expanded ? "folderOpen" : "folder"} size={16} />
+                        <span className="sidebar-project__index" aria-hidden="true">
+                          {String(projectIndex + 1).padStart(2, "0")}
+                        </span>
                         <span className="sidebar-project__copy">
                           <span className="sidebar-project__title">
                             <strong>{project.name}</strong>
@@ -554,36 +506,15 @@ export function Sidebar({
 
                 {expanded ? (
                   <div className="sidebar-project__tasks">
-                    {creatingTaskProjectPath === project.path ? (
-                      <div className="sidebar__create-task">
-                        <input
-                          aria-label="Task title"
-                          autoFocus
-                          onChange={(event) => setDraftTitle(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") createTask();
-                            if (event.key === "Escape") cancelCreate();
-                          }}
-                          placeholder="Name this task"
-                          value={draftTitle}
-                        />
-                        <button disabled={!draftTitle.trim()} onClick={createTask}>Create</button>
-                        <button
-                          aria-label="Cancel new task"
-                          className="sidebar__create-cancel"
-                          onClick={cancelCreate}
-                        >
-                          <XiaoIcon name="close" size={13} />
-                        </button>
-                      </div>
-                    ) : null}
-
                     <div className="task-groups">
                       {groupedTasks.map(({ group, tasks: groupTasks }) => {
                         const groupId = `task-group-${group.toLowerCase().replaceAll(" ", "-")}`;
                         return (
                           <section className="task-group" aria-labelledby={groupId} key={group}>
-                            <h3 id={groupId}>{group}</h3>
+                            <h3 id={groupId}>
+                              <span>{group}</span>
+                              <small>{groupTasks.length}</small>
+                            </h3>
                             <div className="task-list">
                               {groupTasks.map((task) => {
                                 const selected = activePage === "tasks" && task.id === activeTaskId;
@@ -690,16 +621,7 @@ export function Sidebar({
           })}
         </div>
 
-        <nav className="sidebar__secondary-nav" aria-label="Utilities">
-          <button
-            className={`sidebar__settings ${activePage === "settings" ? "is-active" : ""}`}
-            onClick={onOpenSettings}
-          >
-            <XiaoIcon name="settings" size={17} />
-            <span>Settings</span>
-          </button>
-        </nav>
-        <div className="sidebar__footer">
+        <div className="sidebar__utility-dock">
           <button
             className={`sidebar__profile ${activePage === "profile" ? "is-active" : ""}`}
             onClick={onOpenProfile}
@@ -718,6 +640,15 @@ export function Sidebar({
               <small>{account?.planType ?? "Xiao profile"}</small>
             </span>
           </button>
+          <button
+            className={`sidebar__utility-settings ${activePage === "settings" ? "is-active" : ""}`}
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={onOpenSettings}
+          >
+            <XiaoIcon name="settings" size={16} />
+          </button>
         </div>
       </aside>
 
@@ -731,20 +662,6 @@ export function Sidebar({
               style={{ top: projectMenu.top, left: projectMenu.left }}
               onKeyDown={handleMenuKeyDown}
             >
-              <button
-                role="menuitem"
-                disabled={menuProject.path !== activeProjectPath && projectSwitchLocked}
-                title={
-                  menuProject.path !== activeProjectPath && projectSwitchLocked
-                    ? "Wait for the active task to finish"
-                    : undefined
-                }
-                onClick={() => openTaskComposer(menuProject.path)}
-              >
-                <XiaoIcon name="add" size={15} />
-                <span>New task</span>
-              </button>
-              <i className="context-menu-separator" />
               <button
                 role="menuitem"
                 onClick={() => {

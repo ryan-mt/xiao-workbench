@@ -225,7 +225,7 @@ export function Composer({
   const [goalEditorOpen, setGoalEditorOpen] = useState(false);
   const [goalValue, setGoalValue] = useState(goal?.objective ?? "");
   const [dragging, setDragging] = useState(false);
-  const [planCollapsed, setPlanCollapsed] = useState(false);
+  const [runDeckCollapsed, setRunDeckCollapsed] = useState(false);
   const [fileMention, setFileMention] = useState<FileMention | null>(null);
   const [fileResults, setFileResults] = useState<FuzzyFileResult[]>([]);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
@@ -269,6 +269,24 @@ export function Composer({
     planSteps.find((step) => step.status === "inProgress") ??
     planSteps.find((step) => step.status === "pending") ??
     planSteps.at(-1);
+  const showRunDeck = currentTaskWorking || planSteps.length > 0 || followUps.length > 0;
+  const runDeckNeedsAttention = Boolean(
+    failedFollowUpId && followUps.some((followUp) => followUp.id === failedFollowUpId),
+  );
+  const runDeckTitle = runDeckNeedsAttention
+    ? "Queue needs attention"
+    : currentTaskWorking
+      ? "Xiao is working"
+      : planComplete && planSteps.length > 0
+        ? "Plan complete"
+        : followUps.length > 0
+          ? `${followUps.length} follow-up${followUps.length === 1 ? "" : "s"} queued`
+          : "Execution plan";
+  const runDeckSummary = runDeckNeedsAttention
+    ? "A queued follow-up could not start"
+    : planComplete && planSteps.length > 0
+      ? "All planned steps completed"
+      : activePlanStep?.step ?? (currentTaskWorking ? "Executing the current turn" : "Waiting to continue");
   const normalizedSlashQuery = slashQuery?.trim().toLocaleLowerCase() ?? "";
   const filteredSlashCommands = filterSlashCommands(SLASH_COMMANDS, normalizedSlashQuery)
     .filter((command) => command.id !== "undo" || (canUndo && !undoing));
@@ -277,6 +295,15 @@ export function Composer({
     slashCommandDisabledReason(command, { canCompact, compacting, hasThread });
 
   useEffect(() => setGoalValue(goal?.objective ?? ""), [goal?.objective]);
+
+  useEffect(() => {
+    if (!showRunDeck) return;
+    if (currentTaskWorking || runDeckNeedsAttention) {
+      setRunDeckCollapsed(false);
+      return;
+    }
+    if (planComplete && followUps.length === 0) setRunDeckCollapsed(true);
+  }, [currentTaskWorking, followUps.length, planComplete, runDeckNeedsAttention, showRunDeck]);
 
   useEffect(() => {
     setValue((current) => current === draftText ? current : draftText);
@@ -646,6 +673,8 @@ export function Composer({
     composerPlaceholder = "Resolve the runtime issue to send this task";
   } else if (canSteer) {
     composerPlaceholder = "Queue a follow-up while Xiao is working";
+  } else if (currentTaskWorking) {
+    composerPlaceholder = "Xiao is preparing this task";
   } else if (runtime.phase === "working") {
     composerPlaceholder = "Xiao is working in another task";
   }
@@ -695,127 +724,161 @@ export function Composer({
           <button type="button" onClick={() => onOpenView("runtime")}>View runtime</button>
         </div>
       )}
-      {planSteps.length > 0 && (
-        <div className={`plan-dock ${planCollapsed ? "is-collapsed" : ""}`}>
-          <button
-            className="plan-dock__toggle"
-            type="button"
-            aria-expanded={!planCollapsed}
-            aria-controls="composer-plan-steps"
-            onClick={() => setPlanCollapsed((collapsed) => !collapsed)}
-          >
-            <span className="plan-dock__identity">
-              <span className="plan-dock__mark"><XiaoIcon name="plan" size={14} /></span>
-              <span>
-                <small>Execution plan</small>
-                <strong>{completedPlanSteps} / {planSteps.length} complete</strong>
-              </span>
-            </span>
-            <span className="plan-dock__current">
-              {planComplete ? "All steps completed" : activePlanStep?.step}
-            </span>
-            <span
-              className="plan-dock__progress"
-              role="progressbar"
-              aria-label="Plan progress"
-              aria-valuemin={0}
-              aria-valuemax={planSteps.length}
-              aria-valuenow={completedPlanSteps}
+      {showRunDeck && (
+        <section
+          className={`run-deck ${runDeckCollapsed ? "is-collapsed" : ""} ${
+            currentTaskWorking ? "is-working" : ""
+          } ${runDeckNeedsAttention ? "needs-attention" : ""}`}
+          aria-label="Active run"
+          style={{ "--run-deck-progress": `${planProgress}%` } as React.CSSProperties}
+        >
+          <header className="run-deck__header">
+            <button
+              className="run-deck__toggle"
+              type="button"
+              aria-expanded={!runDeckCollapsed}
+              aria-controls="composer-run-deck"
+              onClick={() => setRunDeckCollapsed((collapsed) => !collapsed)}
             >
-              <i style={{ "--plan-progress": `${planProgress}%` } as React.CSSProperties} />
-            </span>
-            <span className="plan-dock__chevron"><XiaoIcon name="caret" size={13} /></span>
-          </button>
-          <div
-            className="plan-dock__body"
-            id="composer-plan-steps"
-            aria-hidden={planCollapsed}
-          >
-            <ol className="plan-dock__list">
-              {planSteps.map((step, index) => {
-                const statusLabel =
-                  step.status === "completed"
-                    ? "Completed"
-                    : step.status === "inProgress"
-                      ? "In progress"
-                      : "Pending";
-                return (
-                  <li
-                    className={step.status === "inProgress" ? "is-in-progress" : `is-${step.status}`}
-                    aria-label={`${statusLabel}: ${step.step}`}
-                    key={`${index}-${step.step}`}
-                  >
-                    <span className="plan-dock__check" aria-hidden="true">
-                      {step.status === "completed" ? (
-                        <XiaoIcon name="check" size={11} strokeWidth={2.1} />
-                      ) : step.status === "inProgress" ? (
-                        <i />
-                      ) : <b>{index + 1}</b>}
-                    </span>
-                    <span>{step.step}</span>
-                    {step.status !== "pending" ? <small>{step.status === "inProgress" ? "Now" : "Done"}</small> : null}
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-        </div>
-      )}
-      {followUps.length > 0 && (
-        <section className="follow-up-dock" aria-label={`${followUps.length} queued follow-ups`}>
-          <header>
-            <span><XiaoIcon name="taskQueue" size={14} /> Follow-up queue</span>
-            <small>{followUps.length} waiting</small>
+              <span className="run-deck__signal" aria-hidden="true">
+                <XiaoIcon
+                  className={currentTaskWorking ? "run-deck__signal-spin" : undefined}
+                  name={runDeckNeedsAttention ? "result" : currentTaskWorking ? "pending" : "plan"}
+                  size={14}
+                />
+              </span>
+              <span className="run-deck__identity">
+                <small>{currentTaskWorking ? "Active run" : "Run deck"}</small>
+                <strong>{runDeckTitle}</strong>
+              </span>
+              <span className="run-deck__summary" title={runDeckSummary}>{runDeckSummary}</span>
+              <span className="run-deck__metrics" aria-label="Run summary">
+                {planSteps.length > 0 ? <small><b>{completedPlanSteps}/{planSteps.length}</b> plan</small> : null}
+                {followUps.length > 0 ? <small><b>{followUps.length}</b> queued</small> : null}
+              </span>
+              <span className="run-deck__chevron"><XiaoIcon name="caret" size={12} /></span>
+            </button>
+            {planSteps.length > 0 ? (
+              <button
+                className="run-deck__open"
+                type="button"
+                title="Open plan details"
+                aria-label="Open plan details"
+                onClick={() => onOpenView("plan")}
+              >
+                <XiaoIcon name="external" size={13} />
+              </button>
+            ) : null}
           </header>
-          <ol>
-            {followUps.map((followUp, index) => {
-              const sending = sendingFollowUpId === followUp.id;
-              const failed = failedFollowUpId === followUp.id;
-              return (
-                <li className={failed ? "is-error" : sending ? "is-sending" : undefined} key={followUp.id}>
-                  <span>{index + 1}</span>
+
+          <div className="run-deck__body" id="composer-run-deck" aria-hidden={runDeckCollapsed}>
+            <div className="run-deck__body-inner">
+              {currentTaskWorking ? (
+                <div className="run-deck__now" role="status">
+                  <span aria-hidden="true"><i /></span>
                   <div>
-                    <strong>{followUp.prompt}</strong>
-                    <small>
-                      {sending
-                        ? "Starting now"
-                        : failed
-                          ? "Could not start"
-                          : index === 0
-                            ? "Runs when the current turn ends"
-                            : "Runs after the previous follow-up"}
-                      {followUp.attachments.length ? ` · ${followUp.attachments.length} attachment${followUp.attachments.length === 1 ? "" : "s"}` : ""}
-                    </small>
+                    <strong>Working now</strong>
+                    <small>{activePlanStep?.step ?? "Executing the current turn"}</small>
                   </div>
-                  <button
-                    className="follow-up-dock__send"
-                    type="button"
-                    disabled={sending || Boolean(activeQuestionRequest) || (!canSteer && !failed)}
-                    title={canSteer
-                      ? "Send this message to the current turn"
-                      : failed
-                        ? "Retry this queued message"
-                        : "Available once the current turn starts"}
-                    onClick={() => {
-                      if (failed && !canSteer) onRetryFollowUp();
-                      else void onSendFollowUpNow(followUp.id);
-                    }}
-                  >
-                    <XiaoIcon name="send" size={11} />
-                    <span>{failed ? (canSteer ? "Retry now" : "Retry") : "Send now"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove queued follow-up ${index + 1}`}
-                    disabled={sending}
-                    onClick={() => onRemoveFollowUp(followUp.id)}
-                  >
-                    <XiaoIcon name="close" size={12} />
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
+                  <button type="button" onClick={() => onOpenView("run")}>Inspect</button>
+                </div>
+              ) : null}
+
+              {planSteps.length > 0 ? (
+                <section className="run-deck__section" aria-label="Plan progress">
+                  <header>
+                    <span>Plan</span>
+                    <small>{completedPlanSteps} of {planSteps.length}</small>
+                  </header>
+                  <ol className="run-deck__steps">
+                    {planSteps.map((step, index) => {
+                      const statusLabel =
+                        step.status === "completed"
+                          ? "Completed"
+                          : step.status === "inProgress"
+                            ? "In progress"
+                            : "Pending";
+                      return (
+                        <li
+                          className={step.status === "inProgress" ? "is-in-progress" : `is-${step.status}`}
+                          aria-label={`${statusLabel}: ${step.step}`}
+                          key={`${index}-${step.step}`}
+                        >
+                          <span className="run-deck__step-mark" aria-hidden="true">
+                            {step.status === "completed" ? (
+                              <XiaoIcon name="check" size={10} strokeWidth={2.1} />
+                            ) : step.status === "inProgress" ? (
+                              <i />
+                            ) : <b>{index + 1}</b>}
+                          </span>
+                          <span>{step.step}</span>
+                          {step.status !== "pending" ? <small>{step.status === "inProgress" ? "Now" : "Done"}</small> : null}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </section>
+              ) : null}
+
+              {followUps.length > 0 ? (
+                <section className="run-deck__section" aria-label={`${followUps.length} queued follow-ups`}>
+                  <header>
+                    <span>Queue</span>
+                    <small>{followUps.length} waiting</small>
+                  </header>
+                  <ol className="run-deck__queue">
+                    {followUps.map((followUp, index) => {
+                      const sending = sendingFollowUpId === followUp.id;
+                      const failed = failedFollowUpId === followUp.id;
+                      return (
+                        <li className={failed ? "is-error" : sending ? "is-sending" : undefined} key={followUp.id}>
+                          <span className="run-deck__queue-index">{index + 1}</span>
+                          <div>
+                            <strong>{followUp.prompt}</strong>
+                            <small>
+                              {sending
+                                ? "Starting now"
+                                : failed
+                                  ? "Could not start"
+                                  : index === 0
+                                    ? "Runs when the current turn ends"
+                                    : "Runs after the previous follow-up"}
+                              {followUp.attachments.length ? ` · ${followUp.attachments.length} attachment${followUp.attachments.length === 1 ? "" : "s"}` : ""}
+                            </small>
+                          </div>
+                          <button
+                            className="run-deck__send"
+                            type="button"
+                            disabled={sending || Boolean(activeQuestionRequest) || (!canSteer && !failed)}
+                            title={canSteer
+                              ? "Send this message to the current turn"
+                              : failed
+                                ? "Retry this queued message"
+                                : "Available once the current turn starts"}
+                            onClick={() => {
+                              if (failed && !canSteer) onRetryFollowUp();
+                              else void onSendFollowUpNow(followUp.id);
+                            }}
+                          >
+                            <XiaoIcon name="send" size={11} />
+                            <span>{failed ? (canSteer ? "Retry now" : "Retry") : "Send now"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Remove queued follow-up ${index + 1}`}
+                            disabled={sending}
+                            onClick={() => onRemoveFollowUp(followUp.id)}
+                          >
+                            <XiaoIcon name="close" size={12} />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </section>
+              ) : null}
+            </div>
+          </div>
         </section>
       )}
       {activeQuestionRequest ? (

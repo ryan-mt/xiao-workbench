@@ -7,16 +7,17 @@ type AppShellProps = {
   sidebar: ReactNode;
   content: ReactNode;
   focusRail?: ReactNode;
+  statusBar: ReactNode;
   sidebarOpen: boolean;
   onCloseSidebar: () => void;
 };
 
-const defaultSidebarWidth = 280;
-const minSidebarWidth = 210;
+const defaultSidebarWidth = 252;
+const minSidebarWidth = 220;
 const sidebarWidthStorageKey = "xiao.sidebar.width";
 const defaultFocusRailWidth = 520;
 const minFocusRailWidth = 480;
-const minTaskWidth = 450;
+const minTaskWidth = 520;
 const focusRailWidthStorageKey = "xiao.focus-rail.width";
 
 const maxSidebarWidth = () =>
@@ -52,6 +53,7 @@ export function AppShell({
   sidebar,
   content,
   focusRail,
+  statusBar,
   sidebarOpen,
   onCloseSidebar,
 }: AppShellProps) {
@@ -260,6 +262,7 @@ export function AppShell({
           {focusRail ?? null}
         </div>
       </div>
+      {statusBar}
     </div>
   );
 }

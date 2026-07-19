@@ -2,6 +2,7 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
 import { ActivityItem } from "./ActivityItem";
+import { ExecutionGroup } from "./ExecutionGroup";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
@@ -27,16 +28,27 @@ type TaskTimelineProps = {
   onReviewChanges: () => void;
 };
 
-type TimelineRow =
+export type TimelineRow =
   | { kind: "entry"; entry: TimelineEntry; index: number }
-  | { kind: "exploration"; entries: TimelineEntry[]; index: number };
+  | { kind: "exploration"; entries: TimelineEntry[]; index: number }
+  | { kind: "execution"; entries: TimelineEntry[]; index: number };
 
-const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
+export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   const rows: TimelineRow[] = [];
   let index = 0;
 
   while (index < timeline.length) {
     const entry = timeline[index];
+    if (entry.kind === "command") {
+      let end = index + 1;
+      while (end < timeline.length && timeline[end].kind === "command") end += 1;
+      const entries = timeline.slice(index, end);
+      if (entries.length > 1) rows.push({ kind: "execution", entries, index });
+      else rows.push({ kind: "entry", entry, index });
+      index = end;
+      continue;
+    }
+
     if (entry.kind !== "explore" && entry.kind !== "thought") {
       rows.push({ kind: "entry", entry, index });
       index += 1;
@@ -100,27 +112,64 @@ export function TaskTimeline({
           <p>Describe the outcome below. Xiao will keep the work, commands, and changes in this task.</p>
         </div>
       ) : null}
-      {rows.map((row) =>
-        row.kind === "exploration" ? (
-          <div
-            className="timeline-exploration-anchor"
-            key={`exploration-${row.entries.map((entry) => entry.id).join("-")}`}
-          >
-            {row.entries.map((entry) => (
-              <span
-                aria-hidden="true"
-                className="timeline-entry-anchor-target"
-                id={`timeline-entry-${entry.id}`}
-                key={entry.id}
+      {rows.map((row) => {
+        if (row.kind === "exploration") {
+          return (
+            <div
+              className="timeline-exploration-anchor"
+              key={`exploration-${row.entries.map((entry) => entry.id).join("-")}`}
+            >
+              {row.entries.map((entry) => (
+                <span
+                  aria-hidden="true"
+                  className="timeline-entry-anchor-target"
+                  id={`timeline-entry-${entry.id}`}
+                  key={entry.id}
+                />
+              ))}
+              <ExplorationGroup
+                entries={row.entries}
+                expandByDefault={expandToolOutput}
+                index={row.index}
               />
-            ))}
-            <ExplorationGroup
+            </div>
+          );
+        }
+
+        if (row.kind === "execution") {
+          return (
+            <ExecutionGroup
               entries={row.entries}
               expandByDefault={expandToolOutput}
               index={row.index}
-            />
-          </div>
-        ) : (
+              key={`execution-${row.entries.map((entry) => entry.id).join("-")}`}
+            >
+              {row.entries.map((entry, offset) => (
+                <div
+                  className="execution-group__entry"
+                  id={`timeline-entry-${entry.id}`}
+                  key={entry.id}
+                >
+                  <ActivityItem
+                    entry={entry}
+                    index={row.index + offset}
+                    showReasoningSummaries={showReasoningSummaries}
+                    expandToolOutput={expandToolOutput}
+                    workspacePath={workspacePath}
+                    onOpenResource={onOpenResource}
+                    taskId={taskId}
+                    canFork={canFork}
+                    onForkTask={onForkTask}
+                    onResolveApproval={onResolveApproval}
+                    onReviewChanges={onReviewChanges}
+                  />
+                </div>
+              ))}
+            </ExecutionGroup>
+          );
+        }
+
+        return (
           <div
             className="timeline-entry-anchor"
             id={`timeline-entry-${row.entry.id}`}
@@ -140,8 +189,8 @@ export function TaskTimeline({
               onReviewChanges={onReviewChanges}
             />
           </div>
-        ),
-      )}
+        );
+      })}
       <LiveTurnStatus taskId={taskId} runtime={runtime} timeline={timeline} />
       {latestRun ? (
         <VerificationEvidenceCard run={latestRun} onReviewChanges={onReviewChanges} />

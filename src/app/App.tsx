@@ -3,13 +3,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
-import type {
-  AgentAttachment,
-  AgentGoal,
-  AgentPlan,
-  AgentTurnOutcome,
-  AgentUndoResult,
-  TimelineEntry,
+import {
+  contextUsedPercent,
+  type AgentAttachment,
+  type AgentGoal,
+  type AgentPlan,
+  type AgentTurnOutcome,
+  type AgentUndoResult,
+  type TimelineEntry,
 } from "../core/models/agent";
 import type {
   AcceptanceContractVersionSummary,
@@ -48,6 +49,8 @@ import { useTheme } from "../features/settings/hooks/useTheme";
 import { AppShell } from "../features/shell/components/AppShell";
 import { GlobalContextMenu } from "../features/shell/components/GlobalContextMenu";
 import { Sidebar } from "../features/shell/components/Sidebar";
+import { StatusBar } from "../features/shell/components/StatusBar";
+import { TaskSwitcher } from "../features/shell/components/TaskSwitcher";
 import { TitleBar } from "../features/shell/components/TitleBar";
 import type { AppPage } from "../features/shell/shell.types";
 import {
@@ -89,6 +92,37 @@ type ProjectPreferences = Record<string, ProjectPreference>;
 
 const projectPreferencesStorageKey = "xiao.projects.v1";
 const activeProjectStorageKey = "xiao.active-project.v1";
+const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
+const focusViews = new Set<FocusView>([
+  "plan",
+  "files",
+  "changes",
+  "context",
+  "verification",
+  "observatory",
+  "extensions",
+  "terminal",
+  "browser",
+  "run",
+  "schedule",
+  "runtime",
+]);
+
+const readFocusRailPreference = (): { view: FocusView; open: boolean } => {
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(focusRailPreferenceStorageKey) ?? "null",
+    ) as { view?: unknown; open?: unknown } | null;
+    return {
+      view: typeof stored?.view === "string" && focusViews.has(stored.view as FocusView)
+        ? stored.view as FocusView
+        : "changes",
+      open: stored?.open === true,
+    };
+  } catch {
+    return { view: "changes", open: false };
+  }
+};
 const comparableWorkspacePath = (path: string) =>
   path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase();
 
@@ -1192,11 +1226,12 @@ export function App() {
   const codexUpdate = useCodexUpdate();
   const [initialTaskState] = useState(defaultTaskState);
   const [activePage, setActivePage] = useState<AppPage>("tasks");
-  const [focusView, setFocusView] = useState<FocusView>("changes");
+  const [initialFocusRailPreference] = useState(readFocusRailPreference);
+  const [focusView, setFocusView] = useState<FocusView>(initialFocusRailPreference.view);
   const [focusResourceRequest, setFocusResourceRequest] = useState<FocusResourceRequest | null>(null);
   const focusResourceRequestId = useRef(0);
   const focusResourceContextRef = useRef("");
-  const [focusPanelOpen, setFocusPanelOpen] = useState(false);
+  const [focusPanelOpen, setFocusPanelOpen] = useState(initialFocusRailPreference.open);
   const invalidateFocusResourceRequest = () => {
     focusResourceRequestId.current += 1;
     setFocusResourceRequest(null);
@@ -1209,6 +1244,7 @@ export function App() {
     () => !window.matchMedia("(max-width: 760px)").matches,
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [taskSwitcherOpen, setTaskSwitcherOpen] = useState(false);
   const [taskWorkspacePath, setTaskWorkspacePath] = useState("");
   const taskWorkspacePathRef = useRef(taskWorkspacePath);
   taskWorkspacePathRef.current = taskWorkspacePath;
@@ -1344,7 +1380,18 @@ export function App() {
     };
   }
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        focusRailPreferenceStorageKey,
+        JSON.stringify({ view: focusView, open: focusPanelOpen }),
+      );
+    } catch {
+      // Focus rail persistence is optional when local storage is unavailable.
+    }
+  }, [focusPanelOpen, focusView]);
+
   const closeSidebarOnNarrow = useCallback(() => {
     if (window.matchMedia("(max-width: 760px)").matches) setSidebarOpen(false);
   }, []);
@@ -1852,6 +1899,16 @@ export function App() {
   const visibleModels = agent.models.filter(
     (model) => !preferences.hiddenModels.includes(model.model) || model.model === activeTask.model,
   );
+  const statusModel =
+    agent.models.find((model) => model.model === activeTask.model) ??
+    agent.models.find((model) => model.isDefault) ??
+    agent.models[0];
+  const statusContextPercent = contextUsedPercent(
+    agent.contextUsage,
+    statusModel?.contextWindow,
+  );
+  const statusReasoningEffort =
+    activeTask.reasoningEffort || statusModel?.defaultReasoningEffort || "";
 
   useEffect(() => {
     const runtimeError = agent.runtime.error;
@@ -2998,10 +3055,17 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        setTaskSwitcherOpen(false);
         setCommandMenuOpen((open) => !open);
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key === "Tab") {
+        event.preventDefault();
+        setCommandMenuOpen(false);
+        setTaskSwitcherOpen(true);
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "t") {
         event.preventDefault();
+        setTaskSwitcherOpen(false);
         openNewTaskTab();
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w" && activePage === "tasks") {
@@ -3012,7 +3076,10 @@ export function App() {
         event.preventDefault();
         openFocusView("runtime");
       }
-      if (event.key === "Escape") setCommandMenuOpen(false);
+      if (event.key === "Escape") {
+        setCommandMenuOpen(false);
+        setTaskSwitcherOpen(false);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -3021,9 +3088,42 @@ export function App() {
   return (
     <>
       <GlobalContextMenu />
+      {taskSwitcherOpen ? (
+        <TaskSwitcher
+          tasks={tasks}
+          activeTaskId={activeTaskId}
+          workingTaskIds={agent.workingTaskIds}
+          onClose={() => setTaskSwitcherOpen(false)}
+          onSelect={(taskId) => {
+            setOpenTaskIds((current) => current.includes(taskId) ? current : [...current, taskId]);
+            setActiveTaskId(taskId);
+            setActivePage("tasks");
+            setTaskSwitcherOpen(false);
+            closeSidebarOnNarrow();
+          }}
+        />
+      ) : null}
       <AppShell
         sidebarOpen={sidebarOpen}
         onCloseSidebar={closeSidebar}
+        statusBar={
+          <StatusBar
+            runtimePhase={agent.runtime.phase}
+            workspaceName={workspace.name}
+            workspacePath={workspace.path}
+            branch={workspace.git?.branch ?? null}
+            model={statusModel?.displayName ?? activeTask.model ?? "Default model"}
+            reasoningEffort={statusReasoningEffort}
+            contextPercent={statusContextPercent}
+            sandboxMode={activeTask.sandboxMode}
+            approvalPolicy={activeTask.approvalPolicy}
+            workspaceMode={activeTask.workspaceMode}
+            workingTaskCount={agent.workingTaskIds.length}
+            onOpenRuntime={() => openFocusView("runtime")}
+            onOpenChanges={() => openFocusView("changes")}
+            onOpenContext={() => openFocusView("context")}
+          />
+        }
         titleBar={
           <TitleBar
             tabs={titleBarTabs}
@@ -3058,7 +3158,6 @@ export function App() {
             account={agent.account}
             profile={profile}
             canOpenProjects={isTauriHost()}
-            onOpenSidebar={openSidebar}
             onOpenMenu={() => setCommandMenuOpen(true)}
             onOpenProfile={() => {
               setActivePage("profile");
@@ -3082,7 +3181,6 @@ export function App() {
               closeFocusPanel();
               closeSidebarOnNarrow();
             }}
-            onCreateTask={createTask}
             onSelectTask={(taskId) => {
               setActiveTaskId(taskId);
               setActivePage("tasks");

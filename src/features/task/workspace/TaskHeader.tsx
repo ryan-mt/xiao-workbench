@@ -155,7 +155,12 @@ export function TaskHeader({
             <span>Retry</span>
           </button>
         ) : null}
-        <button className="button button--quiet" onClick={() => onFocusView("changes")}>
+        <button
+          aria-label="Review workspace changes"
+          className="button button--quiet"
+          title="Review workspace changes"
+          onClick={() => onFocusView("changes")}
+        >
           <XiaoIcon name="changes" size={16} />
           <span>Review</span>
         </button>

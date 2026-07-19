@@ -191,7 +191,13 @@ export function FocusRail({
   return (
     <aside className="focus-rail" id="review-panel">
       <header className="review-tabs-bar">
-        <button className="review-tabs-bar__rail" type="button" aria-label={activeView === "run" ? "Xiao Break" : "Review workspace"}>
+        <button
+          className="review-tabs-bar__rail"
+          type="button"
+          aria-label="Hide review sidebar"
+          title="Hide review sidebar"
+          onClick={onClose}
+        >
           <XiaoIcon name={activeView === "run" ? "game" : "sidebar"} size={15} />
         </button>
         <nav className="review-tabs" aria-label="Review tabs">
@@ -322,6 +328,9 @@ export function FocusRail({
         {activeView === "extensions" && (
           <ExtensionsPanel workspace={workspace} taskId={executionTaskId} runtime={runtime} />
         )}
+        {activeView === "terminal" && executionTaskId === null && (
+          <div className="rail-empty"><XiaoIcon name="terminal" size={22} /><strong>Start this task first</strong><p>The terminal will return here after Xiao creates the native task.</p></div>
+        )}
         {executionTaskId !== null && (terminalOpened || activeView === "terminal") && (
           <div className="focus-terminal-slot" hidden={activeView !== "terminal"}>
             <Suspense fallback={<div className="terminal-loading"><XiaoIcon name="pending" size={15} /> Starting terminal</div>}>
@@ -377,6 +386,9 @@ export function FocusRail({
             onClearError={onClearRoutineError}
           />
         )}
+        {activeView === "verification" && executionTaskId === null && (
+          <div className="rail-empty"><XiaoIcon name="check" size={22} /><strong>Acceptance unavailable</strong><p>Start this task before defining deterministic run gates.</p></div>
+        )}
         {activeView === "verification" && executionTaskId !== null && (
           <VerificationPanel
             key={`${workspace.path}\u0000${executionTaskId}`}
@@ -385,6 +397,9 @@ export function FocusRail({
             contract={task.acceptanceContract}
             onSaved={onTaskAcceptanceContractSaved}
           />
+        )}
+        {activeView === "observatory" && executionTaskId === null && (
+          <div className="rail-empty"><XiaoIcon name="approach" size={22} /><strong>Observatory unavailable</strong><p>Start this task before inspecting runs and recovery history.</p></div>
         )}
         {activeView === "observatory" && executionTaskId !== null && (
           <ObservatoryPanel

@@ -1,0 +1,185 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { XiaoIcon } from "../../../components/icons/XiaoIcon";
+import type { WorkbenchTask } from "../../task/task.types";
+
+type TaskSwitcherProps = {
+  tasks: WorkbenchTask[];
+  activeTaskId: string | null;
+  workingTaskIds: string[];
+  onSelect: (taskId: string) => void;
+  onClose: () => void;
+};
+
+const taskTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+
+const relativeTaskTime = (timestamp: number) => {
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  if (elapsed < 60_000) return "now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
+  if (elapsed < 172_800_000) return "yesterday";
+  return taskTimeFormatter.format(timestamp);
+};
+
+export const orderTaskSwitcherTasks = (
+  tasks: WorkbenchTask[],
+  workingTaskIds: readonly string[],
+) => {
+  const working = new Set(workingTaskIds);
+  return tasks
+    .filter((task) => !task.archived)
+    .sort(
+      (left, right) =>
+        Number(working.has(right.id)) - Number(working.has(left.id)) ||
+        Number(right.pinned) - Number(left.pinned) ||
+        Number(right.unread) - Number(left.unread) ||
+        right.updatedAt - left.updatedAt,
+    );
+};
+
+export function TaskSwitcher({
+  tasks,
+  activeTaskId,
+  workingTaskIds,
+  onSelect,
+  onClose,
+}: TaskSwitcherProps) {
+  const [query, setQuery] = useState("");
+  const orderedTasks = useMemo(
+    () => orderTaskSwitcherTasks(tasks, workingTaskIds),
+    [tasks, workingTaskIds],
+  );
+  const visibleTasks = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return orderedTasks;
+    return orderedTasks.filter((task) =>
+      [task.title, task.meta, task.model ?? ""]
+        .some((value) => value.toLocaleLowerCase().includes(normalized)),
+    );
+  }, [orderedTasks, query]);
+  const initialIndex = Math.max(0, visibleTasks.findIndex((task) => task.id === activeTaskId));
+  const [activeIndex, setActiveIndex] = useState(initialIndex);
+  const listRef = useRef<HTMLDivElement>(null);
+  const working = new Set(workingTaskIds);
+
+  useEffect(() => {
+    const selectedIndex = visibleTasks.findIndex((task) => task.id === activeTaskId);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+  }, [activeTaskId, query, visibleTasks]);
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-task-index="${activeIndex}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (
+        event.key === "ArrowDown" ||
+        event.key === "ArrowUp" ||
+        ((event.ctrlKey || event.metaKey) && event.key === "Tab")
+      ) {
+        if (!visibleTasks.length) return;
+        event.preventDefault();
+        const direction = event.key === "ArrowUp" || event.shiftKey ? -1 : 1;
+        setActiveIndex((current) =>
+          (current + direction + visibleTasks.length) % visibleTasks.length,
+        );
+        return;
+      }
+      if (event.key === "Enter") {
+        const task = visibleTasks[activeIndex];
+        if (!task) return;
+        event.preventDefault();
+        onSelect(task.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeIndex, onClose, onSelect, visibleTasks]);
+
+  return (
+    <div
+      className="task-switcher-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="task-switcher" role="dialog" aria-modal="true" aria-label="Switch tasks">
+        <header className="task-switcher__search">
+          <XiaoIcon name="search" size={16} />
+          <input
+            autoFocus
+            value={query}
+            aria-label="Search tasks"
+            placeholder="Switch tasks"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <kbd>Ctrl Tab</kbd>
+        </header>
+
+        <div className="task-switcher__list" ref={listRef} role="listbox" aria-label="Tasks">
+          {visibleTasks.map((task, index) => {
+            const taskWorking = working.has(task.id);
+            const active = index === activeIndex;
+            const selected = task.id === activeTaskId;
+            const state = taskWorking ? "Running" : task.unread ? "Unread" : relativeTaskTime(task.updatedAt);
+            return (
+              <button
+                className={`${active ? "is-active" : ""} ${selected ? "is-selected" : ""}`}
+                data-task-index={index}
+                type="button"
+                role="option"
+                aria-selected={active}
+                key={task.id}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => onSelect(task.id)}
+              >
+                <span className="task-switcher__mark" aria-hidden="true">
+                  <XiaoIcon
+                    name={taskWorking ? "pending" : task.unread ? "result" : "workspace"}
+                    size={14}
+                  />
+                </span>
+                <span className="task-switcher__copy">
+                  <strong>{task.title}</strong>
+                  <small>
+                    {state}
+                    {task.model ? ` · ${task.model}` : ""}
+                  </small>
+                </span>
+                <span className="task-switcher__flags">
+                  {task.pinned ? <XiaoIcon name="pin" size={11} /> : null}
+                  {selected ? <small>Open</small> : null}
+                </span>
+              </button>
+            );
+          })}
+          {!visibleTasks.length ? (
+            <div className="task-switcher__empty">
+              <XiaoIcon name="search" size={18} />
+              <strong>No matching tasks</strong>
+              <small>Try a task title or model name.</small>
+            </div>
+          ) : null}
+        </div>
+
+        <footer className="task-switcher__footer">
+          <span><kbd>↑↓</kbd> Navigate</span>
+          <span><kbd>Enter</kbd> Open <kbd>Esc</kbd> Close</span>
+        </footer>
+      </section>
+    </div>
+  );
+}
