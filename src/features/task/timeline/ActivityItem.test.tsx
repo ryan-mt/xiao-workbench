@@ -85,3 +85,36 @@ describe("ActivityItem context compaction", () => {
     expect(markup).toContain("Context compacted");
   });
 });
+
+describe("ActivityItem agent collaboration", () => {
+  it("shows subagent identity, current status, and delegated work", () => {
+    const markup = renderCompaction({
+      id: "collab-1",
+      kind: "agent",
+      title: "Waiting for subagent results",
+      body: "Inspect the streaming path",
+      meta: "1 subagent - gpt-test",
+      status: "active",
+      collaborators: [{
+        threadId: "thread-child-123456",
+        status: "running",
+        message: "Reading the backend",
+      }],
+      collaborationTool: "wait",
+    });
+
+    expect(markup).toContain("activity--agent activity--active");
+    expect(markup).toContain("Waiting for subagent results");
+    expect(markup).toContain("Subagent 1");
+    expect(markup).toContain("thread-child");
+    expect(markup).toContain("Reading the backend");
+    expect(markup).toContain("Working");
+    expect(statusLabel([{
+      id: "collab-1",
+      kind: "agent",
+      title: "Waiting for subagent results",
+      status: "active",
+      collaborationTool: "wait",
+    }])).toBe("Waiting for subagent results");
+  });
+});

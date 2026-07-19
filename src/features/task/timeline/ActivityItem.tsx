@@ -28,6 +28,18 @@ const iconByKind: Record<TimelineEntry["kind"], XiaoIconName> = {
   result: "result",
   approval: "approval",
   user: "user",
+  agent: "cpu",
+};
+
+const collaboratorStatusLabel: Record<NonNullable<TimelineEntry["collaborators"]>[number]["status"], string> = {
+  pendingInit: "Starting",
+  running: "Working",
+  interrupted: "Interrupted",
+  completed: "Completed",
+  errored: "Failed",
+  shutdown: "Closed",
+  notFound: "Not found",
+  unknown: "Status unavailable",
 };
 
 type PatchLine = {
@@ -229,6 +241,58 @@ export function ActivityItem({
           </summary>
           {entry.body && <div><MarkdownBody content={entry.body} streaming={entry.status === "active"} /></div>}
         </details>
+      </article>
+    );
+  }
+
+  if (entry.kind === "agent") {
+    const collaborators = entry.collaborators ?? [];
+    return (
+      <article
+        className={`activity activity--agent activity--${entry.status ?? "idle"}`}
+        style={{ "--activity-index": index } as React.CSSProperties}
+      >
+        <div className="agent-activity">
+          <header>
+            <span className="agent-activity__icon"><XiaoIcon name="cpu" size={14} /></span>
+            <span className="agent-activity__heading">
+              <strong>{entry.title}</strong>
+              {entry.meta && <small>{entry.meta}</small>}
+            </span>
+            <span className={`agent-activity__state is-${entry.status ?? "idle"}`}>
+              {entry.status === "active" ? "Working" : entry.status === "error" ? "Needs attention" : "Done"}
+            </span>
+          </header>
+          {collaborators.length > 0 && (
+            <ul className="agent-activity__agents">
+              {collaborators.map((collaborator, collaboratorIndex) => (
+                <li className={`is-${collaborator.status}`} key={collaborator.threadId}>
+                  <span className="agent-activity__agent-state" aria-hidden="true">
+                    {collaborator.status === "completed" || collaborator.status === "shutdown" ? (
+                      <XiaoIcon name="check" size={11} />
+                    ) : collaborator.status === "errored" || collaborator.status === "interrupted" || collaborator.status === "notFound" ? (
+                      <XiaoIcon name="close" size={11} />
+                    ) : (
+                      <XiaoIcon name="pending" size={11} />
+                    )}
+                  </span>
+                  <span>
+                    <strong>Subagent {collaboratorIndex + 1}</strong>
+                    <code title={collaborator.threadId}>{collaborator.threadId.slice(0, 12)}</code>
+                    {collaborator.message && <small>{collaborator.message}</small>}
+                  </span>
+                  <em>{collaboratorStatusLabel[collaborator.status]}</em>
+                </li>
+              ))}
+            </ul>
+          )}
+          {entry.body && (
+            <details className="agent-activity__prompt">
+              <summary>Delegated task <XiaoIcon name="caret" size={12} /></summary>
+              <p>{entry.body}</p>
+            </details>
+          )}
+        </div>
       </article>
     );
   }

@@ -46,9 +46,25 @@ export type AgentQuestionRequest = {
 
 export type AgentApprovalRequestKind = "action" | "permissions";
 
+export type AgentCollaboratorStatus =
+  | "pendingInit"
+  | "running"
+  | "interrupted"
+  | "completed"
+  | "errored"
+  | "shutdown"
+  | "notFound"
+  | "unknown";
+
+export type AgentCollaborator = {
+  threadId: string;
+  status: AgentCollaboratorStatus;
+  message: string | null;
+};
+
 export type TimelineEntry = {
   id: string;
-  kind: "brief" | "thought" | "command" | "explore" | "change" | "result" | "approval" | "user";
+  kind: "brief" | "thought" | "command" | "explore" | "change" | "result" | "approval" | "user" | "agent";
   title: string;
   createdAt?: number;
   body?: string;
@@ -65,6 +81,8 @@ export type TimelineEntry = {
   approvalPermissions?: Record<string, unknown>;
   turnId?: string;
   turnDiff?: string;
+  collaborators?: AgentCollaborator[];
+  collaborationTool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";
 };
 
 export type AgentRuntimeState = {

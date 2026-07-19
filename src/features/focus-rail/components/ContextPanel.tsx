@@ -31,6 +31,7 @@ const messageKind = (entry: TimelineEntry): Exclude<MessageKind, "all"> => {
     entry.kind === "command" ||
     entry.kind === "explore" ||
     entry.kind === "change" ||
+    entry.kind === "agent" ||
     entry.kind === "approval"
   ) return "tools";
   return "assistant";

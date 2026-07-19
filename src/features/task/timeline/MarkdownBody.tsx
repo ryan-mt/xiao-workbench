@@ -1,6 +1,7 @@
 import {
   Children,
   isValidElement,
+  memo,
   useEffect,
   useState,
   type ComponentProps,
@@ -210,7 +211,13 @@ function CodeBlock({ children, streaming }: { children: ReactNode; streaming: bo
   );
 }
 
-export function MarkdownBody({ content, streaming = false }: { content: string; streaming?: boolean }) {
+export const MarkdownBody = memo(function MarkdownBody({
+  content,
+  streaming = false,
+}: {
+  content: string;
+  streaming?: boolean;
+}) {
   const rendered = streaming ? remend(content, { linkMode: "text-only" }) : content;
 
   return (
@@ -234,4 +241,4 @@ export function MarkdownBody({ content, streaming = false }: { content: string; 
       </ReactMarkdown>
     </div>
   );
-}
+});

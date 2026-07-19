@@ -54,8 +54,23 @@ import {
   shouldRestorePendingInput,
   type RunProjection,
 } from "./runProjection";
+import {
+  appendLiveTimelineDelta,
+  applyLiveTimelineDeltas,
+  reconcileCompletedStreamBody,
+  type LiveTimelineDelta,
+} from "./liveTimelineDeltas";
+import { collaborationTimelineEntry } from "./collaborationTimeline";
 
 const MAX_RUNTIME_LOGS = 240;
+const LIVE_DELTA_FLUSH_MS = 33;
+const SETTLED_PLAN_LINGER_MS = 4_000;
+type LiveDeltaBatch = {
+  deltas: LiveTimelineDelta[];
+  eventCount: number;
+  methodCounts: Map<string, number>;
+  stdout: string;
+};
 type RuntimeMessageEnvelope = {
   environmentId: string;
   generation: number;
@@ -337,6 +352,8 @@ const readTokenUsage = (value: unknown): TokenUsageBreakdown | null => {
 const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | null => {
   const contextCompaction = contextCompactionTimelineEntry(item, "completed");
   if (contextCompaction) return contextCompaction;
+  const collaboration = collaborationTimelineEntry(item);
+  if (collaboration) return collaboration;
 
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
   const createdAt = Date.now();
@@ -469,6 +486,33 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
     };
   }
 
+  if (item.type === "dynamicToolCall") {
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    const namespace = typeof item.namespace === "string" && item.namespace.trim()
+      ? item.namespace.trim()
+      : null;
+    const output = Array.isArray(item.contentItems)
+      ? item.contentItems.flatMap((content) => {
+          if (!content || typeof content !== "object") return [];
+          const value = content as Record<string, unknown>;
+          if (value.type === "inputText" && typeof value.text === "string") return [value.text];
+          if (value.type === "inputImage") return ["Image output"];
+          return [];
+        }).join("\n\n")
+      : "";
+    const failed = item.status === "failed" || item.success === false;
+    const duration = typeof item.durationMs === "number" ? `${Math.round(item.durationMs)} ms` : null;
+    return {
+      id,
+      kind: "command",
+      createdAt,
+      title: namespace ? `${namespace} · ${tool}` : tool,
+      body: output ? output.slice(0, 8_000) : undefined,
+      meta: ["Dynamic tool", duration].filter(Boolean).join(" · "),
+      status: failed ? "error" : item.status === "inProgress" ? "active" : "success",
+    };
+  }
+
   if (item.type === "webSearch") {
     return {
       id,
@@ -477,27 +521,6 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
       title: typeof item.query === "string" ? `Searched: ${item.query}` : "Web search",
       meta: "Browser tool",
       status: "success",
-    };
-  }
-
-  if (item.type === "collabAgentToolCall") {
-    const tool = typeof item.tool === "string" ? item.tool : "agent";
-    const status = typeof item.status === "string" ? item.status : "inProgress";
-    const labels: Record<string, string> = {
-      spawnAgent: "Delegated an agent task",
-      sendInput: "Sent context to an agent",
-      resumeAgent: "Resumed an agent task",
-      wait: "Waiting for agent results",
-      closeAgent: "Closed an agent task",
-    };
-    return {
-      id,
-      kind: "command",
-      createdAt,
-      title: labels[tool] ?? "Agent collaboration",
-      body: typeof item.prompt === "string" ? item.prompt : undefined,
-      meta: typeof item.model === "string" ? `Subagent · ${item.model}` : "Subagent",
-      status: status === "inProgress" ? "active" : status === "failed" ? "error" : "success",
     };
   }
 
@@ -586,6 +609,9 @@ export function useAgentRuntime(
   const compactingTasks = useRef(new Set<string>());
   const undoingScopeRef = useRef<AgentRuntimeTaskScope | null>(null);
   const timelineCache = useRef(new Map<string, TimelineEntry[]>());
+  const liveDeltaBatches = useRef(new Map<string, LiveDeltaBatch>());
+  const liveDeltaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const planClearTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const onTimelineChangeRef = useRef(onTimelineChange);
   const onPlanChangeRef = useRef(onPlanChange);
   const onTaskTitleChangeRef = useRef(onTaskTitleChange);
@@ -633,6 +659,11 @@ export function useAgentRuntime(
     autoResolvingRequests.current.clear();
     compactingTasks.current.clear();
     timelineCache.current.clear();
+    if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
+    liveDeltaTimer.current = null;
+    liveDeltaBatches.current.clear();
+    for (const timer of planClearTimers.current.values()) clearTimeout(timer);
+    planClearTimers.current.clear();
     timelineCache.current.set(activeTaskId, activeTaskTimeline);
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
     reconnectAttempt.current = 0;
@@ -751,6 +782,142 @@ export function useAgentRuntime(
     },
     [updateTimeline],
   );
+
+  const cancelPlanClear = useCallback((taskId: string) => {
+    const timer = planClearTimers.current.get(taskId);
+    if (timer) clearTimeout(timer);
+    planClearTimers.current.delete(taskId);
+  }, []);
+
+  const schedulePlanClear = useCallback((taskId: string) => {
+    cancelPlanClear(taskId);
+    const timer = setTimeout(() => {
+      if (planClearTimers.current.get(taskId) !== timer) return;
+      planClearTimers.current.delete(taskId);
+      onPlanChangeRef.current(taskId, null);
+    }, SETTLED_PLAN_LINGER_MS);
+    planClearTimers.current.set(taskId, timer);
+  }, [cancelPlanClear]);
+
+  const flushLiveDeltas = useCallback(() => {
+    if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
+    liveDeltaTimer.current = null;
+    if (!liveDeltaBatches.current.size) return;
+
+    const batches = [...liveDeltaBatches.current.entries()];
+    liveDeltaBatches.current.clear();
+    let eventCount = 0;
+    const logs: RuntimeLogEntry[] = [];
+
+    for (const [taskId, batch] of batches) {
+      eventCount += batch.eventCount;
+      if (batch.deltas.length) {
+        updateTimeline(taskId, (current) => applyLiveTimelineDeltas(current, batch.deltas));
+      }
+      for (const [method, count] of batch.methodCounts) {
+        logs.push({
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          stream: "event",
+          text: count > 1 ? `${method} x${count}` : method,
+        });
+      }
+      if (batch.stdout.trimEnd()) {
+        logs.push({
+          id: crypto.randomUUID(),
+          timestamp: Date.now(),
+          stream: "stdout",
+          text: batch.stdout.trimEnd().slice(-8_000),
+        });
+      }
+    }
+
+    setRuntime((current) => ({ ...current, eventsSeen: current.eventsSeen + eventCount }));
+    if (logs.length) {
+      setRuntimeLogs((current) => [...current, ...logs].slice(-MAX_RUNTIME_LOGS));
+    }
+  }, [updateTimeline]);
+
+  const queueLiveDelta = useCallback((taskId: string, message: AgentMessage) => {
+    const method = message.method;
+    const delta = message.params?.delta;
+    if (
+      typeof delta !== "string" ||
+      ![
+        "item/agentMessage/delta",
+        "item/reasoning/summaryTextDelta",
+        "item/reasoning/textDelta",
+        "item/commandExecution/outputDelta",
+      ].includes(method ?? "")
+    ) return false;
+
+    let batch = liveDeltaBatches.current.get(taskId);
+    if (!batch) {
+      batch = { deltas: [], eventCount: 0, methodCounts: new Map(), stdout: "" };
+      liveDeltaBatches.current.set(taskId, batch);
+    }
+    batch.eventCount += 1;
+    batch.methodCounts.set(method!, (batch.methodCounts.get(method!) ?? 0) + 1);
+
+    if (method === "item/agentMessage/delta") {
+      let entryId = liveAgentEntries.current.get(taskId);
+      if (!entryId) {
+        const itemId = message.params?.itemId;
+        entryId = typeof itemId === "string" ? itemId : crypto.randomUUID();
+        liveAgentEntries.current.set(taskId, entryId);
+      }
+      const settleThinkingEntryId = activeThinkingEntries.current.get(taskId);
+      if (settleThinkingEntryId) activeThinkingEntries.current.delete(taskId);
+      appendLiveTimelineDelta(batch.deltas, {
+        kind: "assistant",
+        entryId,
+        delta,
+        settleThinkingEntryId,
+      });
+    } else if (
+      method === "item/reasoning/summaryTextDelta" ||
+      method === "item/reasoning/textDelta"
+    ) {
+      const itemId = readItemId(message);
+      const channel = method === "item/reasoning/summaryTextDelta" ? "summary" : "content";
+      const previousChannel = itemId ? reasoningChannels.current.get(itemId) : undefined;
+      if (previousChannel === "summary" && channel === "content") {
+        if (!liveDeltaTimer.current) {
+          liveDeltaTimer.current = setTimeout(flushLiveDeltas, LIVE_DELTA_FLUSH_MS);
+        }
+        return true;
+      }
+      const replace = previousChannel === "content" && channel === "summary";
+      if (itemId) reasoningChannels.current.set(itemId, channel);
+      let entryId = itemId ? reasoningEntries.current.get(itemId) : undefined;
+      if (!entryId) {
+        entryId = itemId ?? activeThinkingEntries.current.get(taskId) ?? crypto.randomUUID();
+        activeThinkingEntries.current.set(taskId, entryId);
+        if (itemId) reasoningEntries.current.set(itemId, entryId);
+      }
+      appendLiveTimelineDelta(batch.deltas, {
+        kind: "reasoning",
+        entryId,
+        delta,
+        replace,
+      });
+    } else {
+      const itemId = readItemId(message);
+      if (itemId) {
+        appendLiveTimelineDelta(batch.deltas, {
+          kind: "command-output",
+          entryId: itemId,
+          delta,
+        });
+      }
+      batch.stdout = `${batch.stdout}${delta}`.slice(-8_000);
+    }
+
+    if (!liveDeltaTimer.current) {
+      liveDeltaTimer.current = setTimeout(flushLiveDeltas, LIVE_DELTA_FLUSH_MS);
+    }
+    return true;
+  }, [flushLiveDeltas]);
 
   const declineWithoutPrompt = useCallback(
     async (
@@ -906,6 +1073,9 @@ export function useAgentRuntime(
         replayed?: boolean;
       },
     ) => {
+      const taskId = route?.taskId ?? resolveTaskId(message);
+      if (queueLiveDelta(taskId, message)) return;
+      flushLiveDeltas();
       setRuntime((current) => ({ ...current, eventsSeen: current.eventsSeen + 1 }));
 
       const outputDelta =
@@ -995,8 +1165,6 @@ export function useAgentRuntime(
         }
       }
 
-      const taskId = route?.taskId ?? resolveTaskId(message);
-
       if (message.method === "item/tool/requestUserInput") {
         const pendingInput = route?.pendingInput;
         const request = pendingInput
@@ -1045,6 +1213,8 @@ export function useAgentRuntime(
       }
 
       if (message.method === "turn/started") {
+        cancelPlanClear(taskId);
+        onPlanChangeRef.current(taskId, null);
         const turn = message.params?.turn;
         const turnId =
           turn && typeof turn === "object" && typeof (turn as Record<string, unknown>).id === "string"
@@ -1096,72 +1266,6 @@ export function useAgentRuntime(
         }
       }
 
-      if (
-        (message.method === "item/reasoning/summaryTextDelta" ||
-          message.method === "item/reasoning/textDelta") &&
-        typeof message.params?.delta === "string"
-      ) {
-        const itemId = readItemId(message);
-        const channel = message.method === "item/reasoning/summaryTextDelta" ? "summary" : "content";
-        const previousChannel = itemId ? reasoningChannels.current.get(itemId) : undefined;
-        if (previousChannel === "summary" && channel === "content") return;
-        const replaceContent = previousChannel === "content" && channel === "summary";
-        if (itemId) reasoningChannels.current.set(itemId, channel);
-        let entryId = itemId ? reasoningEntries.current.get(itemId) : undefined;
-        if (!entryId) {
-          entryId = itemId ?? activeThinkingEntries.current.get(taskId) ?? crypto.randomUUID();
-          activeThinkingEntries.current.set(taskId, entryId);
-          if (itemId) reasoningEntries.current.set(itemId, entryId);
-        }
-        const delta = message.params.delta;
-        updateTimeline(taskId, (current) => {
-          if (!current.some((entry) => entry.id === entryId)) {
-            return [
-              ...current,
-              {
-                 id: entryId,
-                 kind: "thought",
-                 title: "Thinking",
-                 createdAt: Date.now(),
-                 body: delta,
-                meta: "Live reasoning",
-                status: "active",
-              },
-            ];
-          }
-          return current.map((entry) =>
-            entry.id === entryId
-              ? {
-                  ...entry,
-                  title: "Thinking",
-                  body: replaceContent ? delta : `${entry.body ?? ""}${delta}`,
-                  meta: "Live reasoning",
-                  status: "active",
-                }
-              : entry,
-          );
-        });
-        return;
-      }
-
-      if (
-        message.method === "item/commandExecution/outputDelta" &&
-        typeof message.params?.delta === "string"
-      ) {
-        const itemId = readItemId(message);
-        if (itemId) {
-          const delta = message.params.delta;
-          updateTimeline(taskId, (current) =>
-            current.map((entry) =>
-              entry.id === itemId
-                ? { ...entry, body: `${entry.body ?? ""}${delta}`.slice(-8_000) }
-                : entry,
-            ),
-          );
-        }
-        return;
-      }
-
       if (message.method === "thread/tokenUsage/updated") {
         const threadId = readMessageThreadId(message);
         const tokenUsage = message.params?.tokenUsage;
@@ -1192,6 +1296,7 @@ export function useAgentRuntime(
       }
 
       if (message.method === "turn/plan/updated" && Array.isArray(message.params?.plan)) {
+        cancelPlanClear(taskId);
         const steps = message.params.plan.flatMap((item) => {
           if (!item || typeof item !== "object") return [];
           const value = item as Record<string, unknown>;
@@ -1213,39 +1318,6 @@ export function useAgentRuntime(
               : null,
           steps,
         });
-      }
-
-      if (message.method === "item/agentMessage/delta") {
-        const delta = message.params?.delta;
-        if (typeof delta !== "string") return;
-        settleThinking(taskId);
-        const liveEntryId = liveAgentEntries.current.get(taskId);
-        if (!liveEntryId) {
-          const itemId = message.params?.itemId;
-          const id = typeof itemId === "string" ? itemId : crypto.randomUUID();
-          liveAgentEntries.current.set(taskId, id);
-          updateTimeline(taskId, (current) => [
-            ...current,
-            {
-               id,
-               kind: "result",
-               title: "Agent response",
-               createdAt: Date.now(),
-               body: delta,
-              meta: "Streaming",
-              status: "active",
-            },
-          ]);
-          return;
-        }
-
-        updateTimeline(taskId, (current) =>
-          current.map((entry) =>
-            entry.id === liveEntryId
-              ? { ...entry, body: `${entry.body ?? ""}${delta}` }
-              : entry,
-          ),
-        );
       }
 
       if (message.method === "item/started") {
@@ -1288,7 +1360,12 @@ export function useAgentRuntime(
           );
           return;
         }
-        if (item.type === "commandExecution" || item.type === "collabAgentToolCall") {
+        if (
+          item.type === "commandExecution" ||
+          item.type === "collabAgentToolCall" ||
+          item.type === "mcpToolCall" ||
+          item.type === "dynamicToolCall"
+        ) {
           settleThinking(taskId);
           const entry = timelineEntryFromItem(item);
           if (entry) {
@@ -1345,13 +1422,12 @@ export function useAgentRuntime(
                 if (currentEntry.id !== completedEntry.id) return currentEntry;
                 const streamedBody = currentEntry.body;
                 const completedBody = completedEntry.body;
-                const preserveStreamedBody =
-                  (item.type === "agentMessage" || item.type === "reasoning") &&
-                  streamedBody != null &&
-                  (completedBody == null || streamedBody.length > completedBody.length);
                 return {
                   ...completedEntry,
-                  body: preserveStreamedBody ? streamedBody : completedBody ?? streamedBody,
+                  body:
+                    item.type === "agentMessage" || item.type === "reasoning"
+                      ? reconcileCompletedStreamBody(streamedBody, completedBody)
+                      : completedBody ?? streamedBody,
                 };
               })
             : [...timeline, completedEntry];
@@ -1424,9 +1500,7 @@ export function useAgentRuntime(
           if (outcome === "completed") {
             updateTimeline(taskId, invalidateUndoHistory);
           }
-        } else {
-          onPlanChangeRef.current(taskId, null);
-        }
+        } else schedulePlanClear(taskId);
         const errorValue = turn?.error;
         const errorMessage = outcome === "failed"
           ? errorValue &&
@@ -1522,10 +1596,14 @@ export function useAgentRuntime(
     },
     [
       appendRuntimeLog,
+      cancelPlanClear,
+      flushLiveDeltas,
+      queueLiveDelta,
       recordUsage,
       refreshAccountUsage,
       refreshRuntimeIdentity,
       resolveTaskId,
+      schedulePlanClear,
       settleThinking,
       updateTimeline,
       workspacePath,
@@ -1611,6 +1689,7 @@ export function useAgentRuntime(
               !listenerIsCurrent() ||
               event.payload.snapshot.workspacePath !== workspacePath
             ) return;
+            flushLiveDeltas();
             const next = projectRunUpdate(runProjectionRef.current, event.payload);
             publishRunProjection(next);
             const pending = event.payload.pendingInput;
@@ -1713,6 +1792,7 @@ export function useAgentRuntime(
                 event.payload,
               )
             ) return;
+            flushLiveDeltas();
             const stopError = runtimeStopError.current;
             runtimeStopError.current = null;
             if (!stopError) reconnectAttempt.current += 1;
@@ -1745,6 +1825,7 @@ export function useAgentRuntime(
         addCleanup(
           await listen<string>("xiao://run-service-error", (event) => {
             if (listenerIsCurrent()) {
+              flushLiveDeltas();
               appendRuntimeLog("stderr", event.payload);
               setRuntime((current) => ({ ...current, error: event.payload }));
             }
@@ -1768,9 +1849,14 @@ export function useAgentRuntime(
     return () => {
       disposed = true;
       setListenersReady(false);
+      if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
+      liveDeltaTimer.current = null;
+      liveDeltaBatches.current.clear();
+      for (const timer of planClearTimers.current.values()) clearTimeout(timer);
+      planClearTimers.current.clear();
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [appendRuntimeLog, handleMessage, publishRunProjection, workspacePath]);
+  }, [appendRuntimeLog, flushLiveDeltas, handleMessage, publishRunProjection, workspacePath]);
 
   useEffect(() => {
     if (!isTauriHost() || !listenersReady) return;

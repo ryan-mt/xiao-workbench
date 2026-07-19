@@ -16,6 +16,11 @@ export const statusLabel = (timeline: TimelineEntry[]) => {
   if (active?.kind === "command") return "Running command";
   if (active?.kind === "explore") return "Exploring workspace";
   if (active?.kind === "change") return "Applying changes";
+  if (active?.kind === "agent") {
+    if (active.collaborationTool === "wait") return "Waiting for subagent results";
+    if (active.collaborationTool === "spawnAgent") return "Subagent working";
+    return "Coordinating subagents";
+  }
   if (active?.kind === "result" && active.meta === "Context") return "Compacting context";
   if (active?.kind === "result") return "Writing response";
   if (active?.kind === "approval") return "Waiting for approval";

@@ -624,6 +624,175 @@
   margin-top: 8px;
 }
 
+.activity--agent {
+  margin: 4px 0 10px;
+}
+
+.agent-activity {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-raised) 84%, var(--surface));
+}
+
+.agent-activity > header {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+}
+
+.agent-activity__icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+.agent-activity__heading {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.agent-activity__heading strong,
+.agent-activity__heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity__heading strong {
+  color: var(--text-soft);
+  font-size: var(--text-label);
+  font-weight: 590;
+}
+
+.agent-activity__heading small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.agent-activity__state {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-weight: 580;
+}
+
+.agent-activity__state.is-active { color: var(--accent); }
+.agent-activity__state.is-error { color: var(--danger); }
+.agent-activity__state.is-success { color: var(--success); }
+
+.agent-activity__agents {
+  display: grid;
+  margin: 0;
+  padding: 0 10px 8px;
+  list-style: none;
+}
+
+.agent-activity__agents li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-activity__agent-state {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-deep);
+  color: var(--muted);
+}
+
+.agent-activity__agents li.is-running .agent-activity__agent-state,
+.agent-activity__agents li.is-pendingInit .agent-activity__agent-state { color: var(--accent); }
+.agent-activity__agents li.is-completed .agent-activity__agent-state,
+.agent-activity__agents li.is-shutdown .agent-activity__agent-state { color: var(--success); }
+.agent-activity__agents li.is-errored .agent-activity__agent-state,
+.agent-activity__agents li.is-interrupted .agent-activity__agent-state,
+.agent-activity__agents li.is-notFound .agent-activity__agent-state { color: var(--danger); }
+
+.agent-activity__agents li > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px;
+}
+
+.agent-activity__agents strong {
+  color: var(--text-soft);
+  font-size: var(--text-caption);
+  font-weight: 570;
+}
+
+.agent-activity__agents code {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity__agents small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity__agents em {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.agent-activity__prompt {
+  margin: 0 10px 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.agent-activity__prompt summary {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.agent-activity__prompt summary::-webkit-details-marker { display: none; }
+.agent-activity__prompt summary svg { transition: transform 140ms ease; }
+.agent-activity__prompt[open] summary svg { transform: rotate(90deg); }
+
+.agent-activity__prompt p {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .exploration-group {
   margin: 2px 0 7px;
   color: var(--muted);
