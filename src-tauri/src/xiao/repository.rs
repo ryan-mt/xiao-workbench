@@ -676,6 +676,36 @@ impl XiaoRepository {
         })
     }
 
+    pub(crate) fn ensure_workspace_execution_environment(
+        &self,
+        workspace_path: &str,
+    ) -> Result<ExecutionEnvironmentRecord, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    format!("Could not start Xiao workspace environment setup: {error}")
+                })?;
+            transaction
+                .execute(
+                    r#"INSERT INTO workspaces(
+                        workspace_path, active_task_id, show_archived, updated_at, public_id
+                     ) VALUES (?1, NULL, 0, 0, ?2)
+                     ON CONFLICT(workspace_path) DO NOTHING"#,
+                    params![workspace_path, new_uuid_v7()],
+                )
+                .map_err(|error| format!("Could not create Xiao workspace record: {error}"))?;
+            let workspace_id = workspace_id(&transaction, &workspace_path)?;
+            let environment =
+                ensure_local_environment(&transaction, workspace_id, &workspace_path)?;
+            transaction.commit().map_err(|error| {
+                format!("Could not commit Xiao workspace environment setup: {error}")
+            })?;
+            Ok(environment)
+        })
+    }
+
     pub(crate) fn begin_managed_worktree(
         &self,
         record: NewManagedWorktreeRecord,

@@ -68,6 +68,15 @@ type RuntimeDiagnosticEnvelope = {
 };
 type RuntimeStoppedEnvelope = { environmentId: string; generation: number };
 
+export const agentRuntimeEnvelopeMatches = (
+  expectedEnvironmentId: string,
+  expectedGeneration: number | null,
+  envelope: { environmentId: string; generation: number },
+) => (
+  envelope.environmentId === expectedEnvironmentId &&
+  (expectedGeneration === null || envelope.generation === expectedGeneration)
+);
+
 const initialRuntime: AgentRuntimeState = {
   phase: "offline",
   taskId: null,
@@ -519,7 +528,9 @@ export const titleFromPrompt = (prompt: string) => {
 
 export function useAgentRuntime(
   workspacePath: string,
+  workspaceEnvironmentId: string,
   activeTaskId: string,
+  executionTaskId: string | null,
   activeTaskTitle: string,
   activeTaskTimeline: TimelineEntry[],
   activeTaskTimelineComplete: boolean,
@@ -548,9 +559,11 @@ export function useAgentRuntime(
   const [stateWorkspacePath, setStateWorkspacePath] = useState(workspacePath);
   const { usage, recordUsage } = useCodexUsage();
   const activeTaskIdRef = useRef(activeTaskId);
+  const executionTaskIdRef = useRef(executionTaskId);
   const activeTimelineReadyRef = useRef(activeTaskTimelineComplete);
   const questionRequestRef = useRef<AgentQuestionRequest | null>(null);
   const runProjectionRef = useRef<RunProjection>(emptyRunProjection());
+  const expectedEnvironmentIdRef = useRef(workspaceEnvironmentId);
   const activeEnvironmentIdRef = useRef<string | null>(null);
   const activeGenerationRef = useRef<number | null>(null);
   const finishedRunIds = useRef(new Set<string>());
@@ -590,13 +603,17 @@ export function useAgentRuntime(
   );
   const workspaceChanged = nextWorkspaceScope !== previousWorkspaceScope;
   workspaceScopeRef.current = nextWorkspaceScope;
+  expectedEnvironmentIdRef.current = workspaceEnvironmentId;
   activeTaskIdRef.current = activeTaskId;
+  executionTaskIdRef.current = executionTaskId;
 
   if (workspaceChanged) {
     activeTaskIdRef.current = activeTaskId;
+    executionTaskIdRef.current = executionTaskId;
     activeTimelineReadyRef.current = activeTaskTimelineComplete;
     questionRequestRef.current = null;
     runProjectionRef.current = emptyRunProjection();
+    expectedEnvironmentIdRef.current = workspaceEnvironmentId;
     activeEnvironmentIdRef.current = null;
     activeGenerationRef.current = null;
     finishedRunIds.current.clear();
@@ -815,7 +832,7 @@ export function useAgentRuntime(
     try {
       const nextUsage = await nativeBridge.readAgentUsage(
         workspacePath,
-        activeTaskIdRef.current,
+        executionTaskIdRef.current,
       );
       if (!agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
@@ -838,8 +855,8 @@ export function useAgentRuntime(
     const scope = workspaceScopeRef.current;
     try {
       const [nextAccount, nextModels] = await Promise.all([
-        nativeBridge.readAgentAccount(workspacePath, activeTaskIdRef.current),
-        nativeBridge.listAgentModels(workspacePath, activeTaskIdRef.current),
+        nativeBridge.readAgentAccount(workspacePath, executionTaskIdRef.current),
+        nativeBridge.listAgentModels(workspacePath, executionTaskIdRef.current),
       ]);
       if (!agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
@@ -945,7 +962,7 @@ export function useAgentRuntime(
             turnStartedAt: null,
             error,
           }));
-          void nativeBridge.stopAgent(workspacePath, activeTaskIdRef.current).catch(() => {
+          void nativeBridge.stopAgent(workspacePath, executionTaskIdRef.current).catch(() => {
             runtimeStopError.current = null;
           });
           return;
@@ -1657,12 +1674,14 @@ export function useAgentRuntime(
         );
         addCleanup(
           await listen<RuntimeMessageEnvelope>("agent://runtime-message", (event) => {
-            const activeEnvironmentId = activeEnvironmentIdRef.current;
             const activeGeneration = activeGenerationRef.current;
             if (
               listenerIsCurrent() &&
-              (!activeEnvironmentId || event.payload.environmentId === activeEnvironmentId) &&
-              (activeGeneration == null || event.payload.generation === activeGeneration) &&
+              agentRuntimeEnvelopeMatches(
+                expectedEnvironmentIdRef.current,
+                activeGeneration,
+                event.payload,
+              ) &&
               (event.payload.message.id === 0 || compactingTasks.current.size > 0)
             ) {
               void handleMessage(event.payload.message);
@@ -1674,8 +1693,11 @@ export function useAgentRuntime(
             if (
               listenerIsCurrent() &&
               event.payload.message.trim() &&
-              (!activeEnvironmentIdRef.current ||
-                event.payload.environmentId === activeEnvironmentIdRef.current)
+              agentRuntimeEnvelopeMatches(
+                expectedEnvironmentIdRef.current,
+                activeGenerationRef.current,
+                event.payload,
+              )
             ) {
               appendRuntimeLog("stderr", event.payload.message);
             }
@@ -1685,8 +1707,11 @@ export function useAgentRuntime(
           await listen<RuntimeStoppedEnvelope>("agent://runtime-stopped", (event) => {
             if (
               !listenerIsCurrent() ||
-              (activeEnvironmentIdRef.current &&
-                event.payload.environmentId !== activeEnvironmentIdRef.current)
+              !agentRuntimeEnvelopeMatches(
+                expectedEnvironmentIdRef.current,
+                activeGenerationRef.current,
+                event.payload,
+              )
             ) return;
             const stopError = runtimeStopError.current;
             runtimeStopError.current = null;
@@ -1933,17 +1958,20 @@ export function useAgentRuntime(
       return;
     }
 
-    activeEnvironmentIdRef.current = null;
+    activeEnvironmentIdRef.current = expectedEnvironmentIdRef.current;
     activeGenerationRef.current = null;
     setRuntime((current) => ({ ...current, phase: "starting", error: null }));
     appendRuntimeLog("system", "Starting Codex app-server.");
     try {
-      const result = await nativeBridge.startAgent(workspacePath, activeTaskIdRef.current);
+      const result = await nativeBridge.startAgent(workspacePath, executionTaskIdRef.current);
       if (!agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
         workspacePath,
         scope.generation,
       )) return;
+      if (result.environmentId !== expectedEnvironmentIdRef.current) {
+        throw new Error("Codex connected to an unexpected execution environment.");
+      }
       activeEnvironmentIdRef.current = result.environmentId;
       activeGenerationRef.current = result.generation;
       appendRuntimeLog("system", `Codex ${result.version} connected.`);

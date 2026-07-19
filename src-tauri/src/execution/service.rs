@@ -17,9 +17,9 @@ use crate::xiao::models::XiaoWorkspaceMode;
 use crate::xiao::repository::{normalize_workspace_path, XiaoRepository};
 
 use super::models::{
-    ExecutionContext, ExecutionEnvironmentSummary, ManagedPaths, ManagedWorktreeRecord,
-    ManagedWorktreeStatus, ManagedWorktreeSummary, NewManagedWorktreeRecord, OwnershipMarker,
-    TaskExecutionBinding,
+    ExecutionContext, ExecutionEnvironmentRecord, ExecutionEnvironmentSummary, ManagedPaths,
+    ManagedWorktreeRecord, ManagedWorktreeStatus, ManagedWorktreeSummary, NewManagedWorktreeRecord,
+    OwnershipMarker, TaskExecutionBinding,
 };
 
 const MARKER_VERSION: u32 = 1;
@@ -33,7 +33,14 @@ pub fn resolve_execution_context(
     let project_path = canonical_directory(project_path, "project")?;
     let project_display = display_path(&project_path);
     let Some(task_id) = task_id.filter(|value| !value.trim().is_empty()) else {
-        return Ok(unbound_local_context(&project_path));
+        let environment = repository.ensure_workspace_execution_environment(&project_display)?;
+        let environment_root = canonical_directory(&environment.workspace_root, "environment")?;
+        if environment_root != project_path {
+            return Err(
+                "The workspace execution environment does not match its project root.".to_owned(),
+            );
+        }
+        return Ok(workspace_local_context(&project_path, environment));
     };
     let binding = repository.task_execution_binding(&project_display, task_id)?;
     let environment_root = canonical_directory(&binding.environment.workspace_root, "environment")?;
@@ -257,16 +264,23 @@ pub fn remove_managed_task_environment(
     resolve_execution_context(repository, project_path, Some(task_id))
 }
 
-fn unbound_local_context(project_path: &Path) -> ExecutionContext {
+fn workspace_local_context(
+    project_path: &Path,
+    environment: ExecutionEnvironmentRecord,
+) -> ExecutionContext {
     let (isolation_available, isolation_unavailable_reason) = isolation_capability(project_path);
     ExecutionContext {
         project_path: display_path(project_path),
         execution_root: display_path(project_path),
         environment: ExecutionEnvironmentSummary {
-            id: "unbound-windows-local".to_owned(),
-            kind: "windows".to_owned(),
-            label: "Windows local".to_owned(),
-            availability: "available".to_owned(),
+            id: environment.id,
+            kind: environment.kind,
+            label: environment.label,
+            availability: if project_path.is_dir() {
+                "available".to_owned()
+            } else {
+                environment.availability
+            },
         },
         workspace_mode: XiaoWorkspaceMode::Local,
         managed_worktree: None,
@@ -1050,6 +1064,31 @@ mod tests {
         fs::write(nested.join("inside.txt"), "inside baseline\n").unwrap();
         run(root, &["add", "."]);
         run(root, &["commit", "-m", "initial"]);
+    }
+
+    #[test]
+    fn draft_workspace_context_reuses_environment_after_task_save() {
+        let directory = TestDirectory::new("draft-runtime");
+        let workspace = directory.0.join("workspace");
+        let state = directory.0.join("state");
+        fs::create_dir_all(&workspace).unwrap();
+        let repository = XiaoRepository::open(&state).unwrap();
+
+        let draft =
+            resolve_execution_context(&repository, &workspace.to_string_lossy(), None).unwrap();
+        let repeated =
+            resolve_execution_context(&repository, &workspace.to_string_lossy(), None).unwrap();
+        repository
+            .save_workspace(task_update(&workspace, "task"))
+            .unwrap();
+        let persisted =
+            resolve_execution_context(&repository, &workspace.to_string_lossy(), Some("task"))
+                .unwrap();
+
+        assert_eq!(draft.environment.id, repeated.environment.id);
+        assert_eq!(draft.environment.id, persisted.environment.id);
+        assert_eq!(draft.project_path, persisted.project_path);
+        assert_eq!(draft.execution_root, persisted.execution_root);
     }
 
     #[test]

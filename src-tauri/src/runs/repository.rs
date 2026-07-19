@@ -190,6 +190,21 @@ impl XiaoRepository {
         })
     }
 
+    pub(crate) fn has_active_runs(&self) -> Result<bool, String> {
+        self.with_connection(|connection| {
+            let count: i64 = connection
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM runs WHERE status IN ({RUN_OWNERSHIP_STATUSES_SQL})"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not inspect active Xiao runs: {error}"))?;
+            Ok(count != 0)
+        })
+    }
+
     pub(crate) fn run_task_defaults(
         &self,
         workspace_path: &str,
@@ -2685,6 +2700,19 @@ mod tests {
             .unwrap()
             .mutation
             .run
+    }
+
+    #[test]
+    fn active_run_guard_includes_queued_work() {
+        let directory = TestDirectory::new("active-run-guard");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+
+        assert!(!repository.has_active_runs().unwrap());
+        repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "queued"))
+            .unwrap();
+        assert!(repository.has_active_runs().unwrap());
     }
 
     #[test]

@@ -385,6 +385,20 @@ export const confirmedExecutionTaskId = (
     : null
 );
 
+export const shouldAutoConnectAgentRuntime = (
+  codexUpdating: boolean,
+  taskStateReady: boolean,
+  workspaceActionable: boolean,
+  taskWorkspacePath: string,
+  workspacePath: string,
+) => (
+  !codexUpdating &&
+  taskStateReady &&
+  workspaceActionable &&
+  comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
+  Boolean(workspacePath)
+);
+
 const readActiveProjectPath = () => {
   try { return window.localStorage.getItem(activeProjectStorageKey) || undefined; }
   catch { return undefined; }
@@ -1672,7 +1686,9 @@ export function App() {
 
   const agent = useAgentRuntime(
     workspace.path,
+    workspace.execution.environment.id,
     activeTask.id,
+    executionTaskId,
     activeTask.title,
     activeTask.timeline,
     activeTask.timelineComplete,
@@ -1685,7 +1701,13 @@ export function App() {
     updateTaskGoal,
     markTaskFinished,
     refresh,
-    !codexUpdate.updating && Boolean(executionTaskId),
+    shouldAutoConnectAgentRuntime(
+      codexUpdate.updating,
+      taskStateReady,
+      workspaceActionable,
+      taskWorkspacePath,
+      workspace.path,
+    ),
   );
   const titleBarTabs = [
     ...openTaskIds.flatMap((taskId) => {

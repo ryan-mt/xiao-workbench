@@ -1,6 +1,7 @@
 use tauri::State;
 
-use crate::agent::runtime::AgentRuntime;
+use crate::agent::runtime::EnvironmentRuntimeRegistry;
+use crate::xiao::repository::XiaoRepository;
 
 use super::models::{CodexUpdateResult, CodexUpdateStatus, SystemInfo};
 use super::service::{check_codex_update as check_update, read_system_info, update_codex};
@@ -19,9 +20,13 @@ pub async fn check_codex_update() -> Result<CodexUpdateStatus, String> {
 
 #[tauri::command]
 pub async fn update_codex_cli(
-    runtime: State<'_, AgentRuntime>,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
 ) -> Result<CodexUpdateResult, String> {
-    runtime.stop()?;
+    if repository.has_active_runs()? {
+        return Err("Wait for active Xiao runs to finish before updating Codex.".to_owned());
+    }
+    runtimes.stop_all()?;
     tauri::async_runtime::spawn_blocking(update_codex)
         .await
         .map_err(|error| error.to_string())?

@@ -4,6 +4,7 @@ import type { AgentQuestionRequest } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
 import {
   advanceAgentRuntimeWorkspaceScope,
+  agentRuntimeEnvelopeMatches,
   agentQuestionRequestMatches,
   agentRuntimeApprovalRequestKey,
   agentRuntimeTaskScopeMatches,
@@ -69,6 +70,27 @@ const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapsh
 });
 
 describe("agent runtime workspace scope", () => {
+  it("rejects runtime events from other environments and stale generations", () => {
+    expect(
+      agentRuntimeEnvelopeMatches("environment-a", null, {
+        environmentId: "environment-b",
+        generation: 1,
+      }),
+    ).toBe(false);
+    expect(
+      agentRuntimeEnvelopeMatches("environment-a", 2, {
+        environmentId: "environment-a",
+        generation: 1,
+      }),
+    ).toBe(false);
+    expect(
+      agentRuntimeEnvelopeMatches("environment-a", 2, {
+        environmentId: "environment-a",
+        generation: 2,
+      }),
+    ).toBe(true);
+  });
+
   it("keeps its generation while switching tasks in one workspace", () => {
     const scope: AgentRuntimeWorkspaceScope = { workspacePath: "C:/A", generation: 4 };
 

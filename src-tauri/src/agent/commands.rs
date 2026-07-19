@@ -11,22 +11,22 @@ use super::{models, service};
 pub fn start_agent_runtime(
     app: AppHandle,
     project_path: String,
-    task_id: String,
+    task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
-    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     runtimes.start(app, &context.environment.id)
 }
 
 #[tauri::command]
 pub fn stop_agent_runtime(
     project_path: String,
-    task_id: String,
+    task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<(), String> {
-    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     runtimes.stop(&context.environment.id)
 }
 
@@ -216,11 +216,11 @@ fn apply_execution_root(
 #[tauri::command]
 pub async fn read_agent_account(
     project_path: String,
-    task_id: String,
+    task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<models::AgentAccountSummary, String> {
-    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     let runtime = runtimes.runtime(&context.environment.id)?;
     service::read_account(&runtime).await
 }
@@ -228,11 +228,11 @@ pub async fn read_agent_account(
 #[tauri::command]
 pub async fn read_agent_usage(
     project_path: String,
-    task_id: String,
+    task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<models::AgentAccountUsage, String> {
-    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     let runtime = runtimes.runtime(&context.environment.id)?;
     service::read_account_usage(&runtime).await
 }
@@ -240,11 +240,11 @@ pub async fn read_agent_usage(
 #[tauri::command]
 pub async fn list_agent_models(
     project_path: String,
-    task_id: String,
+    task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<models::AgentModelSummary>, String> {
-    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     let runtime = runtimes.runtime(&context.environment.id)?;
     service::list_models(&runtime).await
 }

@@ -63,7 +63,7 @@ export const nativeBridge = {
     return invoke<CodexUpdateResult>("update_codex_cli");
   },
 
-  startAgent(projectPath: string, taskId: string) {
+  startAgent(projectPath: string, taskId: string | null) {
     return invoke<{
       version: string;
       alreadyRunning: boolean;
@@ -72,7 +72,7 @@ export const nativeBridge = {
     }>("start_agent_runtime", { projectPath, taskId });
   },
 
-  stopAgent(projectPath: string, taskId: string) {
+  stopAgent(projectPath: string, taskId: string | null) {
     return invoke<void>("stop_agent_runtime", { projectPath, taskId });
   },
 
@@ -89,15 +89,15 @@ export const nativeBridge = {
     });
   },
 
-  readAgentAccount(projectPath: string, taskId: string) {
+  readAgentAccount(projectPath: string, taskId: string | null) {
     return invoke<AgentAccountSummary>("read_agent_account", { projectPath, taskId });
   },
 
-  readAgentUsage(projectPath: string, taskId: string) {
+  readAgentUsage(projectPath: string, taskId: string | null) {
     return invoke<AgentAccountUsage>("read_agent_usage", { projectPath, taskId });
   },
 
-  listAgentModels(projectPath: string, taskId: string) {
+  listAgentModels(projectPath: string, taskId: string | null) {
     return invoke<AgentModelSummary[]>("list_agent_models", { projectPath, taskId });
   },
 

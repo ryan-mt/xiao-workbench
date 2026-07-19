@@ -27,6 +27,7 @@ import {
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
+  shouldAutoConnectAgentRuntime,
   stageTaskReviewContext,
   taskReviewContext,
   isAcceptanceContractVersionSummary,
@@ -799,6 +800,27 @@ describe("workspace task persistence debounce", () => {
 });
 
 describe("confirmed native task materialization", () => {
+  it("allows the workspace runtime to connect before a draft task is confirmed", () => {
+    const confirmation = beginNativeTaskConfirmation(
+      { workspacePath: "", generation: 0, taskIds: new Set() },
+      workspacePath,
+    );
+
+    expect(confirmedExecutionTaskId(confirmation, workspacePath, null)).toBeNull();
+    expect(
+      shouldAutoConnectAgentRuntime(false, true, true, workspacePath, workspacePath),
+    ).toBe(true);
+  });
+
+  it("blocks runtime auto-connect during updates and stale workspace transitions", () => {
+    expect(
+      shouldAutoConnectAgentRuntime(true, true, true, workspacePath, workspacePath),
+    ).toBe(false);
+    expect(
+      shouldAutoConnectAgentRuntime(false, true, true, "D:/projects/other", workspacePath),
+    ).toBe(false);
+  });
+
   it("keeps a fresh task unconfirmed while its bridge save is pending and after failure", async () => {
     let confirmation = confirmNativeTaskIds(
       beginNativeTaskConfirmation(

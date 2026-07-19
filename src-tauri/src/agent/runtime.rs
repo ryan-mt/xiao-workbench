@@ -575,6 +575,20 @@ impl EnvironmentRuntimeRegistry {
         runtime.stop()
     }
 
+    pub fn stop_all(&self) -> Result<(), String> {
+        let runtimes = self
+            .runtimes
+            .lock()
+            .map_err(|error| error.to_string())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for runtime in runtimes {
+            runtime.stop()?;
+        }
+        Ok(())
+    }
+
     pub async fn request(
         &self,
         environment_id: &str,
