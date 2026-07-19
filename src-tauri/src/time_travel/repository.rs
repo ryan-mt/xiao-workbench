@@ -80,6 +80,38 @@ pub(crate) fn insert_turn_checkpoint(
     Ok(())
 }
 
+fn ensure_current_execution_root(
+    connection: &Connection,
+    workspace_id: i64,
+    task_id: &str,
+    workspace_path: &str,
+    execution_root: &str,
+) -> Result<(), String> {
+    let (workspace_mode, managed_root, managed_status): (String, Option<String>, Option<String>) =
+        connection
+            .query_row(
+                r#"SELECT t.workspace_mode, m.execution_root, m.status
+               FROM tasks t
+               LEFT JOIN managed_worktrees m ON m.id = t.managed_worktree_id
+               WHERE t.workspace_id = ?1 AND t.task_id = ?2"#,
+                params![workspace_id, task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| format!("Could not verify the task execution root: {error}"))?;
+    let current_root = match workspace_mode.as_str() {
+        "local" => normalize_workspace_path(workspace_path),
+        "managed-worktree" if managed_status.as_deref() == Some("active") => {
+            managed_root.ok_or_else(|| "The managed task has no execution root.".to_owned())?
+        }
+        "managed-worktree" => return Err("The managed task execution root is changing.".to_owned()),
+        _ => return Err("The task has an unsupported execution mode.".to_owned()),
+    };
+    if normalize_workspace_path(&current_root) != normalize_workspace_path(execution_root) {
+        return Err("The task execution root changed before the operation could start.".to_owned());
+    }
+    Ok(())
+}
+
 impl XiaoRepository {
     pub(crate) fn record_turn_checkpoint(
         &self,
@@ -124,12 +156,28 @@ impl XiaoRepository {
         &self,
         workspace_path: &str,
         task_id: &str,
+        execution_root: &str,
         limit: Option<usize>,
     ) -> Result<Vec<TurnCheckpointSummary>, String> {
         let limit = limit
             .unwrap_or(DEFAULT_CHECKPOINT_LIMIT)
             .clamp(1, MAX_CHECKPOINT_LIMIT) as i64;
         self.with_connection(|connection| {
+            let normalized_workspace = normalize_workspace_path(workspace_path);
+            let workspace_id: i64 = connection
+                .query_row(
+                    "SELECT id FROM workspaces WHERE workspace_path = ?1",
+                    [&normalized_workspace],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "The Xiao workspace is not persisted.".to_owned())?;
+            ensure_current_execution_root(
+                connection,
+                workspace_id,
+                task_id,
+                &normalized_workspace,
+                execution_root,
+            )?;
             let mut statement = connection
                 .prepare(
                     r#"SELECT c.id, c.run_id, c.turn_id, r.prompt, r.status,
@@ -137,14 +185,14 @@ impl XiaoRepository {
                               c.after_fingerprint, c.created_at, c.restored_at
                        FROM turn_checkpoints c
                        JOIN runs r ON r.id = c.run_id
-                       JOIN workspaces w ON w.id = c.workspace_id
-                       WHERE w.workspace_path = ?1 AND c.task_id = ?2
-                       ORDER BY c.created_at DESC, c.id DESC LIMIT ?3"#,
+                       WHERE c.workspace_id = ?1 AND c.task_id = ?2
+                         AND c.execution_root = ?3
+                       ORDER BY c.created_at DESC, c.id DESC LIMIT ?4"#,
                 )
                 .map_err(|error| format!("Could not prepare Xiao checkpoint history: {error}"))?;
             let rows = statement
                 .query_map(
-                    params![normalize_workspace_path(workspace_path), task_id, limit],
+                    params![workspace_id, task_id, execution_root, limit],
                     |row| {
                         let patch_bytes = row.get::<_, i64>(5)?;
                         Ok(TurnCheckpointSummary {
@@ -191,6 +239,13 @@ impl XiaoRepository {
                     |row| row.get(0),
                 )
                 .map_err(|_| "The Xiao workspace is not persisted.".to_owned())?;
+            ensure_current_execution_root(
+                &transaction,
+                workspace_id,
+                task_id,
+                &normalized_workspace,
+                execution_root,
+            )?;
             let active_runs: i64 = transaction
                 .query_row(
                     r#"SELECT COUNT(*) FROM runs
@@ -211,8 +266,8 @@ impl XiaoRepository {
                 .query_row(
                     r#"SELECT 1 FROM turn_checkpoints
                        WHERE id = ?1 AND workspace_id = ?2 AND task_id = ?3
-                         AND restored_at IS NULL"#,
-                    params![target_checkpoint_id, workspace_id, task_id],
+                         AND execution_root = ?4 AND restored_at IS NULL"#,
+                    params![target_checkpoint_id, workspace_id, task_id, execution_root],
                     |_| Ok(()),
                 )
                 .optional()
@@ -227,12 +282,13 @@ impl XiaoRepository {
                     r#"SELECT id, run_id, execution_root, patch, patch_sha256,
                               before_fingerprint, after_fingerprint
                        FROM turn_checkpoints
-                       WHERE workspace_id = ?1 AND task_id = ?2 AND restored_at IS NULL
+                       WHERE workspace_id = ?1 AND task_id = ?2
+                         AND execution_root = ?3 AND restored_at IS NULL
                        ORDER BY created_at DESC, id DESC"#,
                 )
                 .map_err(|error| format!("Could not prepare the restore plan: {error}"))?;
             let rows = statement
-                .query_map(params![workspace_id, task_id], |row| {
+                .query_map(params![workspace_id, task_id, execution_root], |row| {
                     Ok(StoredTurnCheckpoint {
                         id: row.get(0)?,
                         run_id: row.get(1)?,
@@ -438,6 +494,54 @@ mod tests {
         fs::read_to_string(path).unwrap().replace("\r\n", "\n")
     }
 
+    fn insert_completed_run(
+        repository: &XiaoRepository,
+        workspace_path: &str,
+        run_id: &str,
+        turn_id: &str,
+        execution_root: &str,
+    ) {
+        repository
+            .with_connection(|connection| {
+                let (workspace_id, environment_id): (i64, String) = connection
+                    .query_row(
+                        r#"SELECT w.id, e.id FROM workspaces w
+                           JOIN execution_environments e ON e.workspace_id = w.id
+                           WHERE w.workspace_path = ?1"#,
+                        [normalize_workspace_path(workspace_path)],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO runs(
+                            id, workspace_id, task_id, idempotency_key, status,
+                            agent_outcome, verification_outcome, execution_root,
+                            queued_at, started_at, finished_at, version,
+                            execution_environment_id, input_json, history_json, prompt,
+                            mode, approval_policy, sandbox_mode, turn_id,
+                            verification_baseline_state
+                         ) VALUES (
+                            ?1, ?2, 'task', ?3, 'completed', 'completed',
+                            'not_requested', ?4, 1, 1, 1, 0, ?5, '[]', '[]',
+                            'Change note', 'default', 'on-request', 'workspace-write',
+                            ?6, 'not_required'
+                         )"#,
+                        params![
+                            run_id,
+                            workspace_id,
+                            format!("test:{run_id}"),
+                            execution_root,
+                            environment_id,
+                            turn_id,
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn durable_restore_compensates_on_database_failure_then_commits_once() {
         let app_data = test_directory("repo");
@@ -505,7 +609,7 @@ mod tests {
             .record_turn_checkpoint(&run_id, "turn-1", &capture)
             .unwrap();
         let checkpoint = repository
-            .list_turn_checkpoints(&execution_root, "task", None)
+            .list_turn_checkpoints(&execution_root, "task", &execution_root, None)
             .unwrap()
             .remove(0);
 
@@ -558,7 +662,7 @@ mod tests {
         assert_eq!(read_text(&workspace.join("note.txt")), "after\n");
         assert_eq!(
             repository
-                .list_turn_checkpoints(&execution_root, "task", None)
+                .list_turn_checkpoints(&execution_root, "task", &execution_root, None)
                 .unwrap()[0]
                 .restored_at,
             None
@@ -577,7 +681,7 @@ mod tests {
         assert_eq!(restored.restored_turn_count, 1);
         assert_eq!(read_text(&workspace.join("note.txt")), "before\n");
         assert!(repository
-            .list_turn_checkpoints(&execution_root, "task", None)
+            .list_turn_checkpoints(&execution_root, "task", &execution_root, None)
             .unwrap()[0]
             .restored_at
             .is_some());
@@ -590,6 +694,213 @@ mod tests {
                 .count(),
             1
         );
+
+        drop(repository);
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn restore_filters_checkpoints_to_current_execution_root() {
+        let app_data = test_directory("root-filter-repo");
+        let workspace = test_directory("root-filter-workspace");
+        let removed_worktree = test_directory("removed-worktree");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "before\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![task()],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "after\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        let local_root = normalize_workspace_path(&workspace_path);
+        let foreign_root = normalize_workspace_path(&removed_worktree.to_string_lossy());
+        let local_run_id = new_uuid_v7();
+        let foreign_run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &local_run_id,
+            "turn-local",
+            &local_root,
+        );
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &foreign_run_id,
+            "turn-foreign",
+            &foreign_root,
+        );
+        repository
+            .record_turn_checkpoint(&local_run_id, "turn-local", &capture)
+            .unwrap();
+        repository
+            .record_turn_checkpoint(&foreign_run_id, "turn-foreign", &capture)
+            .unwrap();
+
+        let (local_checkpoint_id, foreign_checkpoint_id) = repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE turn_checkpoints SET created_at = 1 WHERE run_id = ?1",
+                        [&local_run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "UPDATE turn_checkpoints SET created_at = 2 WHERE run_id = ?1",
+                        [&foreign_run_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let local_checkpoint_id = connection
+                    .query_row(
+                        "SELECT id FROM turn_checkpoints WHERE run_id = ?1",
+                        [&local_run_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let foreign_checkpoint_id = connection
+                    .query_row(
+                        "SELECT id FROM turn_checkpoints WHERE run_id = ?1",
+                        [&foreign_run_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok((local_checkpoint_id, foreign_checkpoint_id))
+            })
+            .unwrap();
+
+        let foreign_restore = repository.restore_turn_checkpoints(
+            &workspace_path,
+            "task",
+            &foreign_checkpoint_id,
+            &local_root,
+        );
+        assert_eq!(
+            foreign_restore.unwrap_err(),
+            "The selected turn is no longer restorable."
+        );
+        assert_eq!(read_text(&workspace.join("note.txt")), "after\n");
+
+        let stale_worktree_id = "stale-worktree";
+        repository
+            .with_connection(|connection| {
+                let workspace_id: i64 = connection
+                    .query_row(
+                        "SELECT id FROM workspaces WHERE workspace_path = ?1",
+                        [&local_root],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"INSERT INTO managed_worktrees(
+                            id, workspace_id, task_id, run_id, repository_root,
+                            repository_common_dir_sha256, checkout_path, execution_root,
+                            branch, base_commit, owner_marker_path, status, failure_reason,
+                            created_at, removed_at
+                         ) VALUES (
+                            ?1, ?2, 'task', NULL, ?3, ?4, ?5, ?6, 'xiao/stale',
+                            'base', ?7, 'active', NULL, 3, NULL
+                         )"#,
+                        params![
+                            stale_worktree_id,
+                            workspace_id,
+                            local_root,
+                            "0".repeat(64),
+                            foreign_root,
+                            foreign_root,
+                            format!("{foreign_root}/ownership.json"),
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"UPDATE tasks SET workspace_mode = 'managed-worktree',
+                            managed_worktree_id = ?1
+                           WHERE workspace_id = ?2 AND task_id = 'task'"#,
+                        params![stale_worktree_id, workspace_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let stale_root_restore = repository.restore_turn_checkpoints(
+            &workspace_path,
+            "task",
+            &local_checkpoint_id,
+            &local_root,
+        );
+        assert_eq!(
+            stale_root_restore.unwrap_err(),
+            "The task execution root changed before the operation could start."
+        );
+        assert_eq!(read_text(&workspace.join("note.txt")), "after\n");
+        repository
+            .with_connection(|connection| {
+                let workspace_id: i64 = connection
+                    .query_row(
+                        "SELECT id FROM workspaces WHERE workspace_path = ?1",
+                        [&local_root],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        r#"UPDATE tasks SET workspace_mode = 'local', managed_worktree_id = NULL
+                           WHERE workspace_id = ?1 AND task_id = 'task'"#,
+                        [workspace_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                connection
+                    .execute(
+                        "DELETE FROM managed_worktrees WHERE id = ?1",
+                        [stale_worktree_id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let restored = repository
+            .restore_turn_checkpoints(&workspace_path, "task", &local_checkpoint_id, &local_root)
+            .unwrap();
+        assert_eq!(restored.restored_turn_count, 1);
+        assert_eq!(
+            restored.restored_checkpoint_ids,
+            vec![local_checkpoint_id.clone()]
+        );
+        assert_eq!(read_text(&workspace.join("note.txt")), "before\n");
+
+        let checkpoints = repository
+            .list_turn_checkpoints(&workspace_path, "task", &local_root, None)
+            .unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].id, local_checkpoint_id);
+        assert!(checkpoints[0].restored_at.is_some());
+        let foreign_restored_at = repository
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT restored_at FROM turn_checkpoints WHERE id = ?1",
+                        [&foreign_checkpoint_id],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(foreign_restored_at, None);
 
         drop(repository);
         fs::remove_dir_all(app_data).unwrap();

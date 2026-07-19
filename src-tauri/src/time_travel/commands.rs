@@ -12,7 +12,8 @@ pub fn list_xiao_turn_checkpoints(
     limit: Option<usize>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<TurnCheckpointSummary>, String> {
-    repository.list_turn_checkpoints(&project_path, &task_id, limit)
+    let context = resolve_execution_context(&repository, &project_path, Some(&task_id))?;
+    repository.list_turn_checkpoints(&project_path, &task_id, &context.execution_root, limit)
 }
 
 #[tauri::command]
