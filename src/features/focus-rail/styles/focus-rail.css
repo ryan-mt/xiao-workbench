@@ -3,7 +3,7 @@
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: 40px minmax(0, 1fr);
+  grid-template-rows: 44px minmax(0, 1fr);
   overflow: hidden;
   border-left: 1px solid var(--line);
   background: color-mix(in srgb, var(--canvas) 96%, var(--panel));
@@ -1452,8 +1452,10 @@
 
 .review-tabs > button.is-active,
 .review-tabs__utility.is-active {
-  background: var(--surface-strong);
+  background: var(--surface-hover);
   color: var(--text);
+  box-shadow: none;
+  font-weight: 600;
 }
 
 .review-tabs > button > small {

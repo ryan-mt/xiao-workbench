@@ -226,111 +226,97 @@ export function ProfilePage({
 
   return (
     <section className="profile-page">
-      <header className="profile-hero">
-        <div className="profile-hero__inner">
-          <div className="profile-identity">
-            <button className="profile-avatar" type="button" onClick={openEditor} aria-label="Edit profile">
-              {profile.avatarDataUrl ? (
-                <img src={profile.avatarDataUrl} alt="" />
-              ) : initials ? (
-                initials
-              ) : (
-                <XiaoIcon name="user" size={24} />
-              )}
-            </button>
-            <div>
-              <span className="profile-eyebrow">Local identity</span>
-              <h1>{profile.name || "Set up your profile"}</h1>
-              <p>
-                {profile.name
-                  ? "Your private identity across Xiao tasks"
-                  : "Add the name and photo Xiao should use"}
-              </p>
-            </div>
+      <div className="profile-shell">
+        <header className="profile-toolbar">
+          <div>
+            <span className="profile-eyebrow">Local account</span>
+            <h1>Profile &amp; usage</h1>
+            <p>Identity and Codex activity stored by Xiao on this device.</p>
           </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close profile">
+            <XiaoIcon name="close" size={14} />
+          </button>
+        </header>
 
-          <div className="profile-hero__actions">
-            <span
-              className={connected ? "profile-connection is-connected" : "profile-connection"}
-              role="status"
-            >
-              <i /> {connected ? "Codex connected" : "Reconnecting"}
-            </span>
-            <button className="profile-edit-button" type="button" onClick={openEditor}>
-              <XiaoIcon name="edit" size={14} />
-              <span>Edit profile</span>
-            </button>
-            <button className="icon-button" type="button" onClick={onClose} aria-label="Close profile">
-              <XiaoIcon name="close" size={14} />
-            </button>
-          </div>
-
-          <div className="profile-hero__usage">
-            <span>Codex lifetime</span>
-            <strong title={fullNumber.format(activityUsage.totals.totalTokens)}>
-              {compactNumber(activityUsage.totals.totalTokens)}
-            </strong>
-            <small>{fullNumber.format(activityUsage.totals.totalTokens)} tokens reported by Codex</small>
-          </div>
-        </div>
-      </header>
-
-      <div className="profile-dashboard">
-        <section className="profile-activity" aria-labelledby="profile-activity-title">
-          <header className="profile-section-heading">
-            <div>
-              <span>365-day signal</span>
-              <h2 id="profile-activity-title">Codex activity</h2>
-            </div>
-            <p>Account usage in your local timezone</p>
-          </header>
-
-          <div className="profile-activity__body">
-            <div className="profile-heatmap">
-              <div className="contribution-months" aria-hidden="true">
-                {monthLabels.map((day) => <span key={day.key}>{monthLabel.format(day.date)}</span>)}
-              </div>
-              <div className="profile-heatmap__plot">
-                <div className="profile-heatmap__weekdays" aria-hidden="true">
-                  <span>M</span>
-                  <span>W</span>
-                  <span>F</span>
-                </div>
-                <div className="contribution-grid" aria-label="Token activity over the last year">
-                  {days.map((day) => (
-                    <span
-                      className={`contribution-day level-${day.level}`}
-                      key={day.key}
-                      title={`${dayLabel.format(day.date)}: ${fullNumber.format(day.tokens)} tokens`}
-                    />
-                  ))}
-                </div>
-              </div>
-              <footer className="profile-heatmap__legend">
-                <span>Less</span>
-                {[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}
-                <span>More</span>
-              </footer>
-            </div>
-
-            <aside className="profile-activity__summary" aria-label="Activity summary">
-              <div className="profile-streak">
-                <span>Current streak</span>
-                <strong>{activityUsage.currentStreak}<small>days</small></strong>
+        <div className="profile-layout">
+          <aside className="profile-sidebar" aria-label="Local profile">
+            <div className="profile-identity">
+              <button className="profile-avatar" type="button" onClick={openEditor} aria-label="Edit profile">
+                {profile.avatarDataUrl ? (
+                  <img src={profile.avatarDataUrl} alt="" />
+                ) : initials ? (
+                  initials
+                ) : (
+                  <XiaoIcon name="user" size={24} />
+                )}
+              </button>
+              <div>
+                <span className="profile-eyebrow">Local identity</span>
+                <h2>{profile.name || "Set up your profile"}</h2>
                 <p>
-                  {activityUsage.currentStreak
-                    ? "Keep the signal alive with another Xiao task today."
-                    : "Start a Xiao task today to begin a new streak."}
+                  {profile.name
+                    ? "Used across Xiao tasks"
+                    : "Add the name and photo Xiao should use"}
                 </p>
               </div>
-              <dl>
+            </div>
+
+            <button className="profile-edit-button" type="button" onClick={openEditor}>
+              <XiaoIcon name="edit" size={14} />
+              <span>Edit local profile</span>
+            </button>
+
+            <dl className="profile-facts">
+              <div>
+                <dt>Codex</dt>
+                <dd className={connected ? "is-connected" : ""}>
+                  <i /> {connected ? "Connected" : "Reconnecting"}
+                </dd>
+              </div>
+              <div>
+                <dt>Profile data</dt>
+                <dd>On this device</dd>
+              </div>
+              <div>
+                <dt>Runtime</dt>
+                <dd>{runtime.phase}</dd>
+              </div>
+            </dl>
+
+            <p className="profile-privacy-note">
+              Xiao keeps your display name and photo local. Usage values come from Codex events.
+            </p>
+          </aside>
+
+          <main className="profile-main">
+            <section className="profile-section profile-activity" aria-labelledby="profile-activity-title">
+              <header className="profile-section-heading">
                 <div>
-                  <dt>Longest streak</dt>
-                  <dd>{activityUsage.longestStreak} days</dd>
+                  <h2 id="profile-activity-title">Activity</h2>
+                  <p>Codex usage in your local timezone.</p>
+                </div>
+                <span>Last 365 days</span>
+              </header>
+
+              <dl className="profile-summary-grid">
+                <div className="profile-summary-grid__primary">
+                  <dt>Lifetime tokens</dt>
+                  <dd title={fullNumber.format(activityUsage.totals.totalTokens)}>
+                    {compactNumber(activityUsage.totals.totalTokens)}
+                  </dd>
+                  <small>{fullNumber.format(activityUsage.totals.totalTokens)} reported</small>
+                </div>
+                <div>
+                  <dt>Current streak</dt>
+                  <dd>{activityUsage.currentStreak}<small> days</small></dd>
                 </div>
                 <div>
                   <dt>Active days</dt>
                   <dd>{activityUsage.activeDays}</dd>
+                </div>
+                <div>
+                  <dt>Longest streak</dt>
+                  <dd>{activityUsage.longestStreak}<small> days</small></dd>
                 </div>
                 <div>
                   <dt>Peak day</dt>
@@ -341,51 +327,75 @@ export function ProfilePage({
                   <dd>{compactDuration(accountUsage?.longestRunningTurnSec)}</dd>
                 </div>
               </dl>
-            </aside>
-          </div>
-        </section>
 
-        <section className="profile-ledger" aria-labelledby="profile-ledger-title">
-          <header className="profile-section-heading">
-            <div>
-              <span>Local ledger</span>
-              <h2 id="profile-ledger-title">Token flow through Xiao</h2>
-            </div>
-            <div className="profile-ledger__total">
-              <span>Observed total</span>
-              <strong title={fullNumber.format(usage.totals.totalTokens)}>
-                {compactNumber(usage.totals.totalTokens)}
-              </strong>
-            </div>
-          </header>
-
-          <div className="profile-token-rows">
-            {tokenRows.map((row) => (
-              <div className={`profile-token-row profile-token-row--${row.id}`} key={row.id}>
-                <div>
-                  <strong>{row.label}</strong>
-                  <span>{row.description}</span>
+              <div className="profile-heatmap">
+                <div className="contribution-months" aria-hidden="true">
+                  {monthLabels.map((day) => <span key={day.key}>{monthLabel.format(day.date)}</span>)}
                 </div>
-                <div className="profile-token-meter" aria-hidden="true">
-                  <i
-                    style={{
-                      width: `${row.value ? Math.max(3, (row.value / maxTokenRow) * 100) : 0}%`,
-                    }}
-                  />
+                <div className="profile-heatmap__plot">
+                  <div className="profile-heatmap__weekdays" aria-hidden="true">
+                    <span>M</span>
+                    <span>W</span>
+                    <span>F</span>
+                  </div>
+                  <div className="contribution-grid" aria-label="Token activity over the last year">
+                    {days.map((day) => (
+                      <span
+                        className={`contribution-day level-${day.level}`}
+                        key={day.key}
+                        title={`${dayLabel.format(day.date)}: ${fullNumber.format(day.tokens)} tokens`}
+                      />
+                    ))}
+                  </div>
                 </div>
-                <strong title={fullNumber.format(row.value)}>{compactNumber(row.value)}</strong>
+                <footer className="profile-heatmap__legend">
+                  <span>Less</span>
+                  {[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}
+                  <span>More</span>
+                </footer>
               </div>
-            ))}
-          </div>
+            </section>
 
-          <footer className="profile-ledger__note">
-            <XiaoIcon name="result" size={15} />
-            <p>
-              Values come from <code>thread/tokenUsage/updated</code>. Xiao stores emitted deltas;
-              it does not estimate tokens from text.
-            </p>
-          </footer>
-        </section>
+            <section className="profile-section profile-ledger" aria-labelledby="profile-ledger-title">
+              <header className="profile-section-heading">
+                <div>
+                  <h2 id="profile-ledger-title">Token breakdown</h2>
+                  <p>Observed usage emitted during Xiao tasks.</p>
+                </div>
+                <strong title={fullNumber.format(usage.totals.totalTokens)}>
+                  {compactNumber(usage.totals.totalTokens)} total
+                </strong>
+              </header>
+
+              <div className="profile-token-rows">
+                {tokenRows.map((row) => (
+                  <div className={`profile-token-row profile-token-row--${row.id}`} key={row.id}>
+                    <div>
+                      <strong>{row.label}</strong>
+                      <span>{row.description}</span>
+                    </div>
+                    <div className="profile-token-meter" aria-hidden="true">
+                      <i
+                        style={{
+                          width: `${row.value ? Math.max(3, (row.value / maxTokenRow) * 100) : 0}%`,
+                        }}
+                      />
+                    </div>
+                    <strong title={fullNumber.format(row.value)}>{compactNumber(row.value)}</strong>
+                  </div>
+                ))}
+              </div>
+
+              <footer className="profile-ledger__note">
+                <XiaoIcon name="result" size={15} />
+                <p>
+                  Source: <code>thread/tokenUsage/updated</code>. Xiao stores emitted deltas and
+                  does not estimate tokens from text.
+                </p>
+              </footer>
+            </section>
+          </main>
+        </div>
       </div>
 
       {editing ? (

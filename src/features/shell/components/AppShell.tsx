@@ -9,19 +9,23 @@ type AppShellProps = {
   focusRail?: ReactNode;
   statusBar: ReactNode;
   sidebarOpen: boolean;
+  focusRailOverlay?: boolean;
   onCloseSidebar: () => void;
 };
 
-const defaultSidebarWidth = 252;
-const minSidebarWidth = 220;
-const sidebarWidthStorageKey = "xiao.sidebar.width";
-const defaultFocusRailWidth = 520;
-const minFocusRailWidth = 480;
-const minTaskWidth = 520;
-const focusRailWidthStorageKey = "xiao.focus-rail.width";
+const defaultSidebarWidth = 272;
+const minSidebarWidth = 240;
+const sidebarWidthStorageKey = "xiao.sidebar.width.v3";
+const defaultFocusRailWidth = 400;
+const minFocusRailWidth = 360;
+const defaultFocusRailPeekWidth = 560;
+const minFocusRailPeekWidth = 480;
+const minTaskWidth = 600;
+const focusRailWidthStorageKey = "xiao.focus-rail.dock.width.v3";
+const focusRailPeekWidthStorageKey = "xiao.focus-rail.peek.width.v3";
 
 const maxSidebarWidth = () =>
-  Math.max(minSidebarWidth, Math.min(460, Math.floor(window.innerWidth * 0.45)));
+  Math.max(minSidebarWidth, Math.min(380, Math.floor(window.innerWidth * 0.4)));
 
 const clampSidebarWidth = (width: number) =>
   Math.min(maxSidebarWidth(), Math.max(minSidebarWidth, width));
@@ -37,14 +41,14 @@ const readSidebarWidth = () => {
   }
 };
 
-const readFocusRailWidth = () => {
+const readFocusRailWidth = (storageKey: string, minimum: number, fallback: number) => {
   try {
-    const stored = Number(window.localStorage.getItem(focusRailWidthStorageKey));
+    const stored = Number(window.localStorage.getItem(storageKey));
     return Number.isFinite(stored) && stored > 0
-      ? Math.max(minFocusRailWidth, stored)
-      : defaultFocusRailWidth;
+      ? Math.max(minimum, stored)
+      : fallback;
   } catch {
-    return defaultFocusRailWidth;
+    return fallback;
   }
 };
 
@@ -55,21 +59,46 @@ export function AppShell({
   focusRail,
   statusBar,
   sidebarOpen,
+  focusRailOverlay: preferFocusRailOverlay = false,
   onCloseSidebar,
 }: AppShellProps) {
   const focusRailOpen = Boolean(focusRail);
   const [sidebarWidth, setSidebarWidth] = useState(readSidebarWidth);
   const [resizingSidebar, setResizingSidebar] = useState(false);
-  const [focusRailWidth, setFocusRailWidth] = useState(readFocusRailWidth);
-  const [focusRailMaxWidth, setFocusRailMaxWidth] = useState(defaultFocusRailWidth);
-  const [focusRailOverlay, setFocusRailOverlay] = useState(true);
+  const [focusRailDockWidth, setFocusRailDockWidth] = useState(() =>
+    readFocusRailWidth(focusRailWidthStorageKey, minFocusRailWidth, defaultFocusRailWidth),
+  );
+  const [focusRailPeekWidth, setFocusRailPeekWidth] = useState(() =>
+    readFocusRailWidth(
+      focusRailPeekWidthStorageKey,
+      minFocusRailPeekWidth,
+      defaultFocusRailPeekWidth,
+    ),
+  );
+  const [focusRailMaxWidth, setFocusRailMaxWidth] = useState(defaultFocusRailPeekWidth);
+  const [focusRailConstrained, setFocusRailConstrained] = useState(true);
   const [resizingFocusRail, setResizingFocusRail] = useState(false);
   const sidebarResizeStart = useRef({ pointerX: 0, sidebarWidth: defaultSidebarWidth });
   const focusRailResizeStart = useRef({ pointerX: 0, focusRailWidth: defaultFocusRailWidth });
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const focusRailWidth = preferFocusRailOverlay ? focusRailPeekWidth : focusRailDockWidth;
+  const focusRailMinimum = preferFocusRailOverlay
+    ? minFocusRailPeekWidth
+    : minFocusRailWidth;
+  const focusRailDefault = preferFocusRailOverlay
+    ? defaultFocusRailPeekWidth
+    : defaultFocusRailWidth;
+
+  const updateFocusRailWidth = (update: (width: number) => number) => {
+    if (preferFocusRailOverlay) {
+      setFocusRailPeekWidth(update);
+      return;
+    }
+    setFocusRailDockWidth(update);
+  };
 
   const clampFocusRailWidth = (width: number) =>
-    Math.min(focusRailMaxWidth, Math.max(minFocusRailWidth, width));
+    Math.min(focusRailMaxWidth, Math.max(focusRailMinimum, width));
 
   useEffect(() => {
     if (resizingSidebar) return;
@@ -83,11 +112,12 @@ export function AppShell({
   useEffect(() => {
     if (resizingFocusRail) return;
     try {
-      window.localStorage.setItem(focusRailWidthStorageKey, String(focusRailWidth));
+      window.localStorage.setItem(focusRailWidthStorageKey, String(focusRailDockWidth));
+      window.localStorage.setItem(focusRailPeekWidthStorageKey, String(focusRailPeekWidth));
     } catch {
-      // Keep the resized width for this session when storage is unavailable.
+      // Keep the resized widths for this session when storage is unavailable.
     }
-  }, [focusRailWidth, resizingFocusRail]);
+  }, [focusRailDockWidth, focusRailPeekWidth, resizingFocusRail]);
 
   useEffect(() => {
     const keepWidthInViewport = () => setSidebarWidth((width) => clampSidebarWidth(width));
@@ -138,26 +168,28 @@ export function AppShell({
     const keepFocusRailInWorkspace = () => {
       const overlaysTask =
         window.matchMedia("(max-width: 1040px)").matches ||
-        workspace.clientWidth < minTaskWidth + minFocusRailWidth;
+        workspace.clientWidth < minTaskWidth + focusRailMinimum;
       const nextMax = Math.max(
-        minFocusRailWidth,
+        focusRailMinimum,
         workspace.clientWidth - (overlaysTask ? 0 : minTaskWidth),
       );
-      setFocusRailOverlay(overlaysTask);
+      setFocusRailConstrained(overlaysTask);
       setFocusRailMaxWidth(nextMax);
-      setFocusRailWidth((width) => Math.min(nextMax, Math.max(minFocusRailWidth, width)));
+      updateFocusRailWidth((width) =>
+        Math.min(nextMax, Math.max(focusRailMinimum, width)),
+      );
     };
     keepFocusRailInWorkspace();
     const observer = new ResizeObserver(keepFocusRailInWorkspace);
     observer.observe(workspace);
     return () => observer.disconnect();
-  }, [focusRailOpen]);
+  }, [focusRailOpen, preferFocusRailOverlay]);
 
   useEffect(() => {
     if (!resizingFocusRail) return;
 
     const resize = (event: PointerEvent) => {
-      setFocusRailWidth(
+      updateFocusRailWidth(() =>
         clampFocusRailWidth(
           focusRailResizeStart.current.focusRailWidth -
             (event.clientX - focusRailResizeStart.current.pointerX),
@@ -175,7 +207,7 @@ export function AppShell({
       window.removeEventListener("pointercancel", stopResizing);
       window.removeEventListener("blur", stopResizing);
     };
-  }, [focusRailMaxWidth, resizingFocusRail]);
+  }, [focusRailMaxWidth, preferFocusRailOverlay, resizingFocusRail]);
 
   return (
     <div
@@ -227,7 +259,9 @@ export function AppShell({
         ) : null}
         <div
           className={`app-workspace ${focusRailOpen ? "app-workspace--split" : ""} ${
-            focusRailOpen && focusRailOverlay ? "app-workspace--focus-overlay" : ""
+            focusRailOpen && (preferFocusRailOverlay || focusRailConstrained)
+              ? "app-workspace--focus-overlay"
+              : ""
           }`}
           ref={workspaceRef}
         >
@@ -238,17 +272,17 @@ export function AppShell({
               role="separator"
               aria-label="Resize review panel"
               aria-orientation="vertical"
-              aria-valuemin={minFocusRailWidth}
+              aria-valuemin={focusRailMinimum}
               aria-valuemax={focusRailMaxWidth}
               aria-valuenow={focusRailWidth}
               tabIndex={0}
               onDoubleClick={() =>
-                setFocusRailWidth(clampFocusRailWidth(defaultFocusRailWidth))
+                updateFocusRailWidth(() => clampFocusRailWidth(focusRailDefault))
               }
               onKeyDown={(event) => {
                 if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
                 event.preventDefault();
-                setFocusRailWidth((width) =>
+                updateFocusRailWidth((width) =>
                   clampFocusRailWidth(width + (event.key === "ArrowLeft" ? 10 : -10)),
                 );
               }}

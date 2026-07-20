@@ -14,6 +14,8 @@
     "probe:codex": "node scripts/probe-codex-app-server.mjs",
     "pretauri": "node scripts/sync-build-version.mjs",
     "tauri": "tauri",
+    "pretauri:dev:beta": "node scripts/sync-build-version.mjs",
+    "tauri:dev:beta": "tauri dev --config src-tauri/tauri.beta.conf.json",
     "check": "tsc -b --pretty false",
     "test": "vitest run"
   },

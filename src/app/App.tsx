@@ -575,6 +575,17 @@ export const shouldInvalidateTaskWorkspaceState = (
     comparableWorkspacePath(taskWorkspacePath)
 );
 
+export const shouldAdoptResolvedWorkspacePath = (
+  loading: boolean,
+  requestedWorkspacePath: string | undefined,
+  resolvedWorkspacePath: string,
+) => (
+  !loading &&
+  Boolean(resolvedWorkspacePath) &&
+  comparableWorkspacePath(requestedWorkspacePath ?? "") !==
+    comparableWorkspacePath(resolvedWorkspacePath)
+);
+
 const readActiveProjectPath = () => {
   try { return window.localStorage.getItem(activeProjectStorageKey) || undefined; }
   catch { return undefined; }
@@ -1332,7 +1343,10 @@ export function App() {
     setFocusPanelOpen(false);
   };
   const [sidebarOpen, setSidebarOpen] = useState(
-    () => !window.matchMedia("(max-width: 760px)").matches,
+    () =>
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function" ||
+      !window.matchMedia("(max-width: 760px)").matches,
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [taskSwitcherOpen, setTaskSwitcherOpen] = useState(false);
@@ -1576,7 +1590,10 @@ export function App() {
   const taskSaveDebouncer = taskSaveDebouncerRef.current;
 
   useEffect(() => {
-    if (!isTauriHost() || loading || activeProjectPath) return;
+    if (
+      !isTauriHost() ||
+      !shouldAdoptResolvedWorkspacePath(loading, activeProjectPath, workspace.path)
+    ) return;
     setActiveProjectPath(workspace.path);
   }, [activeProjectPath, loading, workspace.path]);
 
@@ -3239,6 +3256,7 @@ export function App() {
       ) : null}
       <AppShell
         sidebarOpen={sidebarOpen}
+        focusRailOverlay={focusView === "browser" || focusView === "files"}
         onCloseSidebar={closeSidebar}
         statusBar={
           <StatusBar
@@ -3295,6 +3313,10 @@ export function App() {
             attentionCount={attentionItems.length}
             attentionHydrationStatus={attentionHydrationStatus}
             onOpenMenu={() => setCommandMenuOpen(true)}
+            onNewTask={() => {
+              openNewTaskTab();
+              closeSidebarOnNarrow();
+            }}
             onOpenAttention={() => {
               setActivePage("attention");
               closeFocusPanel();

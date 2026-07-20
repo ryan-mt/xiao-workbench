@@ -33,6 +33,7 @@ type SidebarProps = {
   onOpenAttention: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
+  onNewTask: () => void;
   onOpenTasks: () => void;
   onAddProject: () => void;
   onSelectProject: (path: string) => void;
@@ -118,6 +119,7 @@ export function Sidebar({
   onOpenAttention,
   onOpenProfile,
   onOpenSettings,
+  onNewTask,
   onOpenTasks,
   onAddProject,
   onSelectProject,
@@ -392,17 +394,30 @@ export function Sidebar({
   return (
     <>
       <aside className="sidebar" aria-label="Workspace navigation">
-        <div className="sidebar__primary-nav">
-          <button className="sidebar__search" type="button" onClick={onOpenMenu}>
-            <XiaoIcon name="search" size={15} />
-            <span>Find anything</span>
-            <kbd>Ctrl K</kbd>
-          </button>
-        </div>
+        <div className="sidebar__panel">
+          <header className="sidebar__header">
+            <div className="sidebar__workspace-name">
+              <span>Workspace</span>
+              <strong>{workspace.name}</strong>
+            </div>
+            <button className="sidebar__new-task" type="button" onClick={onNewTask}>
+              <XiaoIcon name="add" size={16} />
+              <span>New task</span>
+              <kbd>Ctrl T</kbd>
+            </button>
+          </header>
+
+          <div className="sidebar__primary-nav">
+            <button className="sidebar__search" type="button" onClick={onOpenMenu}>
+              <XiaoIcon name="search" size={15} />
+              <span>Find anything</span>
+              <kbd>Ctrl K</kbd>
+            </button>
+          </div>
 
         <div className="sidebar__projects-heading">
           <div>
-            <span>Workspace index</span>
+            <span>Projects</span>
             <small>{projects.length}</small>
           </div>
           <button
@@ -632,50 +647,57 @@ export function Sidebar({
           })}
         </div>
 
-        <div className="sidebar__utility-dock">
-          <button
-            className={`sidebar__profile ${activePage === "profile" ? "is-active" : ""}`}
-            onClick={onOpenProfile}
-          >
-            <span className="sidebar__profile-avatar">
-              {profile.avatarDataUrl ? (
-                <img src={profile.avatarDataUrl} alt="" />
-              ) : initials ? (
-                initials
-              ) : (
-                <XiaoIcon name="user" size={14} />
-              )}
-            </span>
-            <span className="sidebar__profile-copy">
-              <strong>{profile.name || "Set up profile"}</strong>
-              <small>{account?.planType ?? "Xiao profile"}</small>
-            </span>
-          </button>
-          <button
-            id={sidebarAttentionTriggerId}
-            className={`sidebar__utility-attention ${activePage === "attention" ? "is-active" : ""}`}
-            type="button"
-            aria-label={attentionLabel}
-            aria-current={activePage === "attention" ? "page" : undefined}
-            title="Attention"
-            onClick={onOpenAttention}
-          >
-            <XiaoIcon name="approval" size={16} />
-            {attentionCount > 0 ? (
-              <span className="sidebar__attention-badge" aria-hidden="true">
-                {attentionCount > 99 ? "99+" : attentionCount}
+          <footer className="sidebar__footer">
+            <nav className="sidebar__footer-nav" aria-label="Workspace utilities">
+              <button
+                id={sidebarAttentionTriggerId}
+                className={`sidebar__footer-action sidebar__utility-attention ${activePage === "attention" ? "is-active" : ""}`}
+                type="button"
+                aria-label={attentionLabel}
+                aria-current={activePage === "attention" ? "page" : undefined}
+                onClick={onOpenAttention}
+              >
+                <XiaoIcon name="approval" size={16} />
+                <span>Attention</span>
+                {attentionCount > 0 ? (
+                  <span className="sidebar__attention-badge" aria-hidden="true">
+                    {attentionCount > 99 ? "99+" : attentionCount}
+                  </span>
+                ) : null}
+              </button>
+              <button
+                className={`sidebar__footer-action ${activePage === "settings" ? "is-active" : ""}`}
+                type="button"
+                aria-current={activePage === "settings" ? "page" : undefined}
+                onClick={onOpenSettings}
+              >
+                <XiaoIcon name="settings" size={16} />
+                <span>Settings</span>
+              </button>
+            </nav>
+            <button
+              className={`sidebar__profile ${activePage === "profile" ? "is-active" : ""}`}
+              type="button"
+              aria-label={profile.name ? `Open ${profile.name}'s profile` : "Set up profile"}
+              aria-current={activePage === "profile" ? "page" : undefined}
+              onClick={onOpenProfile}
+            >
+              <span className="sidebar__profile-avatar">
+                {profile.avatarDataUrl ? (
+                  <img src={profile.avatarDataUrl} alt="" />
+                ) : initials ? (
+                  initials
+                ) : (
+                  <XiaoIcon name="user" size={14} />
+                )}
               </span>
-            ) : null}
-          </button>
-          <button
-            className={`sidebar__utility-settings ${activePage === "settings" ? "is-active" : ""}`}
-            type="button"
-            aria-label="Settings"
-            title="Settings"
-            onClick={onOpenSettings}
-          >
-            <XiaoIcon name="settings" size={16} />
-          </button>
+              <span className="sidebar__profile-copy">
+                <strong>{profile.name || "Set up profile"}</strong>
+                <small>{account?.planType ?? "Local workspace"}</small>
+              </span>
+              <XiaoIcon className="sidebar__profile-chevron" name="caret" size={12} />
+            </button>
+          </footer>
         </div>
       </aside>
 

@@ -34,6 +34,7 @@ import {
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
+  shouldAdoptResolvedWorkspacePath,
   shouldAutoConnectAgentRuntime,
   shouldInvalidateTaskWorkspaceState,
   shouldLoadTaskWorkspaceState,
@@ -1048,6 +1049,30 @@ describe("visible task unread transitions", () => {
 });
 
 describe("task workspace hydration readiness", () => {
+  it("adopts the resolved project root before hydrating task state", () => {
+    expect(
+      shouldAdoptResolvedWorkspacePath(
+        false,
+        "C:/projects/xiao/src-tauri",
+        "C:/projects/xiao",
+      ),
+    ).toBe(true);
+    expect(
+      shouldAdoptResolvedWorkspacePath(
+        false,
+        "C:\\PROJECTS\\xiao\\",
+        "C:/projects/xiao",
+      ),
+    ).toBe(false);
+    expect(
+      shouldAdoptResolvedWorkspacePath(
+        true,
+        "C:/projects/xiao/src-tauri",
+        "C:/projects/xiao",
+      ),
+    ).toBe(false);
+  });
+
   it("keeps task actions disabled until the visible workspace is fully hydrated", () => {
     expect(isTaskWorkspaceStateLoading(true, true, workspacePath, workspacePath, false)).toBe(true);
     expect(isTaskWorkspaceStateLoading(false, false, workspacePath, workspacePath, false)).toBe(true);

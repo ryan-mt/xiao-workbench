@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Xiao Workbench Beta",
+  "identifier": "com.xiao.workbench.beta",
+  "app": {
+    "windows": [
+      {
+        "title": "Xiao Workbench Beta",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 980,
+        "minHeight": 680,
+        "center": true,
+        "decorations": false,
+        "resizable": true
+      }
+    ]
+  }
+}
