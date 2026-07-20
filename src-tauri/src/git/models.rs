@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +43,39 @@ pub struct GitBranch {
     pub name: String,
     pub current: bool,
     pub remote: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPushResult {
+    pub branch: String,
+    pub remote: String,
+    pub upstream: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPullRequestSummary {
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub is_draft: bool,
+    pub state: String,
+    pub base_ref_name: String,
+    pub head_ref_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCheckSummary {
+    pub name: String,
+    pub state: String,
+    pub bucket: String,
+    #[serde(default)]
+    pub link: String,
+    #[serde(default)]
+    pub workflow: String,
 }
 
 #[derive(Debug, Serialize)]

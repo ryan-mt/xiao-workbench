@@ -3,11 +3,14 @@ use tauri::State;
 use crate::execution::service::resolve_execution_context;
 use crate::xiao::repository::XiaoRepository;
 
-use super::models::{GitBranch, GitSummary, GitWorktree};
+use super::models::{
+    GitBranch, GitCheckSummary, GitPullRequestSummary, GitPushResult, GitSummary, GitWorktree,
+};
 use super::service::{
-    apply_workspace_patch, create_workspace_checkpoint, create_worktree,
-    discard_workspace_checkpoint, finish_workspace_checkpoint, list_branches, list_worktrees,
-    read_git_comparison, run_git_action,
+    apply_workspace_patch, create_draft_pull_request, create_workspace_checkpoint, create_worktree,
+    discard_workspace_checkpoint, find_pull_request, finish_workspace_checkpoint, list_branches,
+    list_worktrees, publish_current_branch, read_git_comparison, read_pull_request_checks,
+    run_git_action,
 };
 
 fn task_root(
@@ -78,6 +81,54 @@ pub fn get_git_worktrees(
 ) -> Result<Vec<GitWorktree>, String> {
     let root = task_root(&repository, &project_path, task_id.as_deref())?;
     list_worktrees(&root)
+}
+
+#[tauri::command]
+pub async fn publish_git_branch(
+    project_path: String,
+    task_id: Option<String>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<GitPushResult, String> {
+    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || publish_current_branch(&root))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_git_pull_request(
+    project_path: String,
+    task_id: Option<String>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<Option<GitPullRequestSummary>, String> {
+    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || find_pull_request(&root))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn create_git_draft_pull_request(
+    project_path: String,
+    task_id: Option<String>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<GitPullRequestSummary, String> {
+    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || create_draft_pull_request(&root))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_git_pull_request_checks(
+    project_path: String,
+    task_id: Option<String>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<Vec<GitCheckSummary>, String> {
+    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || read_pull_request_checks(&root))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::models::{
-    GitBranch, GitFileChange, GitFileStatus, GitRepositoryIdentity, GitSummary, GitWorktree,
-    GitWorktreeEvidence, WorkspaceCheckpointCapture, WorkspaceRestoreOutcome, WorkspaceRestoreStep,
+    GitBranch, GitCheckSummary, GitFileChange, GitFileStatus, GitPullRequestSummary, GitPushResult,
+    GitRepositoryIdentity, GitSummary, GitWorktree, GitWorktreeEvidence,
+    WorkspaceCheckpointCapture, WorkspaceRestoreOutcome, WorkspaceRestoreStep,
 };
 
 const MAX_CHANGES: usize = 300;
@@ -149,6 +150,254 @@ pub fn list_branches(workspace_path: &str) -> Result<Vec<GitBranch>, String> {
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(branches)
+}
+
+pub fn publish_current_branch(workspace_path: &str) -> Result<GitPushResult, String> {
+    let root = canonical_workspace(workspace_path)?;
+    let (branch, remote, remote_branch, has_upstream) = branch_publish_target(&root)?;
+    let refspec = format!("HEAD:refs/heads/{remote_branch}");
+    let mut arguments = vec!["push".to_owned()];
+    if !has_upstream {
+        arguments.push("--set-upstream".to_owned());
+    }
+    arguments.extend([remote.clone(), refspec]);
+
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(&root)
+        .args(&arguments)
+        .env("GIT_TERMINAL_PROMPT", "0");
+    hide_window(&mut command);
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(command_error(
+            &output.stderr,
+            "Git could not publish the current branch.",
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let output = [stdout, stderr]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(GitPushResult {
+        branch,
+        remote: remote.clone(),
+        upstream: format!("{remote}/{remote_branch}"),
+        output,
+    })
+}
+
+pub fn find_pull_request(workspace_path: &str) -> Result<Option<GitPullRequestSummary>, String> {
+    let root = canonical_workspace(workspace_path)?;
+    let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    let output = run_gh_checked(
+        &root,
+        &[
+            "pr",
+            "list",
+            "--head",
+            &remote_branch,
+            "--state",
+            "open",
+            "--limit",
+            "1",
+            "--json",
+            "number,url,title,isDraft,state,baseRefName,headRefName",
+        ],
+        "GitHub CLI could not look up the pull request.",
+    )?;
+    parse_pull_requests(&output).map(|mut pull_requests| pull_requests.pop())
+}
+
+pub fn create_draft_pull_request(workspace_path: &str) -> Result<GitPullRequestSummary, String> {
+    let root = canonical_workspace(workspace_path)?;
+    let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    let output = run_gh_checked(
+        &root,
+        &[
+            "pr",
+            "create",
+            "--draft",
+            "--fill",
+            "--head",
+            &remote_branch,
+        ],
+        "GitHub CLI could not create the draft pull request.",
+    )?;
+    let url = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with("https://") || line.starts_with("http://"));
+    if let Some(selector) = url {
+        if let Ok(pull_request) = read_pull_request(&root, selector) {
+            return Ok(pull_request);
+        }
+        if let Some(number) = pull_request_number(selector) {
+            return Ok(GitPullRequestSummary {
+                number,
+                url: selector.to_owned(),
+                title: "Draft pull request".to_owned(),
+                is_draft: true,
+                state: "OPEN".to_owned(),
+                base_ref_name: String::new(),
+                head_ref_name: remote_branch,
+            });
+        }
+    }
+    find_pull_request(workspace_path)?.ok_or_else(|| {
+        "The draft pull request was created, but GitHub CLI could not read it back.".to_owned()
+    })
+}
+
+pub fn read_pull_request_checks(workspace_path: &str) -> Result<Vec<GitCheckSummary>, String> {
+    let root = canonical_workspace(workspace_path)?;
+    let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    let output = run_gh(
+        &root,
+        &[
+            "pr",
+            "checks",
+            &remote_branch,
+            "--json",
+            "name,state,bucket,link,workflow",
+        ],
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() || matches!(output.status.code(), Some(1 | 8)) {
+        if stdout.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        return parse_pull_request_checks(&stdout);
+    }
+    Err(command_error(
+        &output.stderr,
+        "GitHub CLI could not read pull request checks.",
+    ))
+}
+
+fn canonical_workspace(workspace_path: &str) -> Result<PathBuf, String> {
+    Path::new(workspace_path)
+        .canonicalize()
+        .map_err(|error| error.to_string())
+}
+
+fn branch_publish_target(root: &Path) -> Result<(String, String, String, bool), String> {
+    let branch = run_git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or("Publish requires a checked-out branch; detached HEAD is not supported.")?;
+    run_git_checked(
+        root,
+        &[
+            "check-ref-format".to_owned(),
+            "--branch".to_owned(),
+            branch.clone(),
+        ],
+    )
+    .map_err(|_| "The current Git branch name is invalid.".to_owned())?;
+
+    let remote_key = format!("branch.{branch}.remote");
+    let merge_key = format!("branch.{branch}.merge");
+    let configured_remote = run_git(root, &["config", "--get", &remote_key])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let configured_merge = run_git(root, &["config", "--get", &merge_key])
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let has_upstream = configured_remote.is_some() && configured_merge.is_some();
+    let remote = configured_remote.unwrap_or_else(|| "origin".to_owned());
+    if remote.starts_with('-') || remote.chars().any(char::is_whitespace) {
+        return Err("The current branch has an invalid Git remote.".to_owned());
+    }
+    run_git(root, &["remote", "get-url", &remote])
+        .ok_or_else(|| format!("Git remote `{remote}` is not configured."))?;
+
+    let remote_branch = configured_merge
+        .as_deref()
+        .and_then(|value| value.strip_prefix("refs/heads/"))
+        .unwrap_or(&branch)
+        .to_owned();
+    run_git_checked(
+        root,
+        &[
+            "check-ref-format".to_owned(),
+            "--branch".to_owned(),
+            remote_branch.clone(),
+        ],
+    )
+    .map_err(|_| "The upstream Git branch name is invalid.".to_owned())?;
+    Ok((branch, remote, remote_branch, has_upstream))
+}
+
+fn read_pull_request(root: &Path, selector: &str) -> Result<GitPullRequestSummary, String> {
+    let output = run_gh_checked(
+        root,
+        &[
+            "pr",
+            "view",
+            selector,
+            "--json",
+            "number,url,title,isDraft,state,baseRefName,headRefName",
+        ],
+        "GitHub CLI could not read the pull request.",
+    )?;
+    serde_json::from_str(&output)
+        .map_err(|error| format!("GitHub CLI returned an invalid pull request: {error}"))
+}
+
+fn parse_pull_requests(output: &str) -> Result<Vec<GitPullRequestSummary>, String> {
+    serde_json::from_str(output)
+        .map_err(|error| format!("GitHub CLI returned invalid pull requests: {error}"))
+}
+
+fn parse_pull_request_checks(output: &str) -> Result<Vec<GitCheckSummary>, String> {
+    serde_json::from_str(output)
+        .map_err(|error| format!("GitHub CLI returned invalid check results: {error}"))
+}
+
+fn pull_request_number(url: &str) -> Option<u64> {
+    url.split("/pull/").nth(1)?.split('/').next()?.parse().ok()
+}
+
+fn run_gh(root: &Path, arguments: &[&str]) -> Result<std::process::Output, String> {
+    #[cfg(test)]
+    let mut command = if let Some(script) = std::env::var_os("XIAO_TEST_GH_SCRIPT") {
+        let mut command = Command::new("node");
+        command.arg(script);
+        command
+    } else {
+        Command::new("gh")
+    };
+    #[cfg(not(test))]
+    let mut command = Command::new("gh");
+    command
+        .current_dir(root)
+        .args(arguments)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    hide_window(&mut command);
+    command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "GitHub CLI is not installed or is not available on PATH.".to_owned()
+        } else {
+            error.to_string()
+        }
+    })
+}
+
+fn run_gh_checked(root: &Path, arguments: &[&str], fallback: &str) -> Result<String, String> {
+    let output = run_gh(root, arguments)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        Err(command_error(&output.stderr, fallback))
+    }
 }
 
 pub fn read_git_comparison(workspace_path: &str, base_branch: &str) -> Result<GitSummary, String> {
@@ -1422,9 +1671,11 @@ fn hide_window(_command: &mut Command) {}
 mod tests {
     use super::super::models::WorkspaceRestoreStep;
     use super::{
-        apply_workspace_patch, create_workspace_checkpoint, discard_workspace_checkpoint,
-        finish_workspace_checkpoint, finish_workspace_checkpoint_capture, list_branches,
-        read_git_comparison, read_git_summary, restore_workspace_checkpoints,
+        apply_workspace_patch, create_draft_pull_request, create_workspace_checkpoint,
+        discard_workspace_checkpoint, find_pull_request, finish_workspace_checkpoint,
+        finish_workspace_checkpoint_capture, list_branches, parse_pull_request_checks,
+        parse_pull_requests, publish_current_branch, read_git_comparison, read_git_summary,
+        read_pull_request_checks, restore_workspace_checkpoints,
         restore_workspace_checkpoints_with_rollback, rollback_workspace_restore, run_git_action,
     };
     use std::fs;
@@ -1465,6 +1716,170 @@ mod tests {
     #[test]
     fn current_workspace_has_a_git_summary() {
         assert!(read_git_summary(Path::new(env!("CARGO_MANIFEST_DIR"))).is_some());
+    }
+
+    #[test]
+    fn publish_current_branch_sets_upstream_and_pushes_without_force() {
+        let root = temporary_directory("publish-branch");
+        let remote = temporary_directory("publish-remote");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("note.txt"), "one\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        run(&root, &["branch", "-M", "feature/ship-flow"]);
+        let output = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&remote)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        run(
+            &root,
+            &["remote", "add", "origin", &remote.to_string_lossy()],
+        );
+
+        let first = publish_current_branch(&root.to_string_lossy()).unwrap();
+        assert_eq!(first.branch, "feature/ship-flow");
+        assert_eq!(first.remote, "origin");
+        assert_eq!(first.upstream, "origin/feature/ship-flow");
+        assert_eq!(
+            git_text(
+                &root,
+                &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+            ),
+            "origin/feature/ship-flow"
+        );
+
+        fs::write(root.join("note.txt"), "two\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "second"]);
+        publish_current_branch(&root.to_string_lossy()).unwrap();
+        assert_eq!(
+            git_text(&root, &["rev-parse", "HEAD"]),
+            git_text(&remote, &["rev-parse", "refs/heads/feature/ship-flow"])
+        );
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn parses_github_pull_requests_and_checks() {
+        let pull_requests = parse_pull_requests(
+            r#"[{"number":42,"url":"https://github.com/acme/xiao/pull/42","title":"Ship flow","isDraft":true,"state":"OPEN","baseRefName":"dev","headRefName":"feature/ship-flow"}]"#,
+        )
+        .unwrap();
+        assert_eq!(pull_requests[0].number, 42);
+        assert!(pull_requests[0].is_draft);
+        assert_eq!(pull_requests[0].base_ref_name, "dev");
+
+        let checks = parse_pull_request_checks(
+            r#"[{"name":"test","state":"IN_PROGRESS","bucket":"pending","link":"https://github.com/acme/xiao/actions/runs/1","workflow":"CI"}]"#,
+        )
+        .unwrap();
+        assert_eq!(checks[0].name, "test");
+        assert_eq!(checks[0].bucket, "pending");
+        assert_eq!(checks[0].workflow, "CI");
+    }
+
+    #[test]
+    fn ship_flow_runs_commit_push_draft_pr_and_ci_end_to_end() {
+        let root = temporary_directory("ship-flow-e2e");
+        let remote = temporary_directory("ship-flow-e2e-remote");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("note.txt"), "initial\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        run(&root, &["branch", "-M", "feature/ship-flow"]);
+        let output = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&remote)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        run(
+            &root,
+            &["remote", "add", "origin", &remote.to_string_lossy()],
+        );
+
+        let shim = root.join("fake-gh.cjs");
+        let shim_log = root.join("fake-gh.log");
+        let shim_state = root.join("fake-gh-created");
+        let pull_request = r#"{number:17,url:"https://github.com/example/xiao/pull/17",title:"Ship flow",isDraft:true,state:"OPEN",baseRefName:"dev",headRefName:"feature/ship-flow"}"#;
+        fs::write(
+            &shim,
+            format!(
+                r#"const fs = require("fs");
+const args = process.argv.slice(2);
+const log = {};
+const state = {};
+const pullRequest = {};
+fs.appendFileSync(log, JSON.stringify(args) + "\n");
+if (args[0] === "pr" && args[1] === "list") {{
+  console.log(fs.existsSync(state) ? JSON.stringify([pullRequest]) : "[]");
+}} else if (args[0] === "pr" && args[1] === "create") {{
+  fs.writeFileSync(state, "created");
+  console.log(pullRequest.url);
+}} else if (args[0] === "pr" && args[1] === "view") {{
+  console.log(JSON.stringify(pullRequest));
+}} else if (args[0] === "pr" && args[1] === "checks") {{
+  console.log(JSON.stringify([{{name:"test",state:"IN_PROGRESS",bucket:"pending",link:"https://github.com/example/xiao/actions/runs/1",workflow:"CI"}}]));
+  process.exitCode = 8;
+}} else {{
+  console.error("unexpected gh arguments: " + args.join(" "));
+  process.exitCode = 1;
+}}
+"#,
+                serde_json::to_string(&shim_log.to_string_lossy()).unwrap(),
+                serde_json::to_string(&shim_state.to_string_lossy()).unwrap(),
+                pull_request,
+            ),
+        )
+        .unwrap();
+        std::env::set_var("XIAO_TEST_GH_SCRIPT", &shim);
+
+        fs::write(root.join("note.txt"), "shipped\n").unwrap();
+        run_git_action(&root.to_string_lossy(), "stage-all", &[], None).unwrap();
+        let commit = run_git_action(
+            &root.to_string_lossy(),
+            "commit",
+            &[],
+            Some("test: ship flow"),
+        )
+        .unwrap();
+        assert!(commit.contains("test: ship flow"));
+
+        let push = publish_current_branch(&root.to_string_lossy()).unwrap();
+        assert_eq!(push.upstream, "origin/feature/ship-flow");
+        assert_eq!(find_pull_request(&root.to_string_lossy()).unwrap(), None);
+        let pull_request = create_draft_pull_request(&root.to_string_lossy()).unwrap();
+        assert_eq!(pull_request.number, 17);
+        assert!(pull_request.is_draft);
+        let checks = read_pull_request_checks(&root.to_string_lossy()).unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].bucket, "pending");
+
+        let calls = read_text(&shim_log);
+        assert!(
+            calls.contains(r#"["pr","create","--draft","--fill","--head","feature/ship-flow"]"#)
+        );
+        assert!(calls.contains(
+            r#"["pr","checks","feature/ship-flow","--json","name,state,bucket,link,workflow"]"#
+        ));
+        assert_eq!(
+            git_text(&root, &["rev-parse", "HEAD"]),
+            git_text(&remote, &["rev-parse", "refs/heads/feature/ship-flow"])
+        );
+
+        std::env::remove_var("XIAO_TEST_GH_SCRIPT");
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(remote);
     }
 
     #[test]

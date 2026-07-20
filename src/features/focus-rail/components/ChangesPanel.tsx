@@ -3,7 +3,20 @@ import { useEffect, useMemo, useState } from "react";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../../core/bridges/tauri";
-import type { GitBranch, GitSummary, WorkspaceSnapshot } from "../../../core/models/workspace";
+import type {
+  GitBranch,
+  GitCheckSummary,
+  GitPullRequestSummary,
+  GitSummary,
+  WorkspaceSnapshot,
+} from "../../../core/models/workspace";
+import {
+  executeShipFlow,
+  initialShipSteps,
+  summarizeShipChecks,
+  updateShipStep,
+  type ShipStepStatus,
+} from "./shipFlow";
 
 type ChangesPanelProps = {
   workspace: WorkspaceSnapshot;
@@ -17,6 +30,18 @@ type Worktree = { path: string; branch: string; head: string; isMain: boolean };
 
 const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const directory = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+const shipStepIcon = (status: ShipStepStatus) => {
+  if (status === "complete") return "check" as const;
+  if (status === "running" || status === "pending") return "pending" as const;
+  if (status === "warning") return "result" as const;
+  if (status === "error") return "close" as const;
+  return "more" as const;
+};
+const checkTone = (check: GitCheckSummary) => {
+  if (check.bucket === "pass" || check.bucket === "skipping") return "pass";
+  if (check.bucket === "fail" || check.bucket === "cancel") return "fail";
+  return "pending";
+};
 
 export function ChangesPanel({
   workspace,
@@ -42,6 +67,10 @@ export function ChangesPanel({
   const blocked = busy || transitioning || !workspaceActionable;
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<string | null>(null);
+  const [shipSteps, setShipSteps] = useState(initialShipSteps);
+  const [pullRequest, setPullRequest] = useState<GitPullRequestSummary | null>(null);
+  const [shipChecks, setShipChecks] = useState<GitCheckSummary[]>([]);
+  const [shipCommitOutput, setShipCommitOutput] = useState<string | null>(null);
   const visibleGit = baseBranch ? comparison : git;
   const comparisonMode = Boolean(baseBranch);
   const preferredChange = visibleGit?.changes.find((change) => !change.patch.startsWith("Binary file")) ?? visibleGit?.changes[0] ?? null;
@@ -111,6 +140,13 @@ export function ChangesPanel({
     void refreshWorktrees();
   }, [workspace.path, taskId, Boolean(git), workspaceActionable]);
 
+  useEffect(() => {
+    setShipSteps(initialShipSteps());
+    setPullRequest(null);
+    setShipChecks([]);
+    setShipCommitOutput(null);
+  }, [git?.branch, taskId, workspace.path]);
+
   const runAction = async (
     action: "commit" | "discard" | "stage" | "stage-all" | "switch" | "unstage",
     paths: string[] = [],
@@ -161,21 +197,66 @@ export function ChangesPanel({
     }
   };
 
-  const createDraftPr = async () => {
-    if (blocked) return;
-    if (!window.confirm("Create a draft pull request for the current branch using GitHub CLI?")) return;
+  const shipChanges = async () => {
+    const message = commitMessage.trim();
+    if (blocked || !git || !taskId || (!message && !shipCommitOutput)) return;
+    const confirmation = shipCommitOutput
+      ? `Resume shipping ${git.branch} from push? The commit is already created.`
+      : `Ship staged changes on ${git.branch}? This will commit, push the current branch, and create or reuse a pull request.`;
+    if (!window.confirm(confirmation)) return;
     setBusy(true);
     setActionError(null);
+    setActionResult(null);
+    setPullRequest(null);
+    setShipChecks([]);
+    setShipSteps(initialShipSteps());
     try {
-      const result = await nativeBridge.agentRequest<{ exitCode: number; stdout: string; stderr: string }>(
-        "command/exec",
-        { command: ["gh", "pr", "create", "--draft", "--fill"], cwd: workspace.path, timeoutMs: 120000 },
-        { projectPath: workspace.path, taskId },
+      const result = await executeShipFlow(
+        {
+          commit: async () => {
+            const output = await nativeBridge.mutateGit(workspace.path, taskId, "commit", [], message);
+            setShipCommitOutput(output);
+            return output;
+          },
+          push: () => nativeBridge.publishGitBranch(workspace.path, taskId),
+          findPullRequest: () => nativeBridge.getGitPullRequest(workspace.path, taskId),
+          createDraftPullRequest: () => nativeBridge.createGitDraftPullRequest(workspace.path, taskId),
+          readChecks: () => nativeBridge.getGitPullRequestChecks(workspace.path, taskId),
+        },
+        {
+          onStep: (id, status, detail) => {
+            setShipSteps((steps) => updateShipStep(steps, id, status, detail));
+          },
+          onPullRequest: setPullRequest,
+          onChecks: setShipChecks,
+        },
+        { commitOutput: shipCommitOutput },
       );
-      if (result.exitCode !== 0) throw new Error(result.stderr || "GitHub CLI could not create the pull request.");
-      setActionResult(result.stdout.trim() || "Draft pull request created.");
+      setCommitMessage("");
+      setShipCommitOutput(null);
+      setActionResult(`${result.pullRequest.isDraft ? "Draft " : ""}PR #${result.pullRequest.number} shipped. CI status loaded.`);
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      onRefresh();
+      setBusy(false);
+    }
+  };
+
+  const refreshShipChecks = async () => {
+    if (blocked || !pullRequest) return;
+    setBusy(true);
+    setActionError(null);
+    setShipSteps((steps) => updateShipStep(steps, "ci", "running", "Refreshing GitHub checks"));
+    try {
+      const checks = await nativeBridge.getGitPullRequestChecks(workspace.path, taskId);
+      const summary = summarizeShipChecks(checks);
+      setShipChecks(checks);
+      setShipSteps((steps) => updateShipStep(steps, "ci", summary.status, summary.detail));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setShipSteps((steps) => updateShipStep(steps, "ci", "error", message));
+      setActionError(message);
     } finally {
       setBusy(false);
     }
@@ -275,14 +356,54 @@ export function ChangesPanel({
       <details className="repository-drawer">
         <summary><span><XiaoIcon name="branch" size={14} /><strong>Repository actions</strong></span><small>{worktrees.length} {worktrees.length === 1 ? "worktree" : "worktrees"}</small><XiaoIcon name="caret" size={12} /></summary>
         <div>
-          <section><label htmlFor="xiao-commit-message">Commit staged changes</label><div><input id="xiao-commit-message" value={commitMessage} placeholder="Commit message" disabled={blocked} onChange={(event) => setCommitMessage(event.target.value)} /><button className="button button--primary" disabled={blocked || !commitMessage.trim()} onClick={() => void runAction("commit", [], commitMessage)}>Commit</button></div></section>
+          <section className="ship-flow" aria-label="Ship flow">
+            <header className="ship-flow__header">
+              <span><XiaoIcon name="send" size={14} /><strong>Ship flow</strong></span>
+              <small>Commit → Push → Draft PR → CI</small>
+            </header>
+            <label htmlFor="xiao-commit-message">Commit staged changes</label>
+            <div className="ship-flow__composer">
+              <input id="xiao-commit-message" value={commitMessage} placeholder="Commit message" disabled={blocked} onChange={(event) => {
+                setCommitMessage(event.target.value);
+                if (shipCommitOutput) setShipCommitOutput(null);
+              }} />
+              <button className="button button--quiet" disabled={blocked || !taskId || !commitMessage.trim() || Boolean(shipCommitOutput)} onClick={() => void runAction("commit", [], commitMessage)}>Commit only</button>
+              <button className="button button--primary" disabled={blocked || !taskId || (!commitMessage.trim() && !shipCommitOutput)} title={taskId ? "Commit staged changes, push, open a draft PR, then read CI" : "Create a task before shipping changes"} onClick={() => void shipChanges()}>{shipCommitOutput ? "Resume push" : "Ship draft PR"}</button>
+            </div>
+            <p className="ship-flow__note">{shipCommitOutput ? "Commit created. Resume starts at push; edit the message to create another commit." : "Staged only. Explicit branch push. Never force-pushes."}</p>
+            <ol className="ship-flow__steps">
+              {shipSteps.map((step) => (
+                <li className={`is-${step.status}`} key={step.id}>
+                  <span><XiaoIcon className={step.status === "running" ? "spin" : undefined} name={shipStepIcon(step.status)} size={12} /></span>
+                  <strong>{step.label}</strong>
+                  <small>{step.detail}</small>
+                </li>
+              ))}
+            </ol>
+            {pullRequest ? (
+              <div className="ship-flow__pull-request">
+                <div>
+                  <span>{pullRequest.isDraft ? "Draft" : pullRequest.state.toLowerCase()}</span>
+                  <a href={pullRequest.url} target="_blank" rel="noreferrer">PR #{pullRequest.number} · {pullRequest.title}<XiaoIcon name="external" size={11} /></a>
+                  <small>{pullRequest.headRefName} → {pullRequest.baseRefName || "base"}</small>
+                </div>
+                <button className="button button--quiet" type="button" disabled={blocked} onClick={() => void refreshShipChecks()}><XiaoIcon name="refresh" size={11} />Refresh CI</button>
+              </div>
+            ) : null}
+            {shipChecks.length ? (
+              <ul className="ship-flow__checks">
+                {shipChecks.slice(0, 8).map((check) => (
+                  <li className={`is-${checkTone(check)}`} key={`${check.workflow}-${check.name}`}>
+                    <i />
+                    <span><strong>{check.name}</strong><small>{check.workflow || check.state}</small></span>
+                    {check.link ? <a href={check.link} target="_blank" rel="noreferrer" aria-label={`Open ${check.name} check`}><XiaoIcon name="external" size={11} /></a> : null}
+                  </li>
+                ))}
+                {shipChecks.length > 8 ? <li className="ship-flow__checks-more">+{shipChecks.length - 8} more checks</li> : null}
+              </ul>
+            ) : null}
+          </section>
           <section><label htmlFor="xiao-branch-name">Branch or manual worktree (not Xiao-managed)</label><div><input id="xiao-branch-name" value={branchName} placeholder="Branch name" disabled={blocked} onChange={(event) => setBranchName(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || workspace.execution.workspaceMode === "managed-worktree"} title={workspace.execution.workspaceMode === "managed-worktree" ? "Branch switching is disabled in Xiao-managed worktrees" : undefined} onClick={() => void runAction("switch", [], branchName)}>Switch</button></div><div><input value={worktreePath} placeholder="New worktree path" disabled={blocked} onChange={(event) => setWorktreePath(event.target.value)} /><button className="button button--quiet" disabled={blocked || !branchName.trim() || !worktreePath.trim()} onClick={() => void createWorktree()}>Add</button></div></section>
-          <button
-            className="repository-drawer__pr"
-            disabled={blocked || !taskId}
-            title={taskId ? undefined : "Create a task before opening a pull request"}
-            onClick={() => void createDraftPr()}
-          ><XiaoIcon name="external" size={13} />Create draft pull request</button>
           {actionError && <p className="rail-error">{actionError}</p>}
           {actionResult && <p className="git-action-result">{actionResult}</p>}
           {worktrees.length > 0 && <div className="worktree-list"><strong>Git worktrees · unowned</strong>{worktrees.map((item) => <span key={item.path}><b>{item.branch}</b><small>{item.path}{item.isMain ? " · main" : ""}</small></span>)}</div>}

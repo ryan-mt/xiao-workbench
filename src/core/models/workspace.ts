@@ -26,6 +26,31 @@ export type GitBranch = {
   remote: boolean;
 };
 
+export type GitPushResult = {
+  branch: string;
+  remote: string;
+  upstream: string;
+  output: string;
+};
+
+export type GitPullRequestSummary = {
+  number: number;
+  url: string;
+  title: string;
+  isDraft: boolean;
+  state: string;
+  baseRefName: string;
+  headRefName: string;
+};
+
+export type GitCheckSummary = {
+  name: string;
+  state: string;
+  bucket: string;
+  link: string;
+  workflow: string;
+};
+
 export type GitFileChange = {
   path: string;
   status: "added" | "modified" | "deleted" | "untracked";

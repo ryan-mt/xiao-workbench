@@ -11,6 +11,9 @@ import type {
   ExecutionContext,
   FileNode,
   GitBranch,
+  GitCheckSummary,
+  GitPullRequestSummary,
+  GitPushResult,
   GitSummary,
   ManagedWorktreeSummary,
   WorkspaceSnapshot,
@@ -249,6 +252,22 @@ export const nativeBridge = {
       "get_git_worktrees",
       { projectPath, taskId },
     );
+  },
+
+  publishGitBranch(projectPath: string, taskId: string | null) {
+    return invoke<GitPushResult>("publish_git_branch", { projectPath, taskId });
+  },
+
+  getGitPullRequest(projectPath: string, taskId: string | null) {
+    return invoke<GitPullRequestSummary | null>("get_git_pull_request", { projectPath, taskId });
+  },
+
+  createGitDraftPullRequest(projectPath: string, taskId: string | null) {
+    return invoke<GitPullRequestSummary>("create_git_draft_pull_request", { projectPath, taskId });
+  },
+
+  getGitPullRequestChecks(projectPath: string, taskId: string | null) {
+    return invoke<GitCheckSummary[]>("get_git_pull_request_checks", { projectPath, taskId });
   },
 
   addGitWorktree(projectPath: string, targetPath: string, branch: string) {

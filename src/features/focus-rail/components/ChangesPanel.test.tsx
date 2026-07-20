@@ -7,6 +7,10 @@ import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 const bridge = vi.hoisted(() => ({
   mutateGit: vi.fn(),
   getGitWorktrees: vi.fn(),
+  publishGitBranch: vi.fn(),
+  getGitPullRequest: vi.fn(),
+  createGitDraftPullRequest: vi.fn(),
+  getGitPullRequestChecks: vi.fn(),
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -26,6 +30,10 @@ vi.mock("../../../core/bridges/tauri", () => ({
   nativeBridge: {
     mutateGit: bridge.mutateGit,
     getGitWorktrees: bridge.getGitWorktrees,
+    publishGitBranch: bridge.publishGitBranch,
+    getGitPullRequest: bridge.getGitPullRequest,
+    createGitDraftPullRequest: bridge.createGitDraftPullRequest,
+    getGitPullRequestChecks: bridge.getGitPullRequestChecks,
   },
 }));
 
@@ -94,6 +102,10 @@ describe("ChangesPanel workspace identity guard", () => {
   beforeEach(() => {
     bridge.mutateGit.mockReset().mockResolvedValue("staged");
     bridge.getGitWorktrees.mockReset().mockResolvedValue([]);
+    bridge.publishGitBranch.mockReset();
+    bridge.getGitPullRequest.mockReset();
+    bridge.createGitDraftPullRequest.mockReset();
+    bridge.getGitPullRequestChecks.mockReset();
   });
 
   it("does not send task B with task A paths while the loaded snapshot is stale", () => {
@@ -140,5 +152,17 @@ describe("ChangesPanel workspace identity guard", () => {
       );
     });
     expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Ship draft PR disabled until a commit message is present", () => {
+    const panel = ChangesPanel({
+      workspace: workspace("C:/project-a", "task-b", "src/task-b.ts"),
+      taskId: "task-b",
+      transitioning: false,
+      workspaceActionable: true,
+      onRefresh: vi.fn(),
+    });
+
+    expect(findButton(panel, "Ship draft PR")?.props.disabled).toBe(true);
   });
 });

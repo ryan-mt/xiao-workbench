@@ -29,7 +29,9 @@ use execution::commands::{
 };
 use git::commands::{
     add_git_worktree, apply_git_patch, compare_git_branch, create_git_checkpoint,
-    discard_git_checkpoint, finish_git_checkpoint, get_git_branches, get_git_worktrees, mutate_git,
+    create_git_draft_pull_request, discard_git_checkpoint, finish_git_checkpoint, get_git_branches,
+    get_git_pull_request, get_git_pull_request_checks, get_git_worktrees, mutate_git,
+    publish_git_branch,
 };
 use handoff::commands::{export_xiao_handoff, import_xiao_handoff};
 use routines::commands::{
@@ -159,6 +161,10 @@ pub fn run() {
             get_git_branches,
             compare_git_branch,
             get_git_worktrees,
+            publish_git_branch,
+            get_git_pull_request,
+            create_git_draft_pull_request,
+            get_git_pull_request_checks,
             add_git_worktree,
             apply_git_patch,
             create_git_checkpoint,

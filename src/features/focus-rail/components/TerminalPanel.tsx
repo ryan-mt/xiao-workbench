@@ -137,7 +137,10 @@ export function TerminalPanel({
     const themeObserver = new MutationObserver(() => {
       terminal.options.theme = readTerminalTheme();
     });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "data-palette"],
+    });
 
     const start = async () => {
       if (!isTauriHost()) {
