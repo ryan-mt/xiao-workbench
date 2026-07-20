@@ -13,16 +13,26 @@ const bridge = vi.hoisted(() => ({
   getGitPullRequestChecks: vi.fn(),
 }));
 
+const stateHarness = vi.hoisted(() => ({
+  callIndex: 0,
+  overrides: new Map<number, unknown>(),
+}));
+
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof ReactModule>();
   return {
     ...actual,
     useEffect: () => undefined,
     useMemo: <T,>(factory: () => T) => factory(),
-    useState: <T,>(initial: T | (() => T)) => [
-      typeof initial === "function" ? (initial as () => T)() : initial,
-      vi.fn(),
-    ],
+    useState: <T,>(initial: T | (() => T)) => {
+      const index = stateHarness.callIndex++;
+      const value = stateHarness.overrides.has(index)
+        ? stateHarness.overrides.get(index) as T
+        : typeof initial === "function"
+          ? (initial as () => T)()
+          : initial;
+      return [value, vi.fn()];
+    },
   };
 });
 
@@ -98,8 +108,37 @@ const findButton = (node: ReactNode, label: string): ReactElement<{ disabled?: b
   return null;
 };
 
+const findLink = (
+  node: ReactNode,
+  href: string,
+): ReactElement<{ href?: string; onClick?: (event: { preventDefault: () => void }) => void }> | null => {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findLink(child, href);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return null;
+  const element = node as ReactElement<{
+    children?: ReactNode;
+    href?: string;
+    onClick?: (event: { preventDefault: () => void }) => void;
+  }>;
+  if (element.type === "a" && element.props.href === href) return element;
+  const children = element.props.children;
+  const items = Array.isArray(children) ? children : [children];
+  for (const child of items) {
+    const match = findLink(child, href);
+    if (match) return match;
+  }
+  return null;
+};
+
 describe("ChangesPanel workspace identity guard", () => {
   beforeEach(() => {
+    stateHarness.callIndex = 0;
+    stateHarness.overrides.clear();
     bridge.mutateGit.mockReset().mockResolvedValue("staged");
     bridge.getGitWorktrees.mockReset().mockResolvedValue([]);
     bridge.publishGitBranch.mockReset();
@@ -116,6 +155,7 @@ describe("ChangesPanel workspace identity guard", () => {
       taskId: "task-b",
       transitioning: false,
       workspaceActionable: false,
+      onOpenBrowser: vi.fn(),
       onRefresh,
     });
     const stage = findButton(panel, "Stage");
@@ -136,6 +176,7 @@ describe("ChangesPanel workspace identity guard", () => {
       taskId: "task-b",
       transitioning: false,
       workspaceActionable: true,
+      onOpenBrowser: vi.fn(),
       onRefresh,
     });
     const stage = findButton(panel, "Stage");
@@ -160,9 +201,50 @@ describe("ChangesPanel workspace identity guard", () => {
       taskId: "task-b",
       transitioning: false,
       workspaceActionable: true,
+      onOpenBrowser: vi.fn(),
       onRefresh: vi.fn(),
     });
 
     expect(findButton(panel, "Ship draft PR")?.props.disabled).toBe(true);
+  });
+
+  it("routes PR and CI links through Xiao's browser preview", () => {
+    const pullRequestUrl = "https://github.com/ryan-mt/xiao-workbench/pull/1";
+    const checkUrl = "https://github.com/ryan-mt/xiao-workbench/actions/runs/123";
+    stateHarness.overrides.set(16, {
+      number: 1,
+      url: pullRequestUrl,
+      title: "dev",
+      isDraft: true,
+      state: "OPEN",
+      baseRefName: "main",
+      headRefName: "dev",
+    });
+    stateHarness.overrides.set(17, [{
+      name: "build",
+      state: "SUCCESS",
+      bucket: "pass",
+      link: checkUrl,
+      workflow: "CI",
+    }]);
+    const onOpenBrowser = vi.fn();
+    const panel = ChangesPanel({
+      workspace: workspace("C:/project-a", "task-b", "src/task-b.ts"),
+      taskId: "task-b",
+      transitioning: false,
+      workspaceActionable: true,
+      onOpenBrowser,
+      onRefresh: vi.fn(),
+    });
+    const preventPrNavigation = vi.fn();
+    const preventCheckNavigation = vi.fn();
+
+    findLink(panel, pullRequestUrl)?.props.onClick?.({ preventDefault: preventPrNavigation });
+    findLink(panel, checkUrl)?.props.onClick?.({ preventDefault: preventCheckNavigation });
+
+    expect(preventPrNavigation).toHaveBeenCalledOnce();
+    expect(preventCheckNavigation).toHaveBeenCalledOnce();
+    expect(onOpenBrowser).toHaveBeenNthCalledWith(1, pullRequestUrl);
+    expect(onOpenBrowser).toHaveBeenNthCalledWith(2, checkUrl);
   });
 });

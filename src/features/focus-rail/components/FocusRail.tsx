@@ -47,6 +47,7 @@ type FocusRailProps = {
   resourceRequest?: FocusResourceRequest | null;
   onViewChange: (view: FocusView) => void;
   onClose: () => void;
+  onOpenBrowser: (url: string) => void;
   onBrowserNavigationStart: () => void;
   workspace: WorkspaceSnapshot;
   system: SystemInfo;
@@ -114,6 +115,7 @@ export function FocusRail({
   resourceRequest = null,
   onViewChange,
   onClose,
+  onOpenBrowser,
   onBrowserNavigationStart,
   workspace,
   system,
@@ -296,6 +298,7 @@ export function FocusRail({
             taskId={executionTaskId}
             transitioning={executionTransitioning}
             workspaceActionable={workspaceActionable}
+            onOpenBrowser={onOpenBrowser}
             onRefresh={onRefresh}
           />
         )}

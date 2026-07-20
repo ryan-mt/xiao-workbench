@@ -23,6 +23,7 @@ type ChangesPanelProps = {
   taskId: string | null;
   transitioning: boolean;
   workspaceActionable: boolean;
+  onOpenBrowser: (url: string) => void;
   onRefresh: () => void;
 };
 
@@ -48,6 +49,7 @@ export function ChangesPanel({
   taskId,
   transitioning,
   workspaceActionable,
+  onOpenBrowser,
   onRefresh,
 }: ChangesPanelProps) {
   const git = workspace.git;
@@ -384,7 +386,10 @@ export function ChangesPanel({
               <div className="ship-flow__pull-request">
                 <div>
                   <span>{pullRequest.isDraft ? "Draft" : pullRequest.state.toLowerCase()}</span>
-                  <a href={pullRequest.url} target="_blank" rel="noreferrer">PR #{pullRequest.number} · {pullRequest.title}<XiaoIcon name="external" size={11} /></a>
+                  <a href={pullRequest.url} onClick={(event) => {
+                    event.preventDefault();
+                    onOpenBrowser(pullRequest.url);
+                  }}>PR #{pullRequest.number} · {pullRequest.title}<XiaoIcon name="external" size={11} /></a>
                   <small>{pullRequest.headRefName} → {pullRequest.baseRefName || "base"}</small>
                 </div>
                 <button className="button button--quiet" type="button" disabled={blocked} onClick={() => void refreshShipChecks()}><XiaoIcon name="refresh" size={11} />Refresh CI</button>
@@ -396,7 +401,10 @@ export function ChangesPanel({
                   <li className={`is-${checkTone(check)}`} key={`${check.workflow}-${check.name}`}>
                     <i />
                     <span><strong>{check.name}</strong><small>{check.workflow || check.state}</small></span>
-                    {check.link ? <a href={check.link} target="_blank" rel="noreferrer" aria-label={`Open ${check.name} check`}><XiaoIcon name="external" size={11} /></a> : null}
+                    {check.link ? <a href={check.link} aria-label={`Open ${check.name} check`} onClick={(event) => {
+                      event.preventDefault();
+                      onOpenBrowser(check.link!);
+                    }}><XiaoIcon name="external" size={11} /></a> : null}
                   </li>
                 ))}
                 {shipChecks.length > 8 ? <li className="ship-flow__checks-more">+{shipChecks.length - 8} more checks</li> : null}

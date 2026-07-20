@@ -3511,6 +3511,7 @@ export function App() {
               resourceRequest={focusResourceRequest}
               onViewChange={(view) => openFocusView(view)}
               onClose={closeFocusPanel}
+              onOpenBrowser={openTimelineResource}
               onBrowserNavigationStart={invalidateFocusResourceRequest}
               workspace={workspace}
               system={system}
