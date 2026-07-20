@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentPlan, AgentQuestionRequest, TimelineEntry } from "../../../core/models/agent";
-import type { RunEventRecord, RunSnapshot } from "../../../core/models/run";
+import type {
+  AgentPlan,
+  AgentQuestionRequest,
+  AgentRuntimeState,
+  TimelineEntry,
+} from "../../../core/models/agent";
+import type {
+  PendingInputSnapshot,
+  RunEventRecord,
+  RunSnapshot,
+} from "../../../core/models/run";
 import {
   advanceAgentRuntimeWorkspaceScope,
   agentRuntimeEnvelopeMatches,
+  attentionHydrationStatusFromSettlements,
   agentQuestionRequestMatches,
   agentRuntimeApprovalRequestKey,
   agentRuntimeTaskScopeMatches,
@@ -13,25 +23,39 @@ import {
   clearResolvedAgentQuestionRequest,
   completedAgentPlan,
   handleAgentApprovalRequest,
+  listenerRecoveryPendingAfterConnect,
   loadAllXiaoRunEvents,
   normalizeFileChangeDiff,
+  resetPendingInputReplayForTaskRestore,
   restoredRunProtocolEnvelope,
+  runtimeAfterListenerAttachSuccess,
+  runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
+  type AttentionHydrationStatus,
 } from "./useAgentRuntime";
 import { latestUndoableTurn } from "./agentProtocol";
 import {
   emptyRunProjection,
   latestRunForTask,
+  mergeListedPendingInputs,
+  mergeListedRunSnapshots,
   projectRunSnapshots,
+  reconcileListedPendingInputs,
+  reconcileListedRunSnapshots,
+  runSnapshotBaselineForIds,
   type RunProjection,
 } from "./runProjection";
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => { resolve = settle; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, reject, resolve };
 };
 
 describe("completedAgentPlan", () => {
@@ -80,6 +104,24 @@ describe("normalizeFileChangeDiff", () => {
       patch,
     });
   });
+});
+
+const pendingInput = (
+  patch: Partial<PendingInputSnapshot> = {},
+): PendingInputSnapshot => ({
+  id: "pending-a",
+  runId: "run-a",
+  runtimeGeneration: 1,
+  requestId: "1",
+  threadId: "thread-a",
+  turnId: "turn-a",
+  itemId: "item-a",
+  kind: "question",
+  safeSummary: {},
+  openedAt: 20,
+  resolvedAt: null,
+  invalidatedAt: null,
+  ...patch,
 });
 
 const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapshot => ({
@@ -395,6 +437,291 @@ describe("agent runtime workspace scope", () => {
     expect(stateAfterResolution).toBe(replacement);
     expect(refAfterResolution).toBe(replacement);
     expect(clearResolvedAgentQuestionRequest(replacement, replacement)).toBeNull();
+  });
+
+  const runtimeState = (
+    phase: AgentRuntimeState["phase"],
+    error: string | null,
+  ): AgentRuntimeState => ({
+    phase,
+    taskId: null,
+    threadId: null,
+    turnId: null,
+    turnStartedAt: null,
+    error,
+    eventsSeen: 4,
+  });
+
+  it("moves the exact listener-owned error runtime to reconnectable offline", () => {
+    const listenerOwnedError = runtimeState("error", "listener failed");
+
+    expect(runtimeAfterListenerAttachSuccess(
+      listenerOwnedError,
+      listenerOwnedError,
+    )).toEqual({
+      ...listenerOwnedError,
+      phase: "offline",
+      error: null,
+    });
+  });
+
+  it("preserves an equal-message runtime not owned by listener registration", () => {
+    const listenerOwnedError = runtimeState("error", "listener failed");
+    const replacement = runtimeState("error", "listener failed");
+
+    expect(runtimeAfterListenerAttachSuccess(replacement, listenerOwnedError)).toBe(
+      replacement,
+    );
+  });
+
+  it("preserves reconnectable error and offline runtimes during listener recovery", () => {
+    const activeRun = run("C:/A", {
+      status: "running",
+      agentOutcome: "pending",
+      finishedAt: null,
+    });
+    const errorRuntime = runtimeState("error", "listener failed");
+    const offlineRuntime = runtimeState("offline", null);
+
+    expect(runtimeForPublishedActiveRun(errorRuntime, activeRun, true)).toBe(errorRuntime);
+    expect(runtimeForPublishedActiveRun(offlineRuntime, activeRun, true)).toBe(offlineRuntime);
+  });
+
+  it("publishes the normal active lifecycle when listener recovery is not pending", () => {
+    const activeRun = run("C:/A", {
+      status: "running",
+      agentOutcome: "pending",
+      finishedAt: null,
+    });
+    const current = runtimeState("error", "prior failure");
+
+    expect(runtimeForPublishedActiveRun(current, activeRun, false)).toMatchObject({
+      phase: "working",
+      taskId: activeRun.taskId,
+      threadId: activeRun.threadId,
+      turnId: activeRun.turnId,
+      error: null,
+    });
+  });
+
+  it("clears listener recovery only after a successful connect", () => {
+    expect(listenerRecoveryPendingAfterConnect(true, true)).toBe(false);
+    expect(listenerRecoveryPendingAfterConnect(true, false)).toBe(true);
+    expect(listenerRecoveryPendingAfterConnect(false, true)).toBe(false);
+  });
+
+  it("keeps a deferred replay publication from cancelling listener recovery", async () => {
+    const activeRun = run("C:/A", {
+      status: "running",
+      agentOutcome: "pending",
+      finishedAt: null,
+    });
+    const replay = deferred<RunSnapshot>();
+    const listenerOwnedError = runtimeState("error", "listener failed");
+    let current = listenerOwnedError;
+    let recoveryPending = true;
+    const publication = replay.promise.then((replayedRun) => {
+      current = runtimeForPublishedActiveRun(current, replayedRun, recoveryPending);
+    });
+
+    current = runtimeAfterListenerAttachSuccess(current, listenerOwnedError);
+    replay.resolve(activeRun);
+    await publication;
+
+    expect(current.phase).toBe("offline");
+    expect(current.error).toBeNull();
+
+    recoveryPending = listenerRecoveryPendingAfterConnect(recoveryPending, true);
+    current = runtimeForPublishedActiveRun(current, activeRun, recoveryPending);
+    expect(current.phase).toBe("working");
+  });
+
+  it("resets pending-input replay state on each A to B to A task activation", () => {
+    const replayed = new Set<string>();
+
+    resetPendingInputReplayForTaskRestore(replayed);
+    expect(replayed.has("pending-a")).toBe(false);
+    replayed.add("pending-a");
+    expect(replayed.has("pending-a")).toBe(true);
+
+    resetPendingInputReplayForTaskRestore(replayed);
+    replayed.add("pending-b");
+
+    resetPendingInputReplayForTaskRestore(replayed);
+    expect(replayed.has("pending-a")).toBe(false);
+    replayed.add("pending-a");
+    expect(replayed.has("pending-a")).toBe(true);
+  });
+
+  it("reports ready only when listeners and both bounded lists succeed", async () => {
+    const fulfilled = await Promise.allSettled([
+      Promise.resolve("runs"),
+      Promise.resolve("pending"),
+    ]);
+    const runsFailed = await Promise.allSettled([
+      Promise.reject(new Error("runs unavailable")),
+      Promise.resolve("pending"),
+    ]);
+    const pendingFailed = await Promise.allSettled([
+      Promise.resolve("runs"),
+      Promise.reject(new Error("pending unavailable")),
+    ]);
+
+    expect(attentionHydrationStatusFromSettlements(fulfilled)).toBe("ready");
+    expect(attentionHydrationStatusFromSettlements(runsFailed)).toBe("partial");
+    expect(attentionHydrationStatusFromSettlements(pendingFailed)).toBe("partial");
+    expect(attentionHydrationStatusFromSettlements(fulfilled, false)).toBe("partial");
+  });
+
+  it("publishes each successful hydration list without waiting for the other", async () => {
+    let projection = emptyRunProjection();
+    let status: AttentionHydrationStatus = "loading";
+    const runsList = deferred<RunSnapshot[]>();
+    const pendingList = deferred<PendingInputSnapshot[]>();
+    const runsBaseline = runSnapshotBaselineForIds(projection, new Set());
+    const pendingBaseline = projection.pendingInputsById;
+    const runsPublication = runsList.promise.then((runs) => {
+      projection = reconcileListedRunSnapshots(projection, runs, runsBaseline);
+    });
+    const pendingPublication = pendingList.promise.then((pendingInputs) => {
+      projection = reconcileListedPendingInputs(
+        projection,
+        pendingInputs,
+        pendingBaseline,
+      );
+    });
+    const hydration = Promise.allSettled([runsPublication, pendingPublication]).then(
+      (settlements) => {
+        status = attentionHydrationStatusFromSettlements(settlements);
+      },
+    );
+    const listedRun = run("C:/A", {
+      status: "running",
+      agentOutcome: "pending",
+      finishedAt: null,
+    });
+
+    runsList.resolve([listedRun]);
+    await runsPublication;
+
+    expect(latestRunForTask(projection, "shared")).toEqual(listedRun);
+    expect(projection.pendingInputsById).toEqual({});
+    expect(status).toBe("loading");
+
+    const listedPending = pendingInput({ runId: listedRun.id });
+    pendingList.resolve([listedPending]);
+    await hydration;
+
+    expect(projection.pendingInputsById[listedPending.id]).toEqual(listedPending);
+    expect(status).toBe("ready");
+  });
+
+  it("drops independent hydration publications after the workspace changes", async () => {
+    let scope: AgentRuntimeWorkspaceScope = { workspacePath: "C:/A", generation: 0 };
+    const captured = scope;
+    let projection = emptyRunProjection();
+    let status: AttentionHydrationStatus = "loading";
+    const runsList = deferred<RunSnapshot[]>();
+    const pendingList = deferred<PendingInputSnapshot[]>();
+    const runsBaseline = runSnapshotBaselineForIds(projection, new Set());
+    const listIsCurrent = () => agentRuntimeWorkspaceScopeMatches(
+      scope,
+      "C:/A",
+      captured.generation,
+    );
+    const runsPublication = runsList.promise.then((runs) => {
+      if (listIsCurrent()) {
+        projection = reconcileListedRunSnapshots(projection, runs, runsBaseline);
+      }
+    });
+    const pendingPublication = pendingList.promise.then((pendingInputs) => {
+      if (listIsCurrent()) {
+        projection = reconcileListedPendingInputs(projection, pendingInputs, {});
+      }
+    });
+    const hydration = Promise.allSettled([runsPublication, pendingPublication]).then(
+      (settlements) => {
+        if (listIsCurrent()) {
+          status = attentionHydrationStatusFromSettlements(settlements);
+        }
+      },
+    );
+
+    scope = advanceAgentRuntimeWorkspaceScope(scope, "C:/B");
+    runsList.resolve([run("C:/A")]);
+    pendingList.resolve([pendingInput()]);
+    await hydration;
+
+    expect(projection).toEqual(emptyRunProjection());
+    expect(status).toBe("loading");
+  });
+
+  it("reconciles a late pending list against its request baseline", async () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    let projection = beforeRequest;
+    const pendingList = deferred<PendingInputSnapshot[]>();
+    const publication = pendingList.promise.then((pendingInputs) => {
+      projection = reconcileListedPendingInputs(
+        projection,
+        pendingInputs,
+        beforeRequest.pendingInputsById,
+      );
+    });
+    const settled = pendingInput({ resolvedAt: 30 });
+
+    projection = mergeListedPendingInputs(projection, [settled]);
+    pendingList.resolve([pendingInput()]);
+    await publication;
+
+    expect(projection.pendingInputsById[settled.id]).toBe(settled);
+  });
+
+  it("keeps projected and lifecycle data intact across a failed retry", async () => {
+    const currentRun = run("C:/A", { version: 3 });
+    const settled = pendingInput({ resolvedAt: 30 });
+    let projection = mergeListedPendingInputs(
+      mergeListedRunSnapshots(emptyRunProjection(), [currentRun]),
+      [settled],
+    );
+    const finishedRunIds = new Set([currentRun.id]);
+    const replayedPendingInputs = new Set([settled.id]);
+    const sessions = new Map([[currentRun.taskId, currentRun.threadId!]]);
+    const lifecycle = { phase: "ready", error: "existing runtime error" };
+    let status: AttentionHydrationStatus = "loading";
+    const runsBaseline = runSnapshotBaselineForIds(
+      projection,
+      new Set([currentRun.id]),
+    );
+    const pendingBaseline = projection.pendingInputsById;
+    const runsList = deferred<RunSnapshot[]>();
+    const pendingList = deferred<PendingInputSnapshot[]>();
+    const runsPublication = runsList.promise.then((runs) => {
+      projection = reconcileListedRunSnapshots(projection, runs, runsBaseline);
+    });
+    const pendingPublication = pendingList.promise.then((pendingInputs) => {
+      projection = reconcileListedPendingInputs(
+        projection,
+        pendingInputs,
+        pendingBaseline,
+      );
+    });
+    const retry = Promise.allSettled([runsPublication, pendingPublication]).then(
+      (settlements) => {
+        status = attentionHydrationStatusFromSettlements(settlements);
+      },
+    );
+
+    runsList.resolve([run("C:/A", { version: 2 })]);
+    pendingList.reject(new Error("pending unavailable"));
+    await retry;
+
+    expect(latestRunForTask(projection, "shared")).toEqual(currentRun);
+    expect(projection.pendingInputsById[settled.id]).toBe(settled);
+    expect(finishedRunIds).toEqual(new Set([currentRun.id]));
+    expect(replayedPendingInputs).toEqual(new Set([settled.id]));
+    expect(sessions).toEqual(new Map([[currentRun.taskId, currentRun.threadId]]));
+    expect(lifecycle).toEqual({ phase: "ready", error: "existing runtime error" });
+    expect(status).toBe("partial");
   });
 
   it("fails closed across deferred A/shared listeners and lists before exposing B/shared", async () => {

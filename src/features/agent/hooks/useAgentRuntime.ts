@@ -48,9 +48,11 @@ import {
   activeRunForTask,
   emptyRunProjection,
   latestRunForTask,
-  mergeListedRunSnapshots,
+  reconcileListedPendingInputs,
+  reconcileListedRunSnapshots,
   projectRunSnapshots,
   projectRunUpdate,
+  runSnapshotBaselineForIds,
   runStatusIsActive,
   shouldRestorePendingInput,
   type RunProjection,
@@ -123,8 +125,58 @@ export const agentRuntimeWorkspaceScopeMatches = (
   generation: number,
 ) => current.workspacePath === workspacePath && current.generation === generation;
 
+export type AttentionHydrationStatus = "loading" | "ready" | "partial";
+
+export const attentionHydrationStatusFromSettlements = (
+  settlements: readonly PromiseSettledResult<unknown>[],
+  listenersAvailable = true,
+): Exclude<AttentionHydrationStatus, "loading"> =>
+  listenersAvailable && settlements.every((result) => result.status === "fulfilled")
+    ? "ready"
+    : "partial";
+
 export type AgentRuntimeTaskScope = AgentRuntimeWorkspaceScope & {
   taskId: string;
+};
+
+type RunProjectionPublicationOptions = {
+  operationScope?: AgentRuntimeTaskScope;
+};
+
+export const runtimeAfterListenerAttachSuccess = (
+  current: AgentRuntimeState,
+  listenerOwnedError: AgentRuntimeState | null,
+): AgentRuntimeState => current === listenerOwnedError
+  ? { ...current, phase: "offline", error: null }
+  : current;
+
+export const listenerRecoveryPendingAfterConnect = (
+  current: boolean,
+  succeeded: boolean,
+) => succeeded ? false : current;
+
+export const runtimeForPublishedActiveRun = (
+  current: AgentRuntimeState,
+  activeRun: RunSnapshot,
+  listenerRecoveryPending = false,
+): AgentRuntimeState => {
+  if (
+    listenerRecoveryPending &&
+    (current.phase === "error" || current.phase === "offline")
+  ) return current;
+  return {
+    ...current,
+    phase: "working",
+    taskId: activeRun.taskId,
+    threadId: activeRun.threadId,
+    turnId: activeRun.turnId,
+    turnStartedAt: activeRun.startedAt,
+    error: null,
+  };
+};
+
+export const resetPendingInputReplayForTaskRestore = (replayed: Set<string>) => {
+  replayed.clear();
 };
 
 export const agentRuntimeTaskWorkspaceScopeMatches = (
@@ -694,7 +746,11 @@ export function useAgentRuntime(
   const [compactingTaskId, setCompactingTaskId] = useState<string | null>(null);
   const [undoingScope, setUndoingScope] = useState<AgentRuntimeTaskScope | null>(null);
   const [listenersReady, setListenersReady] = useState(!isTauriHost());
+  const [listenerRetryRevision, setListenerRetryRevision] = useState(0);
+  const [attentionHydrationRevision, setAttentionHydrationRevision] = useState(0);
   const [runProjection, setRunProjection] = useState<RunProjection>(emptyRunProjection);
+  const [attentionHydrationStatus, setAttentionHydrationStatus] =
+    useState<AttentionHydrationStatus>(() => isTauriHost() ? "loading" : "ready");
   const [stateWorkspacePath, setStateWorkspacePath] = useState(workspacePath);
   const { usage, recordUsage } = useCodexUsage();
   const activeTaskIdRef = useRef(activeTaskId);
@@ -702,6 +758,7 @@ export function useAgentRuntime(
   const activeTimelineReadyRef = useRef(activeTaskTimelineComplete);
   const questionRequestRef = useRef<AgentQuestionRequest | null>(null);
   const runProjectionRef = useRef<RunProjection>(emptyRunProjection());
+  const workspaceListedRunIds = useRef(new Set<string>());
   const expectedEnvironmentIdRef = useRef(workspaceEnvironmentId);
   const activeEnvironmentIdRef = useRef<string | null>(null);
   const activeGenerationRef = useRef<number | null>(null);
@@ -722,6 +779,8 @@ export function useAgentRuntime(
   const autoResolvingRequests = useRef(new Set<string>());
   const reconnectAttempt = useRef(0);
   const runtimeStopError = useRef<string | null>(null);
+  const listenerRecoveryPendingRef = useRef(false);
+  const listenerRegistrationErrorRef = useRef<AgentRuntimeState | null>(null);
   const compactingTasks = useRef(new Set<string>());
   const undoingScopeRef = useRef<AgentRuntimeTaskScope | null>(null);
   const timelineCache = useRef(new Map<string, TimelineEntry[]>());
@@ -756,6 +815,7 @@ export function useAgentRuntime(
     activeTimelineReadyRef.current = activeTaskTimelineComplete;
     questionRequestRef.current = null;
     runProjectionRef.current = emptyRunProjection();
+    workspaceListedRunIds.current.clear();
     expectedEnvironmentIdRef.current = workspaceEnvironmentId;
     activeEnvironmentIdRef.current = null;
     activeGenerationRef.current = null;
@@ -785,6 +845,8 @@ export function useAgentRuntime(
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
     reconnectAttempt.current = 0;
     runtimeStopError.current = null;
+    listenerRecoveryPendingRef.current = false;
+    listenerRegistrationErrorRef.current = null;
     undoingScopeRef.current = null;
   }
 
@@ -802,6 +864,7 @@ export function useAgentRuntime(
     setUndoingScope(null);
     setListenersReady(!isTauriHost());
     setRunProjection(emptyRunProjection());
+    setAttentionHydrationStatus(isTauriHost() ? "loading" : "ready");
   }, [stateWorkspacePath, workspacePath]);
 
   useEffect(() => {
@@ -824,7 +887,7 @@ export function useAgentRuntime(
     onTaskGoalChangeRef.current = onTaskGoalChange;
   }, [onTaskGoalChange]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     onTaskFinishedRef.current = onTaskFinished;
   }, [onTaskFinished]);
 
@@ -1256,6 +1319,11 @@ export function useAgentRuntime(
         }
         if (message.result) {
           reconnectAttempt.current = 0;
+          listenerRecoveryPendingRef.current = listenerRecoveryPendingAfterConnect(
+            listenerRecoveryPendingRef.current,
+            true,
+          );
+          listenerRegistrationErrorRef.current = null;
           const activeRun = activeRunForTask(
             runProjectionRef.current,
             activeTaskIdRef.current,
@@ -1351,13 +1419,18 @@ export function useAgentRuntime(
           }
         }
         if (!route || taskId === activeTaskIdRef.current) {
-          setRuntime((current) => ({
-            ...current,
-            phase: "working",
-            taskId,
-            threadId: threadId ?? current.threadId,
-            turnId,
-          }));
+          setRuntime((current) =>
+            listenerRecoveryPendingRef.current &&
+              (current.phase === "error" || current.phase === "offline")
+              ? current
+              : {
+                  ...current,
+                  phase: "working",
+                  taskId,
+                  threadId: threadId ?? current.threadId,
+                  turnId,
+                }
+          );
         }
       }
 
@@ -1736,7 +1809,7 @@ export function useAgentRuntime(
 
   const publishRunProjection = useCallback((
     next: RunProjection,
-    operationScope?: AgentRuntimeTaskScope,
+    { operationScope }: RunProjectionPublicationOptions = {},
   ) => {
     runProjectionRef.current = next;
     setRunProjection(next);
@@ -1757,15 +1830,12 @@ export function useAgentRuntime(
         threadTasks.current.set(activeRun.threadId, activeRun.taskId);
       }
       if (activeRun.turnId) activeTurnIds.current.set(activeRun.taskId, activeRun.turnId);
-      setRuntime((current) => ({
-        ...current,
-        phase: "working",
-        taskId: activeRun.taskId,
-        threadId: activeRun.threadId,
-        turnId: activeRun.turnId,
-        turnStartedAt: activeRun.startedAt,
-        error: null,
-      }));
+      const listenerRecoveryPending = listenerRecoveryPendingRef.current;
+      setRuntime((current) => runtimeForPublishedActiveRun(
+        current,
+        activeRun,
+        listenerRecoveryPending,
+      ));
     } else {
       activeTurnIds.current.delete(activeTaskIdRef.current);
       setRuntime((current) =>
@@ -1786,6 +1856,19 @@ export function useAgentRuntime(
   useEffect(() => {
     publishRunProjection(runProjectionRef.current);
   }, [activeTaskId, publishRunProjection]);
+
+  const retryAttentionHydration = useCallback(() => {
+    if (!isTauriHost()) {
+      setAttentionHydrationStatus("ready");
+      return;
+    }
+    setAttentionHydrationStatus("loading");
+    if (listenersReady) {
+      setAttentionHydrationRevision((current) => current + 1);
+    } else {
+      setListenerRetryRevision((current) => current + 1);
+    }
+  }, [listenersReady]);
 
   useEffect(() => {
     if (!isTauriHost()) return;
@@ -1955,15 +2038,32 @@ export function useAgentRuntime(
             }
           }),
         );
-        if (listenerIsCurrent()) setListenersReady(true);
+        if (listenerIsCurrent()) {
+          const listenerOwnedError = listenerRegistrationErrorRef.current;
+          listenerRegistrationErrorRef.current = null;
+          setRuntime((current) => runtimeAfterListenerAttachSuccess(
+            current,
+            listenerOwnedError,
+          ));
+          setListenersReady(true);
+        }
       } catch (reason) {
         cleanups.splice(0).forEach((cleanup) => cleanup());
         if (listenerIsCurrent()) {
-          setRuntime((current) => ({
-            ...current,
-            phase: "error",
-            error: reason instanceof Error ? reason.message : String(reason),
-          }));
+          const message = reason instanceof Error ? reason.message : String(reason);
+          listenerRecoveryPendingRef.current = true;
+          setAttentionHydrationStatus(
+            attentionHydrationStatusFromSettlements([], false),
+          );
+          setRuntime((current) => {
+            const listenerOwnedError = {
+              ...current,
+              phase: "error" as const,
+              error: message,
+            };
+            listenerRegistrationErrorRef.current = listenerOwnedError;
+            return listenerOwnedError;
+          });
         }
       }
     };
@@ -1980,10 +2080,21 @@ export function useAgentRuntime(
       planClearTimers.current.clear();
       cleanups.forEach((cleanup) => cleanup());
     };
-  }, [appendRuntimeLog, flushLiveDeltas, handleMessage, publishRunProjection, workspacePath]);
+  }, [
+    appendRuntimeLog,
+    flushLiveDeltas,
+    handleMessage,
+    listenerRetryRevision,
+    publishRunProjection,
+    workspacePath,
+  ]);
 
   useEffect(() => {
-    if (!isTauriHost() || !listenersReady) return;
+    if (
+      !isTauriHost() ||
+      !listenersReady ||
+      stateWorkspacePath !== workspacePath
+    ) return;
     let cancelled = false;
     const listScope = workspaceScopeRef.current;
     const listIsCurrent = () =>
@@ -1993,10 +2104,19 @@ export function useAgentRuntime(
         workspacePath,
         listScope.generation,
       );
-    replayedPendingInputs.current.clear();
-    finishedRunIds.current.clear();
-    publishRunProjection(emptyRunProjection());
-    void nativeBridge.listXiaoRuns(workspacePath, null, 100).then((runs) => {
+    setAttentionHydrationStatus("loading");
+    const runsBaseline = runSnapshotBaselineForIds(
+      runProjectionRef.current,
+      workspaceListedRunIds.current,
+    );
+    const pendingBaseline = runProjectionRef.current.pendingInputsById;
+    const runsRequest = Promise.resolve().then(() =>
+      nativeBridge.listXiaoRuns(workspacePath, null, 100)
+    );
+    const pendingInputsRequest = Promise.resolve().then(() =>
+      nativeBridge.listXiaoPendingInputs(workspacePath, null)
+    );
+    const runsPublication = runsRequest.then((runs) => {
       if (!listIsCurrent()) return;
       const scopedRuns = runs.filter((run) => run.workspacePath === workspacePath);
       for (const run of scopedRuns) {
@@ -2006,20 +2126,43 @@ export function useAgentRuntime(
           if (run.turnId) activeTurnIds.current.set(run.taskId, run.turnId);
         }
       }
-      publishRunProjection(mergeListedRunSnapshots(runProjectionRef.current, scopedRuns));
-    }).catch((reason) => {
-      if (listIsCurrent()) {
-        setRuntime((current) => ({
-          ...current,
-          error: reason instanceof Error ? reason.message : String(reason),
-        }));
-      }
+      publishRunProjection(reconcileListedRunSnapshots(
+        runProjectionRef.current,
+        scopedRuns,
+        runsBaseline,
+      ));
+      workspaceListedRunIds.current = new Set(scopedRuns.map((run) => run.id));
+    });
+    const pendingInputsPublication = pendingInputsRequest.then((pendingInputs) => {
+      if (!listIsCurrent()) return;
+      publishRunProjection(reconcileListedPendingInputs(
+        runProjectionRef.current,
+        pendingInputs,
+        pendingBaseline,
+      ));
+    });
+
+    void Promise.allSettled([
+      runsPublication,
+      pendingInputsPublication,
+    ]).then((settlements) => {
+      if (!listIsCurrent()) return;
+      setAttentionHydrationStatus(
+        attentionHydrationStatusFromSettlements(settlements),
+      );
     });
     return () => { cancelled = true; };
-  }, [listenersReady, publishRunProjection, workspacePath]);
+  }, [
+    attentionHydrationRevision,
+    listenersReady,
+    publishRunProjection,
+    stateWorkspacePath,
+    workspacePath,
+  ]);
 
   useEffect(() => {
     if (!isTauriHost() || !listenersReady || !activeTaskTimelineComplete) return;
+    resetPendingInputReplayForTaskRestore(replayedPendingInputs.current);
     let cancelled = false;
     const restoreScope = workspaceScopeRef.current;
     const restoreIsCurrent = () =>
@@ -2029,7 +2172,6 @@ export function useAgentRuntime(
         workspacePath,
         restoreScope.generation,
       );
-    replayedPendingInputs.current.clear();
     const restore = async () => {
       const [runs, pendingInputs] = await Promise.all([
         nativeBridge.listXiaoRuns(workspacePath, activeTaskId, 50),
@@ -2041,7 +2183,9 @@ export function useAgentRuntime(
       const scopedPendingInputs = pendingInputs.filter((pending) =>
         scopedRunIds.has(pending.runId)
       );
-      publishRunProjection(projectRunSnapshots(runProjectionRef.current, scopedRuns));
+      publishRunProjection(
+        projectRunSnapshots(runProjectionRef.current, scopedRuns),
+      );
       const orderedRuns = [...scopedRuns].sort(
         (left, right) => left.queuedAt - right.queuedAt || left.id.localeCompare(right.id),
       );
@@ -2175,6 +2319,11 @@ export function useAgentRuntime(
       appendRuntimeLog("system", `Codex ${result.version} connected.`);
       if (result.alreadyRunning) {
         reconnectAttempt.current = 0;
+        listenerRecoveryPendingRef.current = listenerRecoveryPendingAfterConnect(
+          listenerRecoveryPendingRef.current,
+          true,
+        );
+        listenerRegistrationErrorRef.current = null;
         setRuntime((current) => ({ ...current, phase: "ready", error: null }));
         await refreshRuntimeIdentity();
       }
@@ -2185,6 +2334,10 @@ export function useAgentRuntime(
         scope.generation,
       )) return;
       reconnectAttempt.current += 1;
+      listenerRecoveryPendingRef.current = listenerRecoveryPendingAfterConnect(
+        listenerRecoveryPendingRef.current,
+        false,
+      );
       setRuntime((current) => ({
         ...current,
         phase: "error",
@@ -2397,7 +2550,7 @@ export function useAgentRuntime(
         snapshot,
         event: null,
         pendingInput: null,
-      }), scope);
+      }), { operationScope: scope });
     } catch (reason) {
       if (agentRuntimeTaskScopeMatches(
         workspaceScopeRef.current,
@@ -2436,7 +2589,7 @@ export function useAgentRuntime(
         snapshot,
         event: null,
         pendingInput: null,
-      }), scope);
+      }), { operationScope: scope });
       return true;
     } catch (reason) {
       if (agentRuntimeTaskScopeMatches(
@@ -2873,6 +3026,10 @@ export function useAgentRuntime(
       (left, right) => right.queuedAt - left.queuedAt || right.id.localeCompare(left.id),
     ),
     pendingInputs: Object.values(scopedRunProjection.pendingInputsById),
+    attentionHydrationStatus: stateIsCurrentWorkspace
+      ? attentionHydrationStatus
+      : isTauriHost() ? "loading" : "ready",
+    retryAttentionHydration,
     hasActiveRuns: Object.values(scopedRunProjection.runsById).some((run) =>
       runStatusIsActive(run.status)
     ),

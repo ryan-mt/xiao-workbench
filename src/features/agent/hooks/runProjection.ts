@@ -36,13 +36,15 @@ const addRunToTask = (
   return { ...projection.runIdsByTask, [snapshot.taskId]: ids };
 };
 
-const shouldReplaceSnapshot = (current: RunSnapshot | undefined, next: RunSnapshot) => {
-  if (!current) return true;
-  if (next.version !== current.version) return next.version > current.version;
+const compareSnapshotFreshness = (current: RunSnapshot, next: RunSnapshot) => {
+  if (next.version !== current.version) return next.version - current.version;
   const currentGeneration = current.runtimeGeneration ?? -1;
   const nextGeneration = next.runtimeGeneration ?? -1;
-  return nextGeneration >= currentGeneration;
+  return nextGeneration - currentGeneration;
 };
+
+const shouldReplaceSnapshot = (current: RunSnapshot | undefined, next: RunSnapshot) =>
+  !current || compareSnapshotFreshness(current, next) >= 0;
 
 const withPendingInput = (
   current: Record<string, PendingInputSnapshot>,
@@ -111,6 +113,111 @@ export const mergeListedRunSnapshots = (
   current: RunProjection,
   snapshots: RunSnapshot[],
 ) => projectRunSnapshots(current, snapshots);
+
+export const runSnapshotBaselineForIds = (
+  projection: RunProjection,
+  ids: ReadonlySet<string>,
+): Readonly<Record<string, RunSnapshot>> => {
+  const baseline: Record<string, RunSnapshot> = {};
+  for (const id of ids) {
+    const snapshot = projection.runsById[id];
+    if (snapshot) baseline[id] = snapshot;
+  }
+  return baseline;
+};
+
+export const reconcileListedRunSnapshots = (
+  projection: RunProjection,
+  listed: RunSnapshot[],
+  baseline: Readonly<Record<string, RunSnapshot>>,
+): RunProjection => {
+  const mergeableListed = listed.filter((snapshot) => {
+    const current = projection.runsById[snapshot.id];
+    return (
+      !current ||
+      current === baseline[snapshot.id] ||
+      compareSnapshotFreshness(current, snapshot) > 0
+    );
+  });
+  const merged = mergeListedRunSnapshots(projection, mergeableListed);
+  const listedIds = new Set(listed.map((snapshot) => snapshot.id));
+  let runsById = merged.runsById;
+  let runIdsByTask = merged.runIdsByTask;
+  let appliedProtocolSequencesByRun = merged.appliedProtocolSequencesByRun;
+
+  for (const baselineRun of Object.values(baseline)) {
+    if (
+      listedIds.has(baselineRun.id) ||
+      runsById[baselineRun.id] !== baselineRun
+    ) continue;
+
+    if (runsById === merged.runsById) runsById = { ...runsById };
+    delete runsById[baselineRun.id];
+
+    const taskRunIds = runIdsByTask[baselineRun.taskId];
+    if (taskRunIds?.includes(baselineRun.id)) {
+      if (runIdsByTask === merged.runIdsByTask) runIdsByTask = { ...runIdsByTask };
+      const remaining = taskRunIds.filter((id) => id !== baselineRun.id);
+      if (remaining.length) runIdsByTask[baselineRun.taskId] = remaining;
+      else delete runIdsByTask[baselineRun.taskId];
+    }
+
+    if (Object.prototype.hasOwnProperty.call(
+      appliedProtocolSequencesByRun,
+      baselineRun.id,
+    )) {
+      if (appliedProtocolSequencesByRun === merged.appliedProtocolSequencesByRun) {
+        appliedProtocolSequencesByRun = { ...appliedProtocolSequencesByRun };
+      }
+      delete appliedProtocolSequencesByRun[baselineRun.id];
+    }
+  }
+
+  return runsById === merged.runsById
+    ? merged
+    : { ...merged, runsById, runIdsByTask, appliedProtocolSequencesByRun };
+};
+
+export const mergeListedPendingInputs = (
+  projection: RunProjection,
+  pendingInputs: PendingInputSnapshot[],
+): RunProjection => pendingInputs.reduce((current, pendingInput) => {
+  const pendingInputsById = withPendingInput(current.pendingInputsById, pendingInput);
+  return pendingInputsById === current.pendingInputsById
+    ? current
+    : { ...current, pendingInputsById };
+}, projection);
+
+export const reconcileListedPendingInputs = (
+  projection: RunProjection,
+  listed: PendingInputSnapshot[],
+  baseline: Readonly<Record<string, PendingInputSnapshot>>,
+): RunProjection => {
+  const mergeableListed = listed.filter((pending) => {
+    const baselinePending = baseline[pending.id];
+    return !baselinePending || projection.pendingInputsById[pending.id] === baselinePending;
+  });
+  const merged = mergeListedPendingInputs(projection, mergeableListed);
+  const listedIds = new Set(listed.map((pending) => pending.id));
+  let pendingInputsById = merged.pendingInputsById;
+
+  for (const pending of Object.values(baseline)) {
+    if (
+      pending.resolvedAt != null ||
+      pending.invalidatedAt != null ||
+      listedIds.has(pending.id) ||
+      pendingInputsById[pending.id] !== pending
+    ) continue;
+    if (pendingInputsById === merged.pendingInputsById) {
+      pendingInputsById = { ...pendingInputsById };
+    }
+    delete pendingInputsById[pending.id];
+  }
+
+  return pendingInputsById === merged.pendingInputsById
+    ? merged
+    : { ...merged, pendingInputsById };
+};
 
 export const projectRunUpdate = (
   projection: RunProjection,

@@ -1,1 +1,1 @@
-export type AppPage = "tasks" | "profile" | "settings";
+export type AppPage = "tasks" | "attention" | "profile" | "settings";

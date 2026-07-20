@@ -12,9 +12,13 @@ import {
   activeRunForTask,
   emptyRunProjection,
   latestRunForTask,
+  mergeListedPendingInputs,
   mergeListedRunSnapshots,
   projectRunSnapshots,
   projectRunUpdate,
+  reconcileListedPendingInputs,
+  reconcileListedRunSnapshots,
+  runSnapshotBaselineForIds,
   runsForTask,
   shouldRestorePendingInput,
 } from "./runProjection";
@@ -126,6 +130,136 @@ describe("native run projection", () => {
     expect(latestRunForTask(projection, "task-a")).toEqual(newest);
   });
 
+  it("clears unresolved baseline pending inputs omitted by an authoritative list", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+
+    const reconciled = reconcileListedPendingInputs(
+      beforeRequest,
+      [],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById).toEqual({});
+  });
+
+  it("preserves a new pending input received after the list request starts", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [
+      pendingInput({ id: "baseline" }),
+    ]);
+    const afterLiveInput = mergeListedPendingInputs(beforeRequest, [
+      pendingInput({ id: "live", requestId: "2" }),
+    ]);
+
+    const reconciled = reconcileListedPendingInputs(
+      afterLiveInput,
+      [],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById).toEqual({
+      live: afterLiveInput.pendingInputsById.live,
+    });
+  });
+
+  it("preserves an active replacement received after the list request starts", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    const replacement = pendingInput({ requestId: "replacement" });
+    const afterReplacement = mergeListedPendingInputs(beforeRequest, [replacement]);
+
+    const reconciled = reconcileListedPendingInputs(
+      afterReplacement,
+      [],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById[replacement.id]).toBe(replacement);
+  });
+
+  it("does not let a stale list replace a same-ID active live replacement", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    const replacement = pendingInput({ requestId: "replacement" });
+    const afterReplacement = mergeListedPendingInputs(beforeRequest, [replacement]);
+
+    const reconciled = reconcileListedPendingInputs(
+      afterReplacement,
+      [pendingInput()],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled).toBe(afterReplacement);
+    expect(reconciled.pendingInputsById[replacement.id]).toBe(replacement);
+  });
+
+  it("merges a listed row when its same-ID baseline is unchanged", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    const listed = pendingInput({ requestId: "listed" });
+
+    const reconciled = reconcileListedPendingInputs(
+      beforeRequest,
+      [listed],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById[listed.id]).toBe(listed);
+  });
+
+  it("preserves a settled replacement received after the list request starts", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    const settled = pendingInput({ resolvedAt: 30 });
+    const afterSettlement = mergeListedPendingInputs(beforeRequest, [settled]);
+
+    const reconciled = reconcileListedPendingInputs(
+      afterSettlement,
+      [],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById).toEqual({ "pending-a": settled });
+  });
+
+  it("does not let a stale active list replace a live settled pending input", () => {
+    const beforeRequest = mergeListedPendingInputs(emptyRunProjection(), [pendingInput()]);
+    const settled = pendingInput({ invalidatedAt: 31 });
+    const afterSettlement = mergeListedPendingInputs(beforeRequest, [settled]);
+
+    const reconciled = reconcileListedPendingInputs(
+      afterSettlement,
+      [pendingInput()],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled).toBe(afterSettlement);
+    expect(reconciled.pendingInputsById[settled.id]).toBe(settled);
+  });
+
+  it("reconciles only baseline pending inputs without disturbing unrelated state", () => {
+    const projection = projectRunSnapshots(emptyRunProjection(), [run({
+      runtimeGeneration: 2,
+      threadId: "thread-a",
+      turnId: "turn-a",
+      version: 2,
+    })]);
+    const withSequence = acceptRunProtocol(projection, protocol({ sequence: 4 })).projection;
+    const beforeRequest = mergeListedPendingInputs(withSequence, [
+      pendingInput({ id: "baseline" }),
+    ]);
+    const unrelated = pendingInput({ id: "unrelated", requestId: "2" });
+    const current = mergeListedPendingInputs(beforeRequest, [unrelated]);
+
+    const reconciled = reconcileListedPendingInputs(
+      current,
+      [],
+      beforeRequest.pendingInputsById,
+    );
+
+    expect(reconciled.pendingInputsById).toEqual({ unrelated });
+    expect(reconciled.runsById).toBe(current.runsById);
+    expect(reconciled.runIdsByTask).toBe(current.runIdsByTask);
+    expect(reconciled.appliedProtocolSequencesByRun).toBe(
+      current.appliedProtocolSequencesByRun,
+    );
+  });
+
   it("does not let a delayed run list overwrite a newer live update", () => {
     const staleListSnapshot = run({
       status: "running",
@@ -150,6 +284,201 @@ describe("native run projection", () => {
     const restored = mergeListedRunSnapshots(afterLiveUpdate, [staleListSnapshot]);
 
     expect(latestRunForTask(restored, "task-a")).toEqual(terminalLiveSnapshot);
+  });
+
+  it("fully removes a baseline run omitted by an authoritative list", () => {
+    const baselineRun = run({
+      status: "running",
+      runtimeGeneration: 2,
+      threadId: "thread-a",
+      turnId: "turn-a",
+      version: 2,
+    });
+    const withRun = projectRunSnapshots(emptyRunProjection(), [baselineRun]);
+    const beforeRequest = acceptRunProtocol(withRun, protocol({ sequence: 4 })).projection;
+
+    const reconciled = reconcileListedRunSnapshots(
+      beforeRequest,
+      [],
+      beforeRequest.runsById,
+    );
+
+    expect(reconciled.runsById).toEqual({});
+    expect(reconciled.runIdsByTask).toEqual({});
+    expect(reconciled.appliedProtocolSequencesByRun).toEqual({});
+  });
+
+  it("prunes only runs with prior workspace-list provenance", () => {
+    const priorListed = run({ id: "prior-listed", idempotencyKey: "prior-listed" });
+    const restoreOnly = run({
+      id: "restore-only",
+      idempotencyKey: "restore-only",
+      queuedAt: 9,
+    });
+    const projection = projectRunSnapshots(emptyRunProjection(), [
+      priorListed,
+      restoreOnly,
+    ]);
+    let trackedIds = new Set([priorListed.id, "no-longer-projected"]);
+    const baseline = runSnapshotBaselineForIds(projection, trackedIds);
+
+    expect(baseline).toEqual({ [priorListed.id]: priorListed });
+
+    const nextListed = run({
+      id: "next-listed",
+      idempotencyKey: "next-listed",
+      queuedAt: 8,
+    });
+    const reconciled = reconcileListedRunSnapshots(
+      projection,
+      [nextListed],
+      baseline,
+    );
+    trackedIds = new Set([nextListed.id]);
+
+    expect(reconciled.runsById).toEqual({
+      [restoreOnly.id]: restoreOnly,
+      [nextListed.id]: nextListed,
+    });
+    expect(runSnapshotBaselineForIds(reconciled, trackedIds)).toEqual({
+      [nextListed.id]: nextListed,
+    });
+  });
+
+  it("retains and merges an unchanged baseline run returned by the list", () => {
+    const baselineRun = run({ version: 2 });
+    const beforeRequest = projectRunSnapshots(emptyRunProjection(), [baselineRun]);
+    const listedRun = { ...baselineRun };
+
+    const reconciled = reconcileListedRunSnapshots(
+      beforeRequest,
+      [listedRun],
+      beforeRequest.runsById,
+    );
+
+    expect(reconciled.runsById[listedRun.id]).toBe(listedRun);
+    expect(reconciled.runIdsByTask[listedRun.taskId]).toEqual([listedRun.id]);
+  });
+
+  it("preserves a same-ID live replacement from an equal or stale list", () => {
+    const baselineRun = run({ runtimeGeneration: 1, version: 1 });
+    const beforeRequest = projectRunSnapshots(emptyRunProjection(), [baselineRun]);
+    const replacement = run({
+      status: "running",
+      runtimeGeneration: 2,
+      version: 2,
+    });
+    const afterReplacement = projectRunUpdate(beforeRequest, update(replacement));
+
+    for (const listedRun of [
+      run({ runtimeGeneration: 1, version: 1 }),
+      run({ runtimeGeneration: 2, version: 2 }),
+    ]) {
+      const reconciled = reconcileListedRunSnapshots(
+        afterReplacement,
+        [listedRun],
+        beforeRequest.runsById,
+      );
+
+      expect(reconciled.runsById[replacement.id]).toBe(replacement);
+      expect(reconciled.runIdsByTask[replacement.taskId]).toEqual([replacement.id]);
+    }
+  });
+
+  it("lets a fresher same-ID list replace a live request-time replacement", () => {
+    const baselineRun = run({ runtimeGeneration: 1, version: 1 });
+    const beforeRequest = projectRunSnapshots(emptyRunProjection(), [baselineRun]);
+    const liveReplacement = run({
+      status: "running",
+      runtimeGeneration: 2,
+      version: 2,
+    });
+    const afterReplacement = projectRunUpdate(beforeRequest, update(liveReplacement));
+    const listedReplacement = run({
+      status: "completed",
+      agentOutcome: "completed",
+      runtimeGeneration: 3,
+      finishedAt: 30,
+      version: 2,
+    });
+
+    const reconciled = reconcileListedRunSnapshots(
+      afterReplacement,
+      [listedReplacement],
+      beforeRequest.runsById,
+    );
+
+    expect(reconciled.runsById[listedReplacement.id]).toBe(listedReplacement);
+  });
+
+  it("preserves a run added after an authoritative list request starts", () => {
+    const baselineRun = run({ id: "baseline", idempotencyKey: "baseline" });
+    const beforeRequest = projectRunSnapshots(emptyRunProjection(), [baselineRun]);
+    const liveRun = run({
+      id: "live",
+      taskId: "task-b",
+      idempotencyKey: "live",
+      queuedAt: 20,
+    });
+    const afterLiveRun = projectRunSnapshots(beforeRequest, [liveRun]);
+
+    const reconciled = reconcileListedRunSnapshots(
+      afterLiveRun,
+      [baselineRun],
+      beforeRequest.runsById,
+    );
+
+    expect(reconciled.runsById[liveRun.id]).toBe(liveRun);
+    expect(reconciled.runIdsByTask[liveRun.taskId]).toEqual([liveRun.id]);
+  });
+
+  it("removes only omitted baseline run state and preserves unrelated indexes", () => {
+    const omitted = run({ id: "omitted", idempotencyKey: "omitted" });
+    const retained = run({
+      id: "retained",
+      idempotencyKey: "retained",
+      queuedAt: 9,
+    });
+    const unrelated = run({
+      id: "unrelated",
+      taskId: "task-b",
+      idempotencyKey: "unrelated",
+      queuedAt: 8,
+    });
+    const beforeRequest = projectRunSnapshots(emptyRunProjection(), [
+      omitted,
+      retained,
+      unrelated,
+    ]);
+    const pendingInputsById = {
+      "pending-b": pendingInput({ id: "pending-b", runId: unrelated.id }),
+    };
+    const current = {
+      ...beforeRequest,
+      pendingInputsById,
+      appliedProtocolSequencesByRun: {
+        omitted: [1],
+        retained: [2],
+        unrelated: [3],
+      },
+    };
+
+    const reconciled = reconcileListedRunSnapshots(
+      current,
+      [retained, unrelated],
+      beforeRequest.runsById,
+    );
+
+    expect(reconciled.runsById).toEqual({ retained, unrelated });
+    expect(reconciled.runIdsByTask).toEqual({
+      "task-a": [retained.id],
+      "task-b": [unrelated.id],
+    });
+    expect(reconciled.appliedProtocolSequencesByRun).toEqual({
+      retained: [2],
+      unrelated: [3],
+    });
+    expect(reconciled.pendingInputsById).toBe(pendingInputsById);
   });
 
   it("deduplicates persisted protocol sequences but accepts out-of-order uniques", () => {

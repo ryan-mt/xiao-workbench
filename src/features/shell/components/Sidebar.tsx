@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentAccountSummary } from "../../../core/models/agent";
+import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { XiaoProjectSummary } from "../../../core/models/xiao";
 import { profileInitials, type LocalUserProfile } from "../../profile/hooks/useLocalProfile";
@@ -26,7 +27,10 @@ type SidebarProps = {
   account: AgentAccountSummary | null;
   profile: LocalUserProfile;
   canOpenProjects: boolean;
+  attentionCount: number;
+  attentionHydrationStatus: AttentionHydrationStatus;
   onOpenMenu: () => void;
+  onOpenAttention: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
@@ -69,6 +73,8 @@ type RenamingTask = {
   title: string;
 };
 
+export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
+
 const projectMenuWidth = 218;
 const projectMenuHeight = 214;
 const taskMenuHeight = 330;
@@ -106,7 +112,10 @@ export function Sidebar({
   account,
   profile,
   canOpenProjects,
+  attentionCount,
+  attentionHydrationStatus,
   onOpenMenu,
+  onOpenAttention,
   onOpenProfile,
   onOpenSettings,
   onOpenTasks,
@@ -148,6 +157,9 @@ export function Sidebar({
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
   const initials = profileInitials(profile.name);
+  const attentionLabel = attentionHydrationStatus === "ready"
+    ? `Attention, ${attentionCount} ${attentionCount === 1 ? "item" : "items"}`
+    : `Attention, ${attentionHydrationStatus}, ${attentionCount} available`;
 
   const closeProjectMenu = (restoreFocus = false) => {
     const trigger = projectMenuTriggerRef.current;
@@ -569,7 +581,6 @@ export function Sidebar({
                                           aria-label={`${task.title}${stateLabel}${task.pinned ? ", pinned" : ""}`}
                                           title={task.title}
                                           onClick={() => {
-                                            onMarkTaskUnread(task.id, false);
                                             onSelectTask(task.id);
                                             onOpenTasks();
                                           }}
@@ -639,6 +650,22 @@ export function Sidebar({
               <strong>{profile.name || "Set up profile"}</strong>
               <small>{account?.planType ?? "Xiao profile"}</small>
             </span>
+          </button>
+          <button
+            id={sidebarAttentionTriggerId}
+            className={`sidebar__utility-attention ${activePage === "attention" ? "is-active" : ""}`}
+            type="button"
+            aria-label={attentionLabel}
+            aria-current={activePage === "attention" ? "page" : undefined}
+            title="Attention"
+            onClick={onOpenAttention}
+          >
+            <XiaoIcon name="approval" size={16} />
+            {attentionCount > 0 ? (
+              <span className="sidebar__attention-badge" aria-hidden="true">
+                {attentionCount > 99 ? "99+" : attentionCount}
+              </span>
+            ) : null}
           </button>
           <button
             className={`sidebar__utility-settings ${activePage === "settings" ? "is-active" : ""}`}

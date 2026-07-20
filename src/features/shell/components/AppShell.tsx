@@ -231,7 +231,7 @@ export function AppShell({
           }`}
           ref={workspaceRef}
         >
-          <main className="app-content">{content}</main>
+          <main className="app-content" tabIndex={-1}>{content}</main>
           {focusRailOpen ? (
             <div
               className="focus-rail-resizer"

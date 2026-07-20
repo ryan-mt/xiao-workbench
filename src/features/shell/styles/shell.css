@@ -1073,7 +1073,7 @@
 .sidebar__utility-dock {
   display: grid;
   min-height: 58px;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
   align-items: center;
   gap: 5px;
   margin: 0 9px 8px;
@@ -1150,7 +1150,9 @@
   font-size: var(--text-micro);
 }
 
+.sidebar__utility-attention,
 .sidebar__utility-settings {
+  position: relative;
   display: grid;
   width: 34px;
   height: 34px;
@@ -1161,14 +1163,41 @@
   transition: background 140ms ease, color 140ms ease, transform 120ms ease;
 }
 
+.sidebar__utility-attention:hover,
+.sidebar__utility-attention.is-active,
 .sidebar__utility-settings:hover,
 .sidebar__utility-settings.is-active {
   background: var(--surface-hover);
   color: var(--text);
 }
 
+.sidebar__utility-attention:active,
 .sidebar__utility-settings:active {
   transform: scale(0.96);
+}
+
+.sidebar__utility-attention:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.sidebar__attention-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: grid;
+  min-width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0 4px;
+  border: 2px solid var(--surface-deep);
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--canvas);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1;
 }
 
 .task-switcher-backdrop {

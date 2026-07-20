@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
 import {
@@ -24,7 +24,13 @@ import type {
   XiaoWorkspaceUpdate,
 } from "../core/models/xiao";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
-import { titleFromPrompt, useAgentRuntime } from "../features/agent/hooks/useAgentRuntime";
+import {
+  titleFromPrompt,
+  useAgentRuntime,
+  type AttentionHydrationStatus,
+} from "../features/agent/hooks/useAgentRuntime";
+import { AttentionCenter } from "../features/attention/AttentionCenter";
+import { projectAttentionItems } from "../features/attention/attentionProjection";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
 import type { RoutineDraft } from "../features/focus-rail/components/SchedulePanel";
@@ -125,6 +131,12 @@ const readFocusRailPreference = (): { view: FocusView; open: boolean } => {
 };
 const comparableWorkspacePath = (path: string) =>
   path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase();
+
+const focusAppContentNextFrame = () => {
+  window.requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>(".app-content")?.focus();
+  });
+};
 
 export type ReviewContextState = Record<string, AgentAttachment[]>;
 
@@ -446,6 +458,85 @@ export const shouldAutoConnectAgentRuntime = (
   comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
   Boolean(workspacePath)
 );
+
+export const attentionTaskStateMatchesWorkspace = (
+  taskStateReady: boolean,
+  taskWorkspacePath: string,
+  workspacePath: string,
+) => (
+  taskStateReady &&
+  Boolean(workspacePath) &&
+  comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath)
+);
+
+export const attentionHydrationStatusForTaskState = (
+  taskStateReady: boolean,
+  taskWorkspacePath: string,
+  workspacePath: string,
+  workspaceLoading: boolean,
+  taskLoadError: string | null,
+  workspaceError: string | null,
+  runtimeStatus: AttentionHydrationStatus,
+): AttentionHydrationStatus => {
+  const pathMatches =
+    comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath);
+  if (workspaceError || (pathMatches && taskLoadError)) return "partial";
+  if (workspaceLoading) return "loading";
+  return attentionTaskStateMatchesWorkspace(
+    taskStateReady,
+    taskWorkspacePath,
+    workspacePath,
+  )
+    ? runtimeStatus
+    : "loading";
+};
+
+export const attentionRetryTargets = (
+  taskWorkspacePath: string,
+  workspacePath: string,
+  taskLoadError: string | null,
+  workspaceError: string | null,
+) => ({
+  agent: true,
+  workspace: Boolean(workspaceError),
+  taskState: Boolean(
+    taskLoadError &&
+    comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath)
+  ),
+});
+
+export const taskIsVisible = (
+  activePage: AppPage,
+  activeTaskId: string | null,
+  taskId: string,
+) => activePage === "tasks" && activeTaskId === taskId;
+
+export const clearVisibleTaskUnread = <Task extends { id: string; unread: boolean }>(
+  tasks: Task[],
+  activePage: AppPage,
+  activeTaskId: string | null,
+): Task[] => {
+  if (activePage !== "tasks" || !activeTaskId) return tasks;
+  const index = tasks.findIndex((task) => task.id === activeTaskId && task.unread);
+  if (index < 0) return tasks;
+  const next = [...tasks];
+  next[index] = { ...next[index], unread: false };
+  return next;
+};
+
+export const markTaskUnreadAfterCompletion = (
+  tasks: WorkbenchTask[],
+  taskId: string,
+  visible: boolean,
+  updatedAt: number,
+): WorkbenchTask[] => {
+  if (visible) return tasks;
+  const index = tasks.findIndex((task) => task.id === taskId);
+  if (index < 0) return tasks;
+  const next = [...tasks];
+  next[index] = { ...next[index], unread: true, updatedAt, meta: "Now" };
+  return next;
+};
 
 export const isTaskWorkspaceStateLoading = (
   workspaceLoading: boolean,
@@ -1252,6 +1343,7 @@ export function App() {
   const taskStateReadyRef = useRef(taskStateReady);
   taskStateReadyRef.current = taskStateReady;
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
+  const [taskLoadRetryRevision, setTaskLoadRetryRevision] = useState(0);
   const taskLoadErrorRef = useRef(taskLoadError);
   taskLoadErrorRef.current = taskLoadError;
   const [confirmedNativeTasks, setConfirmedNativeTasks] = useState<ConfirmedNativeTaskState>({
@@ -1663,6 +1755,7 @@ export function App() {
   }, [
     loading,
     replaceConfirmedNativeTaskIds,
+    taskLoadRetryRevision,
     taskSaveDebouncer,
     taskWorkspacePath,
     workspace.name,
@@ -1760,6 +1853,15 @@ export function App() {
   }, [activeTaskId, taskStateReady]);
 
   useEffect(() => {
+    if (!attentionTaskStateMatchesWorkspace(
+      taskStateReady,
+      taskWorkspacePath,
+      workspace.path,
+    )) return;
+    setTasks((current) => clearVisibleTaskUnread(current, activePage, activeTaskId));
+  }, [activePage, activeTaskId, taskStateReady, taskWorkspacePath]);
+
+  useEffect(() => {
     setOpenTaskIds((current) => {
       const next = current.filter((taskId) => tasks.some((task) => task.id === taskId && !task.archived));
       return next.length === current.length ? current : next;
@@ -1838,11 +1940,12 @@ export function App() {
   const markTaskFinished = useCallback(
     (taskId: string, outcome: AgentTurnOutcome) => {
       const finished = tasks.find((task) => task.id === taskId);
+      const visible = taskIsVisible(activePage, activeTaskId, taskId);
       if (
         outcome === "completed" &&
         finished &&
         !routineController.routines.some((routine) => routine.taskId === taskId) &&
-        taskId !== activeTaskId &&
+        !visible &&
         preferences.notifyCompletions &&
         "Notification" in window &&
         Notification.permission === "granted"
@@ -1850,14 +1953,10 @@ export function App() {
         new Notification("Xiao finished a task", { body: finished.title });
       }
       setTasks((current) =>
-        current.map((task) =>
-          task.id === taskId && taskId !== activeTaskId
-            ? { ...task, unread: true, updatedAt: Date.now(), meta: "Now" }
-            : task,
-        ),
+        markTaskUnreadAfterCompletion(current, taskId, visible, Date.now()),
       );
     },
-    [activeTaskId, preferences.notifyCompletions, routineController.routines, tasks],
+    [activePage, activeTaskId, preferences.notifyCompletions, routineController.routines, tasks],
   );
 
   const agent = useAgentRuntime(
@@ -1885,6 +1984,41 @@ export function App() {
       workspace.path,
     ),
   );
+  const attentionTaskStateReady = attentionTaskStateMatchesWorkspace(
+    taskStateReady,
+    taskWorkspacePath,
+    workspace.path,
+  );
+  const attentionItems = useMemo(
+    () => attentionTaskStateReady
+      ? projectAttentionItems(tasks, agent.runs, agent.pendingInputs)
+      : [],
+    [agent.pendingInputs, agent.runs, attentionTaskStateReady, tasks],
+  );
+  const attentionHydrationStatus = attentionHydrationStatusForTaskState(
+    taskStateReady,
+    taskWorkspacePath,
+    workspace.path,
+    loading,
+    taskLoadError,
+    workspaceError,
+    agent.attentionHydrationStatus,
+  );
+  const retryAttention = () => {
+    const targets = attentionRetryTargets(
+      taskWorkspacePath,
+      workspace.path,
+      taskLoadError,
+      workspaceError,
+    );
+    if (targets.agent) agent.retryAttentionHydration();
+    if (targets.workspace) void refresh();
+    if (targets.taskState) {
+      taskLoadErrorRef.current = null;
+      setTaskLoadError(null);
+      setTaskLoadRetryRevision((current) => current + 1);
+    }
+  };
   const titleBarTabs = [
     ...openTaskIds.flatMap((taskId) => {
       const task = tasks.find((item) => item.id === taskId && !item.archived);
@@ -3158,7 +3292,14 @@ export function App() {
             account={agent.account}
             profile={profile}
             canOpenProjects={isTauriHost()}
+            attentionCount={attentionItems.length}
+            attentionHydrationStatus={attentionHydrationStatus}
             onOpenMenu={() => setCommandMenuOpen(true)}
+            onOpenAttention={() => {
+              setActivePage("attention");
+              closeFocusPanel();
+              closeSidebarOnNarrow();
+            }}
             onOpenProfile={() => {
               setActivePage("profile");
               closeFocusPanel();
@@ -3199,7 +3340,27 @@ export function App() {
           />
         }
         content={
-          activePage === "settings" ? (
+          activePage === "attention" ? (
+            <AttentionCenter
+              items={attentionItems}
+              hydrationStatus={attentionHydrationStatus}
+              onRetry={retryAttention}
+              onOpenTask={(taskId) => {
+                setOpenTaskIds((current) =>
+                  current.includes(taskId) ? current : [...current, taskId]
+                );
+                setActiveTaskId(taskId);
+                markTaskUnread(taskId, false);
+                setActivePage("tasks");
+                closeSidebarOnNarrow();
+                focusAppContentNextFrame();
+              }}
+              onClose={() => {
+                setActivePage("tasks");
+                focusAppContentNextFrame();
+              }}
+            />
+          ) : activePage === "settings" ? (
             <SettingsPage
               theme={theme}
               preferences={preferences}

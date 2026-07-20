@@ -14,6 +14,9 @@ import type {
 import {
   applyTaskAcceptanceContractSave,
   applyCurrentFocusResourceCompletion,
+  attentionHydrationStatusForTaskState,
+  attentionRetryTargets,
+  attentionTaskStateMatchesWorkspace,
   applyCurrentWorkspaceArchiveCompletion,
   applyCurrentWorkspaceSaveCompletion,
   applyCurrentTaskOperationCompletion,
@@ -21,11 +24,13 @@ import {
   archivedProjectTaskState,
   beginNativeTaskConfirmation,
   captureTaskOperationScope,
+  clearVisibleTaskUnread,
   completeUndoRecovery,
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
   createContinuationTask,
   isTaskWorkspaceStateLoading,
+  markTaskUnreadAfterCompletion,
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
@@ -34,6 +39,7 @@ import {
   shouldLoadTaskWorkspaceState,
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
+  taskIsVisible,
   taskReviewContext,
   isAcceptanceContractVersionSummary,
   readBrowserTaskState,
@@ -868,6 +874,176 @@ describe("follow-up task persistence barrier", () => {
       submitTaskFollowUpAfterPersistence(snapshot, persist, submit),
     ).resolves.toBe(false);
     expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("Attention task workspace gating and retry", () => {
+  it("hides stale task state and never reports ready-empty for incomplete data", () => {
+    const oldWorkspacePath = "C:/projects/old";
+
+    expect(attentionTaskStateMatchesWorkspace(true, oldWorkspacePath, workspacePath)).toBe(false);
+    expect(attentionHydrationStatusForTaskState(
+      true,
+      oldWorkspacePath,
+      workspacePath,
+      false,
+      null,
+      null,
+      "ready",
+    )).toBe("loading");
+    expect(attentionHydrationStatusForTaskState(
+      false,
+      workspacePath,
+      workspacePath,
+      false,
+      null,
+      null,
+      "ready",
+    )).toBe("loading");
+  });
+
+  it("accepts canonical paths and preserves runtime hydration status", () => {
+    const canonicalPath = "C:\\PROJECTS\\contract-validation\\";
+
+    expect(attentionTaskStateMatchesWorkspace(true, canonicalPath, workspacePath)).toBe(true);
+    expect(attentionHydrationStatusForTaskState(
+      true,
+      canonicalPath,
+      workspacePath,
+      false,
+      null,
+      null,
+      "ready",
+    )).toBe("ready");
+  });
+
+  it("stays loading while a workspace refresh is unsettled", () => {
+    expect(attentionHydrationStatusForTaskState(
+      true,
+      workspacePath,
+      workspacePath,
+      true,
+      null,
+      null,
+      "ready",
+    )).toBe("loading");
+  });
+
+  it("maps current task and workspace load errors to partial", () => {
+    expect(attentionHydrationStatusForTaskState(
+      false,
+      workspacePath,
+      workspacePath,
+      false,
+      "task load failed",
+      null,
+      "ready",
+    )).toBe("partial");
+    expect(attentionHydrationStatusForTaskState(
+      false,
+      "C:/projects/old",
+      workspacePath,
+      false,
+      null,
+      "workspace load failed",
+      "ready",
+    )).toBe("partial");
+  });
+
+  it("prioritizes workspace and matching task errors over loading", () => {
+    expect(attentionHydrationStatusForTaskState(
+      false,
+      "C:/projects/old",
+      workspacePath,
+      true,
+      null,
+      "workspace load failed",
+      "ready",
+    )).toBe("partial");
+    expect(attentionHydrationStatusForTaskState(
+      false,
+      workspacePath,
+      workspacePath,
+      true,
+      "task load failed",
+      null,
+      "ready",
+    )).toBe("partial");
+  });
+
+  it("targets only contributing workspace and task-load failures on retry", () => {
+    expect(attentionRetryTargets(
+      workspacePath,
+      workspacePath,
+      "task load failed",
+      "workspace load failed",
+    )).toEqual({ agent: true, workspace: true, taskState: true });
+    expect(attentionRetryTargets(
+      "C:/projects/old",
+      workspacePath,
+      "stale task load failed",
+      null,
+    )).toEqual({ agent: true, workspace: false, taskState: false });
+    expect(attentionRetryTargets(workspacePath, workspacePath, null, null)).toEqual({
+      agent: true,
+      workspace: false,
+      taskState: false,
+    });
+  });
+});
+
+describe("visible task unread transitions", () => {
+  const tasks = () => {
+    installStoredState(null);
+    const first = readBrowserTaskState(workspacePath).tasks[0]!;
+    return [first, { ...first, id: "task-2", title: "Second task" }];
+  };
+
+  it.each(["attention", "profile", "settings"] as const)(
+    "marks completion unread while the selected task is on %s",
+    (page) => {
+      const current = tasks();
+      const visible = taskIsVisible(page, "task-1", "task-1");
+      const next = markTaskUnreadAfterCompletion(current, "task-1", visible, 300);
+
+      expect(visible).toBe(false);
+      expect(next[0]).toMatchObject({ unread: true, updatedAt: 300, meta: "Now" });
+    },
+  );
+
+  it("does not mark a task unread while that task is visible", () => {
+    const current = tasks();
+    const visible = taskIsVisible("tasks", "task-1", "task-1");
+
+    expect(markTaskUnreadAfterCompletion(current, "task-1", visible, 300)).toBe(current);
+  });
+
+  it("clears unread only when the matching task becomes visible", () => {
+    const current = tasks().map((task) => ({ ...task, unread: true }));
+
+    expect(clearVisibleTaskUnread(current, "attention", "task-1")).toBe(current);
+    expect(clearVisibleTaskUnread(current, "tasks", "task-1")).toEqual([
+      { ...current[0], unread: false },
+      current[1],
+    ]);
+  });
+
+  it("preserves a manual mark until a later visibility transition", () => {
+    const initiallyVisible = clearVisibleTaskUnread(tasks(), "tasks", "task-1");
+    const manuallyMarked = initiallyVisible.map((task) =>
+      task.id === "task-1" ? { ...task, unread: true } : task
+    );
+
+    expect(manuallyMarked[0].unread).toBe(true);
+    expect(clearVisibleTaskUnread(manuallyMarked, "profile", "task-1")).toBe(manuallyMarked);
+    expect(clearVisibleTaskUnread(manuallyMarked, "tasks", "task-1")[0].unread).toBe(false);
+  });
+
+  it("returns stable state when no visible unread task needs clearing", () => {
+    const current = tasks();
+
+    expect(clearVisibleTaskUnread(current, "tasks", "task-1")).toBe(current);
+    expect(markTaskUnreadAfterCompletion(current, "missing", false, 300)).toBe(current);
   });
 });
 
