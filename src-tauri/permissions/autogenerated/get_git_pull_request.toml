@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-git-pull-request"
+description = "Enables the get_git_pull_request command without any pre-configured scope."
+commands.allow = ["get_git_pull_request"]
+
+[[permission]]
+identifier = "deny-get-git-pull-request"
+description = "Denies the get_git_pull_request command without any pre-configured scope."
+commands.deny = ["get_git_pull_request"]

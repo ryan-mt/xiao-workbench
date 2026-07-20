@@ -72,10 +72,21 @@ pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
 pub fn run() {
     let preview_registry = PreviewRegistry::default();
     let protocol_previews = preview_registry.clone();
-    let builder = tauri::Builder::default().register_uri_scheme_protocol(
-        "xiao-preview",
-        move |_context, request| protocol_previews.respond(&request),
-    );
+    let preview_navigation = preview_registry.clone();
+    let builder = tauri::Builder::default()
+        .register_uri_scheme_protocol("xiao-preview", move |_context, request| {
+            protocol_previews.respond(&request)
+        })
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry, ()>::new("preview-navigation")
+                .on_navigation(move |webview, target| {
+                    let Ok(current) = webview.url() else {
+                        return true;
+                    };
+                    preview_navigation.navigation_allowed(webview.label(), &current, target)
+                })
+                .build(),
+        );
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {

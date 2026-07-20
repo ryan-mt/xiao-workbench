@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-codex-cli"
+description = "Enables the update_codex_cli command without any pre-configured scope."
+commands.allow = ["update_codex_cli"]
+
+[[permission]]
+identifier = "deny-update-codex-cli"
+description = "Denies the update_codex_cli command without any pre-configured scope."
+commands.deny = ["update_codex_cli"]

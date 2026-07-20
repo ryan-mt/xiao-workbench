@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-discover-xiao-acceptance-presets"
+description = "Enables the discover_xiao_acceptance_presets command without any pre-configured scope."
+commands.allow = ["discover_xiao_acceptance_presets"]
+
+[[permission]]
+identifier = "deny-discover-xiao-acceptance-presets"
+description = "Denies the discover_xiao_acceptance_presets command without any pre-configured scope."
+commands.deny = ["discover_xiao_acceptance_presets"]

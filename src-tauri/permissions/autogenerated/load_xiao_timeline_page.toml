@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-xiao-timeline-page"
+description = "Enables the load_xiao_timeline_page command without any pre-configured scope."
+commands.allow = ["load_xiao_timeline_page"]
+
+[[permission]]
+identifier = "deny-load-xiao-timeline-page"
+description = "Denies the load_xiao_timeline_page command without any pre-configured scope."
+commands.deny = ["load_xiao_timeline_page"]

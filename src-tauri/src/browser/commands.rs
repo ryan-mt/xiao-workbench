@@ -1,4 +1,6 @@
-use tauri::{AppHandle, Manager, Url, Webview};
+use tauri::{AppHandle, Manager, State, Url, Webview};
+
+use super::preview::{is_preview_url, PreviewRegistry};
 
 const BROWSER_WEBVIEW_LABELS: [&str; 2] = ["xiao-browser", "xiao-game"];
 
@@ -15,16 +17,26 @@ fn parse_browser_url(value: &str) -> Result<Url, String> {
     let url = Url::parse(value.trim()).map_err(|_| "Enter a valid web address.".to_string())?;
     match url.scheme() {
         "http" | "https" => Ok(url),
-        "xiao-preview" if url.host_str() == Some("localhost") => Ok(url),
+        "xiao-preview" if is_preview_url(&url) => Ok(url),
         _ => Err("Only HTTP and HTTPS pages can open in the Xiao browser.".to_string()),
     }
 }
 
 #[tauri::command]
-pub fn navigate_browser(app: AppHandle, url: String, label: String) -> Result<(), String> {
-    browser_webview(&app, &label)?
-        .navigate(parse_browser_url(&url)?)
-        .map_err(|error| error.to_string())
+pub fn navigate_browser(
+    app: AppHandle,
+    previews: State<'_, PreviewRegistry>,
+    url: String,
+    label: String,
+) -> Result<(), String> {
+    let url = parse_browser_url(&url)?;
+    let webview = browser_webview(&app, &label)?;
+    previews.allow_navigation(&label, &url);
+    if let Err(error) = webview.navigate(url) {
+        previews.clear_navigation_allowance(&label);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -114,9 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_xiao_workspace_previews_only_on_the_internal_host() {
-        assert!(parse_browser_url("xiao-preview://localhost/token/index.html").is_ok());
-        assert!(parse_browser_url("xiao-preview://elsewhere/token/index.html").is_err());
+    fn accepts_xiao_workspace_previews_only_on_token_origins() {
+        assert!(parse_browser_url(
+            "xiao-preview://018f47a2-a9b3-7c11-8c52-cc14251c6789/index.html",
+        )
+        .is_ok());
+        assert!(parse_browser_url("xiao-preview://localhost/index.html").is_err());
     }
 
     #[test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-xiao-workspace"
+description = "Enables the load_xiao_workspace command without any pre-configured scope."
+commands.allow = ["load_xiao_workspace"]
+
+[[permission]]
+identifier = "deny-load-xiao-workspace"
+description = "Denies the load_xiao_workspace command without any pre-configured scope."
+commands.deny = ["load_xiao_workspace"]

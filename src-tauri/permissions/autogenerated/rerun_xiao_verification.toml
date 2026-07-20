@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-rerun-xiao-verification"
+description = "Enables the rerun_xiao_verification command without any pre-configured scope."
+commands.allow = ["rerun_xiao_verification"]
+
+[[permission]]
+identifier = "deny-rerun-xiao-verification"
+description = "Denies the rerun_xiao_verification command without any pre-configured scope."
+commands.deny = ["rerun_xiao_verification"]

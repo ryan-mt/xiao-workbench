@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 
 use crate::runs::models::{RunRecord, RunSnapshot, RunStatus};
 use crate::runs::repository::{bounded_diagnostic, new_uuid_v7, now_millis};
-use crate::runs::service::{emit_service_error, emit_update, RunService};
+use crate::runs::service::{emit_service_error_for_workspace, emit_update, RunService};
 use crate::xiao::repository::XiaoRepository;
 
 use super::artifacts::ArtifactStore;
@@ -190,6 +190,7 @@ impl VerificationService {
         emit_update(app, &started.mutation, None);
 
         let app_for_worker = app.clone();
+        let workspace_path = snapshot.workspace_path.clone();
         let attempt = started.attempt;
         let completion_for_worker = Arc::clone(&completion);
         tauri::async_runtime::spawn(async move {
@@ -206,7 +207,7 @@ impl VerificationService {
                 )),
             };
             if let Err(error) = result {
-                fail_closed_verification(&app_for_worker, &attempt_id, &error);
+                fail_closed_verification(&app_for_worker, &workspace_path, &attempt_id, &error);
             }
             app_for_worker
                 .state::<VerificationService>()
@@ -689,15 +690,16 @@ fn git_error_gate(
     }
 }
 
-fn fail_closed_verification(app: &AppHandle, attempt_id: &str, error: &str) {
-    emit_service_error(app, error);
+fn fail_closed_verification(app: &AppHandle, workspace_path: &str, attempt_id: &str, error: &str) {
+    emit_service_error_for_workspace(app, Some(workspace_path), error);
     match app
         .state::<XiaoRepository>()
         .settle_verification_attempt(attempt_id)
     {
         Ok(settlement) => emit_update(app, &settlement.mutation, None),
-        Err(settlement_error) => emit_service_error(
+        Err(settlement_error) => emit_service_error_for_workspace(
             app,
+            Some(workspace_path),
             &format!("{error} Verification could not settle fail-closed: {settlement_error}"),
         ),
     }

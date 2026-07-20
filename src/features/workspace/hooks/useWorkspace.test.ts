@@ -124,6 +124,23 @@ describe("useWorkspace snapshot identity", () => {
     });
   });
 
+  it("does not let a stalled system probe block the workspace snapshot", async () => {
+    const workspace = deferred<WorkspaceSnapshot>();
+    const system = deferred<{ platform: string; shell: string; codexVersion: string | null }>();
+    bridge.getWorkspace.mockReturnValue(workspace.promise);
+    bridge.getSystemInfo.mockReturnValue(system.promise);
+
+    let view = renderWorkspace("C:/project-a", "task-a");
+    hooks.flushEffects();
+    workspace.resolve(snapshot("C:/project-a", "task-a"));
+    await settle();
+
+    view = renderWorkspace("C:/project-a", "task-a");
+    expect(view.workspace.path).toBe("C:/project-a/task-a");
+    expect(view.loading).toBe(false);
+    expect(view.actionable).toBe(true);
+  });
+
   it("fails closed synchronously while a confirmed task switch is unresolved", async () => {
     const taskA = deferred<WorkspaceSnapshot>();
     const taskB = deferred<WorkspaceSnapshot>();

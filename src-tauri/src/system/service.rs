@@ -8,9 +8,14 @@ use semver::Version;
 use serde::Deserialize;
 use ureq::Agent;
 
+#[cfg(not(test))]
+use crate::process::supervise_process_tree;
+use crate::process::terminate_process_tree;
+
 use super::models::{CodexUpdateResult, CodexUpdateStatus, SystemInfo};
 
 const CODEX_PACKAGE_URL: &str = "https://registry.npmjs.org/@openai%2Fcodex/latest";
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy)]
@@ -235,22 +240,23 @@ fn run_command_with_timeout(
     label: &str,
     timeout: Duration,
 ) -> Result<Output, String> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.stdin(Stdio::null());
+    #[cfg(not(test))]
+    let mut command = supervise_process_tree(command)
+        .map_err(|error| format!("Could not supervise {label}: {error}"))?;
+    #[cfg(test)]
+    let mut command = command;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start {label}: {error}"))?;
     let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_process_tree(&mut child);
         return Err(format!("Could not read {label} output."));
     };
     let Some(mut stderr) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_process_tree(&mut child);
         return Err(format!("Could not read {label} errors."));
     };
     let stdout_reader = thread::spawn(move || {
@@ -268,8 +274,7 @@ fn run_command_with_timeout(
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(100)),
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_process_tree(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Err(format!(
@@ -278,8 +283,7 @@ fn run_command_with_timeout(
                 ));
             }
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_process_tree(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 return Err(format!("Could not monitor {label}: {error}"));
@@ -325,30 +329,21 @@ fn codex_command_succeeds(arguments: &[&str]) -> bool {
         return false;
     };
     command.args(arguments);
-    hide_window(&mut command);
-    command.status().is_ok_and(|status| status.success())
+    run_command_with_timeout(command, "Codex capability probe", PROBE_TIMEOUT).is_ok()
 }
 
 fn codex_output(arguments: &[&str]) -> Option<String> {
     let mut command = codex_command()?;
     command.args(arguments);
-    hide_window(&mut command);
-    let output = command.output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let output = run_command_with_timeout(command, "Codex version probe", PROBE_TIMEOUT).ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
     let mut command = Command::new(program);
     command.args(arguments);
-    hide_window(&mut command);
-    let output = command.output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let output = run_command_with_timeout(command, program, PROBE_TIMEOUT).ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 #[cfg(windows)]
@@ -392,6 +387,30 @@ mod tests {
         let latest = Version::parse("0.144.4").unwrap();
         assert!(latest > current);
         assert!(current <= latest);
+    }
+
+    #[test]
+    fn command_timeout_terminates_the_supervised_process() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "system::service::tests::timeout_target_fixture",
+            "--nocapture",
+        ]);
+
+        let started = Instant::now();
+        let error = run_command_with_timeout(command, "timeout test", Duration::from_millis(100))
+            .unwrap_err();
+
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    #[ignore]
+    fn timeout_target_fixture() {
+        thread::sleep(Duration::from_secs(5));
     }
 
     #[test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-xiao-pending-inputs"
+description = "Enables the list_xiao_pending_inputs command without any pre-configured scope."
+commands.allow = ["list_xiao_pending_inputs"]
+
+[[permission]]
+identifier = "deny-list-xiao-pending-inputs"
+description = "Denies the list_xiao_pending_inputs command without any pre-configured scope."
+commands.deny = ["list_xiao_pending_inputs"]

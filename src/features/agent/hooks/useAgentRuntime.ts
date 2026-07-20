@@ -29,6 +29,10 @@ import type {
   RunStatus,
   RunUpdateEnvelope,
 } from "../../../core/models/run";
+import {
+  workspaceServiceErrorMessage,
+  type WorkspaceServiceError,
+} from "../../../core/models/service";
 import { useCodexUsage } from "../../profile/hooks/useCodexUsage";
 import {
   approvalResponse,
@@ -2030,12 +2034,13 @@ export function useAgentRuntime(
           }),
         );
         addCleanup(
-          await listen<string>("xiao://run-service-error", (event) => {
-            if (listenerIsCurrent()) {
-              flushLiveDeltas();
-              appendRuntimeLog("stderr", event.payload);
-              setRuntime((current) => ({ ...current, error: event.payload }));
-            }
+          await listen<WorkspaceServiceError>("xiao://run-service-error", (event) => {
+            if (!listenerIsCurrent()) return;
+            const message = workspaceServiceErrorMessage(workspacePath, event.payload);
+            if (!message) return;
+            flushLiveDeltas();
+            appendRuntimeLog("stderr", message);
+            setRuntime((current) => ({ ...current, error: message }));
           }),
         );
         if (listenerIsCurrent()) {

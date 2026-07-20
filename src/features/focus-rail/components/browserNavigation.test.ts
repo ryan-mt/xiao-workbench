@@ -25,8 +25,8 @@ describe("toBrowserUrl", () => {
   });
 
   it("keeps Xiao's scoped workspace preview addresses", () => {
-    expect(toBrowserUrl("xiao-preview://localhost/token/index.html"))
-      .toBe("xiao-preview://localhost/token/index.html");
+    expect(toBrowserUrl("xiao-preview://018f47a2-a9b3-7c11-8c52-cc14251c6789/index.html"))
+      .toBe("xiao-preview://018f47a2-a9b3-7c11-8c52-cc14251c6789/index.html");
   });
 
   it("adds a scheme to domains and local development hosts", () => {

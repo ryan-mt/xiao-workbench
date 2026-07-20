@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finish-git-checkpoint"
+description = "Enables the finish_git_checkpoint command without any pre-configured scope."
+commands.allow = ["finish_git_checkpoint"]
+
+[[permission]]
+identifier = "deny-finish-git-checkpoint"
+description = "Denies the finish_git_checkpoint command without any pre-configured scope."
+commands.deny = ["finish_git_checkpoint"]

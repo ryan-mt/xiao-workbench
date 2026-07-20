@@ -300,6 +300,13 @@ pub struct RoutineUpdateEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RoutineServiceErrorEnvelope {
+    pub workspace_path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoutineOpenRunTarget {
     pub workspace_path: String,
     pub task_id: String,

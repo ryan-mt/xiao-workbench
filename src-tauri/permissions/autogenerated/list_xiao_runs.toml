@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-xiao-runs"
+description = "Enables the list_xiao_runs command without any pre-configured scope."
+commands.allow = ["list_xiao_runs"]
+
+[[permission]]
+identifier = "deny-list-xiao-runs"
+description = "Denies the list_xiao_runs command without any pre-configured scope."
+commands.deny = ["list_xiao_runs"]

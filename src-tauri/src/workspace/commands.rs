@@ -1,8 +1,8 @@
 use tauri::State;
 
+use crate::browser::preview::PreviewRegistry;
 use crate::execution::service::resolve_execution_context;
 use crate::xiao::repository::XiaoRepository;
-use crate::browser::preview::PreviewRegistry;
 
 use super::models::FileNode;
 use super::models::WorkspaceSnapshot;
@@ -63,7 +63,6 @@ pub fn open_workspace_preview(
     previews: State<'_, PreviewRegistry>,
 ) -> Result<String, String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
-    let (root, relative) =
-        resolve_workspace_preview_file(&context.execution_root, &relative_path)?;
+    let (root, relative) = resolve_workspace_preview_file(&context.execution_root, &relative_path)?;
     previews.register(root, &relative)
 }

@@ -77,16 +77,17 @@ export function useWorkspace(path?: string, taskId?: string | null) {
     setError(null);
 
     try {
-      const [nextWorkspace, nextSystem] = await Promise.all([
-        nativeBridge.getWorkspace(path, taskId),
-        nativeBridge.getSystemInfo(),
-      ]);
+      void nativeBridge.getSystemInfo().then((nextSystem) => {
+        if (isCurrentRequest()) setSystem(nextSystem);
+      }).catch(() => {
+        // System metadata is optional; a failed CLI probe must not block the workspace.
+      });
+      const nextWorkspace = await nativeBridge.getWorkspace(path, taskId);
       if (!isCurrentRequest()) return;
       setLoadedWorkspace({
         snapshot: nextWorkspace,
         identity: { projectPath: path, taskId },
       });
-      setSystem(nextSystem);
     } catch (reason) {
       if (!isCurrentRequest()) return;
       setError(reason instanceof Error ? reason.message : String(reason));

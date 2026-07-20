@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mutate-git"
+description = "Enables the mutate_git command without any pre-configured scope."
+commands.allow = ["mutate_git"]
+
+[[permission]]
+identifier = "deny-mutate-git"
+description = "Denies the mutate_git command without any pre-configured scope."
+commands.deny = ["mutate_git"]

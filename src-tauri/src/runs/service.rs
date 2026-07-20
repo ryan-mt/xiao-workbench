@@ -22,7 +22,8 @@ use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
     EnqueueRunRequest, NewPendingInput, NewRun, PendingInputKind, PendingInputSnapshot,
-    RunProtocolEnvelope, RunRecord, RunSnapshot, RunStatus, RunUpdateEnvelope, RuntimeAttachment,
+    RunProtocolEnvelope, RunRecord, RunServiceErrorEnvelope, RunSnapshot, RunStatus,
+    RunUpdateEnvelope, RuntimeAttachment,
 };
 use super::repository::{
     bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent, RunMutation,
@@ -386,15 +387,17 @@ impl RunService {
                             turn_id,
                             &checkpoint,
                         ) {
-                            emit_service_error(
+                            emit_service_error_for_workspace(
                                 app,
+                                Some(&run.workspace_path),
                                 &format!("Could not persist interrupted turn checkpoint: {error}"),
                             );
                         }
                     }
                     Ok(None) => {}
-                    Err(error) => emit_service_error(
+                    Err(error) => emit_service_error_for_workspace(
                         app,
+                        Some(&run.workspace_path),
                         &format!("Could not finalize undo checkpoint: {error}"),
                     ),
                 }
@@ -534,6 +537,13 @@ impl RunService {
         generation: u64,
         message: Value,
     ) {
+        let workspace_path = read_thread_id(&message).and_then(|thread_id| {
+            app.state::<XiaoRepository>()
+                .find_active_run_route(environment_id, generation, thread_id)
+                .ok()
+                .flatten()
+                .map(|route| route.workspace_path)
+        });
         if let Err(error) = apply_runtime_message(
             app,
             environment_id,
@@ -541,7 +551,7 @@ impl RunService {
             message,
             &self.input_resolutions,
         ) {
-            emit_service_error(app, &error);
+            emit_service_error_for_workspace(app, workspace_path.as_deref(), &error);
         }
     }
 
@@ -564,16 +574,18 @@ impl RunService {
                                     .state::<XiaoRepository>()
                                     .record_turn_checkpoint(&mutation.run.id, turn_id, &checkpoint)
                                 {
-                                    emit_service_error(
+                                    emit_service_error_for_workspace(
                                         app,
+                                        Some(&mutation.run.workspace_path),
                                         &format!("Could not persist interrupted turn checkpoint: {error}"),
                                     );
                                 }
                             }
                         }
                         Ok(None) => {}
-                        Err(error) => emit_service_error(
+                        Err(error) => emit_service_error_for_workspace(
                             app,
+                            Some(&mutation.run.workspace_path),
                             &format!("Could not finalize interrupted undo checkpoint: {error}"),
                         ),
                     }
@@ -664,7 +676,11 @@ async fn prepare_claimed_run(app: AppHandle, claimed: RunRecord) {
         }
     };
     if let Err(error) = service.begin_checkpoint(&run) {
-        emit_service_error(&app, &format!("Undo checkpoint unavailable: {error}"));
+        emit_service_error_for_workspace(
+            &app,
+            Some(&run.workspace_path),
+            &format!("Undo checkpoint unavailable: {error}"),
+        );
     }
     let turn_result = runtime
         .request_turn_start(run.runtime_generation.unwrap_or_default(), turn_params)
@@ -722,8 +738,9 @@ fn settle_accepted_turn_failure(
     let generation = run.runtime_generation.unwrap_or_default();
     match runtime.stop_generation(generation) {
         Ok(_) => settle_preparation_failure(app, &run.id, RunStatus::Interrupted, error),
-        Err(stop_error) => emit_service_error(
+        Err(stop_error) => emit_service_error_for_workspace(
             app,
+            Some(&run.workspace_path),
             &format!(
                 "{error} The accepted turn remains nonterminal because its runtime could not be stopped safely: {stop_error}"
             ),
@@ -932,7 +949,9 @@ fn settle_preparation_failure(app: &AppHandle, run_id: &str, target: RunStatus, 
             emit_update(app, &mutation, None);
             app.state::<RunService>().wake();
         }
-        Err(transition_error) => emit_service_error(app, &transition_error),
+        Err(transition_error) => {
+            emit_service_error_for_workspace(app, Some(&current.workspace_path), &transition_error)
+        }
     }
 }
 
@@ -1050,7 +1069,11 @@ fn apply_runtime_message(
         let turn_checkpoint = match app.state::<RunService>().finish_checkpoint(&route.id) {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
-                emit_service_error(app, &format!("Could not finalize undo checkpoint: {error}"));
+                emit_service_error_for_workspace(
+                    app,
+                    Some(&route.workspace_path),
+                    &format!("Could not finalize undo checkpoint: {error}"),
+                );
                 None
             }
         };
@@ -1521,7 +1544,21 @@ fn emit_live_protocol(
 }
 
 pub(crate) fn emit_service_error(app: &AppHandle, error: &str) {
-    let _ = app.emit("xiao://run-service-error", bounded_diagnostic(error));
+    emit_service_error_for_workspace(app, None, error);
+}
+
+pub(crate) fn emit_service_error_for_workspace(
+    app: &AppHandle,
+    workspace_path: Option<&str>,
+    error: &str,
+) {
+    let _ = app.emit(
+        "xiao://run-service-error",
+        RunServiceErrorEnvelope {
+            workspace_path: workspace_path.map(str::to_owned),
+            message: bounded_diagnostic(error),
+        },
+    );
 }
 
 #[cfg(test)]

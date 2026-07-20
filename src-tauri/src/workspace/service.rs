@@ -85,9 +85,10 @@ pub fn resolve_workspace_preview_file(
 ) -> Result<(PathBuf, PathBuf), String> {
     let root = resolve_workspace(Some(execution_root))?;
     let relative = validate_relative_path(relative_path)?.to_path_buf();
-    let path = root.join(&relative).canonicalize().map_err(|error| {
-        format!("Could not open {}: {error}", root.join(&relative).display())
-    })?;
+    let path = root
+        .join(&relative)
+        .canonicalize()
+        .map_err(|error| format!("Could not open {}: {error}", root.join(&relative).display()))?;
     if !path.starts_with(&root) || !path.is_file() {
         return Err("Preview file must stay inside the workspace.".to_owned());
     }
@@ -100,7 +101,12 @@ pub fn resolve_workspace_preview_file(
     ) {
         return Err("Only HTML files can open as workspace web previews.".to_owned());
     }
-    Ok((root, relative))
+    let preview_root = path
+        .parent()
+        .ok_or("Preview file has no parent directory.")?
+        .to_path_buf();
+    let entry = path.file_name().ok_or("Preview file has no name.")?.into();
+    Ok((preview_root, entry))
 }
 
 fn validate_relative_path(path: &str) -> Result<&Path, String> {
@@ -188,7 +194,7 @@ mod tests {
     use crate::execution::models::{ExecutionContext, ExecutionEnvironmentSummary};
     use crate::xiao::models::XiaoWorkspaceMode;
 
-    use super::{list_workspace_directory, snapshot_workspace};
+    use super::{list_workspace_directory, resolve_workspace_preview_file, snapshot_workspace};
 
     fn local_context() -> ExecutionContext {
         let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -231,6 +237,23 @@ mod tests {
             list_workspace_directory(&local_context().execution_root, "src-tauri/src/agent")
                 .unwrap();
         assert!(entries.iter().any(|entry| entry.name == "runtime.rs"));
+    }
+
+    #[test]
+    fn scopes_web_previews_to_the_html_directory() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-preview-root-{}", uuid::Uuid::now_v7(),));
+        let site = directory.join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<h1>Preview</h1>").unwrap();
+
+        let (root, entry) =
+            resolve_workspace_preview_file(&directory.to_string_lossy(), "site/index.html")
+                .unwrap();
+
+        assert_eq!(root, site.canonicalize().unwrap());
+        assert_eq!(entry, std::path::PathBuf::from("index.html"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

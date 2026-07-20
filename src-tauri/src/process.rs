@@ -1,4 +1,4 @@
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 const RUNTIME_SUPERVISOR_FLAG: &str = "--xiao-runtime-supervisor";
 const MONITOR_STDIN_MODE: &str = "monitor-stdin";
@@ -89,12 +89,35 @@ pub(crate) fn supervise_command(command: Command) -> Result<Command, String> {
 #[cfg(not(windows))]
 pub(crate) fn supervise_process_tree(mut command: Command) -> Result<Command, String> {
     command.stdin(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     Ok(command)
 }
 #[cfg(not(windows))]
 pub(crate) fn supervise_process_tree_with_input(mut command: Command) -> Result<Command, String> {
     command.stdin(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     Ok(command)
+}
+
+pub(crate) fn terminate_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        const SIGKILL: i32 = 9;
+        let _ = kill(-(child.id() as i32), SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(windows)]
@@ -583,5 +606,92 @@ mod tests {
             "finite target descendant survived its parent process"
         );
         let _ = std::fs::remove_file(ready);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::{supervise_process_tree, terminate_process_tree};
+    use std::fs::{self, OpenOptions};
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const FIXTURE_DIRECTORY_ENV: &str = "XIAO_UNIX_PROCESS_FIXTURE_DIRECTORY";
+
+    #[test]
+    fn terminating_supervised_command_stops_descendants() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-unix-process-tree-{}", uuid::Uuid::now_v7(),));
+        fs::create_dir_all(&directory).unwrap();
+        let heartbeat = directory.join("heartbeat");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(helper_arguments("fixture_parent_spawns_descendant"))
+            .env(FIXTURE_DIRECTORY_ENV, &directory)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = supervise_process_tree(command).unwrap().spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fs::metadata(&heartbeat).is_ok_and(|metadata| metadata.len() >= 3) {
+            assert!(Instant::now() < deadline, "process fixture timed out");
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        terminate_process_tree(&mut child);
+        thread::sleep(Duration::from_millis(150));
+        let settled_length = fs::metadata(&heartbeat).unwrap().len();
+        thread::sleep(Duration::from_millis(350));
+        assert_eq!(fs::metadata(&heartbeat).unwrap().len(), settled_length);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn fixture_parent_spawns_descendant() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(helper_arguments("fixture_descendant_heartbeat"))
+            .env(
+                FIXTURE_DIRECTORY_ENV,
+                std::env::var_os(FIXTURE_DIRECTORY_ENV).unwrap(),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        std::mem::forget(child);
+        loop {
+            thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn fixture_descendant_heartbeat() {
+        let heartbeat = std::path::PathBuf::from(std::env::var_os(FIXTURE_DIRECTORY_ENV).unwrap())
+            .join("heartbeat");
+        let mut output = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(heartbeat)
+            .unwrap();
+        loop {
+            output.write_all(b"x").unwrap();
+            output.flush().unwrap();
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn helper_arguments(name: &str) -> [String; 6] {
+        [
+            "--ignored".to_owned(),
+            "--exact".to_owned(),
+            format!("process::unix_tests::{name}"),
+            "--nocapture".to_owned(),
+            "--test-threads".to_owned(),
+            "1".to_owned(),
+        ]
     }
 }

@@ -13,10 +13,12 @@ const parseWebUrl = (value: string) => {
   }
 };
 
+const previewTokenPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const parseInternalPreviewUrl = (value: string) => {
   try {
     const url = new URL(value);
-    return url.protocol === "xiao-preview:" && url.hostname === "localhost"
+    return url.protocol === "xiao-preview:" && previewTokenPattern.test(url.hostname)
       ? url.toString()
       : null;
   } catch {

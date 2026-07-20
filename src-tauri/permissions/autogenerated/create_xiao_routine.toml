@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-xiao-routine"
+description = "Enables the create_xiao_routine command without any pre-configured scope."
+commands.allow = ["create_xiao_routine"]
+
+[[permission]]
+identifier = "deny-create-xiao-routine"
+description = "Denies the create_xiao_routine command without any pre-configured scope."
+commands.deny = ["create_xiao_routine"]

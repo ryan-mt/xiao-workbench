@@ -14,8 +14,8 @@ use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
     CreateRoutineRequest, NewRoutine, RoutineNotificationTarget, RoutineOccurrenceSummary,
-    RoutineOpenRunTarget, RoutineRecord, RoutineReservation, RoutineScheduleKind, RoutineSummary,
-    RoutineUpdateEnvelope, UpdateRoutineRequest,
+    RoutineOpenRunTarget, RoutineRecord, RoutineReservation, RoutineScheduleKind,
+    RoutineServiceErrorEnvelope, RoutineSummary, RoutineUpdateEnvelope, UpdateRoutineRequest,
 };
 use super::schedule;
 
@@ -278,11 +278,13 @@ impl RoutineService {
         match repository.routine_for_run(&run.id) {
             Ok(Some(record)) => match summarize_routine(&repository, record) {
                 Ok(summary) => emit_routine_update(app, Some(summary), None),
-                Err(error) => emit_service_error(app, &error),
+                Err(error) => {
+                    emit_service_error_for_workspace(app, Some(&run.workspace_path), &error)
+                }
             },
             Ok(None) => return,
             Err(error) => {
-                emit_service_error(app, &error);
+                emit_service_error_for_workspace(app, Some(&run.workspace_path), &error);
                 return;
             }
         }
@@ -312,7 +314,7 @@ impl RoutineService {
         match repository.claim_routine_notification(&run.id, &notification_key) {
             Ok(Some(target)) => show_notification(app, &title, target),
             Ok(None) => {}
-            Err(error) => emit_service_error(app, &error),
+            Err(error) => emit_service_error_for_workspace(app, Some(&run.workspace_path), &error),
         }
     }
 }
@@ -408,8 +410,7 @@ fn process_due_routines(app: &AppHandle) -> bool {
         };
         match reservation {
             Ok(Some(reservation)) => {
-                if let Err(error) = publish_reservation(app, reservation) {
-                    emit_service_error(app, &error);
+                if publish_reservation(app, reservation).is_err() {
                     return false;
                 }
             }
@@ -436,7 +437,13 @@ fn publish_reservation(
         | RoutineReservation::Disabled { routine }
         | RoutineReservation::Unchanged { routine } => routine,
     };
-    let summary = summarize_routine(&app.state::<XiaoRepository>(), record.clone())?;
+    let summary = match summarize_routine(&app.state::<XiaoRepository>(), record.clone()) {
+        Ok(summary) => summary,
+        Err(error) => {
+            emit_service_error_for_workspace(app, Some(&record.workspace_path), &error);
+            return Err(error);
+        }
+    };
     emit_routine_update(app, Some(summary), None);
     Ok(record)
 }
@@ -535,7 +542,17 @@ fn emit_routine_update(
 }
 
 fn emit_service_error(app: &AppHandle, error: &str) {
-    let _ = app.emit("xiao://routine-service-error", error.to_owned());
+    emit_service_error_for_workspace(app, None, error);
+}
+
+fn emit_service_error_for_workspace(app: &AppHandle, workspace_path: Option<&str>, error: &str) {
+    let _ = app.emit(
+        "xiao://routine-service-error",
+        RoutineServiceErrorEnvelope {
+            workspace_path: workspace_path.map(str::to_owned),
+            message: error.to_owned(),
+        },
+    );
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -583,8 +600,9 @@ fn show_notification(app: &AppHandle, title: &str, target: RoutineNotificationTa
                 });
             });
         }
-        Err(error) => emit_service_error(
+        Err(error) => emit_service_error_for_workspace(
             app,
+            Some(&target.route.workspace_path),
             &format!("Could not show routine notification: {error}"),
         ),
     }

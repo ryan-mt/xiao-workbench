@@ -2,6 +2,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
+import {
+  workspaceServiceErrorMessage,
+  type WorkspaceServiceError,
+} from "../../../core/models/service";
 import type {
   CreateRoutineRequest,
   RoutineSummary,
@@ -59,9 +63,14 @@ export function useRoutines(workspacePath: string) {
         if (disposed) removeUpdate();
         else unlisteners.push(removeUpdate);
 
-        const removeError = await listen<string>("xiao://routine-service-error", (event) => {
-          if (!disposed) setError(event.payload);
-        });
+        const removeError = await listen<WorkspaceServiceError>(
+          "xiao://routine-service-error",
+          (event) => {
+            if (disposed) return;
+            const message = workspaceServiceErrorMessage(workspacePath, event.payload);
+            if (message) setError(message);
+          },
+        );
         if (disposed) removeError();
         else unlisteners.push(removeError);
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-xiao-verification-evidence"
+description = "Enables the list_xiao_verification_evidence command without any pre-configured scope."
+commands.allow = ["list_xiao_verification_evidence"]
+
+[[permission]]
+identifier = "deny-list-xiao-verification-evidence"
+description = "Denies the list_xiao_verification_evidence command without any pre-configured scope."
+commands.deny = ["list_xiao_verification_evidence"]

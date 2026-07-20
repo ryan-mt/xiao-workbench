@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restore-xiao-turns"
+description = "Enables the restore_xiao_turns command without any pre-configured scope."
+commands.allow = ["restore_xiao_turns"]
+
+[[permission]]
+identifier = "deny-restore-xiao-turns"
+description = "Denies the restore_xiao_turns command without any pre-configured scope."
+commands.deny = ["restore_xiao_turns"]

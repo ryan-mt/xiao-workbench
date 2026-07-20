@@ -17,7 +17,7 @@ use super::git::{
     full_status_paths, read_committed_delta_paths, status_delta_paths, GitStateSnapshot,
 };
 use super::models::{VerificationGateOutcome, MAX_PATH_PATTERN_BYTES};
-use crate::process::supervise_process_tree;
+use crate::process::{supervise_process_tree, terminate_process_tree};
 
 const COMMAND_OUTPUT_HEAD_BYTES: usize = 256 * 1024;
 const COMMAND_OUTPUT_TAIL_BYTES: usize = 256 * 1024;
@@ -800,8 +800,7 @@ fn elapsed_millis(started: Instant) -> u64 {
 }
 
 fn terminate_child(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    terminate_process_tree(child);
 }
 
 #[cfg(windows)]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-xiao-routine"
+description = "Enables the update_xiao_routine command without any pre-configured scope."
+commands.allow = ["update_xiao_routine"]
+
+[[permission]]
+identifier = "deny-update-xiao-routine"
+description = "Denies the update_xiao_routine command without any pre-configured scope."
+commands.deny = ["update_xiao_routine"]

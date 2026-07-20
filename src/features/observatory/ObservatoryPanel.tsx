@@ -432,11 +432,11 @@ export function ObservatoryPanel({
         <div className="observatory-handoff">
           <div className="observatory-restore__notice">
             <XiaoIcon name="secure" size={15} />
-            <p><strong>Portable, sanitized context</strong><span>Bundles contain task context and lineage, never apply patches on import, and never overwrite an existing task.</span></p>
+            <p><strong>Portable context with redaction safeguards</strong><span>Bundles contain task context and lineage, never apply patches on import, and never overwrite an existing task.</span></p>
           </div>
           <section>
             <h3>Export this task</h3>
-            <p>Secrets and private absolute paths are redacted. Attachments stay excluded unless you select them here.</p>
+            <p>Common credential patterns and private paths are redacted. Review free-form text before sharing; selected attachments are included without redaction.</p>
             {handoffAttachments.length ? (
               <div className="observatory-handoff__attachments">
                 {handoffAttachments.map((attachment) => (

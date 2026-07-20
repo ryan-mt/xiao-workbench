@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-xiao-workspace"
+description = "Enables the save_xiao_workspace command without any pre-configured scope."
+commands.allow = ["save_xiao_workspace"]
+
+[[permission]]
+identifier = "deny-save-xiao-workspace"
+description = "Denies the save_xiao_workspace command without any pre-configured scope."
+commands.deny = ["save_xiao_workspace"]

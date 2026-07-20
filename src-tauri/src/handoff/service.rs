@@ -27,7 +27,7 @@ const MAX_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DECODED_BYTES: usize = 12 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
-const MAX_ATTACHMENTS: usize = 16;
+pub(crate) const MAX_ATTACHMENTS: usize = 16;
 const MAX_TIMELINE_ENTRIES: usize = 10_000;
 const MAX_TIMELINE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENTS_PER_RUN: usize = 10_000;
@@ -44,18 +44,46 @@ const REQUIRED_ENTRY_PATHS: [&str; 5] = [
 ];
 
 static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(api[_-]?key|token|password|secret)\s*[:=]\s*[\"']?[^\s\"',;}]+"#)
-        .expect("handoff secret regex must compile")
+    Regex::new(
+        r#"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|secret|credential|private[_-]?key|connection[_-]?string)[\"']?\s*[:=]\s*[\"']?[^\s\"',;}]+"#,
+    )
+    .expect("handoff secret regex must compile")
+});
+static ENV_SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\b([A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_PASSWORD|_SECRET|_PRIVATE_KEY|_SECRET_ACCESS_KEY|_CONNECTION_STRING))\s*[:=]\s*[\"']?[^\s\"',;}]+"#,
+    )
+    .expect("handoff environment secret regex must compile")
+});
+static AUTHORIZATION_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(authorization\s*:\s*(?:basic|bearer)\s+)[A-Za-z0-9._~+/=-]+")
+        .expect("handoff authorization regex must compile")
 });
 static BEARER_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]+").expect("handoff bearer regex must compile")
+});
+static URL_CREDENTIALS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b([a-z][a-z0-9+.-]*://)[^/@\s\"']+:[^/@\s\"']+@"#)
+        .expect("handoff URL credential regex must compile")
+});
+static PRIVATE_KEY_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
+        .expect("handoff private key regex must compile")
+});
+static COMMON_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[A-Z0-9]{16}|AIza[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{12,})\b",
+    )
+    .expect("handoff common token regex must compile")
 });
 static OPENAI_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bsk-[A-Za-z0-9_-]{8,}\b").expect("handoff key regex must compile")
 });
 static PRIVATE_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:[A-Z]:[\\/]|/(?:Users|home|tmp|var|opt)/)[^\s\"']+"#)
-        .expect("handoff path regex must compile")
+    Regex::new(
+        r#"(?i)(?:[A-Z]:[\\/]|\\\\[^\\/\s\"']+[\\/]|/(?:Users|home|tmp|var|opt|etc|root|srv|mnt|Volumes|private|workspace)/)[^\s\"']+"#,
+    )
+    .expect("handoff path regex must compile")
 });
 
 pub fn export_handoff(
@@ -737,6 +765,12 @@ fn sanitize_value(value: &Value, root: &str, key: Option<&str>, depth: usize) ->
     if depth > 12 {
         return Value::String("[truncated]".to_owned());
     }
+    if key.is_some_and(sensitive_key) {
+        return Value::String("[redacted]".to_owned());
+    }
+    if key.is_some_and(sensitive_path_key) {
+        return Value::String("[private path]".to_owned());
+    }
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
         Value::String(value) => Value::String(sanitize_string(value, root)),
@@ -759,11 +793,7 @@ fn sanitize_value(value: &Value, root: &str, key: Option<&str>, depth: usize) ->
                     );
                 }
             }
-            if matches!(key, Some("path" | "cwd")) {
-                Value::String("[private path]".to_owned())
-            } else {
-                Value::Object(safe)
-            }
+            Value::Object(safe)
         }
     }
 }
@@ -774,12 +804,25 @@ fn sanitize_string(value: &str, root: &str) -> String {
         clean = replace_case_insensitive(&clean, root, "[workspace]");
         clean = replace_case_insensitive(&clean, &root.replace('\\', "/"), "[workspace]");
     }
+    clean = PRIVATE_KEY_BLOCK
+        .replace_all(&clean, "[redacted private key]")
+        .into_owned();
+    clean = URL_CREDENTIALS
+        .replace_all(&clean, "$1[redacted]@")
+        .into_owned();
+    clean = ENV_SECRET_ASSIGNMENT
+        .replace_all(&clean, "$1=[redacted]")
+        .into_owned();
     clean = SECRET_ASSIGNMENT
         .replace_all(&clean, "$1=[redacted]")
+        .into_owned();
+    clean = AUTHORIZATION_SECRET
+        .replace_all(&clean, "$1[redacted]")
         .into_owned();
     clean = BEARER_SECRET
         .replace_all(&clean, "$1[redacted]")
         .into_owned();
+    clean = COMMON_TOKEN.replace_all(&clean, "[redacted]").into_owned();
     clean = OPENAI_SECRET.replace_all(&clean, "[redacted]").into_owned();
     clean = PRIVATE_PATH
         .replace_all(&clean, "[private path]")
@@ -798,6 +841,19 @@ fn replace_case_insensitive(value: &str, needle: &str, replacement: &str) -> Str
         .unwrap_or_else(|_| value.replace(needle, replacement))
 }
 
+fn sensitive_path_key(name: &str) -> bool {
+    let normalized = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    normalized == "cwd"
+        || normalized.ends_with("path")
+        || normalized.ends_with("paths")
+        || normalized.ends_with("directory")
+        || normalized.ends_with("directories")
+}
+
 fn sensitive_key(name: &str) -> bool {
     let normalized = name
         .chars()
@@ -814,7 +870,12 @@ fn sensitive_key(name: &str) -> bool {
             | "credentials"
             | "privatekey"
             | "encryptedcontent"
+            | "connectionstring"
+            | "databaseurl"
+            | "databaseuri"
+            | "dsn"
     ) || normalized.ends_with("token")
+        || normalized.ends_with("connectionstring")
         || normalized.ends_with("apikey")
         || normalized.contains("secret")
 }
@@ -1028,13 +1089,53 @@ mod tests {
 
     #[test]
     fn handoff_redaction_removes_credentials_and_absolute_private_paths() {
-        let value = "token=abc123 Bearer secret-value sk-private123 C:\\Users\\me\\secret.txt /home/me/file";
+        let value = concat!(
+            "client_secret=client-value AWS_SECRET_ACCESS_KEY=aws-secret ",
+            "\"token\": \"quoted-secret\" Authorization: Basic basic-value ",
+            "https://user:pass@example.com/ postgres://db-user:db-pass@example.com/db ",
+            "github_pat_abcdefghijklmnopqrstuvwxyz1234 ",
+            "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY----- ",
+            "C:\\Users\\me\\secret.txt \\\\server\\share\\private.txt /etc/private.conf",
+        );
         let sanitized = sanitize_string(value, "C:\\Users\\me\\project");
-        assert!(!sanitized.contains("abc123"));
-        assert!(!sanitized.contains("secret-value"));
-        assert!(!sanitized.contains("sk-private123"));
-        assert!(!sanitized.contains("C:\\Users"));
-        assert!(!sanitized.contains("/home/me"));
+        for private in [
+            "client-value",
+            "aws-secret",
+            "quoted-secret",
+            "basic-value",
+            "user:pass",
+            "db-user:db-pass",
+            "github_pat_",
+            "private-material",
+            "C:\\Users",
+            "server\\share",
+            "/etc/private.conf",
+        ] {
+            assert!(!sanitized.contains(private), "failed to redact {private}");
+        }
+    }
+
+    #[test]
+    fn handoff_redaction_uses_structured_path_keys() {
+        let sanitized = super::sanitize_value(
+            &json!({
+                "cwd": "relative/private",
+                "artifactPath": "relative/private.txt",
+                "attachmentPaths": ["relative/one", "relative/two"],
+                "connectionString": "postgres://user:pass@example.com/db",
+                "nestedPath": { "value": "/data/customer/private" },
+                "nested": { "safe": "visible" }
+            }),
+            "",
+            None,
+            0,
+        );
+        assert_eq!(sanitized["cwd"], "[private path]");
+        assert_eq!(sanitized["artifactPath"], "[private path]");
+        assert_eq!(sanitized["attachmentPaths"], "[private path]");
+        assert_eq!(sanitized["connectionString"], "[redacted]");
+        assert_eq!(sanitized["nestedPath"], "[private path]");
+        assert_eq!(sanitized["nested"]["safe"], "visible");
     }
 
     #[test]

@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::process::{supervise_process_tree, supervise_process_tree_with_input};
+use crate::process::{
+    supervise_process_tree, supervise_process_tree_with_input, terminate_process_tree,
+};
 
 use super::executor::resolve_command_executable;
 use super::models::VerificationGateOutcome;
@@ -1589,8 +1591,7 @@ impl LimitedBytes {
 }
 
 fn terminate_child(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    terminate_process_tree(child);
 }
 
 fn configure_verification_git_command(

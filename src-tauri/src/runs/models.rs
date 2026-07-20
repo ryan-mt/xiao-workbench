@@ -422,6 +422,13 @@ pub struct RunUpdateEnvelope {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunServiceErrorEnvelope {
+    pub workspace_path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunProtocolEnvelope {
     pub run_id: String,
     pub task_id: String,
