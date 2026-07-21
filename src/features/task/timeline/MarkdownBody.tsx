@@ -140,8 +140,17 @@ const inlineCodeKind = (text: string): "path" | "url" | undefined => {
   return undefined;
 };
 
-const workspacePathHref = (value: string) =>
-  /^(?:[a-z]:[\\/]|file:\/\/\/[a-z]:[\\/])/i.test(value.trim());
+const workspacePathHref = (value: string) => {
+  const path = value.trim();
+  if (/^[a-z]:[\\/]/i.test(path)) return true;
+  if (!/^file:\/\//i.test(path)) return false;
+  try {
+    const url = new URL(path);
+    return Boolean(url.hostname) || /^\/[a-z]:\//i.test(url.pathname);
+  } catch {
+    return false;
+  }
+};
 
 export const markdownUrlTransform = (value: string, allowWorkspacePaths: boolean) =>
   allowWorkspacePaths && workspacePathHref(value) ? value : defaultUrlTransform(value);

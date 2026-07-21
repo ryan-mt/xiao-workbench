@@ -18,6 +18,20 @@ describe("MarkdownBody resource links", () => {
     expect(markup).toContain(`href="${path}"`);
   });
 
+  it("preserves UNC file URLs for internal routing", () => {
+    const path = "file://server/share/project/src/main.ts";
+    expect(markdownUrlTransform(path, true)).toBe(path);
+    expect(markdownUrlTransform(path, false)).toBe("");
+
+    const markup = renderToStaticMarkup(
+      <MarkdownBody
+        content={`Open [main.ts](${path})`}
+        onOpenResource={() => true}
+      />,
+    );
+    expect(markup).toContain(`href="${path}"`);
+  });
+
   it("continues to reject executable URL schemes", () => {
     expect(markdownUrlTransform("javascript:alert(1)", true)).toBe("");
   });

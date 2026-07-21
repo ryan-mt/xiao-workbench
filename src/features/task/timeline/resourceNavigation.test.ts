@@ -39,6 +39,10 @@ describe("resolveTimelineResource", () => {
       kind: "file",
       relativePath: "src/main.ts",
     });
+    expect(resolveTimelineResource("file://server/SHARE/project/src/main.ts", uncRoot)).toEqual({
+      kind: "file",
+      relativePath: "src/main.ts",
+    });
     expect(resolveTimelineResource("\\\\SERVER\\share\\secret.ts", uncRoot)).toBeNull();
   });
 

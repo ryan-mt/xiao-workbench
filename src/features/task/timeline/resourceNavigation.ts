@@ -43,7 +43,10 @@ const localPathParts = (target: string) => {
   if (/^file:\/\//i.test(value)) {
     try {
       const url = new URL(value);
-      value = decodePath(url.pathname).replace(/^\/([a-zA-Z]:\/)/, "$1");
+      const path = decodePath(url.pathname).replace(/^\/([a-zA-Z]:\/)/, "$1");
+      value = url.hostname && url.hostname.toLowerCase() !== "localhost"
+        ? `//${url.hostname}/${path.replace(/^\/+/, "")}`
+        : path;
     } catch {
       return null;
     }
