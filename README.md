@@ -4,7 +4,7 @@
 
 <h1 align="center">Xiao Workbench</h1>
 
-<p align="center"><strong>Windows beta · 0.0.0-day07202026</strong></p>
+<p align="center"><strong>Windows beta · 0.0.0-day07212026</strong></p>
 
 Xiao is a calm desktop desk for noisy agent work. The conversation stays in the
 middle; the plan, files, changes, terminal, browser, and the occasional break
