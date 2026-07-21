@@ -13,6 +13,7 @@ import type {
 } from "../../../core/models/run";
 import {
   advanceAgentRuntimeWorkspaceScope,
+  agentMessageRequiresWorkspaceRefresh,
   agentRuntimeEnvelopeMatches,
   attentionHydrationStatusFromSettlements,
   agentQuestionRequestMatches,
@@ -28,6 +29,7 @@ import {
   fileChangeTimelineEntry,
   normalizeFileChangeDiff,
   projectFileChangePatchUpdate,
+  projectTimelineRunSnapshot,
   projectTimelineRunStatus,
   resetPendingInputReplayForTaskRestore,
   restoredRunProtocolEnvelope,
@@ -151,6 +153,34 @@ describe("streaming file changes", () => {
       files: [{ additions: 2, deletions: 1 }],
     });
   });
+
+  it.each(["add", "update", "delete"])(
+    "refreshes the workspace when a streamed %s reaches disk",
+    (kind) => {
+      expect(agentMessageRequiresWorkspaceRefresh({
+        method: "item/fileChange/patchUpdated",
+        params: {
+          itemId: "patch-1",
+          changes: [{ path: "src/App.tsx", kind: { type: kind }, diff: "changed" }],
+        },
+      })).toBe(true);
+    },
+  );
+
+  it("refreshes once more when a file change or turn completes", () => {
+    expect(agentMessageRequiresWorkspaceRefresh({
+      method: "item/completed",
+      params: { item: { type: "fileChange", id: "patch-1" } },
+    })).toBe(true);
+    expect(agentMessageRequiresWorkspaceRefresh({
+      method: "turn/completed",
+      params: { turn: { id: "turn-1", status: "completed" } },
+    })).toBe(true);
+    expect(agentMessageRequiresWorkspaceRefresh({
+      method: "item/commandExecution/outputDelta",
+      params: { delta: "reading only" },
+    })).toBe(false);
+  });
 });
 
 describe("projectTimelineRunStatus", () => {
@@ -170,6 +200,30 @@ describe("projectTimelineRunStatus", () => {
       status: "active",
     })).toEqual([{
       ...queuedUser,
+      turnId: "turn-1",
+      meta: "You",
+    }]);
+  });
+
+  it("marks a queued image message as delivered when its run starts", () => {
+    const queuedImage = {
+      ...queuedUser,
+      runId: undefined,
+      attachments: [{
+        id: "attachment-1",
+        kind: "image" as const,
+        name: "image.png",
+        path: "clipboard:image-1",
+      }],
+    };
+
+    expect(projectTimelineRunSnapshot([queuedImage], {
+      id: "run-1",
+      idempotencyKey: "request-1",
+      status: "running",
+      turnId: "turn-1",
+    })).toEqual([{
+      ...queuedImage,
       turnId: "turn-1",
       meta: "You",
     }]);

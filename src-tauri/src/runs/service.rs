@@ -34,7 +34,7 @@ use super::RUN_CONCURRENCY_LIMIT;
 
 const THREAD_SOURCE: &str = "xiao-workbench";
 const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
-const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "After a command fails, inspect its output before trying another command. Do not rerun an unchanged command when the failure is caused by the sandbox, a missing executable, or unavailable dependencies. Use a materially different diagnostic when one is available; otherwise report that verification is blocked and continue with checks that do not depend on the same failing environment.";
+const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
 const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
 
 pub struct RunService {
@@ -1983,6 +1983,13 @@ mod tests {
             params["additionalContext"]["xiao.command-failure-recovery"]["value"],
             COMMAND_FAILURE_RECOVERY_INSTRUCTIONS
         );
+        let failure_recovery = params["additionalContext"]["xiao.command-failure-recovery"]
+            ["value"]
+            .as_str()
+            .unwrap();
+        assert!(failure_recovery.contains("active shell and tool schema"));
+        assert!(failure_recovery.contains("at most one corrected recovery attempt"));
+        assert!(failure_recovery.contains("Do not cycle through alternate wrappers"));
         assert!(params["additionalContext"]
             .get("xiao.managed-worktree")
             .is_none());

@@ -80,6 +80,8 @@ export function AppShell({
   const [resizingFocusRail, setResizingFocusRail] = useState(false);
   const sidebarResizeStart = useRef({ pointerX: 0, sidebarWidth: defaultSidebarWidth });
   const focusRailResizeStart = useRef({ pointerX: 0, focusRailWidth: defaultFocusRailWidth });
+  const focusRailDragWidth = useRef(defaultFocusRailWidth);
+  const appFrameRef = useRef<HTMLDivElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const focusRailWidth = preferFocusRailOverlay ? focusRailPeekWidth : focusRailDockWidth;
   const focusRailMinimum = preferFocusRailOverlay
@@ -188,20 +190,33 @@ export function AppShell({
   useEffect(() => {
     if (!resizingFocusRail) return;
 
-    const resize = (event: PointerEvent) => {
-      updateFocusRailWidth(() =>
-        clampFocusRailWidth(
-          focusRailResizeStart.current.focusRailWidth -
-            (event.clientX - focusRailResizeStart.current.pointerX),
-        ),
+    let animationFrame: number | null = null;
+    const paintWidth = () => {
+      animationFrame = null;
+      appFrameRef.current?.style.setProperty(
+        "--focus-rail-width",
+        `${focusRailDragWidth.current}px`,
       );
     };
-    const stopResizing = () => setResizingFocusRail(false);
+    const resize = (event: PointerEvent) => {
+      focusRailDragWidth.current = clampFocusRailWidth(
+        focusRailResizeStart.current.focusRailWidth -
+          (event.clientX - focusRailResizeStart.current.pointerX),
+      );
+      if (animationFrame === null) animationFrame = window.requestAnimationFrame(paintWidth);
+    };
+    const stopResizing = () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      paintWidth();
+      updateFocusRailWidth(() => focusRailDragWidth.current);
+      setResizingFocusRail(false);
+    };
     window.addEventListener("pointermove", resize);
     window.addEventListener("pointerup", stopResizing);
     window.addEventListener("pointercancel", stopResizing);
     window.addEventListener("blur", stopResizing);
     return () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       window.removeEventListener("pointermove", resize);
       window.removeEventListener("pointerup", stopResizing);
       window.removeEventListener("pointercancel", stopResizing);
@@ -211,6 +226,7 @@ export function AppShell({
 
   return (
     <div
+      ref={appFrameRef}
       className={`app-frame ${resizingSidebar ? "app-frame--resizing-sidebar" : ""} ${
         resizingFocusRail ? "app-frame--resizing-focus-rail" : ""
       }`}
@@ -289,6 +305,7 @@ export function AppShell({
               onPointerDown={(event) => {
                 event.preventDefault();
                 focusRailResizeStart.current = { pointerX: event.clientX, focusRailWidth };
+                focusRailDragWidth.current = focusRailWidth;
                 setResizingFocusRail(true);
               }}
             />

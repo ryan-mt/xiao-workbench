@@ -1291,7 +1291,9 @@ export function Composer({
                       <select
                         aria-label="Sandbox mode"
                         value={sandboxMode}
-                        disabled={disabled}
+                        disabled={
+                          disabled || runtime.phase === "starting" || runtime.phase === "working"
+                        }
                         onChange={(event) =>
                           onSandboxModeChange(event.target.value as AgentSandboxMode)
                         }

@@ -83,9 +83,16 @@ export function ChangesPanel({
   }, [visibleGit?.changes, query]);
 
   useEffect(() => {
-    setSelectedPath(preferredChange?.path ?? null);
+    setSelectedPath((current) =>
+      current && visibleGit?.changes.some((change) => change.path === current)
+        ? current
+        : preferredChange?.path ?? null,
+    );
+  }, [preferredChange?.path, visibleGit?.changes]);
+
+  useEffect(() => {
     setQuery("");
-  }, [visibleGit, workspace.path]);
+  }, [workspace.path]);
 
   useEffect(() => {
     let cancelled = false;

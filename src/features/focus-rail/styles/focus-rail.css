@@ -1,6 +1,7 @@
 .focus-rail {
   position: relative;
   display: grid;
+  contain: layout paint;
   min-width: 0;
   min-height: 0;
   grid-template-rows: 44px minmax(0, 1fr);

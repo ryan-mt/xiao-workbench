@@ -73,6 +73,7 @@ import { collaborationTimelineEntry } from "./collaborationTimeline";
 
 const MAX_RUNTIME_LOGS = 240;
 const LIVE_DELTA_FLUSH_MS = 33;
+const WORKSPACE_REFRESH_DEBOUNCE_MS = 180;
 const SETTLED_PLAN_LINGER_MS = 4_000;
 const RUN_EVENT_PAGE_SIZE = 200;
 type LiveDeltaBatch = {
@@ -302,6 +303,15 @@ const readItemId = (message: AgentMessage) => {
   return typeof id === "string" ? id : null;
 };
 
+export const agentMessageRequiresWorkspaceRefresh = (message: AgentMessage) => {
+  if (message.method === "turn/completed") return true;
+  if (message.method === "item/fileChange/patchUpdated") {
+    return Array.isArray(message.params?.changes) && message.params.changes.length > 0;
+  }
+  if (message.method !== "item/completed") return false;
+  return readItem(message)?.type === "fileChange";
+};
+
 const readExplorationActions = (item: Record<string, unknown>) => {
   if (!Array.isArray(item.commandActions) || !item.commandActions.length) return null;
   const fallbackCommand = typeof item.command === "string" ? item.command : "";
@@ -491,6 +501,18 @@ export const projectTimelineRunStatus = (
     ...(settlement.turnDiff !== undefined ? { turnDiff: settlement.turnDiff } : {}),
   };
 });
+
+export const projectTimelineRunSnapshot = (
+  timeline: TimelineEntry[],
+  run: Pick<RunSnapshot, "id" | "idempotencyKey" | "status" | "turnId">,
+): TimelineEntry[] => run.status === "queued"
+  ? timeline
+  : projectTimelineRunStatus(timeline, {
+      entryId: run.idempotencyKey,
+      runId: run.id,
+      turnId: run.turnId,
+      status: timelineStatusForRun(run.status),
+    });
 
 const countDiffLines = (diff: string) => {
   let additions = 0;
@@ -851,6 +873,7 @@ export function useAgentRuntime(
   const timelineCache = useRef(new Map<string, TimelineEntry[]>());
   const liveDeltaBatches = useRef(new Map<string, LiveDeltaBatch>());
   const liveDeltaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const workspaceRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const planClearTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const planCache = useRef(new Map<string, AgentPlan>());
   const onTimelineChangeRef = useRef(onTimelineChange);
@@ -903,6 +926,8 @@ export function useAgentRuntime(
     timelineCache.current.clear();
     if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
     liveDeltaTimer.current = null;
+    if (workspaceRefreshTimer.current) clearTimeout(workspaceRefreshTimer.current);
+    workspaceRefreshTimer.current = null;
     liveDeltaBatches.current.clear();
     for (const timer of planClearTimers.current.values()) clearTimeout(timer);
     planClearTimers.current.clear();
@@ -959,6 +984,16 @@ export function useAgentRuntime(
   useEffect(() => {
     onWorkspaceChangeRef.current = onWorkspaceChange;
   }, [onWorkspaceChange]);
+
+  const scheduleWorkspaceRefresh = useCallback(() => {
+    if (workspaceRefreshTimer.current) clearTimeout(workspaceRefreshTimer.current);
+    const scope = workspaceScopeRef.current;
+    workspaceRefreshTimer.current = setTimeout(() => {
+      workspaceRefreshTimer.current = null;
+      if (workspaceScopeRef.current !== scope) return;
+      onWorkspaceChangeRef.current();
+    }, WORKSPACE_REFRESH_DEBOUNCE_MS);
+  }, []);
 
   const appendRuntimeLog = useCallback(
     (stream: RuntimeLogEntry["stream"], text: string) => {
@@ -1339,6 +1374,9 @@ export function useAgentRuntime(
       },
     ) => {
       const taskId = route?.taskId ?? resolveTaskId(message);
+      if (!route?.replayed && agentMessageRequiresWorkspaceRefresh(message)) {
+        scheduleWorkspaceRefresh();
+      }
       if (queueLiveDelta(taskId, message)) return;
       flushLiveDeltas();
       setRuntime((current) => ({ ...current, eventsSeen: current.eventsSeen + 1 }));
@@ -1711,7 +1749,6 @@ export function useAgentRuntime(
           }
           activeThinkingEntries.current.delete(taskId);
         }
-        if (item.type === "fileChange") onWorkspaceChangeRef.current();
         updateTimeline(taskId, (current) => {
           const timeline = item.type === "contextCompaction"
             ? invalidateUndoHistory(current)
@@ -1898,6 +1935,7 @@ export function useAgentRuntime(
       refreshRuntimeIdentity,
       resolveTaskId,
       schedulePlanClear,
+      scheduleWorkspaceRefresh,
       settleThinking,
       updateTimeline,
       workspacePath,
@@ -2003,33 +2041,30 @@ export function useAgentRuntime(
               );
             }
             const run = event.payload.snapshot;
-            if (
+            const runIsTerminal =
               run.status === "completed" ||
               run.status === "failed" ||
               run.status === "cancelled" ||
-              run.status === "interrupted"
+              run.status === "interrupted";
+            if (
+              run.status !== "queued" &&
+              run.taskId === activeTaskIdRef.current &&
+              activeTimelineReadyRef.current
             ) {
+              updateTimeline(run.taskId, (current) => {
+                const projected = projectTimelineRunSnapshot(current, run);
+                return runIsTerminal
+                  ? reconcilePendingApprovalEntries(projected, null, run.id)
+                  : projected;
+              });
+            }
+            if (runIsTerminal) {
               setQuestionRequest((current) => current?.runId === run.id ? null : current);
               const outcome: AgentTurnOutcome = run.status === "completed"
                 ? "completed"
                 : run.status === "failed"
                   ? "failed"
                   : "interrupted";
-              if (
-                run.taskId === activeTaskIdRef.current &&
-                activeTimelineReadyRef.current
-              ) {
-                const status = timelineStatusForRun(run.status);
-                updateTimeline(run.taskId, (current) => {
-                  const settled = projectTimelineRunStatus(current, {
-                    entryId: run.idempotencyKey,
-                    runId: run.id,
-                    turnId: run.turnId,
-                    status,
-                  });
-                  return reconcilePendingApprovalEntries(settled, null, run.id);
-                });
-              }
               if (!finishedRunIds.current.has(run.id)) {
                 finishedRunIds.current.add(run.id);
                 onTaskFinishedRef.current(run.taskId, outcome);
@@ -2173,6 +2208,8 @@ export function useAgentRuntime(
       setListenersReady(false);
       if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
       liveDeltaTimer.current = null;
+      if (workspaceRefreshTimer.current) clearTimeout(workspaceRefreshTimer.current);
+      workspaceRefreshTimer.current = null;
       liveDeltaBatches.current.clear();
       for (const timer of planClearTimers.current.values()) clearTimeout(timer);
       planClearTimers.current.clear();
