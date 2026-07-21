@@ -32,6 +32,16 @@ describe("resolveTimelineResource", () => {
     });
   });
 
+  it("routes absolute UNC paths within a UNC workspace", () => {
+    const uncRoot = "\\\\SERVER\\share\\project";
+
+    expect(resolveTimelineResource("\\\\server\\SHARE\\project\\src\\main.ts:42", uncRoot)).toEqual({
+      kind: "file",
+      relativePath: "src/main.ts",
+    });
+    expect(resolveTimelineResource("\\\\SERVER\\share\\secret.ts", uncRoot)).toBeNull();
+  });
+
   it("rejects paths outside the execution workspace and unsafe schemes", () => {
     expect(resolveTimelineResource("../secret.html", root)).toBeNull();
     expect(resolveTimelineResource("C:/Users/dev/secret.html", root)).toBeNull();

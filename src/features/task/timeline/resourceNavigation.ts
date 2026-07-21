@@ -17,6 +17,7 @@ const decodePath = (value: string) => {
 const normalizeAbsolutePath = (value: string) => {
   const source = value.replace(/\\/g, "/");
   const drive = source.match(/^([a-zA-Z]:)(?:\/|$)/)?.[1];
+  const unc = source.startsWith("//");
   const absolute = Boolean(drive) || source.startsWith("/");
   if (!absolute) return null;
   const body = drive ? source.slice(drive.length) : source;
@@ -26,7 +27,8 @@ const normalizeAbsolutePath = (value: string) => {
     if (segment === "..") segments.pop();
     else segments.push(segment);
   }
-  return drive ? `${drive}/${segments.join("/")}` : `/${segments.join("/")}`;
+  if (drive) return `${drive}/${segments.join("/")}`;
+  return `${unc ? "//" : "/"}${segments.join("/")}`;
 };
 
 const localPathParts = (target: string) => {
@@ -74,12 +76,12 @@ export const resolveTimelineResource = (
   const root = normalizeAbsolutePath(executionRoot);
   if (!root) return null;
   const candidate = normalizeAbsolutePath(
-    /^(?:[a-z]:[\\/]|\/)/i.test(parts.value)
+    /^(?:[a-z]:[\\/]|[\\/]{2}|\/)/i.test(parts.value)
       ? parts.value
       : `${root}/${parts.value}`,
   );
   if (!candidate) return null;
-  const windowsPath = /^[a-z]:\//i.test(root);
+  const windowsPath = /^[a-z]:\//i.test(root) || root.startsWith("//");
   const comparableRoot = windowsPath ? root.toLocaleLowerCase() : root;
   const comparableCandidate = windowsPath ? candidate.toLocaleLowerCase() : candidate;
   if (
