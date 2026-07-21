@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentAttachment } from "../../../core/models/agent";
 import { workspaceTaskKey } from "../../../app/App";
-import { navigateComposerPromptHistory, runComposerSubmission } from "./Composer";
+import {
+  navigateComposerPromptHistory,
+  runComposerSubmission,
+  sandboxModeOptions,
+} from "./Composer";
 
 const attachment = (path: string): AgentAttachment => ({
   name: path,
@@ -94,6 +98,15 @@ describe("composer prompt history persistence", () => {
       ["previous prompt"],
       ["current draft"],
     ]);
+  });
+});
+
+describe("composer sandbox permissions", () => {
+  it("offers an explicit no-sandbox option backed by danger-full-access", () => {
+    expect(sandboxModeOptions).toContainEqual({
+      value: "danger-full-access",
+      label: "No sandbox (full access)",
+    });
   });
 });
 

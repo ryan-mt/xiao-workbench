@@ -40,6 +40,15 @@ import {
 const promptHistoryStorageKey = "xiao.prompt-history.v1";
 const runtimeErrorRevealDelayMs = 160;
 
+export const sandboxModeOptions: ReadonlyArray<{
+  value: AgentSandboxMode;
+  label: string;
+}> = [
+  { value: "workspace-write", label: "Workspace only" },
+  { value: "read-only", label: "Read only" },
+  { value: "danger-full-access", label: "No sandbox (full access)" },
+];
+
 type ComposerProps = {
   taskId: string;
   executionTaskId: string | null;
@@ -1287,11 +1296,16 @@ export function Composer({
                           onSandboxModeChange(event.target.value as AgentSandboxMode)
                         }
                       >
-                        <option value="workspace-write">Workspace</option>
-                        <option value="read-only">Read only</option>
-                        <option value="danger-full-access">Full access</option>
+                        {sandboxModeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
                       </select>
                     </label>
+                    {sandboxMode === "danger-full-access" ? (
+                      <small className="is-warning">
+                        No sandbox allows commands to access files and the network outside this workspace.
+                      </small>
+                    ) : null}
                   </div>
                 </div>
               )}

@@ -3696,6 +3696,7 @@
 }
 
 .composer-add__settings > small.is-error { color: var(--danger); }
+.composer-add__settings > small.is-warning { color: var(--warning); }
 
 .composer__tools-left .composer-add__settings select {
   width: 100%;
