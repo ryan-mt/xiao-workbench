@@ -68,6 +68,7 @@ import { managedWorktreeCleanupMessage } from "../features/task/taskEnvironment"
 import { forkTaskFromEntry } from "../features/task/taskFork";
 import {
   completeTimelineMetadata,
+  hasUnloadedTimeline,
   mergeTimelinePage,
   toXiaoTaskDocument,
 } from "../features/task/taskPersistence";
@@ -1412,6 +1413,7 @@ export function App() {
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
+  const activeTaskTimelineReady = !hasUnloadedTimeline(activeTask);
   const executionTaskId = confirmedExecutionTaskId(
     confirmedNativeTasks,
     activeProjectPath ?? "",
@@ -1445,7 +1447,7 @@ export function App() {
     setFocusResourceRequest(null);
   }, [focusResourceContext]);
   const activeTaskHistoryLoading = Boolean(
-    selectedTask && !selectedTask.timelineComplete && !taskHistoryError,
+    selectedTask && hasUnloadedTimeline(selectedTask) && !taskHistoryError,
   );
   const taskWorkspaceStateLoading = isTaskWorkspaceStateLoading(
     loading,
@@ -1475,7 +1477,7 @@ export function App() {
     activePage === "tasks" &&
     routineOpenTarget?.taskId !== activeTask.id &&
     (!selectedTask || !selectedTask.archived) &&
-    activeTask.timelineComplete &&
+    activeTaskTimelineReady &&
     activeTask.timeline.length === 0;
   if (taskStateReady && taskWorkspacePath) {
     latestTaskStateRef.current = {
@@ -1788,7 +1790,7 @@ export function App() {
       !taskStateReady ||
       taskWorkspacePath !== workspace.path ||
       !selectedTask ||
-      selectedTask.timelineComplete ||
+      !hasUnloadedTimeline(selectedTask) ||
       taskHistoryLoadingId === selectedTask.id
     ) return;
 
@@ -1819,7 +1821,9 @@ export function App() {
   }, [
     selectedTask?.id,
     selectedTask?.timelineComplete,
+    selectedTask?.timeline.length,
     selectedTask?.timelineLoaded,
+    selectedTask?.timelineEntryCount,
     selectedTask?.timelineStart,
     taskStateReady,
     taskWorkspacePath,
@@ -1845,7 +1849,7 @@ export function App() {
     setTasks((current) => {
       let changed = false;
       const next = current.map((task) => {
-        if (task.title !== "New task" || !task.timelineComplete) return task;
+        if (task.title !== "New task" || hasUnloadedTimeline(task)) return task;
         const firstPrompt = task.timeline.find(
           (entry) => entry.kind === "user" || entry.kind === "brief",
         );
@@ -1981,7 +1985,7 @@ export function App() {
     executionTaskId,
     activeTask.title,
     activeTask.timeline,
-    activeTask.timelineComplete,
+    activeTaskTimelineReady,
     activeTask.model,
     preferences.fastMode,
     activeTask.approvalPolicy,
@@ -2292,7 +2296,7 @@ export function App() {
     if (
       sendingFollowUpId ||
       !taskStateReady ||
-      !activeTask.timelineComplete ||
+      !activeTaskTimelineReady ||
       activeEnvironmentBusy ||
       taskStateError ||
       workspaceError
@@ -2599,7 +2603,7 @@ export function App() {
     if (
       !taskStateReady ||
       taskStateError ||
-      !activeTask.timelineComplete ||
+      !activeTaskTimelineReady ||
       activeEnvironmentBusy ||
       activeTask.archived ||
       activeTask.followUps.length > 0 ||
@@ -2958,7 +2962,7 @@ export function App() {
     const source = tasks.find((task) => task.id === taskId);
     if (!source) return;
     const createdAt = Date.now();
-    if (!source.timelineComplete) return;
+    if (hasUnloadedTimeline(source)) return;
     const task = createContinuationTask(source, {
       id: crypto.randomUUID(),
       createdAt,

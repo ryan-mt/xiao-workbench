@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { TimelineEntry } from "../../core/models/agent";
 import type { XiaoTimelinePage } from "../../core/models/xiao";
-import { completeTimelineMetadata, mergeTimelinePage, toXiaoTaskDocument } from "./taskPersistence";
+import {
+  completeTimelineMetadata,
+  hasUnloadedTimeline,
+  mergeTimelinePage,
+  toXiaoTaskDocument,
+} from "./taskPersistence";
 import type { WorkbenchTask } from "./task.types";
 
 const entry = (id: string): TimelineEntry => ({
@@ -125,5 +130,21 @@ describe("task persistence", () => {
       timelineStart: 0,
       timelineEntryCount: 1,
     });
+  });
+
+  it("does not wait for history when incomplete metadata reports zero entries", () => {
+    expect(hasUnloadedTimeline({
+      timeline: [],
+      timelineComplete: false,
+      timelineEntryCount: 0,
+    })).toBe(false);
+  });
+
+  it("keeps loading when older persisted entries are actually missing", () => {
+    expect(hasUnloadedTimeline({
+      timeline: [entry("event-4")],
+      timelineComplete: false,
+      timelineEntryCount: 4,
+    })).toBe(true);
   });
 });

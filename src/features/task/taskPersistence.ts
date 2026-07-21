@@ -9,6 +9,11 @@ export const completeTimelineMetadata = <T extends { timeline: unknown[] }>(task
   timelineEntryCount: task.timeline.length,
 });
 
+export const hasUnloadedTimeline = (task: Pick<
+  WorkbenchTask,
+  "timeline" | "timelineComplete" | "timelineEntryCount"
+>) => !task.timelineComplete && task.timelineEntryCount > task.timeline.length;
+
 export const toXiaoTaskDocument = (
   task: WorkbenchTask,
   includeTimeline = true,
