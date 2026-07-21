@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-  AgentPlan,
   AgentQuestionRequest,
   AgentRuntimeState,
   TimelineEntry,
@@ -22,7 +21,6 @@ import {
   agentRuntimeTaskWorkspaceScopeMatches,
   agentRuntimeWorkspaceScopeMatches,
   clearResolvedAgentQuestionRequest,
-  completedAgentPlan,
   handleAgentApprovalRequest,
   listenerRecoveryPendingAfterConnect,
   loadAllXiaoRunEvents,
@@ -36,6 +34,7 @@ import {
   runtimeAfterListenerAttachSuccess,
   runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
+  shouldClearAgentPlan,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
   type AttentionHydrationStatus,
@@ -63,24 +62,11 @@ const deferred = <T>() => {
   return { promise, reject, resolve };
 };
 
-describe("completedAgentPlan", () => {
-  it("settles every published step without mutating the live plan", () => {
-    const plan: AgentPlan = {
-      explanation: "Ship it",
-      steps: [
-        { step: "Build", status: "inProgress" },
-        { step: "Verify", status: "pending" },
-      ],
-    };
-
-    expect(completedAgentPlan(plan)).toEqual({
-      explanation: "Ship it",
-      steps: [
-        { step: "Build", status: "completed" },
-        { step: "Verify", status: "completed" },
-      ],
-    });
-    expect(plan.steps.map((step) => step.status)).toEqual(["inProgress", "pending"]);
+describe("shouldClearAgentPlan", () => {
+  it("clears immediately only after a successful turn", () => {
+    expect(shouldClearAgentPlan("completed")).toBe(true);
+    expect(shouldClearAgentPlan("failed")).toBe(false);
+    expect(shouldClearAgentPlan("interrupted")).toBe(false);
   });
 });
 

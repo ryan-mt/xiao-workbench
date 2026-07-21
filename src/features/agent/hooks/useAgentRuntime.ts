@@ -74,7 +74,6 @@ import { collaborationTimelineEntry } from "./collaborationTimeline";
 const MAX_RUNTIME_LOGS = 240;
 const LIVE_DELTA_FLUSH_MS = 33;
 const WORKSPACE_REFRESH_DEBOUNCE_MS = 180;
-const SETTLED_PLAN_LINGER_MS = 4_000;
 const RUN_EVENT_PAGE_SIZE = 200;
 type LiveDeltaBatch = {
   deltas: LiveTimelineDelta[];
@@ -265,10 +264,7 @@ export const settleAutoTitleAfterUndo = (
   if (resetTitle) autoTitledTaskIds.delete(taskId);
 };
 
-export const completedAgentPlan = (plan: AgentPlan): AgentPlan => ({
-  ...plan,
-  steps: plan.steps.map((step) => ({ ...step, status: "completed" })),
-});
+export const shouldClearAgentPlan = (outcome: AgentTurnOutcome) => outcome === "completed";
 
 export const loadAllXiaoRunEvents = async (
   runId: string,
@@ -874,7 +870,6 @@ export function useAgentRuntime(
   const liveDeltaBatches = useRef(new Map<string, LiveDeltaBatch>());
   const liveDeltaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const workspaceRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const planClearTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const planCache = useRef(new Map<string, AgentPlan>());
   const onTimelineChangeRef = useRef(onTimelineChange);
   const onPlanChangeRef = useRef(onPlanChange);
@@ -929,8 +924,6 @@ export function useAgentRuntime(
     if (workspaceRefreshTimer.current) clearTimeout(workspaceRefreshTimer.current);
     workspaceRefreshTimer.current = null;
     liveDeltaBatches.current.clear();
-    for (const timer of planClearTimers.current.values()) clearTimeout(timer);
-    planClearTimers.current.clear();
     timelineCache.current.set(activeTaskId, activeTaskTimeline);
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
     reconnectAttempt.current = 0;
@@ -1062,22 +1055,6 @@ export function useAgentRuntime(
     },
     [updateTimeline],
   );
-
-  const cancelPlanClear = useCallback((taskId: string) => {
-    const timer = planClearTimers.current.get(taskId);
-    if (timer) clearTimeout(timer);
-    planClearTimers.current.delete(taskId);
-  }, []);
-
-  const schedulePlanClear = useCallback((taskId: string) => {
-    cancelPlanClear(taskId);
-    const timer = setTimeout(() => {
-      if (planClearTimers.current.get(taskId) !== timer) return;
-      planClearTimers.current.delete(taskId);
-      onPlanChangeRef.current(taskId, null);
-    }, SETTLED_PLAN_LINGER_MS);
-    planClearTimers.current.set(taskId, timer);
-  }, [cancelPlanClear]);
 
   const flushLiveDeltas = useCallback(() => {
     if (liveDeltaTimer.current) clearTimeout(liveDeltaTimer.current);
@@ -1526,7 +1503,6 @@ export function useAgentRuntime(
       }
 
       if (message.method === "turn/started") {
-        cancelPlanClear(taskId);
         planCache.current.delete(taskId);
         onPlanChangeRef.current(taskId, null);
         const turn = message.params?.turn;
@@ -1630,7 +1606,6 @@ export function useAgentRuntime(
       }
 
       if (message.method === "turn/plan/updated" && Array.isArray(message.params?.plan)) {
-        cancelPlanClear(taskId);
         const steps = message.params.plan.flatMap((item) => {
           if (!item || typeof item !== "object") return [];
           const value = item as Record<string, unknown>;
@@ -1832,13 +1807,10 @@ export function useAgentRuntime(
             updateTimeline(taskId, invalidateUndoHistory);
           }
         } else {
-          const currentPlan = planCache.current.get(taskId);
-          if (outcome === "completed" && currentPlan) {
-            const completedPlan = completedAgentPlan(currentPlan);
-            planCache.current.set(taskId, completedPlan);
-            onPlanChangeRef.current(taskId, completedPlan);
+          if (shouldClearAgentPlan(outcome)) {
+            planCache.current.delete(taskId);
+            onPlanChangeRef.current(taskId, null);
           }
-          schedulePlanClear(taskId);
         }
         const errorValue = turn?.error;
         const errorMessage = outcome === "failed"
@@ -1926,7 +1898,6 @@ export function useAgentRuntime(
     },
     [
       appendRuntimeLog,
-      cancelPlanClear,
       declineWithoutPrompt,
       flushLiveDeltas,
       queueLiveDelta,
@@ -1934,7 +1905,6 @@ export function useAgentRuntime(
       refreshAccountUsage,
       refreshRuntimeIdentity,
       resolveTaskId,
-      schedulePlanClear,
       scheduleWorkspaceRefresh,
       settleThinking,
       updateTimeline,
@@ -2211,8 +2181,6 @@ export function useAgentRuntime(
       if (workspaceRefreshTimer.current) clearTimeout(workspaceRefreshTimer.current);
       workspaceRefreshTimer.current = null;
       liveDeltaBatches.current.clear();
-      for (const timer of planClearTimers.current.values()) clearTimeout(timer);
-      planClearTimers.current.clear();
       cleanups.forEach((cleanup) => cleanup());
     };
   }, [
