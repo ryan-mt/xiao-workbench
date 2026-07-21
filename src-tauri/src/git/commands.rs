@@ -63,14 +63,16 @@ pub fn get_git_branches(
 }
 
 #[tauri::command]
-pub fn compare_git_branch(
+pub async fn compare_git_branch(
     project_path: String,
     task_id: Option<String>,
     base_branch: String,
     repository: State<'_, XiaoRepository>,
 ) -> Result<GitSummary, String> {
     let root = task_root(&repository, &project_path, task_id.as_deref())?;
-    read_git_comparison(&root, &base_branch)
+    tauri::async_runtime::spawn_blocking(move || read_git_comparison(&root, &base_branch))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

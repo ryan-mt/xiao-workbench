@@ -14,6 +14,7 @@ use super::models::{
 
 const MAX_CHANGES: usize = 300;
 const MAX_PATCH_BYTES: usize = 96 * 1024;
+const MAX_DIFF_PATHS_PER_COMMAND: usize = 32;
 const MAX_APPLY_PATCH_BYTES: usize = 8 * 1024 * 1024;
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(1);
 static GIT_INDEX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -458,12 +459,9 @@ pub fn read_git_comparison(workspace_path: &str, base_branch: &str) -> Result<Gi
         changes_truncated: false,
     };
 
+    let mut tracked_changes = Vec::new();
     let mut fields = changed.split('\0').filter(|field| !field.is_empty());
     while let (Some(code), Some(repository_path)) = (fields.next(), fields.next()) {
-        let workspace_path = repository_path
-            .strip_prefix(&prefix)
-            .unwrap_or(repository_path)
-            .to_owned();
         let status = match code.chars().next() {
             Some('A') => {
                 summary.added += 1;
@@ -478,12 +476,25 @@ pub fn read_git_comparison(workspace_path: &str, base_branch: &str) -> Result<Gi
                 GitFileStatus::Modified
             }
         };
-        if summary.changes.len() == MAX_CHANGES {
+        if tracked_changes.len() == MAX_CHANGES {
             summary.changes_truncated = true;
             continue;
         }
-        let (patch, patch_truncated, additions, deletions) =
-            tracked_patch_against(&repository_root, &merge_base, repository_path);
+        tracked_changes.push((repository_path.to_owned(), status));
+    }
+
+    let tracked_paths = tracked_changes
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let tracked_patches = tracked_patches_against(&repository_root, &merge_base, &tracked_paths);
+    for ((repository_path, status), (patch, patch_truncated, additions, deletions)) in
+        tracked_changes.into_iter().zip(tracked_patches)
+    {
+        let workspace_path = repository_path
+            .strip_prefix(&prefix)
+            .unwrap_or(&repository_path)
+            .to_owned();
         summary.changes.push(GitFileChange {
             path: workspace_path,
             status,
@@ -583,6 +594,56 @@ fn tracked_patch_against(
     let (additions, deletions) = count_patch_lines(&patch);
     let (patch, truncated) = truncate_patch(patch);
     (patch, truncated, additions, deletions)
+}
+
+fn tracked_patches_against(
+    repository_root: &Path,
+    base_commit: &str,
+    paths: &[String],
+) -> Vec<(String, bool, usize, usize)> {
+    let mut patches = Vec::with_capacity(paths.len());
+    for batch in paths.chunks(MAX_DIFF_PATHS_PER_COMMAND) {
+        let mut arguments = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--unified=3",
+            base_commit,
+            "--",
+        ];
+        arguments.extend(batch.iter().map(String::as_str));
+        let combined = run_git(repository_root, &arguments).unwrap_or_default();
+        let sections = split_git_patch(&combined);
+        if sections.len() != batch.len() {
+            patches.extend(
+                batch
+                    .iter()
+                    .map(|path| tracked_patch_against(repository_root, base_commit, path)),
+            );
+            continue;
+        }
+        patches.extend(sections.into_iter().map(|patch| {
+            let (additions, deletions) = count_patch_lines(&patch);
+            let (patch, truncated) = truncate_patch(patch);
+            (patch, truncated, additions, deletions)
+        }));
+    }
+    patches
+}
+
+fn split_git_patch(patch: &str) -> Vec<String> {
+    let mut starts = patch
+        .match_indices("diff --git ")
+        .filter_map(|(index, _)| {
+            (index == 0 || patch.as_bytes().get(index - 1) == Some(&b'\n')).then_some(index)
+        })
+        .peekable();
+    let mut sections = Vec::new();
+    while let Some(start) = starts.next() {
+        let end = starts.peek().copied().unwrap_or(patch.len());
+        sections.push(patch[start..end].to_owned());
+    }
+    sections
 }
 
 fn untracked_patch(workspace_root: &Path, path: &str) -> (String, bool, usize, usize) {
@@ -1938,6 +1999,47 @@ if (args[0] === "pr" && args[1] === "list") {{
             .iter()
             .any(|branch| branch.name == "feature" && branch.current));
         assert!(read_git_comparison(&workspace.to_string_lossy(), "--help").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn branch_comparison_batches_tracked_patches_without_mixing_files() {
+        let root = temporary_directory("branch-comparison-batches");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("initial.txt"), "initial\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        run(&root, &["branch", "-M", "main"]);
+        run(&root, &["switch", "-c", "feature"]);
+
+        let file_count = super::MAX_DIFF_PATHS_PER_COMMAND + 3;
+        for index in 0..file_count {
+            fs::write(
+                root.join(format!("file-{index:03}.txt")),
+                format!("unique-content-{index:03}\n"),
+            )
+            .unwrap();
+        }
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "many files"]);
+
+        let summary = read_git_comparison(&root.to_string_lossy(), "main").unwrap();
+        assert_eq!(summary.changes.len(), file_count);
+        for index in 0..file_count {
+            let path = format!("file-{index:03}.txt");
+            let change = summary
+                .changes
+                .iter()
+                .find(|change| change.path == path)
+                .unwrap();
+            assert!(change
+                .patch
+                .contains(&format!("+unique-content-{index:03}")));
+        }
+
         let _ = fs::remove_dir_all(root);
     }
 
