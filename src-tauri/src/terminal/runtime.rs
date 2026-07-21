@@ -43,6 +43,16 @@ pub struct TerminalStartResult {
     pub shell: String,
 }
 
+pub(super) struct TerminalStartRequest {
+    pub(super) session_id: String,
+    pub(super) project_path: String,
+    pub(super) task_id: Option<String>,
+    pub(super) workspace_path: String,
+    pub(super) shell: String,
+    pub(super) cols: u16,
+    pub(super) rows: u16,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalOutput {
@@ -112,17 +122,20 @@ impl Utf8StreamDecoder {
 }
 
 impl TerminalManager {
-    pub fn start(
+    pub(super) fn start(
         &self,
         app: AppHandle,
-        session_id: String,
-        project_path: String,
-        task_id: Option<String>,
-        workspace_path: String,
-        shell: String,
-        cols: u16,
-        rows: u16,
+        request: TerminalStartRequest,
     ) -> Result<TerminalStartResult, String> {
+        let TerminalStartRequest {
+            session_id,
+            project_path,
+            task_id,
+            workspace_path,
+            shell,
+            cols,
+            rows,
+        } = request;
         validate_session_id(&session_id)?;
         let workspace = Path::new(&workspace_path)
             .canonicalize()

@@ -2,6 +2,7 @@ use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::execution::service::resolve_execution_context;
+use crate::lsp::LspManager;
 use crate::xiao::repository::XiaoRepository;
 
 use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
@@ -24,10 +25,12 @@ pub fn stop_agent_runtime(
     project_path: String,
     task_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    lsp: State<'_, LspManager>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<(), String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
-    runtimes.stop(&context.environment.id)
+    runtimes.stop(&context.environment.id)?;
+    lsp.stop_environment(&context.environment.id)
 }
 
 #[tauri::command]

@@ -38,6 +38,26 @@ const APPROVAL_METHODS = new Set([
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
 ]);
+const LSP_DYNAMIC_TOOLS = [{
+  type: "namespace",
+  name: "xiao_lsp",
+  description: "Read-only semantic code intelligence probe.",
+  tools: [{
+    type: "function",
+    name: "definition",
+    description: "Find a definition.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        line: { type: "integer", minimum: 1 },
+        character: { type: "integer", minimum: 1 },
+      },
+      required: ["path", "line", "character"],
+      additionalProperties: false,
+    },
+  }],
+}];
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -263,6 +283,14 @@ async function generateAndCheckSchema(root) {
   const resume = JSON.parse(await readFile(join(schemaDir, "v2", "ThreadResumeParams.json"), "utf8"));
   assert(resume.required?.includes("threadId"), "thread/resume no longer requires threadId.");
 
+  const threadStart = JSON.parse(
+    await readFile(join(schemaDir, "v2", "ThreadStartParams.json"), "utf8"),
+  );
+  assert(threadStart.properties?.dynamicTools, "thread/start is missing dynamicTools.");
+
+  const serverRequest = JSON.parse(await readFile(join(schemaDir, "ServerRequest.json"), "utf8"));
+  assert(JSON.stringify(serverRequest).includes('"item/tool/call"'), "Server requests are missing item/tool/call.");
+
   const commandApproval = JSON.parse(
     await readFile(join(schemaDir, "CommandExecutionRequestApprovalParams.json"), "utf8"),
   );
@@ -314,7 +342,7 @@ async function metadataProbe({ workspace, sqliteHome, persistentThreadIds }) {
 
     const started = await server.request(
       "thread/start",
-      threadParams(workspace, { ephemeral: false }),
+      threadParams(workspace, { ephemeral: false, dynamicTools: LSP_DYNAMIC_TOOLS }),
     );
     const threadId = started?.thread?.id;
     assert(typeof threadId === "string" && threadId.length > 0, "Persistent thread/start returned no ID.");
@@ -371,6 +399,7 @@ async function metadataProbe({ workspace, sqliteHome, persistentThreadIds }) {
       preexistingThreadsVisibleInStateDb: preexistingThreadCount,
       ownedThreadSourceTagPreserved: true,
       persistentResumeAcrossProcessRestart: true,
+      dynamicToolsAccepted: true,
       timingMs: { firstInitializeMs, restartInitializeMs, resumeMs },
     };
   } finally {

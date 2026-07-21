@@ -14,6 +14,7 @@ use crate::git::models::WorkspaceCheckpointCapture;
 use crate::git::service::{
     create_workspace_checkpoint, discard_workspace_checkpoint, finish_workspace_checkpoint_capture,
 };
+use crate::lsp::{codex_supports_dynamic_tools, dynamic_tool_response, LspManager};
 use crate::routines::service::RoutineService;
 #[cfg(test)]
 use crate::verification::models::VerificationBaselineState;
@@ -26,7 +27,8 @@ use super::models::{
     RunUpdateEnvelope, RuntimeAttachment,
 };
 use super::repository::{
-    bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent, RunMutation,
+    bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent,
+    RunMutation, RuntimeTurnSettlement,
 };
 use super::RUN_CONCURRENCY_LIMIT;
 
@@ -798,6 +800,7 @@ async fn prepare_before_turn(
         claimed.service_tier.as_deref(),
         &claimed.approval_policy,
         &claimed.sandbox_mode,
+        codex_supports_dynamic_tools(&start.version),
     )
     .await?;
     let attachment = RuntimeAttachment {
@@ -1002,6 +1005,11 @@ fn apply_runtime_message(
         return Ok(());
     }
 
+    if method == "item/tool/call" {
+        dispatch_lsp_tool_call(app, &route, generation, &message)?;
+        return Ok(());
+    }
+
     if let Some(kind) = pending_input_kind(method) {
         let request_id = message
             .get("id")
@@ -1081,19 +1089,20 @@ fn apply_runtime_message(
             .as_ref()
             .map(|checkpoint| checkpoint.patch.clone());
         let mutation = {
+            let payload = json!({
+                "protocol": safe_message,
+                "turnDiff": turn_diff.as_deref(),
+            });
             let repository = app.state::<XiaoRepository>();
-            repository.settle_runtime_turn_with_checkpoint(
-                &route.id,
+            repository.settle_runtime_turn_with_checkpoint(RuntimeTurnSettlement {
+                run_id: &route.id,
                 generation,
                 thread_id,
                 turn_id,
                 runtime_status,
-                &json!({
-                    "protocol": safe_message,
-                    "turnDiff": turn_diff.as_deref(),
-                }),
-                turn_checkpoint.as_ref(),
-            )?
+                payload: &payload,
+                checkpoint: turn_checkpoint.as_ref(),
+            })?
         };
         emit_update(app, &mutation, None);
         if mutation.event.is_some() {
@@ -1207,12 +1216,81 @@ fn read_turn_id(message: &Value) -> Option<&str> {
 
 fn read_item_id(message: &Value) -> Option<&str> {
     let params = message.get("params")?;
-    params.get("itemId").and_then(Value::as_str).or_else(|| {
-        params
-            .get("item")
-            .and_then(|item| item.get("id"))
-            .and_then(Value::as_str)
-    })
+    params
+        .get("itemId")
+        .or_else(|| params.get("callId"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            params
+                .get("item")
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+        })
+}
+
+fn dispatch_lsp_tool_call(
+    app: &AppHandle,
+    route: &RunRecord,
+    generation: u64,
+    message: &Value,
+) -> Result<(), String> {
+    let request_id = message
+        .get("id")
+        .cloned()
+        .ok_or("Codex dynamic tool call did not include a request id.")?;
+    let params = message
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or("Codex dynamic tool call did not include parameters.")?;
+    let supported_namespace = params.get("namespace").and_then(Value::as_str) == Some("xiao_lsp");
+    let tool = params
+        .get("tool")
+        .and_then(Value::as_str)
+        .ok_or("Codex dynamic tool call did not name a tool.")?
+        .to_owned();
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let environment_id = route.execution_environment_id.clone();
+    let execution_root = route.execution_root.clone();
+    let workspace_path = route.workspace_path.clone();
+    let worker_app = app.clone();
+    let worker_environment_id = environment_id.clone();
+    let worker_request_id = request_id.clone();
+    match std::thread::Builder::new()
+        .name("xiao-lsp-tool".to_owned())
+        .spawn(move || {
+            let result = if supported_namespace {
+                worker_app.state::<LspManager>().execute_tool(
+                    &worker_environment_id,
+                    &execution_root,
+                    &tool,
+                    arguments,
+                )
+            } else {
+                Err("Codex requested an unknown Xiao dynamic tool namespace.".to_owned())
+            };
+            let response = dynamic_tool_response(result);
+            if let Err(error) = worker_app.state::<EnvironmentRuntimeRegistry>().reply(
+                &worker_environment_id,
+                generation,
+                worker_request_id,
+                response,
+            ) {
+                emit_service_error_for_workspace(&worker_app, Some(&workspace_path), &error);
+            }
+        }) {
+        Ok(_) => Ok(()),
+        Err(error) => app.state::<EnvironmentRuntimeRegistry>().reply(
+            &environment_id,
+            generation,
+            request_id,
+            dynamic_tool_response(Err(format!(
+                "Could not start the Xiao LSP tool worker: {error}"
+            ))),
+        ),
+    }
 }
 
 fn validate_message_correlation(
@@ -1846,6 +1924,26 @@ mod tests {
 
         let mut running = run;
         running.turn_id = Some("turn".to_owned());
+        let dynamic_tool_call = json!({
+            "id": 8,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "callId": "call",
+                "namespace": "xiao_lsp",
+                "tool": "definition",
+                "arguments": {}
+            }
+        });
+        assert_eq!(read_item_id(&dynamic_tool_call), Some("call"));
+        assert!(validate_message_correlation(
+            "item/tool/call",
+            &running,
+            read_turn_id(&dynamic_tool_call),
+            read_item_id(&dynamic_tool_call),
+        )
+        .is_ok());
         assert!(
             validate_message_correlation("turn/started", &running, Some("turn"), None,).is_ok()
         );

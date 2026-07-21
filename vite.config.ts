@@ -18,5 +18,15 @@ export default defineConfig({
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
     chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "highlight-vendor": ["@shikijs/core", "@shikijs/engine-javascript"],
+          "markdown-vendor": ["marked", "react-markdown", "remark-gfm", "remend"],
+          "react-vendor": ["react", "react-dom"],
+          "terminal-vendor": ["@xterm/addon-fit", "@xterm/xterm"],
+        },
+      },
+    },
   },
 });

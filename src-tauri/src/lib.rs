@@ -3,6 +3,7 @@ mod browser;
 mod execution;
 mod git;
 mod handoff;
+mod lsp;
 mod process;
 mod routines;
 mod runs;
@@ -34,6 +35,7 @@ use git::commands::{
     publish_git_branch,
 };
 use handoff::commands::{export_xiao_handoff, import_xiao_handoff};
+use lsp::LspManager;
 use routines::commands::{
     create_xiao_routine, delete_xiao_routine, list_xiao_routines, run_xiao_routine_now,
     set_xiao_routine_enabled, update_xiao_routine,
@@ -121,6 +123,7 @@ pub fn run() {
             };
             app.manage(XiaoRepository::initialize(app_data_dir));
             app.manage(EnvironmentRuntimeRegistry::default());
+            app.manage(LspManager::default());
             app.manage(RunService::default());
             app.manage(VerificationService::default());
             app.manage(RoutineService::default());

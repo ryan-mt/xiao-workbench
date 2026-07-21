@@ -3,8 +3,10 @@ use tauri::{AppHandle, State};
 use crate::execution::service::resolve_execution_context;
 use crate::xiao::repository::XiaoRepository;
 
-use super::runtime::{TerminalManager, TerminalStartResult};
+use super::runtime::{TerminalManager, TerminalStartRequest, TerminalStartResult};
 
+// Tauri maps these named command parameters directly from the frontend invoke payload.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn start_terminal(
     app: AppHandle,
@@ -23,13 +25,15 @@ pub fn start_terminal(
     let context = resolve_execution_context(&repository, &project_path, Some(persisted_task_id))?;
     manager.start(
         app,
-        session_id,
-        context.project_path,
-        task_id,
-        context.execution_root,
-        shell,
-        cols,
-        rows,
+        TerminalStartRequest {
+            session_id,
+            project_path: context.project_path,
+            task_id,
+            workspace_path: context.execution_root,
+            shell,
+            cols,
+            rows,
+        },
     )
 }
 

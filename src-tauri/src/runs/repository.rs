@@ -81,6 +81,16 @@ pub(crate) struct CorrelatedRunEvent<'a> {
     pub payload: &'a Value,
 }
 
+pub(crate) struct RuntimeTurnSettlement<'a> {
+    pub run_id: &'a str,
+    pub generation: u64,
+    pub thread_id: &'a str,
+    pub turn_id: &'a str,
+    pub runtime_status: RunStatus,
+    pub payload: &'a Value,
+    pub checkpoint: Option<&'a WorkspaceCheckpointCapture>,
+}
+
 const RUN_SELECT: &str = r#"
 SELECT
     r.id, r.workspace_id, w.workspace_path, r.task_id, r.idempotency_key,
@@ -795,27 +805,30 @@ impl XiaoRepository {
         runtime_status: RunStatus,
         payload: &Value,
     ) -> Result<RunMutation, String> {
-        self.settle_runtime_turn_with_checkpoint(
+        self.settle_runtime_turn_with_checkpoint(RuntimeTurnSettlement {
             run_id,
             generation,
             thread_id,
             turn_id,
             runtime_status,
             payload,
-            None,
-        )
+            checkpoint: None,
+        })
     }
 
     pub(crate) fn settle_runtime_turn_with_checkpoint(
         &self,
-        run_id: &str,
-        generation: u64,
-        thread_id: &str,
-        turn_id: &str,
-        runtime_status: RunStatus,
-        payload: &Value,
-        checkpoint: Option<&WorkspaceCheckpointCapture>,
+        settlement: RuntimeTurnSettlement<'_>,
     ) -> Result<RunMutation, String> {
+        let RuntimeTurnSettlement {
+            run_id,
+            generation,
+            thread_id,
+            turn_id,
+            runtime_status,
+            payload,
+            checkpoint,
+        } = settlement;
         if !matches!(
             runtime_status,
             RunStatus::Completed | RunStatus::Failed | RunStatus::Interrupted

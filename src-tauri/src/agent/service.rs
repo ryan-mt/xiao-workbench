@@ -129,6 +129,7 @@ pub(crate) async fn prepare_persistent_xiao_session(
     service_tier: Option<&str>,
     approval_policy: &str,
     sandbox: &str,
+    enable_lsp_tools: bool,
 ) -> Result<PersistentAgentSession, String> {
     if workspace_path.trim().is_empty() {
         return Err("A workspace path is required to prepare a Xiao session.".to_owned());
@@ -175,6 +176,7 @@ pub(crate) async fn prepare_persistent_xiao_session(
                 service_tier,
                 approval_policy,
                 sandbox,
+                enable_lsp_tools,
             ),
         )
         .await?;
@@ -239,8 +241,9 @@ fn persistent_thread_start_request(
     service_tier: Option<&str>,
     approval_policy: &str,
     sandbox: &str,
+    enable_lsp_tools: bool,
 ) -> Value {
-    json!({
+    let mut params = json!({
         "cwd": workspace_path,
         "runtimeWorkspaceRoots": [workspace_path],
         "model": model,
@@ -250,7 +253,11 @@ fn persistent_thread_start_request(
         "ephemeral": false,
         "serviceName": "Xiao Workbench",
         "threadSource": "xiao-workbench",
-    })
+    });
+    if enable_lsp_tools {
+        params["dynamicTools"] = crate::lsp::dynamic_tool_specs();
+    }
+    params
 }
 
 fn history_items_for_injection(history: Vec<XiaoHistoryItem>) -> Result<Vec<Value>, String> {
@@ -290,6 +297,7 @@ mod tests {
             Some("priority"),
             "on-request",
             "workspace-write",
+            true,
         );
 
         assert_eq!(params["ephemeral"], false);
@@ -297,6 +305,7 @@ mod tests {
         assert_eq!(params["serviceName"], "Xiao Workbench");
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["C:/workspace"]));
         assert_eq!(params["serviceTier"], "priority");
+        assert_eq!(params["dynamicTools"][0]["name"], "xiao_lsp");
     }
 
     #[test]
