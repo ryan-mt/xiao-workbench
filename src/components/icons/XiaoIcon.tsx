@@ -10,6 +10,7 @@ import {
   Cable,
   Check,
   ChevronRight,
+  CircleDashed,
   CornerDownLeft,
   Copy,
   Cpu,
@@ -107,6 +108,7 @@ export type XiaoIconName =
   | "settings"
   | "sidebar"
   | "target"
+  | "todoPending"
   | "taskQueue"
   | "terminal"
   | "user"
@@ -169,6 +171,7 @@ const icons = {
   settings: SlidersHorizontal,
   sidebar: PanelLeft,
   target: Scan,
+  todoPending: CircleDashed,
   taskQueue: ListTodo,
   terminal: SquareTerminal,
   undo: Undo2,

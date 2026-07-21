@@ -35,6 +35,18 @@ const useEventCallback = <Args extends unknown[], Result>(
   return useCallback((...args: Args) => callbackRef.current(...args), []);
 };
 
+export const activeCollaboratorsFromTimeline = (timeline: TimelineEntry[]) => {
+  const latestByThread = new Map(
+    timeline.flatMap((entry) => entry.collaborators ?? []).map((collaborator) => [
+      collaborator.threadId,
+      collaborator,
+    ]),
+  );
+  return [...latestByThread.values()].filter((collaborator) =>
+    collaborator.status === "pendingInit" || collaborator.status === "running"
+  );
+};
+
 type TaskWorkspaceProps = {
   taskId: string;
   executionTaskId: string | null;
@@ -209,6 +221,7 @@ export function TaskWorkspace({
   const forkTimelineTask = useEventCallback(onForkTask);
   const resolveTimelineApproval = useEventCallback(onResolveApproval);
   const reviewTimelineChanges = useEventCallback(() => onFocusView("changes"));
+  const activeCollaborators = activeCollaboratorsFromTimeline(timeline);
 
   useLayoutEffect(() => {
     const node = scrollArea.current;
@@ -242,6 +255,7 @@ export function TaskWorkspace({
       managedWorktree={workspace.execution.managedWorktree}
       goal={goal}
       plan={plan}
+      collaborators={activeCollaborators}
       reviewContext={reviewContext}
       questionRequest={questionRequest}
       draftText={draftText}

@@ -8,6 +8,7 @@ import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
 import type {
   AgentApprovalPolicy,
   AgentAttachment,
+  AgentCollaborator,
   AgentFollowUp,
   AgentGoal,
   AgentMode,
@@ -59,6 +60,7 @@ type ComposerProps = {
   managedWorktree: ManagedWorktreeSummary | null;
   goal: AgentGoal | null;
   plan: AgentPlan | null;
+  collaborators: AgentCollaborator[];
   reviewContext: AgentAttachment[];
   questionRequest: AgentQuestionRequest | null;
   draftText: string;
@@ -176,6 +178,7 @@ export function Composer({
   managedWorktree,
   goal,
   plan,
+  collaborators,
   reviewContext,
   questionRequest,
   draftText,
@@ -228,6 +231,8 @@ export function Composer({
   const [goalValue, setGoalValue] = useState(goal?.objective ?? "");
   const [dragging, setDragging] = useState(false);
   const [runDeckCollapsed, setRunDeckCollapsed] = useState(false);
+  const [agentsExpanded, setAgentsExpanded] = useState(false);
+  const [queueExpanded, setQueueExpanded] = useState(false);
   const [fileMention, setFileMention] = useState<FileMention | null>(null);
   const [fileResults, setFileResults] = useState<FuzzyFileResult[]>([]);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
@@ -265,30 +270,20 @@ export function Composer({
     selectedReasoningEffort || activeModel?.defaultReasoningEffort || "";
   const planSteps = plan?.steps ?? [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
-  const planProgress = planSteps.length ? Math.round((completedPlanSteps / planSteps.length) * 100) : 0;
-  const planComplete = completedPlanSteps === planSteps.length;
-  const activePlanStep =
-    planSteps.find((step) => step.status === "inProgress") ??
-    planSteps.find((step) => step.status === "pending") ??
-    planSteps.at(-1);
-  const showRunDeck = currentTaskWorking || planSteps.length > 0 || followUps.length > 0;
+  const planComplete = planSteps.length > 0 && completedPlanSteps === planSteps.length;
+  const showRunDeck = planSteps.length > 0 || collaborators.length > 0 || followUps.length > 0;
   const runDeckNeedsAttention = Boolean(
     failedFollowUpId && followUps.some((followUp) => followUp.id === failedFollowUpId),
   );
-  const runDeckTitle = runDeckNeedsAttention
+  const todoStackTitle = runDeckNeedsAttention
     ? "Queue needs attention"
-    : currentTaskWorking
-      ? "Xiao is working"
-      : planComplete && planSteps.length > 0
-        ? "Plan complete"
-        : followUps.length > 0
-          ? `${followUps.length} follow-up${followUps.length === 1 ? "" : "s"} queued`
-          : "Execution plan";
-  const runDeckSummary = runDeckNeedsAttention
-    ? "A queued follow-up could not start"
-    : planComplete && planSteps.length > 0
-      ? "All planned steps completed"
-      : activePlanStep?.step ?? (currentTaskWorking ? "Executing the current turn" : "Waiting to continue");
+    : planComplete
+      ? "Tasks complete"
+      : planSteps.length > 0
+        ? "Tasks"
+        : collaborators.length > 0
+          ? "Agents"
+          : "Queue";
   const normalizedSlashQuery = slashQuery?.trim().toLocaleLowerCase() ?? "";
   const filteredSlashCommands = filterSlashCommands(SLASH_COMMANDS, normalizedSlashQuery)
     .filter((command) => command.id !== "undo" || (canUndo && !undoing));
@@ -310,10 +305,13 @@ export function Composer({
     if (!showRunDeck) return;
     if (currentTaskWorking || runDeckNeedsAttention) {
       setRunDeckCollapsed(false);
-      return;
     }
-    if (planComplete && followUps.length === 0) setRunDeckCollapsed(true);
-  }, [currentTaskWorking, followUps.length, planComplete, runDeckNeedsAttention, showRunDeck]);
+  }, [currentTaskWorking, runDeckNeedsAttention, showRunDeck]);
+
+  useEffect(() => {
+    if (runDeckNeedsAttention) setQueueExpanded(true);
+    else if (followUps.length === 0) setQueueExpanded(false);
+  }, [followUps.length, runDeckNeedsAttention]);
 
   useEffect(() => {
     setValue((current) => current === draftText ? current : draftText);
@@ -740,8 +738,7 @@ export function Composer({
           className={`run-deck ${runDeckCollapsed ? "is-collapsed" : ""} ${
             currentTaskWorking ? "is-working" : ""
           } ${runDeckNeedsAttention ? "needs-attention" : ""}`}
-          aria-label="Active run"
-          style={{ "--run-deck-progress": `${planProgress}%` } as React.CSSProperties}
+          aria-label="Task status"
         >
           <header className="run-deck__header">
             <button
@@ -751,21 +748,13 @@ export function Composer({
               aria-controls="composer-run-deck"
               onClick={() => setRunDeckCollapsed((collapsed) => !collapsed)}
             >
-              <span className="run-deck__signal" aria-hidden="true">
-                <XiaoIcon
-                  className={currentTaskWorking ? "run-deck__signal-spin" : undefined}
-                  name={runDeckNeedsAttention ? "result" : currentTaskWorking ? "pending" : "plan"}
-                  size={14}
-                />
-              </span>
               <span className="run-deck__identity">
-                <small>{currentTaskWorking ? "Active run" : "Run deck"}</small>
-                <strong>{runDeckTitle}</strong>
+                <strong>{todoStackTitle}</strong>
               </span>
-              <span className="run-deck__summary" title={runDeckSummary}>{runDeckSummary}</span>
-              <span className="run-deck__metrics" aria-label="Run summary">
-                {planSteps.length > 0 ? <small><b>{completedPlanSteps}/{planSteps.length}</b> plan</small> : null}
-                {followUps.length > 0 ? <small><b>{followUps.length}</b> queued</small> : null}
+              <span className="run-deck__count" aria-label="Task summary">
+                {planSteps.length > 0
+                  ? `${completedPlanSteps} / ${planSteps.length}`
+                  : `${collaborators.length || followUps.length}`}
               </span>
               <span className="run-deck__chevron"><XiaoIcon name="caret" size={12} /></span>
             </button>
@@ -784,23 +773,8 @@ export function Composer({
 
           <div className="run-deck__body" id="composer-run-deck" aria-hidden={runDeckCollapsed}>
             <div className="run-deck__body-inner">
-              {currentTaskWorking ? (
-                <div className="run-deck__now" role="status">
-                  <span aria-hidden="true"><i /></span>
-                  <div>
-                    <strong>Working now</strong>
-                    <small>{activePlanStep?.step ?? "Executing the current turn"}</small>
-                  </div>
-                  <button type="button" onClick={() => onOpenView("run")}>Inspect</button>
-                </div>
-              ) : null}
-
               {planSteps.length > 0 ? (
-                <section className="run-deck__section" aria-label="Plan progress">
-                  <header>
-                    <span>Plan</span>
-                    <small>{completedPlanSteps} of {planSteps.length}</small>
-                  </header>
+                <section className="run-deck__section" aria-label="Task progress">
                   <ol className="run-deck__steps">
                     {planSteps.map((step, index) => {
                       const statusLabel =
@@ -819,8 +793,8 @@ export function Composer({
                             {step.status === "completed" ? (
                               <XiaoIcon name="check" size={10} strokeWidth={2.1} />
                             ) : step.status === "inProgress" ? (
-                              <i />
-                            ) : <b>{index + 1}</b>}
+                              <XiaoIcon className="run-deck__signal-spin" name="pending" size={14} />
+                            ) : <XiaoIcon name="todoPending" size={14} />}
                           </span>
                           <span>{step.step}</span>
                           {step.status !== "pending" ? <small>{step.status === "inProgress" ? "Now" : "Done"}</small> : null}
@@ -831,13 +805,54 @@ export function Composer({
                 </section>
               ) : null}
 
+              {collaborators.length > 0 ? (
+                <section className="run-deck__section" aria-label={`${collaborators.length} active agents`}>
+                  <header>
+                    <button
+                      className="run-deck__group-toggle"
+                      type="button"
+                      aria-expanded={agentsExpanded}
+                      aria-controls="composer-run-deck-agents"
+                      onClick={() => setAgentsExpanded((expanded) => !expanded)}
+                    >
+                      <XiaoIcon name="caret" size={11} /> Agents
+                    </button>
+                    <small>{collaborators.length} active</small>
+                  </header>
+                  <ul
+                    className="run-deck__agents"
+                    id="composer-run-deck-agents"
+                    hidden={!agentsExpanded}
+                  >
+                    {collaborators.map((collaborator) => (
+                      <li key={collaborator.threadId}>
+                        <XiaoIcon className="run-deck__signal-spin" name="pending" size={13} />
+                        <span>{collaborator.message ?? "Subagent working"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+
               {followUps.length > 0 ? (
                 <section className="run-deck__section" aria-label={`${followUps.length} queued follow-ups`}>
                   <header>
-                    <span>Queue</span>
+                    <button
+                      className="run-deck__group-toggle"
+                      type="button"
+                      aria-expanded={queueExpanded}
+                      aria-controls="composer-run-deck-queue"
+                      onClick={() => setQueueExpanded((expanded) => !expanded)}
+                    >
+                      <XiaoIcon name="caret" size={11} /> Queue
+                    </button>
                     <small>{followUps.length} waiting</small>
                   </header>
-                  <ol className="run-deck__queue">
+                  <ol
+                    className={`run-deck__queue ${queueExpanded ? "is-expanded" : ""}`}
+                    id="composer-run-deck-queue"
+                    hidden={!queueExpanded}
+                  >
                     {followUps.map((followUp, index) => {
                       const sending = sendingFollowUpId === followUp.id;
                       const failed = failedFollowUpId === followUp.id;
