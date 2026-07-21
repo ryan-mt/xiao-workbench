@@ -122,6 +122,45 @@ describe("ActivityItem timeline disclosures", () => {
     expect(markup).toContain("line 10");
     expect(markup).not.toContain("<details open=\"\"");
   });
+
+  it("renders a compact completed-turn file summary after the Markdown response", () => {
+    const markup = renderToStaticMarkup(
+      <ActivityItem
+        entry={{
+          id: "result-1",
+          kind: "result",
+          title: "Agent response",
+          body: "Implemented the requested feature.",
+          status: "success",
+        }}
+        index={3}
+        showReasoningSummaries
+        expandToolOutput={false}
+        workspacePath={"C:\\work\\xiao"}
+        onOpenResource={() => true}
+        taskId="task-1"
+        canFork={false}
+        onForkTask={() => undefined}
+        onResolveApproval={async () => undefined}
+        onReviewChanges={() => undefined}
+        turnFiles={[
+          { path: "src/App.tsx", additions: 14, deletions: 0 },
+          { path: "src/app.css", additions: 11, deletions: 2 },
+        ]}
+        canUndo
+        undoing={false}
+        onUndo={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Implemented the requested feature.");
+    expect(markup).toContain("Edited 2 files");
+    expect(markup).toContain("+25");
+    expect(markup).toContain("-2");
+    expect(markup).toContain("src/App.tsx");
+    expect(markup).toContain("Review");
+    expect(markup).toContain("Undo");
+  });
 });
 
 describe("ActivityItem agent collaboration", () => {

@@ -371,6 +371,9 @@ export function TaskWorkspace({
           onForkTask={forkTimelineTask}
           onResolveApproval={resolveTimelineApproval}
           onReviewChanges={reviewTimelineChanges}
+          canUndo={canUndo}
+          undoing={undoing}
+          onUndo={onUndo}
         />
       </div>
       {composer}

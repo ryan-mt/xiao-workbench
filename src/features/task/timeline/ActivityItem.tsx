@@ -21,6 +21,10 @@ type ActivityItemProps = {
     decision: "accept" | "decline",
   ) => Promise<void>;
   onReviewChanges: () => void;
+  turnFiles?: NonNullable<TimelineEntry["files"]>;
+  canUndo?: boolean;
+  undoing?: boolean;
+  onUndo?: () => void;
 };
 
 const iconByKind: Record<TimelineEntry["kind"], XiaoIconName> = {
@@ -115,6 +119,10 @@ export const ActivityItem = memo(function ActivityItem({
   onForkTask,
   onResolveApproval,
   onReviewChanges,
+  turnFiles = [],
+  canUndo = false,
+  undoing = false,
+  onUndo,
 }: ActivityItemProps) {
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
@@ -183,6 +191,8 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (assistantMessage) {
+    const additions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
+    const deletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);
     return (
       <article
         className="activity activity--assistant-message"
@@ -190,6 +200,41 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="activity__assistant-message">
           {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
+          {turnFiles.length > 0 && (
+            <section className="turn-changes" aria-label={`Edited ${turnFiles.length} ${turnFiles.length === 1 ? "file" : "files"}`}>
+              <header className="turn-changes__header">
+                <span className="turn-changes__mark"><XiaoIcon name="changes" size={16} /></span>
+                <span className="turn-changes__summary">
+                  <strong>Edited {turnFiles.length} {turnFiles.length === 1 ? "file" : "files"}</strong>
+                  <small><b>+{additions}</b><em>-{deletions}</em></small>
+                </span>
+                <span className="turn-changes__actions">
+                  {canUndo && onUndo ? (
+                    <button type="button" disabled={undoing} onClick={onUndo}>
+                      {undoing ? "Undoing" : "Undo"}
+                      <XiaoIcon name={undoing ? "pending" : "undo"} size={13} />
+                    </button>
+                  ) : null}
+                  <button className="turn-changes__review" type="button" onClick={onReviewChanges}>
+                    Review
+                  </button>
+                </span>
+              </header>
+              <div className="turn-changes__files">
+                {turnFiles.map((file) => (
+                  <button
+                    key={file.path}
+                    type="button"
+                    title={`Open ${file.path}`}
+                    onClick={() => onOpenResource(file.path)}
+                  >
+                    <span>{file.path}</span>
+                    <small><b>+{file.additions}</b><em>-{file.deletions}</em></small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           {entry.body && (
             <div className="activity__assistant-actions">
               <CopyButton text={entry.body} />

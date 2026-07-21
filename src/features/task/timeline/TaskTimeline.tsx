@@ -26,6 +26,9 @@ type TaskTimelineProps = {
   ) => Promise<void>;
   taskId: string;
   onReviewChanges: () => void;
+  canUndo: boolean;
+  undoing: boolean;
+  onUndo: () => void;
 };
 
 export type TimelineRow =
@@ -84,6 +87,41 @@ export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   return rows;
 };
 
+export const completedTurnFiles = (
+  timeline: TimelineEntry[],
+  resultIndex: number,
+): NonNullable<TimelineEntry["files"]> => {
+  const result = timeline[resultIndex];
+  if (
+    result?.kind !== "result" ||
+    result.title !== "Agent response" ||
+    result.status !== "success"
+  ) {
+    return [];
+  }
+
+  let start = resultIndex - 1;
+  while (start >= 0 && timeline[start].kind !== "user" && timeline[start].kind !== "brief") {
+    start -= 1;
+  }
+
+  const files = new Map<string, NonNullable<TimelineEntry["files"]>[number]>();
+  for (const entry of timeline.slice(start + 1, resultIndex)) {
+    if (entry.kind !== "change" || entry.status === "error" || !entry.files) continue;
+    for (const file of entry.files) {
+      const current = files.get(file.path);
+      files.set(file.path, current
+        ? {
+            ...file,
+            additions: current.additions + file.additions,
+            deletions: current.deletions + file.deletions,
+          }
+        : { ...file });
+    }
+  }
+  return [...files.values()];
+};
+
 export function TaskTimeline({
   timeline,
   runtime,
@@ -98,8 +136,18 @@ export function TaskTimeline({
   taskId,
   onResolveApproval,
   onReviewChanges,
+  canUndo,
+  undoing,
+  onUndo,
 }: TaskTimelineProps) {
   const rows = timelineRows(timeline);
+  let latestCompletedResponseIndex = -1;
+  for (let index = 0; index < timeline.length; index += 1) {
+    const entry = timeline[index];
+    if (entry.kind === "result" && entry.title === "Agent response" && entry.status === "success") {
+      latestCompletedResponseIndex = index;
+    }
+  }
   return (
     <div className="timeline" aria-live="polite">
       {historyLoading ? (
@@ -162,6 +210,9 @@ export function TaskTimeline({
                     onForkTask={onForkTask}
                     onResolveApproval={onResolveApproval}
                     onReviewChanges={onReviewChanges}
+                    canUndo={false}
+                    undoing={undoing}
+                    onUndo={onUndo}
                   />
                 </div>
               ))}
@@ -187,6 +238,10 @@ export function TaskTimeline({
               onForkTask={onForkTask}
               onResolveApproval={onResolveApproval}
               onReviewChanges={onReviewChanges}
+              turnFiles={completedTurnFiles(timeline, row.index)}
+              canUndo={canUndo && row.index === latestCompletedResponseIndex}
+              undoing={undoing}
+              onUndo={onUndo}
             />
           </div>
         );

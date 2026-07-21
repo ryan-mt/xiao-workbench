@@ -555,6 +555,128 @@
   margin-top: 0;
 }
 
+.turn-changes {
+  overflow: hidden;
+  margin: 18px 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--surface-raised);
+}
+
+.turn-changes__header {
+  display: grid;
+  min-height: 63px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+}
+
+.turn-changes__mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--surface-deep);
+  color: var(--muted-strong);
+}
+
+.turn-changes__summary {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.turn-changes__summary > strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-label);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-changes__summary > small,
+.turn-changes__files small {
+  display: flex;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+}
+
+.turn-changes b { color: var(--success); font-weight: 540; }
+.turn-changes em { color: var(--danger); font-style: normal; }
+
+.turn-changes__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.turn-changes__actions button,
+.turn-changes__files button {
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+}
+
+.turn-changes__actions button {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: var(--text-caption);
+}
+
+.turn-changes__actions button:hover,
+.turn-changes__actions button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: 0;
+}
+
+.turn-changes__actions button:disabled { opacity: 0.55; }
+
+.turn-changes__actions .turn-changes__review {
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.turn-changes__files {
+  border-top: 1px solid var(--line);
+}
+
+.turn-changes__files button {
+  display: grid;
+  width: 100%;
+  min-height: 36px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.turn-changes__files button + button { border-top: 1px solid var(--line); }
+
+.turn-changes__files button:hover,
+.turn-changes__files button:focus-visible {
+  background: var(--surface-hover);
+  outline: 0;
+}
+
+.turn-changes__files button > span {
+  overflow: hidden;
+  font-size: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .activity__assistant-actions {
   display: flex;
   min-height: 27px;
