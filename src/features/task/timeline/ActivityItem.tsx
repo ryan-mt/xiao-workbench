@@ -1,6 +1,8 @@
 import { memo } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
+import { isTauriHost } from "../../../core/bridges/tauri";
 import type { TimelineEntry } from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 
@@ -149,6 +151,7 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (userMessage) {
     const reviewComments = entry.attachments?.filter((attachment) => attachment.kind === "review") ?? [];
+    const sentAttachments = entry.attachments?.filter((attachment) => attachment.kind !== "review") ?? [];
     return (
       <article
         className="activity activity--user-message"
@@ -156,6 +159,43 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="activity__user-message-content">
           <div className="activity__user-bubble">{entry.body ?? entry.title}</div>
+          {sentAttachments.length > 0 && (
+            <div className="activity__user-attachments" aria-label="Sent attachments">
+              {sentAttachments.map((attachment) => {
+                const imageSource = attachment.kind === "image"
+                  ? attachment.url ?? (
+                    !attachment.path.startsWith("clipboard:") && isTauriHost()
+                      ? convertFileSrc(attachment.path)
+                      : ""
+                  )
+                  : "";
+                return (
+                  <span
+                    className={`activity__user-attachment${imageSource ? " is-image" : ""}`}
+                    key={attachment.id ?? attachment.path}
+                    title={attachment.path}
+                  >
+                    {imageSource ? (
+                      <img src={imageSource} alt={attachment.name} />
+                    ) : (
+                      <XiaoIcon name={attachment.kind === "directory" ? "folder" : "file"} size={14} />
+                    )}
+                    <span>{attachment.name}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+          {entry.kind === "user" && entry.meta ? (
+            <span className={`activity__user-state is-${entry.status ?? "idle"}`}>
+              <XiaoIcon
+                className={entry.status === "active" ? "spin" : undefined}
+                name={entry.status === "error" ? "close" : entry.status === "success" ? "check" : "pending"}
+                size={11}
+              />
+              {entry.meta}
+            </span>
+          ) : null}
           {reviewComments.length > 0 && (
             <div className="activity__review-comments">
               {reviewComments.map((comment) => {

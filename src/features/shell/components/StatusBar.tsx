@@ -105,7 +105,7 @@ export function StatusBar({
       <div className="status-bar__right">
         {workingTaskCount > 0 ? (
           <span className="status-bar__runs" title={`${workingTaskCount} active task${workingTaskCount === 1 ? "" : "s"}`}>
-            <XiaoIcon name="pending" size={11} />
+            <XiaoIcon className="spin" name="pending" size={11} />
             <span>{workingTaskCount} active</span>
           </span>
         ) : null}

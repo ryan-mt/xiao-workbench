@@ -378,12 +378,15 @@
 
 .task-workspace__scroll {
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .timeline {
   width: min(100%, var(--task-content-width));
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
   margin: 0 auto;
   padding: 36px 32px 48px;
@@ -432,6 +435,8 @@
 }
 
 .activity {
+  max-width: 100%;
+  min-width: 0;
   opacity: 0;
   animation: activity-enter 280ms cubic-bezier(0.22, 0.8, 0.2, 1) forwards;
   animation-delay: 0ms;
@@ -451,6 +456,7 @@
 .activity__user-message-content {
   display: grid;
   width: fit-content;
+  min-width: 0;
   max-width: min(82%, 590px);
   justify-items: end;
   gap: 7px;
@@ -465,8 +471,64 @@
   font-size: 13px;
   line-height: 1.55;
   text-wrap: pretty;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+
+.activity__user-attachments {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.activity__user-attachment {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 220px;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+}
+
+.activity__user-attachment.is-image {
+  height: 58px;
+  padding: 4px 8px 4px 4px;
+}
+
+.activity__user-attachment > img {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.activity__user-attachment > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity__user-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.activity__user-state.is-error { color: var(--danger); }
+.activity__user-state.is-success { color: var(--success); }
 
 .activity__user-actions {
   display: flex;
@@ -696,10 +758,13 @@
 }
 
 .activity--command {
+  min-width: 0;
   margin-bottom: 4px;
 }
 
 .activity__tool-disclosure {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   color: var(--muted);
   font-size: 13px;
@@ -749,6 +814,7 @@
 
 .activity__tool-summary {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
   align-items: baseline;
   gap: 5px;
@@ -792,6 +858,8 @@
 }
 
 .activity__tool-details {
+  min-width: 0;
+  max-width: calc(100% - 21px);
   margin: 5px 0 14px 21px;
 }
 
@@ -1111,12 +1179,22 @@
 .exploration-group__item.is-error strong { color: var(--danger); }
 
 .execution-group {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   margin: 2px 0 8px;
   color: var(--muted);
   font-size: var(--text-label);
 }
 
+.execution-group > details {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .execution-group > details > summary {
+  width: 100%;
   display: flex;
   min-width: 0;
   min-height: 29px;
@@ -1175,10 +1253,16 @@
 
 .execution-group__items {
   display: grid;
+  min-width: 0;
   gap: 2px;
   margin: 4px 0 13px 25px;
   padding-left: 10px;
   border-left: 1px solid var(--line);
+}
+
+.execution-group__entry {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .execution-group__entry .activity--command {

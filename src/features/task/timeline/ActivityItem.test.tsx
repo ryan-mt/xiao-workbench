@@ -48,6 +48,29 @@ describe("ActivityItem user message", () => {
     expect(renderUser(true)).toContain("Fork from here");
     expect(renderUser(false)).not.toContain("Fork from here");
   });
+
+  it("keeps sent images visible while the prompt is queued", () => {
+    const markup = renderCompaction({
+      id: "user-image-1",
+      kind: "user",
+      title: "Please inspect this screenshot",
+      status: "active",
+      meta: "Queued",
+      attachments: [{
+        id: "attachment-1",
+        kind: "image",
+        name: "clipboard.png",
+        path: "clipboard:image-1",
+        url: "data:image/png;base64,aGVsbG8=",
+      }],
+    });
+
+    expect(markup).toContain("aria-label=\"Sent attachments\"");
+    expect(markup).toContain("src=\"data:image/png;base64,aGVsbG8=\"");
+    expect(markup).toContain("alt=\"clipboard.png\"");
+    expect(markup).toContain("Queued");
+    expect(markup).toContain("class=\"lucide lucide-loader-circle spin\"");
+  });
 });
 
 describe("ActivityItem context compaction", () => {

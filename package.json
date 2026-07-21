@@ -16,6 +16,7 @@
     "tauri": "tauri",
     "pretauri:dev:beta": "node scripts/sync-build-version.mjs",
     "tauri:dev:beta": "tauri dev --config src-tauri/tauri.beta.conf.json",
+    "app:dev": "node scripts/run-dev-release.mjs",
     "check": "tsc -b --pretty false",
     "test": "vitest run"
   },

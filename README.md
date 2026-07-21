@@ -59,6 +59,17 @@ npm install
 npm run tauri dev
 ```
 
+To dogfood a fixed production build from the current source without hot reload,
+run:
+
+```powershell
+npm run app:dev
+```
+
+This builds the Beta configuration in release mode, launches an isolated copy
+of the executable, and keeps it unchanged while source files are edited. Close
+the app to end the command.
+
 To verify the same paths used for this beta:
 
 ```powershell
