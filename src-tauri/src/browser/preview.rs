@@ -2,11 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use tauri::http::{header, Request, Response, StatusCode};
 
 const MAX_PREVIEW_ROOTS: usize = 16;
+const HISTORY_NAVIGATION_ALLOWANCE_TTL: Duration = Duration::from_secs(2);
 const BROWSER_WEBVIEW_LABELS: [&str; 2] = ["xiao-browser", "xiao-game"];
 const PREVIEW_CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'none'; ",
@@ -27,10 +29,16 @@ const PREVIEW_CONTENT_SECURITY_POLICY: &str = concat!(
     "sandbox allow-scripts allow-same-origin"
 );
 
+#[derive(Clone)]
+enum NavigationAllowance {
+    Exact(String),
+    HistoryTraversal(Instant),
+}
+
 #[derive(Clone, Default)]
 pub struct PreviewRegistry {
     roots: Arc<Mutex<VecDeque<(String, PathBuf)>>>,
-    navigation_allowances: Arc<Mutex<HashMap<String, String>>>,
+    navigation_allowances: Arc<Mutex<HashMap<String, NavigationAllowance>>>,
 }
 
 impl PreviewRegistry {
@@ -64,7 +72,21 @@ impl PreviewRegistry {
 
     pub(crate) fn allow_navigation(&self, webview_label: &str, target: &tauri::Url) {
         if let Ok(mut allowances) = self.navigation_allowances.lock() {
-            allowances.insert(webview_label.to_owned(), target.to_string());
+            allowances.insert(
+                webview_label.to_owned(),
+                NavigationAllowance::Exact(target.to_string()),
+            );
+        }
+    }
+
+    pub(crate) fn allow_history_navigation(&self, webview_label: &str) {
+        if let Ok(mut allowances) = self.navigation_allowances.lock() {
+            allowances.insert(
+                webview_label.to_owned(),
+                NavigationAllowance::HistoryTraversal(
+                    Instant::now() + HISTORY_NAVIGATION_ALLOWANCE_TTL,
+                ),
+            );
         }
     }
 
@@ -83,19 +105,29 @@ impl PreviewRegistry {
         if !BROWSER_WEBVIEW_LABELS.contains(&webview_label) {
             return true;
         }
-        let explicitly_allowed = self
+        if !matches!(target.scheme(), "http" | "https" | "xiao-preview") {
+            self.clear_navigation_allowance(webview_label);
+            return false;
+        }
+        let allowance = self
             .navigation_allowances
             .lock()
             .ok()
-            .and_then(|mut allowances| allowances.remove(webview_label))
-            .is_some_and(|allowed| allowed == target.as_str());
-        if !matches!(target.scheme(), "http" | "https" | "xiao-preview") {
-            return false;
-        }
+            .and_then(|mut allowances| allowances.remove(webview_label));
+        let explicitly_allowed = matches!(
+            &allowance,
+            Some(NavigationAllowance::Exact(allowed)) if allowed == target.as_str()
+        );
+        let history_allowed = matches!(
+            allowance,
+            Some(NavigationAllowance::HistoryTraversal(expires_at)) if Instant::now() <= expires_at
+        );
         if preview_token(current).is_none() {
             return true;
         }
-        preview_token(target).is_some_and(|token| self.contains_token(token)) || explicitly_allowed
+        preview_token(target).is_some_and(|token| self.contains_token(token))
+            || explicitly_allowed
+            || history_allowed
     }
 
     pub fn respond(&self, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
@@ -280,9 +312,12 @@ fn internal_error() -> Response<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_type, PreviewRegistry, PREVIEW_CONTENT_SECURITY_POLICY};
+    use super::{
+        content_type, NavigationAllowance, PreviewRegistry, PREVIEW_CONTENT_SECURITY_POLICY,
+    };
     use std::fs;
     use std::path::Path;
+    use std::time::{Duration, Instant};
     use tauri::http::{header, Request, StatusCode};
 
     #[test]
@@ -415,17 +450,46 @@ mod tests {
             StatusCode::NOT_FOUND
         );
 
-        let external = tauri::Url::parse("https://example.com/").unwrap();
-        assert!(!registry.navigation_allowed("xiao-browser", &first_parsed, &external));
-        registry.allow_navigation("xiao-browser", &external);
-        let other_external = tauri::Url::parse("https://example.net/").unwrap();
-        assert!(!registry.navigation_allowed("xiao-browser", &first_parsed, &other_external,));
-        assert!(!registry.navigation_allowed("xiao-browser", &first_parsed, &external));
-        registry.allow_navigation("xiao-browser", &external);
-        assert!(registry.navigation_allowed("xiao-browser", &first_parsed, &external));
-        assert!(!registry.navigation_allowed("xiao-browser", &first_parsed, &external));
         assert!(registry.navigation_allowed("xiao-browser", &first_parsed, &second_parsed,));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn explicit_navigation_allowance_is_exact_and_one_shot() {
+        let registry = PreviewRegistry::default();
+        let preview = preview_url();
+        let external = tauri::Url::parse("https://example.com/").unwrap();
+        let other_external = tauri::Url::parse("https://example.net/").unwrap();
+
+        registry.allow_navigation("xiao-browser", &external);
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &other_external));
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+
+        registry.allow_navigation("xiao-browser", &external);
+        assert!(registry.navigation_allowed("xiao-browser", &preview, &external));
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+    }
+
+    #[test]
+    fn history_allowance_is_one_shot_and_never_allows_privileged_schemes() {
+        let registry = PreviewRegistry::default();
+        let preview = preview_url();
+        let external = tauri::Url::parse("https://example.com/").unwrap();
+        let local_file = tauri::Url::parse("file:///private.txt").unwrap();
+
+        registry.allow_history_navigation("xiao-browser");
+        assert!(registry.navigation_allowed("xiao-browser", &preview, &external));
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+
+        registry.allow_history_navigation("xiao-browser");
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &local_file));
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+
+        registry.navigation_allowances.lock().unwrap().insert(
+            "xiao-browser".to_owned(),
+            NavigationAllowance::HistoryTraversal(Instant::now() - Duration::from_secs(1)),
+        );
+        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
     }
 
     #[test]
@@ -444,5 +508,13 @@ mod tests {
             .uri(format!("xiao-preview://{token}{path}"))
             .body(Vec::new())
             .unwrap()
+    }
+
+    fn preview_url() -> tauri::Url {
+        tauri::Url::parse(&format!(
+            "http://xiao-preview.{}/index.html",
+            uuid::Uuid::now_v7()
+        ))
+        .unwrap()
     }
 }

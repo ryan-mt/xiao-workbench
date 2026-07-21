@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { workspaceServiceErrorMessage } from "./service";
 
 describe("workspace service error scoping", () => {
-  it("accepts only errors owned by the current workspace", () => {
+  it("accepts global and current-workspace errors but filters concrete mismatches", () => {
     expect(workspaceServiceErrorMessage("C:\\Project", {
       workspacePath: "c:/project/",
       message: "current failure",
@@ -15,7 +15,7 @@ describe("workspace service error scoping", () => {
     expect(workspaceServiceErrorMessage("C:/project-a", {
       workspacePath: null,
       message: "global failure",
-    })).toBeNull();
+    })).toBe("global failure");
     expect(workspaceServiceErrorMessage("/work/Project", {
       workspacePath: "/work/project",
       message: "different Unix workspace",

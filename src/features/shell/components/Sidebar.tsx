@@ -13,7 +13,11 @@ import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { XiaoProjectSummary } from "../../../core/models/xiao";
 import { profileInitials, type LocalUserProfile } from "../../profile/hooks/useLocalProfile";
-import type { TaskGroup, WorkbenchTask } from "../../task/task.types";
+import {
+  taskGroupForUpdatedAt,
+  type TaskGroup,
+  type WorkbenchTask,
+} from "../../task/task.types";
 import type { AppPage } from "../shell.types";
 
 type SidebarProps = {
@@ -79,7 +83,7 @@ export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
 const projectMenuWidth = 218;
 const projectMenuHeight = 214;
 const taskMenuHeight = 330;
-const taskGroupOrder: TaskGroup[] = ["Active", "Recent", "Yesterday", "This week"];
+const taskGroupOrder: TaskGroup[] = ["Active", "Recent", "Yesterday", "This week", "Older"];
 const sidebarDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -95,11 +99,7 @@ const relativeTime = (timestamp: number, now: number) => {
 };
 
 const groupForTask = (task: WorkbenchTask, activeTaskId: string, now: number): TaskGroup => {
-  if (task.id === activeTaskId) return "Active";
-  const elapsed = Math.max(0, now - task.updatedAt);
-  if (elapsed < 86_400_000) return "Recent";
-  if (elapsed < 172_800_000) return "Yesterday";
-  return "This week";
+  return taskGroupForUpdatedAt(task.updatedAt, task.id === activeTaskId, now);
 };
 
 export function Sidebar({

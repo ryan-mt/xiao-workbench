@@ -4,6 +4,7 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../../core/bridges/tauri";
 import type { AgentRuntimeState } from "../../../core/models/agent";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import { workspacePathComparisonKey } from "../../../core/workspacePath";
 
 type Skill = { name: string; description: string; path: string; enabled: boolean };
 type Plugin = {
@@ -100,7 +101,7 @@ export function ExtensionsPanel({ workspace, taskId, runtime }: ExtensionsPanelP
   }>({ key: null, generation: 0, current: null });
 
   const nextIdentityKey = runtimeAvailable && taskId
-    ? `${workspace.path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase()}\u0000${taskId}`
+    ? `${workspacePathComparisonKey(workspace.path)}\u0000${taskId}`
     : null;
   if (identityState.current.key !== nextIdentityKey) {
     const generation = identityState.current.generation + 1;

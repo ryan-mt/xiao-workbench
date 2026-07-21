@@ -1,4 +1,5 @@
 import type { AgentAttachment } from "../../../core/models/agent";
+import { workspacePathComparisonKey } from "../../../core/workspacePath";
 
 const storageKey = "xiao.composer-attachment-recovery.v1";
 const storageVersion = 1;
@@ -8,7 +9,7 @@ export type ComposerAttachmentRecoveryMap = Record<string, AgentAttachment[]>;
 type AttachmentRecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 const recoveryTaskKey = (workspacePath: string, taskId: string) =>
-  `${workspacePath.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase()}\u0000${taskId}`;
+  `${workspacePathComparisonKey(workspacePath)}\u0000${taskId}`;
 
 const isAttachment = (value: unknown): value is AgentAttachment => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;

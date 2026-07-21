@@ -141,6 +141,17 @@ describe("routine projection", () => {
     expect(untouched.byId["routine-other"]).toBeUndefined();
   });
 
+  it("keeps case-distinct POSIX workspaces isolated", () => {
+    const projection = upsertRoutine(emptyRoutineProjection(), routine());
+    const untouched = applyWorkspaceRoutineUpdate(projection, "/work/Project", {
+      workspacePath: "/work/project",
+      routine: routine({ id: "routine-other", workspacePath: "/work/project" }),
+      deletedId: null,
+    });
+    expect(untouched).toBe(projection);
+    expect(untouched.byId["routine-other"]).toBeUndefined();
+  });
+
   it("sorts enabled routines before newer disabled routines", () => {
     let projection = upsertRoutine(
       emptyRoutineProjection(),

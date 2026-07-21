@@ -9,6 +9,7 @@ import type {
   TurnCheckpointSummary,
 } from "../../core/models/observatory";
 import type { PendingInputSnapshot, RunEventRecord, RunSnapshot } from "../../core/models/run";
+import { workspacePathRelativeTo } from "../../core/workspacePath";
 import { nativeBridge } from "../../core/bridges/tauri";
 import { projectObservatory } from "./observatoryProjection";
 
@@ -78,14 +79,7 @@ const mergeRuns = (listed: RunSnapshot[], live: RunSnapshot[]) => {
 };
 
 const workspaceRelativePath = (root: string, path: string) => {
-  const normalize = (value: string) => value.replace(/\\/g, "/").replace(/\/+$/, "");
-  const normalizedRoot = normalize(root);
-  const normalizedPath = normalize(path);
-  const rootPrefix = `${normalizedRoot.toLowerCase()}/`;
-  const lowerPath = normalizedPath.toLowerCase();
-  const relative = lowerPath.startsWith(rootPrefix)
-    ? normalizedPath.slice(normalizedRoot.length + 1)
-    : normalizedPath;
+  const relative = workspacePathRelativeTo(root, path);
   if (!relative || /^(?:[a-z]:|\/|clipboard:)/i.test(relative)) return null;
   if (relative.split("/").some((part) => !part || part === "." || part === "..")) return null;
   return relative;

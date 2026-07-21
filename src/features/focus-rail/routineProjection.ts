@@ -1,4 +1,5 @@
 import type { RoutineSummary, RoutineUpdateEnvelope } from "../../core/models/routine";
+import { workspacePathComparisonKey } from "../../core/workspacePath";
 
 export type RoutineProjection = {
   byId: Record<string, RoutineSummary>;
@@ -63,9 +64,6 @@ export const mergeRoutineList = (
     projection,
   );
 
-const comparableWorkspacePath = (path: string) =>
-  path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase();
-
 export const applyRoutineUpdate = (
   projection: RoutineProjection,
   update: RoutineUpdateEnvelope,
@@ -85,7 +83,7 @@ export const applyWorkspaceRoutineUpdate = (
   update: RoutineUpdateEnvelope,
 ): RoutineProjection =>
   update.workspacePath &&
-  comparableWorkspacePath(update.workspacePath) !== comparableWorkspacePath(workspacePath)
+  workspacePathComparisonKey(update.workspacePath) !== workspacePathComparisonKey(workspacePath)
     ? projection
     : applyRoutineUpdate(projection, update);
 

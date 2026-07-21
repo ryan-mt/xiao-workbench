@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AgentAccountUsage,
@@ -42,6 +42,8 @@ const accountUsage: AgentAccountUsage = {
 };
 
 describe("ProfilePage", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("uses a compact desktop profile hierarchy instead of the previous dashboard hero", () => {
     const markup = renderToStaticMarkup(
       <ProfilePage
@@ -65,5 +67,47 @@ describe("ProfilePage", () => {
     expect(markup).not.toContain("profile-dashboard");
     expect(markup).not.toContain("Codex lifetime");
     expect(markup).not.toContain("Token flow through Xiao");
+  });
+
+  it("renders 365 real local dates aligned to the Sunday-first grid", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 20, 12));
+    const calendarUsage: CodexUsageSnapshot = {
+      ...usage,
+      days: [
+        {
+          date: "2025-07-21",
+          totalTokens: 10,
+          inputTokens: 10,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+        {
+          date: "2026-07-20",
+          totalTokens: 5,
+          inputTokens: 5,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningOutputTokens: 0,
+        },
+      ],
+    };
+
+    const markup = renderToStaticMarkup(
+      <ProfilePage
+        accountUsage={null}
+        profile={{ name: "Xiao", avatarDataUrl: null }}
+        runtime={runtime}
+        usage={calendarUsage}
+        onClose={() => undefined}
+        onSaveProfile={() => undefined}
+      />,
+    );
+
+    expect(markup.match(/data-date="/g)).toHaveLength(365);
+    expect(markup.match(/contribution-day--placeholder/g)).toHaveLength(1);
+    expect(markup).toContain('class="contribution-day level-4" data-date="2025-07-21"');
+    expect(markup).toContain('class="contribution-day level-2" data-date="2026-07-20"');
   });
 });

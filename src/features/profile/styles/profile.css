@@ -401,6 +401,11 @@
   background: var(--surface-strong);
 }
 
+.contribution-day--placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .contribution-day.level-1,
 .profile-heatmap__legend .level-1 {
   background: color-mix(in srgb, var(--success) 24%, var(--surface));

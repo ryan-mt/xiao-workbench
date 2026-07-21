@@ -55,4 +55,18 @@ describe("composer attachment undo recovery storage", () => {
     reloaded = readComposerAttachmentRecoveries(storage);
     expect(reloaded).toEqual({});
   });
+
+  it("does not share recoveries between case-distinct POSIX workspaces", () => {
+    const storage = memoryStorage();
+    const taskId = "shared-task";
+    const upper = attachment("Upper.txt");
+    const lower = attachment("Lower.txt");
+
+    storeComposerAttachmentRecovery("/work/Project", taskId, [upper], storage);
+    storeComposerAttachmentRecovery("/work/project", taskId, [lower], storage);
+
+    const reloaded = readComposerAttachmentRecoveries(storage);
+    expect(composerAttachmentRecovery(reloaded, "/work/Project", taskId)).toEqual([upper]);
+    expect(composerAttachmentRecovery(reloaded, "/work/project", taskId)).toEqual([lower]);
+  });
 });

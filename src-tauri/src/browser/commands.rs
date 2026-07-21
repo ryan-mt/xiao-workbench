@@ -40,17 +40,36 @@ pub fn navigate_browser(
 }
 
 #[tauri::command]
-pub fn go_back_browser(app: AppHandle, label: String) -> Result<(), String> {
-    browser_webview(&app, &label)?
-        .eval("window.history.back()")
-        .map_err(|error| error.to_string())
+pub fn go_back_browser(
+    app: AppHandle,
+    previews: State<'_, PreviewRegistry>,
+    label: String,
+) -> Result<(), String> {
+    navigate_browser_history(&app, &previews, &label, "window.history.back()")
 }
 
 #[tauri::command]
-pub fn go_forward_browser(app: AppHandle, label: String) -> Result<(), String> {
-    browser_webview(&app, &label)?
-        .eval("window.history.forward()")
-        .map_err(|error| error.to_string())
+pub fn go_forward_browser(
+    app: AppHandle,
+    previews: State<'_, PreviewRegistry>,
+    label: String,
+) -> Result<(), String> {
+    navigate_browser_history(&app, &previews, &label, "window.history.forward()")
+}
+
+fn navigate_browser_history(
+    app: &AppHandle,
+    previews: &PreviewRegistry,
+    label: &str,
+    script: &str,
+) -> Result<(), String> {
+    let webview = browser_webview(app, label)?;
+    previews.allow_history_navigation(label);
+    if let Err(error) = webview.eval(script) {
+        previews.clear_navigation_allowance(label);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -10,7 +10,22 @@ import type {
 import type { XiaoThreadBinding, XiaoWorkspaceMode } from "../../core/models/xiao";
 import type { AcceptanceContractVersionSummary } from "../../core/models/verification";
 
-export type TaskGroup = "Active" | "Recent" | "Yesterday" | "This week";
+export type TaskGroup = "Active" | "Recent" | "Yesterday" | "This week" | "Older";
+
+const DAY_MS = 86_400_000;
+
+export const taskGroupForUpdatedAt = (
+  updatedAt: number,
+  active: boolean,
+  now: number,
+): TaskGroup => {
+  if (active) return "Active";
+  const elapsed = Math.max(0, now - updatedAt);
+  if (elapsed < DAY_MS) return "Recent";
+  if (elapsed < DAY_MS * 2) return "Yesterday";
+  if (elapsed <= DAY_MS * 7) return "This week";
+  return "Older";
+};
 
 export type WorkbenchTask = {
   id: string;

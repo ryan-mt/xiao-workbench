@@ -23,6 +23,7 @@ import type {
   XiaoWorkspaceMode,
   XiaoWorkspaceUpdate,
 } from "../core/models/xiao";
+import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/workspacePath";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
   titleFromPrompt,
@@ -70,7 +71,11 @@ import {
   mergeTimelinePage,
   toXiaoTaskDocument,
 } from "../features/task/taskPersistence";
-import type { TaskGroup, WorkbenchTask } from "../features/task/task.types";
+import {
+  taskGroupForUpdatedAt,
+  type TaskGroup,
+  type WorkbenchTask,
+} from "../features/task/task.types";
 import { resolveTimelineResource } from "../features/task/timeline/resourceNavigation";
 import { TaskWorkspace } from "../features/task/workspace/TaskWorkspace";
 import { useWorkspace } from "../features/workspace/hooks/useWorkspace";
@@ -129,9 +134,6 @@ const readFocusRailPreference = (): { view: FocusView; open: boolean } => {
     return { view: "changes", open: false };
   }
 };
-const comparableWorkspacePath = (path: string) =>
-  path.replaceAll("\\", "/").replace(/\/$/, "").toLocaleLowerCase();
-
 const focusAppContentNextFrame = () => {
   window.requestAnimationFrame(() => {
     document.querySelector<HTMLElement>(".app-content")?.focus();
@@ -633,7 +635,7 @@ const applyProjectPreferences = (
         right.updatedAt - left.updatedAt,
     );
 
-const taskGroups = new Set<TaskGroup>(["Active", "Recent", "Yesterday", "This week"]);
+const taskGroups = new Set<TaskGroup>(["Active", "Recent", "Yesterday", "This week", "Older"]);
 const taskDateFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
 const createDraftTask = (defaults: TaskRunDefaults): WorkbenchTask => {
@@ -695,11 +697,7 @@ const taskMeta = (updatedAt: number) => {
 };
 
 const taskGroup = (updatedAt: number, active: boolean): TaskGroup => {
-  if (active) return "Active";
-  const elapsed = Math.max(0, Date.now() - updatedAt);
-  if (elapsed < 86_400_000) return "Recent";
-  if (elapsed < 172_800_000) return "Yesterday";
-  return "This week";
+  return taskGroupForUpdatedAt(updatedAt, active, Date.now());
 };
 
 type StoredWorkbenchTask = Omit<

@@ -103,8 +103,8 @@ const contributionDays = (usage: CodexUsageSnapshot) => {
   const today = new Date();
   today.setHours(12, 0, 0, 0);
   const start = new Date(today);
-  start.setDate(start.getDate() - 363);
-  const days = Array.from({ length: 364 }, (_, index) => {
+  start.setDate(start.getDate() - 364);
+  const days = Array.from({ length: 365 }, (_, index) => {
     const date = new Date(start);
     date.setDate(date.getDate() + index);
     return { date, key: localDateKey(date), tokens: totals.get(localDateKey(date)) ?? 0 };
@@ -154,7 +154,14 @@ export function ProfilePage({
       }
     : usage;
   const days = contributionDays(activityUsage);
-  const monthLabels = days.filter((day, index) => day.date.getDate() <= 7 && index % 7 === 0);
+  const leadingPlaceholders = days[0]?.date.getDay() ?? 0;
+  const calendarCells = [
+    ...Array.from({ length: leadingPlaceholders }, () => null),
+    ...days,
+  ];
+  const monthLabels = days.filter(
+    (day, index) => day.date.getDate() <= 7 && (index + leadingPlaceholders) % 7 === 0,
+  );
   const connected = runtime.phase === "ready" || runtime.phase === "working";
   const peakDailyTokens =
     accountUsage?.peakDailyTokens ?? Math.max(0, ...activityUsage.days.map((day) => day.totalTokens));
@@ -339,11 +346,18 @@ export function ProfilePage({
                     <span>F</span>
                   </div>
                   <div className="contribution-grid" aria-label="Token activity over the last year">
-                    {days.map((day) => (
+                    {calendarCells.map((day, index) => day ? (
                       <span
                         className={`contribution-day level-${day.level}`}
+                        data-date={day.key}
                         key={day.key}
                         title={`${dayLabel.format(day.date)}: ${fullNumber.format(day.tokens)} tokens`}
+                      />
+                    ) : (
+                      <span
+                        aria-hidden="true"
+                        className="contribution-day contribution-day--placeholder"
+                        key={`placeholder-${index}`}
                       />
                     ))}
                   </div>
