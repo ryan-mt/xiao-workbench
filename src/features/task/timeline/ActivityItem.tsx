@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
 import type { TimelineEntry } from "../../../core/models/agent";
+import { isEnvironmentBlockedCommand } from "./commandPresentation";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 
 type ActivityItemProps = {
@@ -27,6 +28,7 @@ type ActivityItemProps = {
   canUndo?: boolean;
   undoing?: boolean;
   onUndo?: () => void;
+  attemptCount?: number;
 };
 
 const iconByKind: Record<TimelineEntry["kind"], XiaoIconName> = {
@@ -125,6 +127,7 @@ export const ActivityItem = memo(function ActivityItem({
   canUndo = false,
   undoing = false,
   onUndo,
+  attemptCount = 1,
 }: ActivityItemProps) {
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
@@ -389,19 +392,24 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (entry.kind === "command") {
+    const environmentBlocked = isEnvironmentBlockedCommand(entry);
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
     const toolAction = entry.command
       ? entry.status === "active"
         ? "Running"
-        : entry.status === "error"
-          ? "Failed"
-          : "Ran"
+        : environmentBlocked
+          ? "Blocked"
+          : entry.status === "error"
+            ? "Failed"
+            : "Ran"
       : entry.status === "active"
         ? "Using"
-        : entry.status === "error"
-          ? "Failed"
-          : "Used";
+        : environmentBlocked
+          ? "Blocked"
+          : entry.status === "error"
+            ? "Failed"
+            : "Used";
     const summary = (
       <>
         <span className="activity__tool-icon">
@@ -410,6 +418,9 @@ export const ActivityItem = memo(function ActivityItem({
         <span className="activity__tool-summary">
           <strong>{toolAction}</strong>
           <code title={toolDetail}>{toolDetail}</code>
+          {attemptCount > 1 && (
+            <small className="activity__tool-attempts">{attemptCount} attempts</small>
+          )}
         </span>
         {entry.status === "active" && <i className="activity__pulse" />}
         {hasDetails && (
@@ -422,7 +433,7 @@ export const ActivityItem = memo(function ActivityItem({
 
     return (
       <article
-        className={`activity activity--command activity--${entry.status ?? "idle"}`}
+        className={`activity activity--command activity--${environmentBlocked ? "warning" : entry.status ?? "idle"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         {hasDetails ? (
@@ -468,9 +479,10 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="patch-activity__heading">
-          <strong>Patch</strong>
+          <strong>{entry.status === "active" ? "Editing" : entry.status === "error" ? "Edit failed" : "Edited"}</strong>
           <span>{entry.files.length} {entry.files.length === 1 ? "file" : "files"}</span>
           <small><b>+{additions}</b><em>-{deletions}</em></small>
+          {entry.status === "active" ? <i className="activity__pulse" /> : null}
         </div>
         <div className="patch-activity__files">
           {entry.files.map((file) => {

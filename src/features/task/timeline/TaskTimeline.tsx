@@ -2,6 +2,7 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
 import { ActivityItem } from "./ActivityItem";
+import { compactCommandAttempts } from "./commandPresentation";
 import { ExecutionGroup } from "./ExecutionGroup";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
@@ -165,7 +166,7 @@ export function TaskTimeline({
           return (
             <div
               className="timeline-exploration-anchor"
-              key={`exploration-${row.entries.map((entry) => entry.id).join("-")}`}
+              key={`exploration-${row.entries[0]?.id ?? row.index}`}
             >
               {row.entries.map((entry) => (
                 <span
@@ -185,21 +186,31 @@ export function TaskTimeline({
         }
 
         if (row.kind === "execution") {
+          const attempts = compactCommandAttempts(row.entries);
           return (
             <ExecutionGroup
               entries={row.entries}
               expandByDefault={expandToolOutput}
               index={row.index}
-              key={`execution-${row.entries.map((entry) => entry.id).join("-")}`}
+              key={`execution-${row.entries[0]?.id ?? row.index}`}
             >
-              {row.entries.map((entry, offset) => (
+              {attempts.map(({ entry, entryIds, attempts: attemptCount }, offset) => (
                 <div
                   className="execution-group__entry"
                   id={`timeline-entry-${entry.id}`}
                   key={entry.id}
                 >
+                  {entryIds.filter((id) => id !== entry.id).map((id) => (
+                    <span
+                      aria-hidden="true"
+                      className="timeline-entry-anchor-target"
+                      id={`timeline-entry-${id}`}
+                      key={id}
+                    />
+                  ))}
                   <ActivityItem
                     entry={entry}
+                    attemptCount={attemptCount}
                     index={row.index + offset}
                     showReasoningSummaries={showReasoningSummaries}
                     expandToolOutput={expandToolOutput}

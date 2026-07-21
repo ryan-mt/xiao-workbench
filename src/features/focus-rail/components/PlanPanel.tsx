@@ -26,9 +26,9 @@ export function PlanPanel({ runtime, plan }: PlanPanelProps) {
                 <p>{item.step}</p>
                 {item.status === "completed" ? (
                   <XiaoIcon name="check" size={15} strokeWidth={1.9} />
-                ) : (
-                  <XiaoIcon name="pending" size={14} />
-                )}
+                ) : item.status === "inProgress" ? (
+                  <XiaoIcon className="is-spinning" name="pending" size={14} />
+                ) : <XiaoIcon name="todoPending" size={14} />}
               </div>
             ))}
           </div>

@@ -836,6 +836,15 @@
   white-space: nowrap;
 }
 
+.activity__tool-attempts {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  white-space: nowrap;
+}
+
+.activity--warning .activity__tool-summary strong { color: var(--warning); }
+
 .activity__tool-caret {
   display: grid;
   width: 18px;
@@ -1242,6 +1251,7 @@
 }
 
 .execution-group.is-error summary > strong { color: var(--danger); }
+.execution-group.is-warning summary > strong { color: var(--warning); }
 
 .execution-group__caret {
   flex: 0 0 auto;

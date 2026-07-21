@@ -46,7 +46,7 @@ export function ExplorationGroup({ entries, index, expandByDefault }: Exploratio
       className={`activity exploration-group ${active ? "is-active" : ""} ${failed ? "is-error" : ""}`}
       style={{ "--activity-index": index } as React.CSSProperties}
     >
-      <details open={active || expandByDefault}>
+      <details open={expandByDefault}>
         <summary>
           <span className="exploration-group__mark">
             <XiaoIcon name="search" size={13} />

@@ -74,6 +74,34 @@ export const approvalResponse = (
   return { decision };
 };
 
+export const isInactiveApprovalResolutionError = (reason: unknown): boolean => {
+  const message = (reason instanceof Error ? reason.message : String(reason)).toLowerCase();
+  return [
+    "no longer active",
+    "expired with its runtime generation",
+    "no longer attached to a live runtime",
+    "pending input was not found",
+    "cancelled before resolution",
+  ].some((marker) => message.includes(marker));
+};
+
+export const settleResolvedApprovalEntry = (
+  timeline: TimelineEntry[],
+  pendingInputId: string,
+): TimelineEntry[] => {
+  let changed = false;
+  const settled = timeline.map((entry) => {
+    if (
+      entry.kind !== "approval" ||
+      entry.pendingInputId !== pendingInputId ||
+      (entry.status !== "warning" && entry.status !== "active")
+    ) return entry;
+    changed = true;
+    return { ...entry, status: "success" as const, meta: "Request handled" };
+  });
+  return changed ? settled : timeline;
+};
+
 export const reconcilePendingApprovalEntries = (
   timeline: TimelineEntry[],
   activePendingInputIds: ReadonlySet<string> | null,
@@ -88,7 +116,7 @@ export const reconcilePendingApprovalEntries = (
     );
     if (!terminal && !noLongerPending) return entry;
     changed = true;
-    return { ...entry, status: "error" as const, meta: "Request expired" };
+    return { ...entry, status: "success" as const, meta: "Request expired" };
   });
   return changed ? reconciled : timeline;
 };

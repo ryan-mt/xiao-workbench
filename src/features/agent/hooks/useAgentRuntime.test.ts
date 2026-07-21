@@ -25,7 +25,10 @@ import {
   handleAgentApprovalRequest,
   listenerRecoveryPendingAfterConnect,
   loadAllXiaoRunEvents,
+  fileChangeTimelineEntry,
   normalizeFileChangeDiff,
+  projectFileChangePatchUpdate,
+  projectTimelineRunStatus,
   resetPendingInputReplayForTaskRestore,
   restoredRunProtocolEnvelope,
   runtimeAfterListenerAttachSuccess,
@@ -103,6 +106,110 @@ describe("normalizeFileChangeDiff", () => {
       deletions: 1,
       patch,
     });
+  });
+});
+
+describe("streaming file changes", () => {
+  const changes = [{
+    path: "src/App.tsx",
+    kind: { type: "update" },
+    diff: "@@ -1 +1 @@\n-old\n+new",
+  }];
+
+  it("projects an in-progress file change as an active editing entry", () => {
+    expect(fileChangeTimelineEntry({
+      type: "fileChange",
+      id: "patch-1",
+      status: "inProgress",
+      changes,
+    })).toMatchObject({
+      id: "patch-1",
+      kind: "change",
+      title: "Editing 1 file",
+      meta: "Streaming workspace changes",
+      status: "active",
+      files: [{
+        path: "src/App.tsx",
+        additions: 1,
+        deletions: 1,
+        patch: "@@ -1 +1 @@\n-old\n+new",
+      }],
+    });
+  });
+
+  it("updates the same timeline entry when a streamed patch changes", () => {
+    const initial = projectFileChangePatchUpdate([], "patch-1", changes);
+    const updated = projectFileChangePatchUpdate(initial, "patch-1", [{
+      ...changes[0],
+      diff: "@@ -1 +1,2 @@\n-old\n+new\n+line",
+    }]);
+
+    expect(updated).toHaveLength(1);
+    expect(updated[0]).toMatchObject({
+      id: "patch-1",
+      status: "active",
+      files: [{ additions: 2, deletions: 1 }],
+    });
+  });
+});
+
+describe("projectTimelineRunStatus", () => {
+  const queuedUser: TimelineEntry = {
+    id: "request-1",
+    kind: "user",
+    title: "Fix the app",
+    runId: "run-1",
+    meta: "Queued",
+    status: "active",
+  };
+
+  it("marks a queued user message as delivered when its turn starts", () => {
+    expect(projectTimelineRunStatus([queuedUser], {
+      runId: "run-1",
+      turnId: "turn-1",
+      status: "active",
+    })).toEqual([{
+      ...queuedUser,
+      turnId: "turn-1",
+      meta: "You",
+    }]);
+  });
+
+  it("settles terminal messages by idempotency key even before runId attachment", () => {
+    const withoutRunId = { ...queuedUser, runId: undefined };
+
+    expect(projectTimelineRunStatus([withoutRunId], {
+      entryId: "request-1",
+      runId: "run-1",
+      turnId: "turn-1",
+      turnDiff: "diff --git a/file b/file",
+      status: "success",
+    })).toEqual([{
+      ...withoutRunId,
+      turnId: "turn-1",
+      turnDiff: "diff --git a/file b/file",
+      meta: "You",
+      status: "success",
+    }]);
+  });
+
+  it("does not settle an unrelated queued message", () => {
+    expect(projectTimelineRunStatus([queuedUser], {
+      entryId: "request-2",
+      runId: "run-2",
+      turnId: "turn-2",
+      status: "error",
+    })).toEqual([queuedUser]);
+  });
+
+  it("does not regress a delivered message when a late active snapshot arrives", () => {
+    const delivered = { ...queuedUser, meta: "You", status: "success" as const };
+
+    expect(projectTimelineRunStatus([delivered], {
+      entryId: "request-1",
+      runId: "run-1",
+      status: "active",
+    })).toEqual([delivered]);
   });
 });
 

@@ -6,12 +6,14 @@ import {
   contextCompactionTimelineEntry,
   fastServiceTier,
   invalidateUndoHistory,
+  isInactiveApprovalResolutionError,
   latestUndoableTurn,
   mcpElicitationDeclineResponse,
   needsAgentSession,
   permissionGrantFromRequest,
   reconcilePendingApprovalEntries,
   serviceTierForFastMode,
+  settleResolvedApprovalEntry,
   threadCompactRequest,
   userInput,
 } from "./agentProtocol";
@@ -87,8 +89,38 @@ describe("pending approval reconciliation", () => {
     );
 
     expect(reconciled[0]).toEqual(active);
-    expect(reconciled[1]).toMatchObject({ status: "error", meta: "Request expired" });
-    expect(reconciled[2]).toMatchObject({ status: "error", meta: "Request expired" });
+    expect(reconciled[1]).toMatchObject({ status: "success", meta: "Request expired" });
+    expect(reconciled[2]).toMatchObject({ status: "success", meta: "Request expired" });
+  });
+});
+
+describe("inactive approval resolution errors", () => {
+  it("recognizes stale native requests without swallowing unrelated failures", () => {
+    expect(isInactiveApprovalResolutionError(new Error("Approval 0 is no longer active."))).toBe(true);
+    expect(isInactiveApprovalResolutionError(
+      "This Xiao input request expired with its runtime generation.",
+    )).toBe(true);
+    expect(isInactiveApprovalResolutionError("The Xiao pending input was not found.")).toBe(true);
+    expect(isInactiveApprovalResolutionError("Permission denied by the operating system.")).toBe(false);
+  });
+});
+
+describe("resolved approval projection", () => {
+  it("settles only the matching approval so stale action buttons disappear", () => {
+    const matching = {
+      id: "approval-a",
+      kind: "approval" as const,
+      title: "Approval",
+      pendingInputId: "pending-a",
+      status: "active" as const,
+      meta: "Submitting decision",
+    };
+    const unrelated = { ...matching, id: "approval-b", pendingInputId: "pending-b" };
+
+    const settled = settleResolvedApprovalEntry([matching, unrelated], "pending-a");
+
+    expect(settled[0]).toMatchObject({ status: "success", meta: "Request handled" });
+    expect(settled[1]).toEqual(unrelated);
   });
 });
 

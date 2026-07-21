@@ -5,9 +5,10 @@ import type { TimelineEntry } from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
 import { statusLabel } from "./LiveTurnStatus";
 
-const renderCompaction = (entry: TimelineEntry) => renderToStaticMarkup(
+const renderCompaction = (entry: TimelineEntry, attemptCount = 1) => renderToStaticMarkup(
   <ActivityItem
     entry={entry}
+    attemptCount={attemptCount}
     index={0}
     showReasoningSummaries
     expandToolOutput={false}
@@ -70,6 +71,40 @@ describe("ActivityItem user message", () => {
     expect(markup).toContain("alt=\"clipboard.png\"");
     expect(markup).toContain("Queued");
     expect(markup).toContain("class=\"lucide lucide-loader-circle spin\"");
+  });
+});
+
+describe("ActivityItem approval actions", () => {
+  it("hides decision buttons after an approval request is settled", () => {
+    const markup = renderCompaction({
+      id: "approval-1",
+      kind: "approval",
+      title: "Command permission requested",
+      requestId: 0,
+      pendingInputId: "pending-1",
+      status: "success",
+      meta: "Request no longer active",
+    });
+
+    expect(markup).not.toContain("approval-actions");
+    expect(markup).not.toContain("Allow once");
+  });
+});
+
+describe("ActivityItem command retries", () => {
+  it("shows one warning row with its attempt count for an environment block", () => {
+    const markup = renderCompaction({
+      id: "command-1",
+      kind: "command",
+      title: "Run tests",
+      command: "npm test",
+      body: "Error: spawn EPERM",
+      status: "error",
+    }, 3);
+
+    expect(markup).toContain("activity--warning");
+    expect(markup).toContain(">Blocked<");
+    expect(markup).toContain("3 attempts");
   });
 });
 
@@ -143,6 +178,8 @@ describe("ActivityItem timeline disclosures", () => {
 
     expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
     expect(markup).toContain("line 10");
+    expect(markup).toContain(">Editing<");
+    expect(markup).toContain("activity__pulse");
     expect(markup).not.toContain("<details open=\"\"");
   });
 

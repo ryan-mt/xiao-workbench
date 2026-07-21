@@ -34,6 +34,8 @@ use super::RUN_CONCURRENCY_LIMIT;
 
 const THREAD_SOURCE: &str = "xiao-workbench";
 const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
+const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "After a command fails, inspect its output before trying another command. Do not rerun an unchanged command when the failure is caused by the sandbox, a missing executable, or unavailable dependencies. Use a materially different diagnostic when one is available; otherwise report that verification is blocked and continue with checks that do not depend on the same failing environment.";
+const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
 
 pub struct RunService {
     notify: Arc<Notify>,
@@ -901,14 +903,34 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Resul
         }),
     );
     if run.mode != "plan" {
-        params.insert(
-            "additionalContext".to_owned(),
-            json!({
-                "xiao.plan-progress": {
+        let mut additional_context = Map::from_iter([
+            (
+                "xiao.plan-progress".to_owned(),
+                json!({
                     "kind": "application",
                     "value": PLAN_PROGRESS_INSTRUCTIONS,
-                },
-            }),
+                }),
+            ),
+            (
+                "xiao.command-failure-recovery".to_owned(),
+                json!({
+                    "kind": "application",
+                    "value": COMMAND_FAILURE_RECOVERY_INSTRUCTIONS,
+                }),
+            ),
+        ]);
+        if run.managed_worktree_id.is_some() {
+            additional_context.insert(
+                "xiao.managed-worktree".to_owned(),
+                json!({
+                    "kind": "application",
+                    "value": MANAGED_WORKTREE_INSTRUCTIONS,
+                }),
+            );
+        }
+        params.insert(
+            "additionalContext".to_owned(),
+            Value::Object(additional_context),
         );
     }
     Ok(Value::Object(params))
@@ -1366,6 +1388,7 @@ fn is_live_only_method(method: &str) -> bool {
             | "item/reasoning/summaryTextDelta"
             | "item/reasoning/textDelta"
             | "item/commandExecution/outputDelta"
+            | "item/fileChange/patchUpdated"
             | "turn/diff/updated"
     )
 }
@@ -1400,7 +1423,8 @@ fn lifecycle_event_key(
 }
 
 fn live_protocol_message(message: &Value, execution_root: &str) -> Value {
-    if message.get("method").and_then(Value::as_str) == Some("turn/diff/updated") {
+    let method = message.get("method").and_then(Value::as_str);
+    if method == Some("turn/diff/updated") {
         return json!({
             "method": "turn/diff/updated",
             "params": {
@@ -1411,6 +1435,37 @@ fn live_protocol_message(message: &Value, execution_root: &str) -> Value {
                     .and_then(|params| params.get("diff"))
                     .and_then(Value::as_str)
                     .map(|diff| truncate_utf8(diff, 512 * 1024)),
+            },
+        });
+    }
+    if method == Some("item/fileChange/patchUpdated") {
+        let mut remaining_diff_bytes = 512 * 1024;
+        let changes = message
+            .get("params")
+            .and_then(|params| params.get("changes"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(200)
+            .filter_map(|change| {
+                let path = change.get("path").and_then(Value::as_str)?;
+                let diff = change.get("diff").and_then(Value::as_str).unwrap_or("");
+                let safe_diff = truncate_utf8(diff, remaining_diff_bytes.min(128 * 1024));
+                remaining_diff_bytes = remaining_diff_bytes.saturating_sub(safe_diff.len());
+                Some(json!({
+                    "path": relative_path(path, execution_root),
+                    "kind": change.get("kind").cloned().unwrap_or(Value::Null),
+                    "diff": safe_diff,
+                }))
+            })
+            .collect::<Vec<_>>();
+        return json!({
+            "method": "item/fileChange/patchUpdated",
+            "params": {
+                "threadId": read_thread_id(message),
+                "turnId": read_turn_id(message),
+                "itemId": read_item_id(message),
+                "changes": changes,
             },
         });
     }
@@ -1771,8 +1826,38 @@ mod tests {
     fn runtime_limits_and_live_event_policy_are_fixed() {
         assert_eq!(RUN_CONCURRENCY_LIMIT, 2);
         assert!(is_live_only_method("item/agentMessage/delta"));
+        assert!(is_live_only_method("item/fileChange/patchUpdated"));
+        assert!(!is_persisted_protocol_method(
+            "item/fileChange/patchUpdated"
+        ));
         assert!(!is_persisted_protocol_method("item/agentMessage/delta"));
         assert!(is_persisted_protocol_method("item/completed"));
+    }
+
+    #[test]
+    fn live_file_change_patch_keeps_renderable_change_data() {
+        let message = json!({
+            "method": "item/fileChange/patchUpdated",
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "itemId": "patch",
+                "changes": [{
+                    "path": "src/App.tsx",
+                    "kind": { "type": "update" },
+                    "diff": "@@ -1 +1 @@\n-old\n+new",
+                }],
+            },
+        });
+
+        let safe = live_protocol_message(&message, ".");
+        assert_eq!(safe["method"], "item/fileChange/patchUpdated");
+        assert_eq!(safe["params"]["itemId"], "patch");
+        assert_eq!(safe["params"]["changes"][0]["path"], "src/App.tsx");
+        assert_eq!(
+            safe["params"]["changes"][0]["diff"],
+            "@@ -1 +1 @@\n-old\n+new"
+        );
     }
 
     #[test]
@@ -1894,6 +1979,21 @@ mod tests {
             "medium"
         );
         assert!(params.get("additionalContext").is_some());
+        assert_eq!(
+            params["additionalContext"]["xiao.command-failure-recovery"]["value"],
+            COMMAND_FAILURE_RECOVERY_INSTRUCTIONS
+        );
+        assert!(params["additionalContext"]
+            .get("xiao.managed-worktree")
+            .is_none());
+
+        let mut managed_run = run.clone();
+        managed_run.managed_worktree_id = Some("worktree".to_owned());
+        let managed_params = turn_start_params(&managed_run, &session).unwrap();
+        assert_eq!(
+            managed_params["additionalContext"]["xiao.managed-worktree"]["value"],
+            MANAGED_WORKTREE_INSTRUCTIONS
+        );
 
         let mut plan_run = run.clone();
         plan_run.mode = "plan".to_owned();

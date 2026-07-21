@@ -38,11 +38,13 @@ import {
   approvalResponse,
   contextCompactionTimelineEntry,
   invalidateUndoHistory,
+  isInactiveApprovalResolutionError,
   latestUndoableTurn,
   permissionGrantFromRequest,
   reconcilePendingApprovalEntries,
   reviewContextText,
   serviceTierForFastMode,
+  settleResolvedApprovalEntry,
   threadCompactRequest,
   userInput,
 } from "./agentProtocol";
@@ -453,12 +455,42 @@ export const restoredRunProtocolEnvelope = (
   };
 };
 
-const timelineStatusForRun = (status: RunStatus): TimelineEntry["status"] => {
+const timelineStatusForRun = (status: RunStatus): NonNullable<TimelineEntry["status"]> => {
   if (status === "completed") return "success";
   if (status === "failed" || status === "cancelled") return "error";
   if (status === "interrupted" || status === "needs_attention") return "warning";
   return "active";
 };
+
+export const projectTimelineRunStatus = (
+  timeline: TimelineEntry[],
+  settlement: {
+    entryId?: string | null;
+    runId?: string | null;
+    turnId?: string | null;
+    turnDiff?: string;
+    status: NonNullable<TimelineEntry["status"]>;
+    matchUnscopedActive?: boolean;
+  },
+): TimelineEntry[] => timeline.map((entry) => {
+  const matches =
+    (settlement.entryId != null && entry.id === settlement.entryId) ||
+    (settlement.runId != null && entry.runId === settlement.runId) ||
+    (settlement.turnId != null && entry.turnId === settlement.turnId) ||
+    (settlement.matchUnscopedActive === true && entry.status === "active");
+  if (!matches) return entry;
+
+  const settled = entry.status === "active"
+    ? { ...entry, status: settlement.status }
+    : entry;
+  if (settled.kind !== "user") return settled;
+  return {
+    ...settled,
+    meta: "You",
+    ...(settlement.turnId != null ? { turnId: settlement.turnId } : {}),
+    ...(settlement.turnDiff !== undefined ? { turnDiff: settlement.turnDiff } : {}),
+  };
+});
 
 const countDiffLines = (diff: string) => {
   let additions = 0;
@@ -505,6 +537,57 @@ const fileChangeKind = (value: unknown): FileChangeKind => {
   return type === "add" || type === "delete" || type === "update" ? type : null;
 };
 
+export const fileChangeTimelineEntry = (
+  item: Record<string, unknown>,
+): TimelineEntry | null => {
+  if (item.type !== "fileChange" || !Array.isArray(item.changes)) return null;
+  const files = item.changes.flatMap((change) => {
+    if (!change || typeof change !== "object") return [];
+    const value = change as Record<string, unknown>;
+    if (typeof value.path !== "string") return [];
+    const diff = typeof value.diff === "string" ? value.diff : "";
+    const normalized = normalizeFileChangeDiff(diff, fileChangeKind(value.kind));
+    return [{ path: value.path, ...normalized }];
+  });
+  if (!files.length) return null;
+
+  const active = item.status === "inProgress";
+  const failed = item.status === "failed" || item.status === "declined";
+  const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
+  return {
+    id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
+    kind: "change",
+    createdAt: Date.now(),
+    title: active
+      ? `Editing ${fileLabel}`
+      : failed
+        ? `Could not update ${fileLabel}`
+        : `Updated ${fileLabel}`,
+    meta: active ? "Streaming workspace changes" : "Workspace changes",
+    status: active ? "active" : failed ? "error" : "success",
+    files,
+  };
+};
+
+export const projectFileChangePatchUpdate = (
+  timeline: TimelineEntry[],
+  itemId: string,
+  changes: unknown,
+): TimelineEntry[] => {
+  const entry = fileChangeTimelineEntry({
+    type: "fileChange",
+    id: itemId,
+    status: "inProgress",
+    changes,
+  });
+  if (!entry) return timeline;
+  return timeline.some((currentEntry) => currentEntry.id === itemId)
+    ? timeline.map((currentEntry) => currentEntry.id === itemId
+      ? { ...entry, createdAt: currentEntry.createdAt ?? entry.createdAt }
+      : currentEntry)
+    : [...timeline, entry];
+};
+
 const readTokenUsage = (value: unknown): TokenUsageBreakdown | null => {
   if (!value || typeof value !== "object") return null;
   const usage = value as Record<string, unknown>;
@@ -526,6 +609,8 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
   if (contextCompaction) return contextCompaction;
   const collaboration = collaborationTimelineEntry(item);
   if (collaboration) return collaboration;
+  const fileChange = fileChangeTimelineEntry(item);
+  if (fileChange) return fileChange;
 
   const id = typeof item.id === "string" ? item.id : crypto.randomUUID();
   const createdAt = Date.now();
@@ -603,30 +688,6 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
       body: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined,
       meta: typeof item.cwd === "string" ? item.cwd : "Workspace",
       status: commandStatus === "inProgress" ? "active" : failed ? "error" : "success",
-    };
-  }
-
-  if (item.type === "fileChange" && Array.isArray(item.changes)) {
-    const files = item.changes.flatMap((change) => {
-      if (!change || typeof change !== "object") return [];
-      const value = change as Record<string, unknown>;
-      if (typeof value.path !== "string") return [];
-      const diff = typeof value.diff === "string" ? value.diff : "";
-      const normalized = normalizeFileChangeDiff(diff, fileChangeKind(value.kind));
-      return [{ path: value.path, ...normalized }];
-    });
-    if (!files.length) return null;
-    const failed = item.status === "failed" || item.status === "declined";
-    return {
-      id,
-      kind: "change",
-      createdAt,
-      title: failed
-        ? `Could not update ${files.length} ${files.length === 1 ? "file" : "files"}`
-        : `Updated ${files.length} ${files.length === 1 ? "file" : "files"}`,
-      meta: "Workspace changes",
-      status: failed ? "error" : "success",
-      files,
     };
   }
 
@@ -1148,20 +1209,40 @@ export function useAgentRuntime(
         if (entryId) {
           updateTimeline(taskId, (current) => current.map((entry) =>
             entry.id === entryId
-              ? { ...entry, status: "error", meta: "Declined by Never ask" }
+              ? { ...entry, status: "success", meta: "Declined by Never ask" }
               : entry,
           ));
+        }
+        if (agentRuntimeTaskScopeMatches(
+          workspaceScopeRef.current,
+          activeTaskIdRef.current,
+          scope,
+        )) {
+          setRuntime((current) => ({ ...current, error: null }));
         }
         return true;
       } catch (reason) {
         if (!agentRuntimeTaskWorkspaceScopeMatches(workspaceScopeRef.current, scope)) return false;
         const message = reason instanceof Error ? reason.message : String(reason);
+        const inactive = isInactiveApprovalResolutionError(reason);
         if (entryId) {
           updateTimeline(taskId, (current) => current.map((entry) =>
             entry.id === entryId
-              ? { ...entry, status: "warning", meta: "Automatic decline failed - decide manually" }
+              ? inactive
+                ? { ...entry, status: "success", meta: "Request no longer active" }
+                : { ...entry, status: "warning", meta: "Automatic decline failed - decide manually" }
               : entry,
           ));
+        }
+        if (inactive) {
+          if (agentRuntimeTaskScopeMatches(
+            workspaceScopeRef.current,
+            activeTaskIdRef.current,
+            scope,
+          )) {
+            setRuntime((current) => ({ ...current, error: null }));
+          }
+          return true;
         }
         if (agentRuntimeTaskScopeMatches(
           workspaceScopeRef.current,
@@ -1283,11 +1364,16 @@ export function useAgentRuntime(
           ...(route.pendingInput ? [route.pendingInput] : []),
           ...Object.values(runProjectionRef.current.pendingInputsById),
         ].find((pending) =>
-          pending.kind === "question" &&
           pending.runId === route.runId &&
           String(messageFromPendingInput(pending).id) === String(requestId)
         );
         if (!pendingInput) return;
+        if (pendingInput.kind !== "question") {
+          updateTimeline(route.taskId, (current) =>
+            settleResolvedApprovalEntry(current, pendingInput.id)
+          );
+          return;
+        }
         const resolvedRequest = {
           requestId,
           pendingInputId: pendingInput.id,
@@ -1413,14 +1499,15 @@ export function useAgentRuntime(
         const threadId = readMessageThreadId(message);
         if (turnId) {
           activeTurnIds.current.set(taskId, turnId);
-          const pendingEntryId = route
+          const pendingEntryId = (route
             ? runProjectionRef.current.runsById[route.runId]?.idempotencyKey
-            : pendingUserEntries.current.get(taskId);
-          if (pendingEntryId) {
-            updateTimeline(taskId, (current) => current.map((entry) =>
-              entry.id === pendingEntryId ? { ...entry, turnId } : entry,
-            ));
-          }
+            : null) ?? pendingUserEntries.current.get(taskId);
+          updateTimeline(taskId, (current) => projectTimelineRunStatus(current, {
+            entryId: pendingEntryId,
+            runId: route?.runId,
+            turnId,
+            status: "active",
+          }));
         }
         if (!route || taskId === activeTaskIdRef.current) {
           setRuntime((current) =>
@@ -1444,6 +1531,20 @@ export function useAgentRuntime(
         typeof message.params.diff === "string"
       ) {
         activeTurnDiffs.current.set(message.params.turnId, message.params.diff);
+      }
+
+      if (
+        message.method === "item/fileChange/patchUpdated" &&
+        typeof message.params?.itemId === "string" &&
+        Array.isArray(message.params.changes)
+      ) {
+        settleThinking(taskId);
+        updateTimeline(taskId, (current) => projectFileChangePatchUpdate(
+          current,
+          message.params!.itemId as string,
+          message.params!.changes,
+        ));
+        return;
       }
 
       if (message.method === "thread/name/updated") {
@@ -1559,6 +1660,7 @@ export function useAgentRuntime(
         }
         if (
           item.type === "commandExecution" ||
+          item.type === "fileChange" ||
           item.type === "collabAgentToolCall" ||
           item.type === "mcpToolCall" ||
           item.type === "dynamicToolCall"
@@ -1717,9 +1819,9 @@ export function useAgentRuntime(
         const completedTurnDiff = route?.turnDiff ?? (completedTurnId
           ? activeTurnDiffs.current.get(completedTurnId)
           : undefined);
-        const pendingEntryId = route
+        const pendingEntryId = (route
           ? runProjectionRef.current.runsById[route.runId]?.idempotencyKey
-          : pendingUserEntries.current.get(taskId);
+          : null) ?? pendingUserEntries.current.get(taskId);
         settleThinking(taskId);
         liveAgentEntries.current.delete(taskId);
         setQuestionRequest((current) => current?.taskId === taskId ? null : current);
@@ -1750,24 +1852,15 @@ export function useAgentRuntime(
         }
         if (!route?.replayed) void refreshAccountUsage();
         updateTimeline(taskId, (current) => {
-          const settledStatus: TimelineEntry["status"] =
+          const settledStatus: NonNullable<TimelineEntry["status"]> =
             outcome === "completed" ? "success" : outcome === "failed" ? "error" : "warning";
-          const settled = current.map((entry) => {
-            const belongsToCompletedRun = !route ||
-              entry.runId === route.runId ||
-              (completedTurnId != null && entry.turnId === completedTurnId) ||
-              entry.id === pendingEntryId;
-            const settledEntry = entry.status === "active" && belongsToCompletedRun
-              ? { ...entry, status: settledStatus }
-              : entry;
-            if (
-              completedTurnId &&
-              settledEntry.kind === "user" &&
-              (settledEntry.turnId === completedTurnId || settledEntry.id === pendingEntryId)
-            ) {
-              return { ...settledEntry, turnId: completedTurnId, turnDiff: completedTurnDiff };
-            }
-            return settledEntry;
+          const settled = projectTimelineRunStatus(current, {
+            entryId: pendingEntryId,
+            runId: route?.runId,
+            turnId: completedTurnId,
+            turnDiff: completedTurnDiff,
+            status: settledStatus,
+            matchUnscopedActive: !route,
           });
           if (!errorMessage) return settled;
           const errorTurnId = completedTurnId ?? crypto.randomUUID();
@@ -1928,12 +2021,12 @@ export function useAgentRuntime(
               ) {
                 const status = timelineStatusForRun(run.status);
                 updateTimeline(run.taskId, (current) => {
-                  const settled = current.map((entry) =>
-                    entry.status === "active" &&
-                    (entry.runId === run.id || (run.turnId && entry.turnId === run.turnId))
-                      ? { ...entry, status }
-                      : entry,
-                  );
+                  const settled = projectTimelineRunStatus(current, {
+                    entryId: run.idempotencyKey,
+                    runId: run.id,
+                    turnId: run.turnId,
+                    status,
+                  });
                   return reconcilePendingApprovalEntries(settled, null, run.id);
                 });
               }
@@ -2432,13 +2525,20 @@ export function useAgentRuntime(
           autoTitledTasks.current.add(scope.taskId);
           onTaskTitleChangeRef.current(scope.taskId, titleFromPrompt(cleanPrompt));
         }
-        updateTimeline(scope.taskId, (current) =>
-          current.map((entry) =>
+        updateTimeline(scope.taskId, (current) => {
+          const withRun = current.map((entry) =>
             entry.id === userEntryId
-              ? { ...entry, runId: run.id, meta: "Queued", status: "active" }
+              ? { ...entry, runId: run.id, turnId: run.turnId ?? entry.turnId }
               : entry,
-          ),
-        );
+          );
+          if (run.status === "queued") return withRun;
+          return projectTimelineRunStatus(withRun, {
+            entryId: userEntryId,
+            runId: run.id,
+            turnId: run.turnId,
+            status: timelineStatusForRun(run.status),
+          });
+        });
         return true;
       } catch (reason) {
         if (!operationWorkspaceIsCurrent()) return false;
@@ -2900,22 +3000,42 @@ export function useAgentRuntime(
             entry.id === entryId
               ? {
                   ...entry,
-                  status: decision === "accept" ? "success" : "error",
+                  status: "success",
                   meta: decision === "accept" ? "Approved" : "Declined",
                 }
               : entry,
           ),
         );
+        if (agentRuntimeTaskScopeMatches(
+          workspaceScopeRef.current,
+          activeTaskIdRef.current,
+          scope,
+        )) {
+          setRuntime((current) => ({ ...current, error: null }));
+        }
       } catch (reason) {
         if (!operationWorkspaceIsCurrent()) return;
         const message = reason instanceof Error ? reason.message : String(reason);
+        const inactive = isInactiveApprovalResolutionError(reason);
         updateTimeline(taskId, (current) =>
           current.map((entry) =>
             entry.id === entryId
-              ? { ...entry, status: "warning", meta: "Decision failed - try again" }
+              ? inactive
+                ? { ...entry, status: "success", meta: "Request no longer active" }
+                : { ...entry, status: "warning", meta: "Decision failed - try again" }
               : entry,
           ),
         );
+        if (inactive) {
+          if (agentRuntimeTaskScopeMatches(
+            workspaceScopeRef.current,
+            activeTaskIdRef.current,
+            scope,
+          )) {
+            setRuntime((current) => ({ ...current, error: null }));
+          }
+          return;
+        }
         if (agentRuntimeTaskScopeMatches(
           workspaceScopeRef.current,
           activeTaskIdRef.current,
