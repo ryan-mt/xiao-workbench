@@ -141,6 +141,33 @@ describe("useWorkspace snapshot identity", () => {
     expect(view.actionable).toBe(true);
   });
 
+  it("keeps a hydrated task actionable while its workspace refreshes in the background", async () => {
+    const initial = deferred<WorkspaceSnapshot>();
+    const refreshed = deferred<WorkspaceSnapshot>();
+    bridge.getWorkspace
+      .mockReturnValueOnce(initial.promise)
+      .mockReturnValueOnce(refreshed.promise);
+
+    let view = renderWorkspace("C:/project-a", "task-a");
+    hooks.flushEffects();
+    initial.resolve(snapshot("C:/project-a", "task-a"));
+    await settle();
+
+    view = renderWorkspace("C:/project-a", "task-a");
+    expect(view.loading).toBe(false);
+    const refresh = view.refresh();
+
+    view = renderWorkspace("C:/project-a", "task-a");
+    expect(view.loading).toBe(false);
+    expect(view.actionable).toBe(true);
+
+    refreshed.resolve(snapshot("C:/project-a", "task-a"));
+    await refresh;
+    view = renderWorkspace("C:/project-a", "task-a");
+    expect(view.loading).toBe(false);
+    expect(view.actionable).toBe(true);
+  });
+
   it("fails closed synchronously while a confirmed task switch is unresolved", async () => {
     const taskA = deferred<WorkspaceSnapshot>();
     const taskB = deferred<WorkspaceSnapshot>();

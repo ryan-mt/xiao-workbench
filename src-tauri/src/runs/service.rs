@@ -23,8 +23,8 @@ use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
     EnqueueRunRequest, NewPendingInput, NewRun, PendingInputKind, PendingInputSnapshot,
-    RunProtocolEnvelope, RunRecord, RunServiceErrorEnvelope, RunSnapshot, RunStatus,
-    RunUpdateEnvelope, RuntimeAttachment, SteerRunRequest,
+    RunEventRecord, RunProtocolEnvelope, RunRecord, RunServiceErrorEnvelope, RunSnapshot,
+    RunStatus, RunUpdateEnvelope, RuntimeAttachment, SteerRunRequest,
 };
 use super::repository::{
     bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent,
@@ -36,6 +36,7 @@ const THREAD_SOURCE: &str = "xiao-workbench";
 const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
 const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. Do not use a check-only command as a probe when its expected nonzero exit would merely tell you to run the corresponding formatter or fixer; after editing, run the formatter or fixer first and reserve its check-only form for final verification. Do not batch a command that may fail as part of normal probing with independent checks, because one expected failure makes the whole batch appear failed. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
 const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
+const FULL_ACCESS_INSTRUCTIONS: &str = "This Xiao turn runs with the sandbox disabled. Xiao does not restrict filesystem, process, or network access to the execution root. The execution root and runtime workspace roots identify the active project; they are not access boundaries. Use access outside the project only when it is in scope for the user's task. Full access does not make an unavailable tool, disconnected integration, or external service available.";
 
 pub struct RunService {
     notify: Arc<Notify>,
@@ -983,8 +984,9 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Resul
             },
         }),
     );
+    let mut additional_context = Map::new();
     if run.mode != "plan" {
-        let mut additional_context = Map::from_iter([
+        additional_context.extend([
             (
                 "xiao.plan-progress".to_owned(),
                 json!({
@@ -1009,6 +1011,17 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Resul
                 }),
             );
         }
+    }
+    if run.sandbox_mode == "danger-full-access" {
+        additional_context.insert(
+            "xiao.full-access".to_owned(),
+            json!({
+                "kind": "application",
+                "value": FULL_ACCESS_INSTRUCTIONS,
+            }),
+        );
+    }
+    if !additional_context.is_empty() {
         params.insert(
             "additionalContext".to_owned(),
             Value::Object(additional_context),
@@ -1109,7 +1122,7 @@ fn apply_runtime_message(
     }
 
     if method == "item/tool/call" {
-        dispatch_lsp_tool_call(app, &route, generation, &message)?;
+        dispatch_dynamic_tool_call(app, &route, generation, &message)?;
         return Ok(());
     }
 
@@ -1331,7 +1344,58 @@ fn read_item_id(message: &Value) -> Option<&str> {
         })
 }
 
-fn dispatch_lsp_tool_call(
+fn runtime_diagnostics_payload(route: &RunRecord, events: Vec<RunEventRecord>) -> Value {
+    let sandbox_policy = match route.sandbox_mode.as_str() {
+        "danger-full-access" => json!({ "type": "dangerFullAccess" }),
+        "read-only" => json!({ "type": "readOnly" }),
+        _ => json!({
+            "type": "workspaceWrite",
+            "writableRoots": [route.execution_root],
+            "networkAccess": false,
+        }),
+    };
+    json!({
+        "run": route.snapshot(),
+        "effectiveAccess": {
+            "sandboxDisabled": route.sandbox_mode == "danger-full-access",
+            "sandboxPolicy": sandbox_policy,
+            "executionRoot": route.execution_root,
+            "executionRootIsAccessBoundary": route.sandbox_mode != "danger-full-access",
+        },
+        "recentEvents": events,
+    })
+}
+
+fn execute_runtime_tool(
+    app: &AppHandle,
+    route: &RunRecord,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    if tool != "diagnostics" {
+        return Err(format!("Unknown Xiao runtime tool `{tool}`."));
+    }
+    let arguments = arguments
+        .as_object()
+        .ok_or("Runtime diagnostics arguments must be an object.")?;
+    if arguments.keys().any(|key| key != "limit") {
+        return Err("Runtime diagnostics only accepts the `limit` argument.".to_owned());
+    }
+    let limit = match arguments.get("limit") {
+        Some(value) => value
+            .as_u64()
+            .filter(|limit| (1..=100).contains(limit))
+            .ok_or("Runtime diagnostics limit must be between 1 and 100.")?
+            as usize,
+        None => 50,
+    };
+    let events = app
+        .state::<XiaoRepository>()
+        .list_run_events(&route.id, None, Some(limit))?;
+    Ok(runtime_diagnostics_payload(route, events))
+}
+
+fn dispatch_dynamic_tool_call(
     app: &AppHandle,
     route: &RunRecord,
     generation: u64,
@@ -1345,7 +1409,11 @@ fn dispatch_lsp_tool_call(
         .get("params")
         .and_then(Value::as_object)
         .ok_or("Codex dynamic tool call did not include parameters.")?;
-    let supported_namespace = params.get("namespace").and_then(Value::as_str) == Some("xiao_lsp");
+    let namespace = params
+        .get("namespace")
+        .and_then(Value::as_str)
+        .ok_or("Codex dynamic tool call did not name a namespace.")?
+        .to_owned();
     let tool = params
         .get("tool")
         .and_then(Value::as_str)
@@ -1358,21 +1426,24 @@ fn dispatch_lsp_tool_call(
     let environment_id = route.execution_environment_id.clone();
     let execution_root = route.execution_root.clone();
     let workspace_path = route.workspace_path.clone();
+    let worker_route = route.clone();
     let worker_app = app.clone();
     let worker_environment_id = environment_id.clone();
     let worker_request_id = request_id.clone();
     match std::thread::Builder::new()
-        .name("xiao-lsp-tool".to_owned())
+        .name("xiao-dynamic-tool".to_owned())
         .spawn(move || {
-            let result = if supported_namespace {
-                worker_app.state::<LspManager>().execute_tool(
+            let result = match namespace.as_str() {
+                "xiao_lsp" => worker_app.state::<LspManager>().execute_tool(
                     &worker_environment_id,
                     &execution_root,
                     &tool,
                     arguments,
-                )
-            } else {
-                Err("Codex requested an unknown Xiao dynamic tool namespace.".to_owned())
+                ),
+                "xiao_runtime" => {
+                    execute_runtime_tool(&worker_app, &worker_route, &tool, arguments)
+                }
+                _ => Err("Codex requested an unknown Xiao dynamic tool namespace.".to_owned()),
             };
             let response = dynamic_tool_response(result);
             if let Err(error) = worker_app.state::<EnvironmentRuntimeRegistry>().reply(
@@ -1390,7 +1461,7 @@ fn dispatch_lsp_tool_call(
             generation,
             request_id,
             dynamic_tool_response(Err(format!(
-                "Could not start the Xiao LSP tool worker: {error}"
+                "Could not start the Xiao dynamic tool worker: {error}"
             ))),
         ),
     }
@@ -2111,6 +2182,25 @@ mod tests {
         assert_eq!(
             managed_params["additionalContext"]["xiao.managed-worktree"]["value"],
             MANAGED_WORKTREE_INSTRUCTIONS
+        );
+
+        let mut full_access_run = run.clone();
+        full_access_run.mode = "plan".to_owned();
+        full_access_run.sandbox_mode = "danger-full-access".to_owned();
+        let full_access_params = turn_start_params(&full_access_run, &session).unwrap();
+        assert_eq!(
+            full_access_params["sandboxPolicy"],
+            json!({ "type": "dangerFullAccess" })
+        );
+        assert_eq!(
+            full_access_params["additionalContext"]["xiao.full-access"]["value"],
+            FULL_ACCESS_INSTRUCTIONS
+        );
+        let diagnostics = runtime_diagnostics_payload(&full_access_run, Vec::new());
+        assert_eq!(diagnostics["effectiveAccess"]["sandboxDisabled"], true);
+        assert_eq!(
+            diagnostics["effectiveAccess"]["executionRootIsAccessBoundary"],
+            false
         );
 
         let mut plan_run = run.clone();

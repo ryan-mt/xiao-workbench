@@ -45,9 +45,13 @@ export function useWorkspace(path?: string, taskId?: string | null) {
     snapshot: browserWorkspace,
     identity: null,
   });
+  const loadedWorkspaceRef = useRef(loadedWorkspace);
+  loadedWorkspaceRef.current = loadedWorkspace;
   const [system, setSystem] = useState<SystemInfo>(browserSystem);
   const [refreshing, setRefreshing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const errorRef = useRef(error);
+  errorRef.current = error;
   const refreshId = useRef(0);
   const requestedPath = useRef(path);
   const requestedTaskId = useRef(taskId);
@@ -73,7 +77,15 @@ export function useWorkspace(path?: string, taskId?: string | null) {
       return;
     }
 
-    setRefreshing(true);
+    const loadedIdentity = loadedWorkspaceRef.current.identity;
+    if (
+      loadedIdentity === null ||
+      loadedIdentity.projectPath !== path ||
+      loadedIdentity.taskId !== taskId ||
+      errorRef.current !== null
+    ) {
+      setRefreshing(true);
+    }
     setError(null);
 
     try {

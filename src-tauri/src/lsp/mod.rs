@@ -67,6 +67,22 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                 },
             }
         ]
+    }, {
+        "type": "namespace",
+        "name": "xiao_runtime",
+        "description": "Read-only diagnostics for the active Xiao run and its effective access policy.",
+        "tools": [{
+            "type": "function",
+            "name": "diagnostics",
+            "description": "Read the active run snapshot, effective sandbox policy, and recent sanitized run events.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                },
+                "additionalProperties": false
+            }
+        }]
     }])
 }
 
@@ -155,6 +171,8 @@ mod tests {
         );
         assert!(!specs.to_string().contains("rename"));
         assert!(!specs.to_string().contains("code_action"));
+        assert_eq!(specs[1]["name"], "xiao_runtime");
+        assert_eq!(specs[1]["tools"][0]["name"], "diagnostics");
     }
 
     #[test]

@@ -353,6 +353,7 @@ mod tests {
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["C:/workspace"]));
         assert_eq!(params["serviceTier"], "priority");
         assert_eq!(params["dynamicTools"][0]["name"], "xiao_lsp");
+        assert_eq!(params["dynamicTools"][1]["name"], "xiao_runtime");
     }
 
     #[test]
