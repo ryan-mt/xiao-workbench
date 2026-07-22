@@ -10,6 +10,7 @@ type AttentionCenterProps = {
   hydrationStatus: AttentionHydrationStatus;
   onRetry: () => void;
   onOpenTask: (taskId: string) => void;
+  onDismiss: (itemId: string) => void;
   onClose: () => void;
 };
 
@@ -45,6 +46,7 @@ export function AttentionCenter({
   hydrationStatus,
   onRetry,
   onOpenTask,
+  onDismiss,
   onClose,
 }: AttentionCenterProps) {
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -119,14 +121,27 @@ export function AttentionCenter({
                         {attentionTime.format(item.timestamp)}
                       </time>
                     </div>
-                    <button
-                      type="button"
-                      aria-label={`Open task: ${detail}`}
-                      onClick={() => onOpenTask(item.taskId)}
-                    >
-                      <span>Open task</span>
-                      <XiaoIcon name="forward" size={14} />
-                    </button>
+                    <div className="attention-center__actions">
+                      <button
+                        className="attention-center__open"
+                        type="button"
+                        aria-label={`Open task: ${detail}`}
+                        onClick={() => onOpenTask(item.taskId)}
+                      >
+                        <span>Open task</span>
+                        <XiaoIcon name="forward" size={14} />
+                      </button>
+                      <button
+                        className="attention-center__dismiss"
+                        type="button"
+                        aria-label={`Dismiss: ${detail}`}
+                        title="Dismiss"
+                        onClick={() => onDismiss(item.id)}
+                      >
+                        <XiaoIcon name="close" size={14} />
+                        <span>Dismiss</span>
+                      </button>
+                    </div>
                   </li>
                 );
               })}

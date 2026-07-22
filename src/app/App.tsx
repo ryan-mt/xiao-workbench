@@ -33,6 +33,10 @@ import {
   type AttentionHydrationStatus,
 } from "../features/agent/hooks/useAgentRuntime";
 import { AttentionCenter } from "../features/attention/AttentionCenter";
+import {
+  readAttentionDismissals,
+  writeAttentionDismissals,
+} from "../features/attention/attentionDismissals";
 import { projectAttentionItems } from "../features/attention/attentionProjection";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
@@ -1394,6 +1398,9 @@ export function App() {
   taskStateReadyRef.current = taskStateReady;
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [taskLoadRetryRevision, setTaskLoadRetryRevision] = useState(0);
+  const [attentionDismissalsByWorkspace, setAttentionDismissalsByWorkspace] = useState<
+    Record<string, string[]>
+  >({});
   const taskLoadErrorRef = useRef(taskLoadError);
   taskLoadErrorRef.current = taskLoadError;
   const [confirmedNativeTasks, setConfirmedNativeTasks] = useState<ConfirmedNativeTaskState>({
@@ -2065,12 +2072,32 @@ export function App() {
     taskWorkspacePath,
     workspace.path,
   );
+  const attentionWorkspaceKey = comparableWorkspacePath(workspace.path);
+  const dismissedAttentionIds = useMemo(
+    () => new Set(
+      attentionDismissalsByWorkspace[attentionWorkspaceKey] ??
+        readAttentionDismissals(workspace.path),
+    ),
+    [attentionDismissalsByWorkspace, attentionWorkspaceKey, workspace.path],
+  );
   const attentionItems = useMemo(
     () => attentionTaskStateReady
-      ? projectAttentionItems(tasks, agent.runs, agent.pendingInputs)
+      ? projectAttentionItems(tasks, agent.runs, agent.pendingInputs).filter(
+        (item) => !dismissedAttentionIds.has(item.id),
+      )
       : [],
-    [agent.pendingInputs, agent.runs, attentionTaskStateReady, tasks],
+    [agent.pendingInputs, agent.runs, attentionTaskStateReady, dismissedAttentionIds, tasks],
   );
+  const dismissAttentionItem = (itemId: string) => {
+    setAttentionDismissalsByWorkspace((current) => {
+      const dismissed = current[attentionWorkspaceKey] ??
+        readAttentionDismissals(workspace.path);
+      if (dismissed.includes(itemId)) return current;
+      const next = [...dismissed, itemId];
+      writeAttentionDismissals(workspace.path, next);
+      return { ...current, [attentionWorkspaceKey]: next };
+    });
+  };
   const attentionHydrationStatus = attentionHydrationStatusForTaskState(
     taskStateReady,
     taskWorkspacePath,
@@ -3538,6 +3565,7 @@ export function App() {
                 closeSidebarOnNarrow();
                 focusAppContentNextFrame();
               }}
+              onDismiss={dismissAttentionItem}
               onClose={() => {
                 setActivePage("tasks");
                 focusAppContentNextFrame();

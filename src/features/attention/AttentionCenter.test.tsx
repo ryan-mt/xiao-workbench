@@ -25,6 +25,7 @@ const renderCenter = (
     hydrationStatus={hydrationStatus}
     onRetry={() => undefined}
     onOpenTask={() => undefined}
+    onDismiss={() => undefined}
     onClose={() => undefined}
   />,
 );
@@ -48,6 +49,7 @@ describe("AttentionCenter", () => {
     expect(markup).toContain("Review workspace changes");
     expect(markup).toContain("<time dateTime=");
     expect(markup).toContain("Open task");
+    expect(markup).toContain("Dismiss");
   });
 
   it("renders ready empty without claiming exhaustive run history", () => {
@@ -132,6 +134,7 @@ describe("AttentionCenter", () => {
 
     expect(markup).toContain('aria-label="Close attention center"');
     expect(markup).toContain('aria-label="Open task: Review workspace changes"');
+    expect(markup).toContain('aria-label="Dismiss: Review workspace changes"');
     expect(markup).toContain('aria-label="Workspace attention items"');
   });
 });
