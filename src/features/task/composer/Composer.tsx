@@ -726,6 +726,24 @@ export function Composer({
   } else if (runtime.phase === "working") {
     composerPlaceholder = "Xiao is working in another task";
   }
+  const goalStatusLabel = goal?.status === "active"
+    ? currentTaskWorking ? "Working" : hasThread ? "Active" : "Starts next turn"
+    : goal?.status === "paused"
+      ? "Paused"
+      : goal?.status === "blocked"
+        ? "Blocked"
+        : goal?.status === "usageLimited"
+          ? "Usage limited"
+          : goal?.status === "budgetLimited"
+            ? "Budget reached"
+            : goal?.status === "complete"
+              ? "Complete"
+              : null;
+  const goalActionLabel = goal?.status === "active"
+    ? "Pause"
+    : goal?.status === "complete"
+      ? "Restart"
+      : "Resume";
 
   return (
     <div className={`composer-wrap ${planSteps.length ? "has-plan" : ""}`}>
@@ -733,8 +751,9 @@ export function Composer({
         <div className="goal-strip">
           <XiaoIcon name="target" size={15} />
           <span title={goal.objective}>{goal.objective}</span>
-          <button onClick={() => void onGoalSet(goal.objective, goal.status === "paused" ? "active" : "paused")}>
-            {goal.status === "paused" ? "Resume" : "Pause"}
+          {goalStatusLabel && <small className={`goal-strip__status goal-strip__status--${goal.status}`}>{goalStatusLabel}</small>}
+          <button onClick={() => void onGoalSet(goal.objective, goal.status === "active" ? "paused" : "active")}>
+            {goalActionLabel}
           </button>
           <button onClick={() => setGoalEditorOpen(true)}>Edit</button>
           <button aria-label="Clear goal" onClick={() => void onGoalClear()}>

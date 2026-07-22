@@ -1604,6 +1604,34 @@ export function useAgentRuntime(
         return;
       }
 
+      if (message.method === "thread/goal/updated") {
+        const value = message.params?.goal;
+        const goal = value && typeof value === "object" ? value as Record<string, unknown> : null;
+        const status = goal?.status;
+        if (
+          goal &&
+          typeof goal.objective === "string" &&
+          ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(String(status))
+        ) {
+          const nextGoal: AgentGoal = {
+            objective: goal.objective,
+            status: status as AgentGoal["status"],
+            tokenBudget: typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
+            tokensUsed: typeof goal.tokensUsed === "number" ? goal.tokensUsed : 0,
+            timeUsedSeconds: typeof goal.timeUsedSeconds === "number" ? goal.timeUsedSeconds : 0,
+          };
+          syncedGoals.current.set(taskId, `${nextGoal.status}:${nextGoal.objective}`);
+          onTaskGoalChangeRef.current(taskId, nextGoal);
+        }
+        return;
+      }
+
+      if (message.method === "thread/goal/cleared") {
+        syncedGoals.current.delete(taskId);
+        onTaskGoalChangeRef.current(taskId, null);
+        return;
+      }
+
       if (message.method === "turn/started") {
         planCache.current.delete(taskId);
         onPlanChangeRef.current(taskId, null);
@@ -1936,7 +1964,10 @@ export function useAgentRuntime(
           : undefined);
         const pendingEntryId = (route
           ? runProjectionRef.current.runsById[route.runId]?.idempotencyKey
-          : null) ?? pendingUserEntries.current.get(taskId);
+           : null) ?? pendingUserEntries.current.get(taskId);
+        const goalContinues = Boolean(
+          route && runProjectionRef.current.runsById[route.runId]?.status === "running"
+        );
         settleThinking(taskId);
         liveAgentEntries.current.delete(taskId);
         setQuestionRequest((current) => current?.taskId === taskId ? null : current);
@@ -1959,6 +1990,7 @@ export function useAgentRuntime(
         }
         if (
           !manualCompaction &&
+          !goalContinues &&
           !route?.replayed &&
           (!route || !finishedRunIds.current.has(route.runId))
         ) {

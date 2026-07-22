@@ -749,7 +749,7 @@ const isAgentGoal = (value: unknown): value is AgentGoal => {
   const goal = value as Record<string, unknown>;
   return (
     typeof goal.objective === "string" &&
-    ["active", "paused", "complete"].includes(String(goal.status))
+    ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(String(goal.status))
   );
 };
 
@@ -3421,7 +3421,7 @@ export function App() {
       ) : null}
       <AppShell
         sidebarOpen={sidebarOpen}
-        focusRailOverlay={focusView === "browser" || focusView === "files"}
+        focusRailOverlay={focusView === "files"}
         onCloseSidebar={closeSidebar}
         statusBar={
           <StatusBar

@@ -127,7 +127,10 @@ export type AgentSandboxMode = "danger-full-access" | "read-only" | "workspace-w
 
 export type AgentGoal = {
   objective: string;
-  status: "active" | "paused" | "complete";
+  status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+  tokenBudget?: number | null;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
 };
 
 export type AgentPlanStep = {

@@ -456,7 +456,31 @@
 
   .task-header__copy { gap: 7px; }
   .task-header h1 { flex: 1 1 auto; }
-  .task-header__context-row { flex: 0 0 auto; gap: 0; }
+  .task-header__context-row { flex: 0 0 auto; gap: 4px; }
+
+  .task-header__branch {
+    max-width: 120px;
+    padding: 0 6px;
+  }
+
+  .task-header__context span,
+  .task-header__actions .button span {
+    display: none;
+  }
+
+  .task-header__actions { gap: 4px; }
+
+  .task-header__context,
+  .task-header__actions .button {
+    width: 30px;
+    min-width: 30px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+
+@container (max-width: 520px) {
+  .task-header__context-row { gap: 0; }
 
   .task-header__branch {
     width: 30px;
@@ -466,13 +490,9 @@
   }
 
   .task-header__branch span,
-  .task-header__environment,
-  .task-header__context span,
-  .task-header__actions .button span {
+  .task-header__environment {
     display: none;
   }
-
-  .task-header__actions { gap: 4px; }
 
   .task-header__runtime {
     width: 14px;
@@ -480,14 +500,6 @@
     gap: 0;
     padding: 0;
     font-size: 0;
-  }
-
-  .task-header__context,
-  .task-header__actions .button {
-    width: 30px;
-    min-width: 30px;
-    padding: 0;
-    justify-content: center;
   }
 }
 
@@ -2765,6 +2777,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.goal-strip__status {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--muted-strong);
+  font-size: var(--text-micro);
+  font-weight: 650;
+}
+
+.goal-strip__status--active { color: var(--accent); }
+.goal-strip__status--blocked,
+.goal-strip__status--usageLimited,
+.goal-strip__status--budgetLimited { color: var(--warning); }
+.goal-strip__status--complete { color: var(--success); }
 
 .goal-strip button {
   padding: 4px 6px;

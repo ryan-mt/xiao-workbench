@@ -730,6 +730,48 @@ impl XiaoRepository {
                         event: None,
                     });
                 }
+                if current.status == RunStatus::Running
+                    && current
+                        .goal
+                        .as_ref()
+                        .and_then(|goal| goal.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("active")
+                {
+                    let changed = transaction
+                        .execute(
+                            r#"UPDATE runs SET turn_id = ?1, version = version + 1
+                               WHERE id = ?2 AND version = ?3 AND status = 'running'"#,
+                            params![turn_id, run_id, current.version],
+                        )
+                        .map_err(|error| {
+                            format!("Could not bind Xiao goal continuation: {error}")
+                        })?;
+                    if changed != 1 {
+                        return Err("The Xiao run changed before its goal continuation.".to_owned());
+                    }
+                    let key = format!("{generation}/{thread_id}/{turn_id}/started");
+                    let event = append_event(
+                        &transaction,
+                        run_id,
+                        "run.goal_continued",
+                        Some(&key),
+                        &json!({
+                            "runtimeGeneration": generation,
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                        }),
+                    )?;
+                    let run = load_run(&transaction, run_id)?;
+                    mark_task_thread_materialized(&transaction, &run)?;
+                    transaction.commit().map_err(|error| {
+                        format!("Could not commit Xiao goal continuation: {error}")
+                    })?;
+                    return Ok(RunMutation {
+                        run,
+                        event: Some(event),
+                    });
+                }
                 return Err("Only a preparing Xiao run can start a turn.".to_owned());
             }
             if current.cancel_requested {
@@ -946,6 +988,84 @@ impl XiaoRepository {
         })
     }
 
+    pub(crate) fn update_runtime_goal(
+        &self,
+        run_id: &str,
+        goal: Option<&Value>,
+        event_type: &str,
+    ) -> Result<RunMutation, String> {
+        if let Some(goal) = goal {
+            validate_safe_payload(goal)?;
+        }
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Xiao goal update: {error}"))?;
+            let current = load_run(&transaction, run_id)?;
+            if current.status.is_terminal() {
+                return Err("A terminal Xiao run cannot update its goal.".to_owned());
+            }
+            let goal_json = optional_json_string(goal, "runtime goal")?;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE runs SET goal_json = ?1, version = version + 1
+                       WHERE id = ?2 AND version = ?3"#,
+                    params![goal_json, run_id, current.version],
+                )
+                .map_err(|error| format!("Could not update Xiao run goal: {error}"))?;
+            if changed != 1 {
+                return Err("The Xiao run changed before its goal update.".to_owned());
+            }
+            transaction
+                .execute(
+                    r#"UPDATE tasks SET goal_json = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3"#,
+                    params![goal_json, current.workspace_id, current.task_id],
+                )
+                .map_err(|error| format!("Could not update Xiao task goal: {error}"))?;
+            let event = append_event(
+                &transaction,
+                run_id,
+                event_type,
+                None,
+                &json!({ "goal": goal }),
+            )?;
+            let run = load_run(&transaction, run_id)?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Xiao goal update: {error}"))?;
+            Ok(RunMutation {
+                run,
+                event: Some(event),
+            })
+        })
+    }
+
+    pub(crate) fn update_task_goal_from_run(
+        &self,
+        run_id: &str,
+        goal: Option<&Value>,
+    ) -> Result<(), String> {
+        if let Some(goal) = goal {
+            validate_safe_payload(goal)?;
+        }
+        self.with_connection(|connection| {
+            let current = load_run(connection, run_id)?;
+            connection
+                .execute(
+                    r#"UPDATE tasks SET goal_json = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3"#,
+                    params![
+                        optional_json_string(goal, "runtime task goal")?,
+                        current.workspace_id,
+                        current.task_id,
+                    ],
+                )
+                .map_err(|error| format!("Could not update idle Xiao task goal: {error}"))?;
+            Ok(())
+        })
+    }
+
     pub(crate) fn find_active_run_route(
         &self,
         environment_id: &str,
@@ -974,6 +1094,146 @@ impl XiaoRepository {
                 [record] => Ok(Some(record.clone())),
                 _ => Err("Multiple active Xiao runs share one runtime thread.".to_owned()),
             }
+        })
+    }
+
+    pub(crate) fn find_latest_runtime_thread_run(
+        &self,
+        environment_id: &str,
+        generation: u64,
+        thread_id: &str,
+    ) -> Result<Option<RunRecord>, String> {
+        let generation = generation_to_i64(generation)?;
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    &format!(
+                        "{RUN_SELECT} WHERE r.execution_environment_id = ?1 AND r.runtime_generation = ?2 AND r.thread_id = ?3 ORDER BY r.queued_at DESC, r.id DESC LIMIT 1"
+                    ),
+                    params![environment_id, generation, thread_id],
+                    run_from_row,
+                )
+                .optional()
+                .map_err(|error| format!("Could not query Xiao runtime thread owner: {error}"))?
+                .map(StoredRunRow::decode)
+                .transpose()
+        })
+    }
+
+    pub(crate) fn adopt_runtime_goal_turn(
+        &self,
+        run: NewRun,
+        attachment: &RuntimeAttachment,
+        turn_id: &str,
+    ) -> Result<RunMutation, String> {
+        let generation = generation_to_i64(attachment.generation)?;
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Xiao goal turn adoption: {error}"))?;
+            let queued = Self::enqueue_run_in_transaction(&transaction, &run)?;
+            if queued.event.is_none() {
+                if queued.run.status == RunStatus::Running
+                    && queued.run.turn_id.as_deref() == Some(turn_id)
+                {
+                    transaction.commit().map_err(|error| {
+                        format!("Could not finish duplicate Xiao goal turn adoption: {error}")
+                    })?;
+                    return Ok(RunMutation {
+                        run: queued.run,
+                        event: None,
+                    });
+                }
+                return Err("The Xiao goal turn idempotency key is already in use.".to_owned());
+            }
+            let preparing = transition(
+                &transaction,
+                &run.id,
+                Some(queued.run.version),
+                RunStatus::Preparing,
+                "run.preparing",
+                Some("lifecycle:preparing"),
+                &json!({ "source": "goalContinuation" }),
+            )?;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE runs SET runtime_generation = ?1, thread_id = ?2,
+                        thread_source = ?3, cli_version = ?4, version = version + 1
+                       WHERE id = ?5 AND version = ?6 AND status = 'preparing'"#,
+                    params![
+                        generation,
+                        attachment.thread_id,
+                        attachment.thread_source,
+                        attachment.cli_version,
+                        run.id,
+                        preparing.run.version,
+                    ],
+                )
+                .map_err(|error| format!("Could not attach adopted Xiao goal turn: {error}"))?;
+            if changed != 1 {
+                return Err("The Xiao goal turn changed during runtime attachment.".to_owned());
+            }
+            let binding = XiaoThreadBinding {
+                thread_id: attachment.thread_id.clone(),
+                persistence: XiaoThreadPersistence::Persistent,
+                materialized: attachment.materialized,
+                thread_source: Some(attachment.thread_source.clone()),
+                cli_version: Some(attachment.cli_version.clone()),
+            };
+            transaction
+                .execute(
+                    r#"UPDATE tasks SET thread_binding_json = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3"#,
+                    params![
+                        json_string(&binding, "persistent thread binding")?,
+                        run.workspace_id,
+                        run.task_id,
+                    ],
+                )
+                .map_err(|error| format!("Could not persist adopted goal thread: {error}"))?;
+            append_event(
+                &transaction,
+                &run.id,
+                "run.runtime_attached",
+                Some(&format!("runtime:{generation}:{}", attachment.thread_id)),
+                &json!({
+                    "runtimeGeneration": attachment.generation,
+                    "threadId": attachment.thread_id,
+                    "threadSource": attachment.thread_source,
+                    "cliVersion": attachment.cli_version,
+                }),
+            )?;
+            let attached = load_run(&transaction, &run.id)?;
+            transaction
+                .execute(
+                    r#"UPDATE runs SET turn_id = ?1 WHERE id = ?2 AND version = ?3
+                       AND status = 'preparing'"#,
+                    params![turn_id, run.id, attached.version],
+                )
+                .map_err(|error| format!("Could not bind adopted Xiao goal turn: {error}"))?;
+            let key = format!(
+                "{}/{}/{turn_id}/started",
+                attachment.generation, attachment.thread_id
+            );
+            let mutation = transition(
+                &transaction,
+                &run.id,
+                Some(attached.version),
+                RunStatus::Running,
+                "run.running",
+                Some(&key),
+                &json!({
+                    "runtimeGeneration": attachment.generation,
+                    "threadId": attachment.thread_id,
+                    "turnId": turn_id,
+                    "source": "goalContinuation",
+                }),
+            )?;
+            mark_task_thread_materialized(&transaction, &mutation.run)?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Xiao goal turn adoption: {error}"))?;
+            Ok(mutation)
         })
     }
 
@@ -3120,6 +3380,117 @@ mod tests {
         let unchanged = repository.get_run(&second.id).unwrap();
         assert_eq!(unchanged.status, RunStatus::Preparing);
         assert!(unchanged.turn_id.is_none());
+    }
+
+    #[test]
+    fn active_goal_rebinds_the_same_run_to_automatic_continuation_turns() {
+        let directory = TestDirectory::new("goal-continuation");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let mut input = new_run(&repository, &workspace, "task-a", "goal");
+        input.goal = Some(json!({
+            "objective": "Finish the goal",
+            "status": "active",
+        }));
+        let run = repository.enqueue_run(input).unwrap().run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 3,
+                    thread_id: "thread-goal".to_owned(),
+                    thread_source: "xiao-workbench".to_owned(),
+                    cli_version: "codex-test".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 3, "thread-goal", "turn-1")
+            .unwrap();
+
+        let continued = repository
+            .mark_run_running(&run.id, 3, "thread-goal", "turn-2")
+            .unwrap();
+        assert_eq!(continued.run.status, RunStatus::Running);
+        assert_eq!(continued.run.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(continued.event.unwrap().event_type, "run.goal_continued");
+
+        repository
+            .update_runtime_goal(
+                &run.id,
+                Some(&json!({
+                    "objective": "Finish the goal",
+                    "status": "paused",
+                })),
+                "agent.thread/goal/updated",
+            )
+            .unwrap();
+        assert!(repository
+            .mark_run_running(&run.id, 3, "thread-goal", "turn-3")
+            .is_err());
+    }
+
+    #[test]
+    fn idle_goal_turn_is_adopted_as_a_running_xiao_run() {
+        let directory = TestDirectory::new("goal-adoption");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let mut first_input = new_run(&repository, &workspace, "task-a", "first");
+        first_input.goal = Some(json!({
+            "objective": "Finish the goal",
+            "status": "active",
+        }));
+        let first = repository.enqueue_run(first_input).unwrap().run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        let attachment = RuntimeAttachment {
+            generation: 4,
+            thread_id: "thread-goal".to_owned(),
+            thread_source: "xiao-workbench".to_owned(),
+            cli_version: "codex-test".to_owned(),
+            materialized: true,
+        };
+        repository
+            .attach_run_runtime(&first.id, &attachment)
+            .unwrap();
+        repository
+            .mark_run_running(&first.id, 4, "thread-goal", "turn-1")
+            .unwrap();
+        repository
+            .transition_run(
+                &first.id,
+                RunStatus::Completed,
+                "run.completed",
+                Some("4/thread-goal/turn-1/completed"),
+                &json!({}),
+            )
+            .unwrap();
+
+        let mut adopted_input = new_run(&repository, &workspace, "task-a", "goal-adopted");
+        adopted_input.parent_run_id = Some(first.id.clone());
+        adopted_input.goal = Some(json!({
+            "objective": "Finish the goal",
+            "status": "active",
+        }));
+        let adopted = repository
+            .adopt_runtime_goal_turn(adopted_input, &attachment, "turn-2")
+            .unwrap();
+
+        assert_eq!(adopted.run.status, RunStatus::Running);
+        assert_eq!(
+            adopted.run.parent_run_id.as_deref(),
+            Some(first.id.as_str())
+        );
+        assert_eq!(adopted.run.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(
+            repository
+                .find_active_run_route(&first.execution_environment_id, 4, "thread-goal")
+                .unwrap()
+                .unwrap()
+                .id,
+            adopted.run.id
+        );
     }
 
     #[test]

@@ -26,6 +26,11 @@ use super::models::{
     RunEventRecord, RunProtocolEnvelope, RunRecord, RunServiceErrorEnvelope, RunSnapshot,
     RunStatus, RunUpdateEnvelope, RuntimeAttachment, SteerRunRequest,
 };
+use super::prompt::{compile_additional_context, XiaoPromptContext};
+#[cfg(test)]
+use super::prompt::{
+    COMMAND_FAILURE_RECOVERY_INSTRUCTIONS, FULL_ACCESS_INSTRUCTIONS, MANAGED_WORKTREE_INSTRUCTIONS,
+};
 use super::repository::{
     bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent,
     RunMutation, RuntimeTurnSettlement,
@@ -33,10 +38,6 @@ use super::repository::{
 use super::RUN_CONCURRENCY_LIMIT;
 
 const THREAD_SOURCE: &str = "xiao-workbench";
-const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
-const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. Do not use a check-only command as a probe when its expected nonzero exit would merely tell you to run the corresponding formatter or fixer; after editing, run the formatter or fixer first and reserve its check-only form for final verification. Do not batch a command that may fail as part of normal probing with independent checks, because one expected failure makes the whole batch appear failed. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
-const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
-const FULL_ACCESS_INSTRUCTIONS: &str = "This Xiao turn runs with the sandbox disabled. Xiao does not restrict filesystem, process, or network access to the execution root. The execution root and runtime workspace roots identify the active project; they are not access boundaries. Use access outside the project only when it is in scope for the user's task. Full access does not make an unavailable tool, disconnected integration, or external service available.";
 
 pub struct RunService {
     notify: Arc<Notify>,
@@ -775,7 +776,12 @@ async fn prepare_claimed_run(app: AppHandle, claimed: RunRecord) {
         )
     };
     match mutation {
-        Ok(mutation) => emit_update(&app, &mutation, None),
+        Ok(mutation) => {
+            emit_update(&app, &mutation, None);
+            if let Err(error) = sync_run_goal(&runtime, &mutation.run).await {
+                settle_accepted_turn_failure(&app, &run, &runtime, &error);
+            }
+        }
         Err(error) => {
             let current = app.state::<XiaoRepository>().get_run(&run.id);
             if current
@@ -873,24 +879,39 @@ async fn prepare_before_turn(
         repository.attach_run_runtime(&claimed.id, &attachment)?
     };
     emit_update(app, &mutation, None);
-    let run = mutation.run;
-    if let Some(goal) = run.goal.as_ref() {
-        let objective = goal.get("objective").and_then(Value::as_str);
-        let status = goal.get("status").and_then(Value::as_str);
-        if let (Some(objective), Some(status)) = (objective, status) {
-            runtime
-                .request(
-                    "thread/goal/set".to_owned(),
-                    json!({
-                        "threadId": session.thread_id,
-                        "objective": objective,
-                        "status": status,
-                    }),
-                )
-                .await?;
-        }
-    }
-    Ok((run, runtime, session))
+    Ok((mutation.run, runtime, session))
+}
+
+async fn sync_run_goal(
+    runtime: &Arc<crate::agent::runtime::AgentRuntime>,
+    run: &RunRecord,
+) -> Result<(), String> {
+    let Some(goal) = run.goal.as_ref() else {
+        return Ok(());
+    };
+    let objective = goal
+        .get("objective")
+        .and_then(Value::as_str)
+        .ok_or("The Xiao goal has no objective.")?;
+    let status = goal
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or("The Xiao goal has no status.")?;
+    let thread_id = run
+        .thread_id
+        .as_deref()
+        .ok_or("The Xiao run has no thread for goal synchronization.")?;
+    runtime
+        .request(
+            "thread/goal/set".to_owned(),
+            json!({
+                "threadId": thread_id,
+                "objective": objective,
+                "status": status,
+            }),
+        )
+        .await?;
+    Ok(())
 }
 
 fn effective_reasoning_effort(
@@ -984,43 +1005,13 @@ fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Resul
             },
         }),
     );
-    let mut additional_context = Map::new();
-    if run.mode != "plan" {
-        additional_context.extend([
-            (
-                "xiao.plan-progress".to_owned(),
-                json!({
-                    "kind": "application",
-                    "value": PLAN_PROGRESS_INSTRUCTIONS,
-                }),
-            ),
-            (
-                "xiao.command-failure-recovery".to_owned(),
-                json!({
-                    "kind": "application",
-                    "value": COMMAND_FAILURE_RECOVERY_INSTRUCTIONS,
-                }),
-            ),
-        ]);
-        if run.managed_worktree_id.is_some() {
-            additional_context.insert(
-                "xiao.managed-worktree".to_owned(),
-                json!({
-                    "kind": "application",
-                    "value": MANAGED_WORKTREE_INSTRUCTIONS,
-                }),
-            );
-        }
-    }
-    if run.sandbox_mode == "danger-full-access" {
-        additional_context.insert(
-            "xiao.full-access".to_owned(),
-            json!({
-                "kind": "application",
-                "value": FULL_ACCESS_INSTRUCTIONS,
-            }),
-        );
-    }
+    let additional_context = compile_additional_context(XiaoPromptContext {
+        default_mode: run.mode != "plan",
+        managed_worktree: run.managed_worktree_id.is_some(),
+        full_access: run.sandbox_mode == "danger-full-access",
+        active_goal: run_goal_is_active(run),
+        verification_contract: run.acceptance_contract_snapshot.is_some(),
+    });
     if !additional_context.is_empty() {
         params.insert(
             "additionalContext".to_owned(),
@@ -1092,15 +1083,110 @@ fn apply_runtime_message(
     let Some(thread_id) = read_thread_id(&message) else {
         return Ok(());
     };
+    let turn_id = read_turn_id(&message);
+    let item_id = read_item_id(&message);
     let route = {
         let repository = app.state::<XiaoRepository>();
         repository.find_active_run_route(environment_id, generation, thread_id)?
     };
+    if route.is_none() && matches!(method, "thread/goal/updated" | "thread/goal/cleared") {
+        let owner = app
+            .state::<XiaoRepository>()
+            .find_latest_runtime_thread_run(environment_id, generation, thread_id)?;
+        if let Some(owner) = owner {
+            let goal = if method == "thread/goal/updated" {
+                Some(
+                    message
+                        .get("params")
+                        .and_then(|params| params.get("goal"))
+                        .ok_or("Codex thread/goal/updated did not include a goal.")?,
+                )
+            } else {
+                None
+            };
+            app.state::<XiaoRepository>()
+                .update_task_goal_from_run(&owner.id, goal)?;
+        }
+        return Ok(());
+    }
+    if route.is_none() && method == "turn/started" {
+        let turn_id = turn_id.ok_or("Codex turn/started did not include a turn id.")?;
+        let owner = app
+            .state::<XiaoRepository>()
+            .find_latest_runtime_thread_run(environment_id, generation, thread_id)?;
+        if let Some(owner) = owner {
+            let defaults = app
+                .state::<XiaoRepository>()
+                .run_task_defaults(&owner.workspace_path, &owner.task_id)?;
+            let active_goal = defaults
+                .goal
+                .as_ref()
+                .filter(|goal| goal.get("status").and_then(Value::as_str) == Some("active"));
+            if let Some(goal) = active_goal {
+                let objective = goal
+                    .get("objective")
+                    .and_then(Value::as_str)
+                    .ok_or("The active Xiao goal has no objective.")?;
+                let prompt = format!("Continue working toward the active goal: {objective}");
+                let attachment = RuntimeAttachment {
+                    generation,
+                    thread_id: thread_id.to_owned(),
+                    thread_source: owner
+                        .thread_source
+                        .clone()
+                        .unwrap_or_else(|| THREAD_SOURCE.to_owned()),
+                    cli_version: owner
+                        .cli_version
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_owned()),
+                    materialized: true,
+                };
+                let mutation = app.state::<XiaoRepository>().adopt_runtime_goal_turn(
+                    NewRun {
+                        id: new_uuid_v7(),
+                        workspace_id: defaults.workspace_id,
+                        task_id: owner.task_id.clone(),
+                        idempotency_key: format!("goal:{generation}:{thread_id}:{turn_id}"),
+                        parent_run_id: Some(owner.id),
+                        candidate_group_id: None,
+                        routine_occurrence_id: None,
+                        execution_environment_id: owner.execution_environment_id,
+                        execution_root: owner.execution_root,
+                        managed_worktree_id: owner.managed_worktree_id,
+                        prompt: prompt.clone(),
+                        input: vec![json!({ "type": "text", "text": prompt })],
+                        history: Vec::new(),
+                        model: defaults.model.or(owner.model),
+                        reasoning_effort: defaults.reasoning_effort.or(owner.reasoning_effort),
+                        service_tier: owner.service_tier,
+                        mode: defaults.mode,
+                        approval_policy: defaults.approval_policy,
+                        sandbox_mode: defaults.sandbox_mode,
+                        goal: defaults.goal,
+                        queued_at: now_millis()?,
+                    },
+                    &attachment,
+                    turn_id,
+                )?;
+                if let Err(error) = app.state::<RunService>().begin_checkpoint(&mutation.run) {
+                    emit_service_error_for_workspace(
+                        app,
+                        Some(&mutation.run.workspace_path),
+                        &format!("Undo checkpoint unavailable for goal turn: {error}"),
+                    );
+                }
+                let safe_message = safe_protocol_message(&message, &mutation.run.execution_root);
+                emit_update(app, &mutation, None);
+                if mutation.event.is_some() {
+                    emit_protocol(app, &mutation, generation, &safe_message, None, None);
+                }
+                return Ok(());
+            }
+        }
+    }
     let Some(route) = route else {
         return Ok(());
     };
-    let turn_id = read_turn_id(&message);
-    let item_id = read_item_id(&message);
     validate_message_correlation(method, &route, turn_id, item_id)?;
     let safe_message = if is_live_only_method(method) {
         live_protocol_message(&message, &route.execution_root)
@@ -1108,12 +1194,53 @@ fn apply_runtime_message(
         safe_protocol_message(&message, &route.execution_root)
     };
 
+    if method == "thread/goal/updated" {
+        let goal = message
+            .get("params")
+            .and_then(|params| params.get("goal"))
+            .ok_or("Codex thread/goal/updated did not include a goal.")?;
+        let mutation = app.state::<XiaoRepository>().update_runtime_goal(
+            &route.id,
+            Some(goal),
+            "agent.thread/goal/updated",
+        )?;
+        emit_update(app, &mutation, None);
+        emit_protocol(app, &mutation, generation, &safe_message, None, None);
+        return Ok(());
+    }
+
+    if method == "thread/goal/cleared" {
+        let mutation = app.state::<XiaoRepository>().update_runtime_goal(
+            &route.id,
+            None,
+            "agent.thread/goal/cleared",
+        )?;
+        emit_update(app, &mutation, None);
+        emit_protocol(app, &mutation, generation, &safe_message, None, None);
+        return Ok(());
+    }
+
     if method == "turn/started" {
         let turn_id = turn_id.ok_or("Codex turn/started did not include a turn id.")?;
+        let goal_continuation = route.status == RunStatus::Running
+            && route
+                .turn_id
+                .as_deref()
+                .is_some_and(|current| current != turn_id)
+            && run_goal_is_active(&route);
         let mutation = {
             let repository = app.state::<XiaoRepository>();
             repository.mark_run_running(&route.id, generation, thread_id, turn_id)?
         };
+        if goal_continuation {
+            if let Err(error) = app.state::<RunService>().begin_checkpoint(&mutation.run) {
+                emit_service_error_for_workspace(
+                    app,
+                    Some(&mutation.run.workspace_path),
+                    &format!("Undo checkpoint unavailable for goal continuation: {error}"),
+                );
+            }
+        }
         emit_update(app, &mutation, None);
         if mutation.event.is_some() {
             emit_protocol(app, &mutation, generation, &safe_message, None, None);
@@ -1204,6 +1331,42 @@ fn apply_runtime_message(
         let turn_diff = turn_checkpoint
             .as_ref()
             .map(|checkpoint| checkpoint.patch.clone());
+        if runtime_status == RunStatus::Completed && run_goal_is_active(&route) {
+            if let Some(checkpoint) = turn_checkpoint.as_ref() {
+                if let Err(error) = app
+                    .state::<XiaoRepository>()
+                    .record_turn_checkpoint(&route.id, turn_id, checkpoint)
+                {
+                    emit_service_error_for_workspace(
+                        app,
+                        Some(&route.workspace_path),
+                        &format!("Could not persist goal turn checkpoint: {error}"),
+                    );
+                }
+            }
+            let event_key =
+                lifecycle_event_key(method, generation, thread_id, Some(turn_id), item_id);
+            let mutation = app.state::<XiaoRepository>().record_run_event(
+                &route.id,
+                CorrelatedRunEvent {
+                    generation,
+                    thread_id,
+                    turn_id: Some(turn_id),
+                    event_type: "agent.turn/completed",
+                    event_key: event_key.as_deref(),
+                    payload: &json!({
+                        "protocol": safe_message,
+                        "turnDiff": turn_diff.as_deref(),
+                        "goalContinues": true,
+                    }),
+                },
+            )?;
+            emit_update(app, &mutation, None);
+            if mutation.event.is_some() {
+                emit_protocol(app, &mutation, generation, &safe_message, turn_diff, None);
+            }
+            return Ok(());
+        }
         let mutation = {
             let payload = json!({
                 "protocol": safe_message,
@@ -1479,6 +1642,7 @@ fn validate_message_correlation(
             .turn_id
             .as_deref()
             .is_some_and(|expected| expected != turn_id)
+            && !run_goal_is_active(run)
         {
             return Err("A late Codex turn/start targeted another Xiao turn.".to_owned());
         }
@@ -1494,6 +1658,14 @@ fn validate_message_correlation(
         return Err("Codex item event did not include an item id.".to_owned());
     }
     Ok(())
+}
+
+fn run_goal_is_active(run: &RunRecord) -> bool {
+    run.goal
+        .as_ref()
+        .and_then(|goal| goal.get("status"))
+        .and_then(Value::as_str)
+        == Some("active")
 }
 
 fn pending_input_kind(method: &str) -> Option<PendingInputKind> {
@@ -2160,6 +2332,10 @@ mod tests {
         );
         assert!(params.get("additionalContext").is_some());
         assert_eq!(
+            params["additionalContext"]["xiao.execution-lifecycle"]["kind"],
+            "application"
+        );
+        assert_eq!(
             params["additionalContext"]["xiao.command-failure-recovery"]["value"],
             COMMAND_FAILURE_RECOVERY_INSTRUCTIONS
         );
@@ -2258,6 +2434,21 @@ mod tests {
         assert!(
             validate_message_correlation("turn/started", &running, Some("late-turn"), None,)
                 .is_err()
+        );
+        running.goal = Some(json!({
+            "objective": "Finish the goal",
+            "status": "active",
+        }));
+        let goal_params = turn_start_params(&running, &session).unwrap();
+        assert!(
+            goal_params["additionalContext"]["xiao.goal-lifecycle"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("one real iteration")
+        );
+        assert!(
+            validate_message_correlation("turn/started", &running, Some("next-turn"), None,)
+                .is_ok()
         );
         assert!(validate_message_correlation(
             "item/completed",
