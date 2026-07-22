@@ -1,9 +1,8 @@
 import Image from "next/image";
+import Link from "next/link";
 import {
-  ArrowDown,
   ArrowRight,
   CheckCircle,
-  ClockCountdown,
   Code,
   FolderOpen,
   GithubLogo,
@@ -11,288 +10,102 @@ import {
   TerminalWindow,
   TreeStructure,
 } from "@phosphor-icons/react/dist/ssr";
+import { releaseUrl, repoUrl } from "@/lib/site";
 
-const repoUrl = "https://github.com/ryan-mt/xiao-workbench";
-const releaseUrl = `${repoUrl}/releases`;
-
-const outcomes = [
-  {
-    icon: Code,
-    title: "Follow the whole task",
-    body: "Conversation, tool activity, approvals, plans, and follow-ups stay in one readable timeline.",
-  },
-  {
-    icon: TerminalWindow,
-    title: "Keep tools within reach",
-    body: "Open files, diffs, a real terminal, and the browser without replacing the task in front of you.",
-  },
-  {
-    icon: ListChecks,
-    title: "Review before done",
-    body: "Attach acceptance gates and evidence to the work so completion is something you can inspect.",
-  },
-];
-
-const workbenchItems = [
-  {
-    icon: FolderOpen,
-    title: "Files and changes",
-    body: "Read project files, inspect diffs, and keep every action scoped to the workspace you opened.",
-  },
-  {
-    icon: TerminalWindow,
-    title: "Terminal and browser",
-    body: "Use a native terminal and open references beside the task instead of switching to another app.",
-  },
-  {
-    icon: TreeStructure,
-    title: "Branches and worktrees",
-    body: "Give parallel work an isolated Git worktree while keeping its relationship to the main project clear.",
-  },
-  {
-    icon: ClockCountdown,
-    title: "Routines and history",
-    body: "Schedule repeatable work, return to completed runs, and keep handoffs organized by project.",
-  },
-];
-
-const workflow = [
-  {
-    icon: FolderOpen,
-    title: "Open a project",
-    body: "Xiao scopes files, Git, and terminal work to the folder you choose.",
-  },
-  {
-    icon: Code,
-    title: "Ask Codex",
-    body: "Start a task and follow the conversation, plan, and tool activity as it happens.",
-  },
-  {
-    icon: CheckCircle,
-    title: "Review and ship",
-    body: "Inspect changes and verification evidence before you keep the result.",
-  },
+const capabilities = [
+  { icon: Code, title: "The task stays central", body: "Conversation, plans, tool activity, and approvals share one readable timeline." },
+  { icon: FolderOpen, title: "Context stays attached", body: "Files, diffs, and history remain tied to the workspace you opened." },
+  { icon: TerminalWindow, title: "Tools wait off-stage", body: "A native terminal and browser slide in without replacing the work." },
+  { icon: ListChecks, title: "Done comes with proof", body: "Acceptance gates and evidence make the result inspectable before you keep it." },
 ];
 
 export default function Home() {
   return (
-    <main>
-      <header className="site-header shell">
-        <a className="brand" href="#top" aria-label="Xiao home">
-          <Image src="/xiao-mark.png" alt="" width={38} height={38} priority />
-          <span>Xiao</span>
-        </a>
-        <nav aria-label="Primary navigation">
-          <a href="#inside">Inside Xiao</a>
-          <a href="#workbench">Workbench</a>
-          <a href="#principles">Why local</a>
-          <a className="nav-download" href={releaseUrl} target="_blank" rel="noreferrer">
-            Download
-            <ArrowDown size={15} weight="bold" />
-          </a>
-        </nav>
-      </header>
-
-      <section className="hero shell" id="top">
-        <div className="hero-copy">
-          <p className="eyebrow">Local Codex workspace for Windows</p>
-          <h1>Keep the task in focus.</h1>
-          <p className="hero-lede">
-            Xiao keeps Codex, Git, files, terminal, browser, and verification together on your machine.
-          </p>
+    <>
+      <section className="home-hero shell">
+        <div className="home-hero-copy">
+          <p className="eyebrow">Field note 001 · Windows beta</p>
+          <h1>Agent work,<br />without the noise.</h1>
+          <p>Xiao keeps Codex and the tools around it on one calm, local desktop.</p>
           <div className="hero-actions">
-            <a className="button button-primary" href={releaseUrl} target="_blank" rel="noreferrer">
-              Download for Windows
-              <ArrowDown size={18} weight="bold" />
-            </a>
-            <a className="button button-quiet" href={repoUrl} target="_blank" rel="noreferrer">
-              <GithubLogo size={18} weight="fill" />
-              View source
-            </a>
+            <a className="button primary" href={releaseUrl} target="_blank" rel="noreferrer">Get the beta <ArrowRight size={18} weight="bold" /></a>
+            <a className="button secondary" href={repoUrl} target="_blank" rel="noreferrer"><GithubLogo size={18} weight="fill" /> Read the code</a>
           </div>
         </div>
-
-        <figure className="product-visual">
-          <div className="product-frame">
-            <Image
-              src="/xiao-workbench-preview.png"
-              alt="Xiao Workbench interface with a focused task composer and local workspace controls"
-              width={1440}
-              height={900}
-              priority
-              sizes="(max-width: 820px) 100vw, 58vw"
-            />
+        <figure className="hero-product">
+          <div className="window-frame">
+            <div className="window-bar"><span></span><span></span><span></span><small>Xiao · New task</small></div>
+            <Image src="/xiao-depth-engine.png" alt="New task screen in Xiao Workbench" width={1586} height={992} priority sizes="(max-width: 900px) 100vw, 68vw" />
           </div>
-          <figcaption>Interface preview. Live tasks run in the native app.</figcaption>
+          <figcaption>New task · local workspace · beta build</figcaption>
         </figure>
       </section>
 
-      <section className="proof shell" aria-label="Xiao product principles">
-        <p>Built for a quieter way to work.</p>
-        <div className="proof-items">
-          <span>Windows desktop</span>
-          <span>Local-first</span>
-          <span>MIT open source</span>
-          <span>No Xiao telemetry</span>
+      <section className="fact-strip" aria-label="Product facts">
+        <div className="shell fact-grid">
+          <span><strong>Local-first</strong> Runtime on your machine</span>
+          <span><strong>Open source</strong> MIT License</span>
+          <span><strong>Windows</strong> Desktop beta</span>
+          <span><strong>No Xiao telemetry</strong> Nothing extra watching</span>
         </div>
       </section>
 
-      <section className="outcomes shell section" id="inside">
-        <div className="section-heading">
+      <section className="section shell">
+        <div className="section-title narrow">
           <h2>One task. Everything around it.</h2>
-          <p>
-            Xiao keeps the work centered while the supporting tools stay close enough to open when you need them.
-          </p>
+          <p>Xiao does not turn the whole screen into a dashboard. It reveals tools only when the work calls for them.</p>
         </div>
-        <div className="outcome-grid">
-          {outcomes.map(({ icon: Icon, title, body }, index) => (
-            <article className={`outcome outcome-${index + 1}`} key={title}>
-              <Icon size={28} weight="duotone" aria-hidden="true" />
-              <div>
-                <h3>{title}</h3>
-                <p>{body}</p>
-              </div>
+        <div className="capability-mosaic">
+          {capabilities.map(({ icon: Icon, title, body }, index) => (
+            <article className={`mosaic-card card-${index + 1}`} key={title}>
+              <Icon size={29} weight="duotone" aria-hidden="true" />
+              <div><h3>{title}</h3><p>{body}</p></div>
             </article>
           ))}
         </div>
       </section>
 
-      <section className="workbench shell section" id="workbench">
-        <div className="workbench-heading">
-          <h2>The tools move. The task stays.</h2>
-          <p>
-            The Focus Rail opens beside the conversation, so checking a diff or running a command never hides the work.
-          </p>
-        </div>
-        <div className="capability-list">
-          {workbenchItems.map(({ icon: Icon, title, body }) => (
-            <article className="capability" key={title}>
-              <Icon size={25} weight="duotone" aria-hidden="true" />
-              <div>
-                <h3>{title}</h3>
-                <p>{body}</p>
-              </div>
-            </article>
-          ))}
+      <section className="section workflow-section">
+        <div className="shell workflow-grid">
+          <div className="workflow-copy">
+            <h2>Prompt to proof.</h2>
+            <p>A legible path through the work, with a human still making the decisions.</p>
+            <Link className="text-link" href="/features">Open the workbench <ArrowRight size={17} weight="bold" /></Link>
+          </div>
+          <ol className="workflow-steps">
+            <li><span>01</span><div><h3>Open a workspace</h3><p>Give files, Git, and the terminal a clear project boundary.</p></div></li>
+            <li><span>02</span><div><h3>Hand Codex the task</h3><p>Follow the plan, tool activity, and approvals while work is moving.</p></div></li>
+            <li><span>03</span><div><h3>Inspect what survived</h3><p>Read the diff, run the gates, and review the evidence before keeping it.</p></div></li>
+          </ol>
         </div>
       </section>
 
-      <section className="verification section">
-        <div className="shell verification-layout">
-          <div className="verification-mark" aria-hidden="true">
-            <CheckCircle size={112} weight="duotone" />
-            <span>Evidence attached</span>
-          </div>
-          <div className="verification-copy">
-            <h2>Done should mean checked.</h2>
-            <p>
-              Define the expected result, run the checks that matter, and review the evidence beside the task.
-            </p>
-            <div className="verification-points">
-              <span>Set acceptance gates</span>
-              <span>Run project checks</span>
-              <span>Inspect artifacts and failures</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="local shell section" id="principles">
-        <div className="local-media">
-          <Image
-            src="/xiao-local-first.png"
-            alt="Xiao mushroom mascot beside a laptop, project folder, and local storage drive"
-            width={1484}
-            height={1060}
-            sizes="(max-width: 820px) 100vw, 52vw"
-          />
+      <section className="section shell local-section">
+        <div className="local-visual">
+          <Image src="/xiao-local-first.png" alt="Xiao mascot beside a laptop and local storage drive" width={1484} height={1060} sizes="(max-width: 800px) 100vw, 100vw" />
         </div>
         <div className="local-copy">
-          <h2>Local by design.</h2>
-          <p>
-            Xiao connects to the Codex app server installed on your computer. It does not add another remote agent runtime.
-          </p>
-          <div className="principles" role="list">
-            <div role="listitem">
-              <CheckCircle size={21} weight="fill" />
-              <span>Workspace and Git actions stay scoped to the project you opened.</span>
-            </div>
-            <div role="listitem">
-              <CheckCircle size={21} weight="fill" />
-              <span>Xiao adds no analytics or telemetry of its own.</span>
-            </div>
-            <div role="listitem">
-              <CheckCircle size={21} weight="fill" />
-              <span>The MIT-licensed source is open for inspection.</span>
-            </div>
-          </div>
+          <p className="eyebrow">Local by design</p>
+          <h2>Your work stays close.</h2>
+          <p>Xiao talks to the Codex app server installed on your computer. It does not hide another runtime behind a remote web app.</p>
+          <ul className="check-list">
+            <li><CheckCircle size={21} weight="fill" /> Workspace and Git actions stay scoped to the project.</li>
+            <li><CheckCircle size={21} weight="fill" /> Xiao adds no analytics or telemetry of its own.</li>
+            <li><CheckCircle size={21} weight="fill" /> The MIT-licensed source is open to inspect and build.</li>
+          </ul>
         </div>
       </section>
 
-      <section className="flow shell section" id="workflow">
-        <div className="section-heading flow-heading">
-          <h2>From prompt to proof.</h2>
-          <p>Start with the project. Stay with the task. Keep only what survives review.</p>
+      <section className="section shell open-callout">
+        <div>
+          <TreeStructure size={38} weight="duotone" />
+          <h2>Built in the open.</h2>
         </div>
-        <div className="flow-grid">
-          {workflow.map(({ icon: Icon, title, body }) => (
-            <article className="flow-item" key={title}>
-              <Icon size={25} weight="duotone" aria-hidden="true" />
-              <h3>{title}</h3>
-              <p>{body}</p>
-            </article>
-          ))}
+        <div>
+          <p>Follow the work through commits, report friction in issues, and send focused changes to the dev branch.</p>
+          <Link className="button secondary" href="/open-source">Enter the project <ArrowRight size={18} weight="bold" /></Link>
         </div>
       </section>
-
-      <section className="download shell section" id="download" aria-label="Download Xiao">
-        <div className="download-intro">
-          <p className="eyebrow">Windows beta</p>
-          <h2>Make room for the work.</h2>
-          <p>
-            Install Xiao, sign in through the Codex CLI, and open the project you want to work on.
-          </p>
-          <div className="download-actions">
-            <a className="button button-primary" href={releaseUrl} target="_blank" rel="noreferrer">
-              Download for Windows
-              <ArrowDown size={18} weight="bold" />
-            </a>
-            <a className="text-link" href={repoUrl} target="_blank" rel="noreferrer">
-              Read the source
-              <ArrowRight size={16} weight="bold" />
-            </a>
-          </div>
-        </div>
-        <div className="requirements">
-          <article>
-            <span>Platform</span>
-            <strong>Windows desktop</strong>
-          </article>
-          <article>
-            <span>Agent runtime</span>
-            <strong>Codex CLI, signed in</strong>
-          </article>
-          <article>
-            <span>License</span>
-            <strong>MIT open source</strong>
-          </article>
-          <article>
-            <span>Installer</span>
-            <strong>Code signing is coming</strong>
-          </article>
-          <p className="installer-note">
-            Windows SmartScreen may ask you to confirm the unsigned beta installer. Use only files attached to this repository&apos;s releases.
-          </p>
-        </div>
-      </section>
-
-      <footer className="site-footer shell">
-        <span>Xiao Workbench</span>
-        <span>Built with Tauri, Rust, React, and TypeScript.</span>
-        <a href={repoUrl} target="_blank" rel="noreferrer">
-          GitHub
-        </a>
-      </footer>
-    </main>
+    </>
   );
 }
