@@ -82,6 +82,7 @@ export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
 const projectMenuWidth = 218;
 const projectMenuHeight = 214;
 const taskMenuHeight = 330;
+const collapsedTaskGroupLimit = 6;
 const taskGroupOrder: TaskGroup[] = ["Active", "Recent", "Yesterday", "This week", "Older"];
 const sidebarDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -138,6 +139,9 @@ export function Sidebar({
   const [renamingProject, setRenamingProject] = useState<RenamingProject | null>(null);
   const [taskMenu, setTaskMenu] = useState<TaskMenuState | null>(null);
   const [renamingTask, setRenamingTask] = useState<RenamingTask | null>(null);
+  const [expandedTaskGroups, setExpandedTaskGroups] = useState<ReadonlySet<TaskGroup>>(
+    () => new Set(),
+  );
   const [now, setNow] = useState(Date.now);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuTriggerRef = useRef<HTMLElement | null>(null);
@@ -301,6 +305,7 @@ export function Sidebar({
 
   useEffect(() => {
     setExpandedProjectPath(activeProjectPath);
+    setExpandedTaskGroups(new Set());
   }, [activeProjectPath]);
 
   useEffect(() => {
@@ -529,14 +534,23 @@ export function Sidebar({
                     <div className="task-groups">
                       {groupedTasks.map(({ group, tasks: groupTasks }) => {
                         const groupId = `task-group-${group.toLowerCase().replaceAll(" ", "-")}`;
+                        const taskListId = `${groupId}-list`;
+                        const groupExpanded = expandedTaskGroups.has(group);
+                        const hiddenTaskCount = Math.max(
+                          0,
+                          groupTasks.length - collapsedTaskGroupLimit,
+                        );
+                        const renderedTasks = groupExpanded
+                          ? groupTasks
+                          : groupTasks.slice(0, collapsedTaskGroupLimit);
                         return (
                           <section className="task-group" aria-labelledby={groupId} key={group}>
                             <h3 id={groupId}>
                               <span>{group}</span>
                               <small>{groupTasks.length}</small>
                             </h3>
-                            <div className="task-list">
-                              {groupTasks.map((task) => {
+                            <div className="task-list" id={taskListId}>
+                              {renderedTasks.map((task) => {
                                 const selected = activePage === "tasks" && task.id === activeTaskId;
                                 const taskRunning = workingTasks.has(task.id);
                                 const taskMenuOpen = taskMenu?.taskId === task.id;
@@ -625,6 +639,25 @@ export function Sidebar({
                                 );
                               })}
                             </div>
+                            {hiddenTaskCount > 0 ? (
+                              <button
+                                className="task-group__toggle"
+                                type="button"
+                                aria-controls={taskListId}
+                                aria-expanded={groupExpanded}
+                                onClick={() => {
+                                  setExpandedTaskGroups((currentGroups) => {
+                                    const nextGroups = new Set(currentGroups);
+                                    if (groupExpanded) nextGroups.delete(group);
+                                    else nextGroups.add(group);
+                                    return nextGroups;
+                                  });
+                                }}
+                              >
+                                <span>{groupExpanded ? "Show less" : "Show more"}</span>
+                                {!groupExpanded ? <small>+{hiddenTaskCount}</small> : null}
+                              </button>
+                            ) : null}
                           </section>
                         );
                       })}

@@ -2,7 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { XiaoProjectSummary } from "../../../core/models/xiao";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
+import type { WorkbenchTask } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
 import { Sidebar, sidebarAttentionTriggerId } from "./Sidebar";
 
@@ -29,17 +31,61 @@ const workspace: WorkspaceSnapshot = {
 
 const noop = () => undefined;
 
+const project: XiaoProjectSummary = {
+  name: workspace.name,
+  path: workspace.path,
+  updatedAt: Date.now(),
+};
+
+const task = (id: string, updatedAt: number): WorkbenchTask => ({
+  id,
+  title: id,
+  meta: "Now",
+  group: "Recent",
+  archived: false,
+  pinned: false,
+  unread: false,
+  createdAt: updatedAt,
+  updatedAt,
+  draftText: "",
+  followUps: [],
+  model: null,
+  reasoningEffort: null,
+  threadId: null,
+  threadBinding: null,
+  mode: "default",
+  approvalPolicy: "on-request",
+  sandboxMode: "workspace-write",
+  goal: null,
+  acceptanceContract: null,
+  timeline: [],
+  timelineLoaded: true,
+  timelineComplete: true,
+  timelineStart: 0,
+  timelineEntryCount: 0,
+  plan: null,
+  executionEnvironmentId: null,
+  workspaceMode: "local",
+  managedWorktreeId: null,
+});
+
+type SidebarContent = {
+  projects?: XiaoProjectSummary[];
+  tasks?: WorkbenchTask[];
+};
+
 const renderSidebar = (
   attentionCount: number,
   activePage: AppPage = "tasks",
   attentionHydrationStatus: AttentionHydrationStatus = "ready",
+  content: SidebarContent = {},
 ) =>
   renderToStaticMarkup(
     <Sidebar
       activePage={activePage}
-      projects={[]}
+      projects={content.projects ?? []}
       activeProjectPath={workspace.path}
-      tasks={[]}
+      tasks={content.tasks ?? []}
       activeTaskId=""
       workspace={workspace}
       workingTaskIds={[]}
@@ -131,5 +177,32 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain(">Attention</span>");
     expect(markup).toContain(">Settings</span>");
     expect(markup).toContain(">Xiao User</strong>");
+  });
+});
+
+describe("Sidebar task group disclosure", () => {
+  it("shows all tasks without a disclosure at the six-task limit", () => {
+    const now = Date.now();
+    const tasks = Array.from({ length: 6 }, (_, index) =>
+      task(`Recent task ${index + 1}`, now - index),
+    );
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
+
+    expect(markup).toContain("Recent task 6");
+    expect(markup).not.toContain("task-group__toggle");
+  });
+
+  it("collapses task groups after six tasks and reports the hidden count", () => {
+    const now = Date.now();
+    const tasks = Array.from({ length: 8 }, (_, index) =>
+      task(`Recent task ${index + 1}`, now - index),
+    );
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
+
+    expect(markup).toContain("Recent task 6");
+    expect(markup).not.toContain("Recent task 7");
+    expect(markup).not.toContain("Recent task 8");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain(">Show more</span><small>+2</small>");
   });
 });

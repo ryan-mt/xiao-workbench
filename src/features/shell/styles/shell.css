@@ -626,6 +626,31 @@
   gap: 1px;
 }
 
+.task-group__toggle {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 8px 0 28px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-weight: 560;
+  text-align: left;
+}
+
+.task-group__toggle:hover,
+.task-group__toggle:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.task-group__toggle small {
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
 .task-list__item {
   display: grid;
   min-height: 40px;
