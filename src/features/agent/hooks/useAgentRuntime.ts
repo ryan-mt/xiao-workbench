@@ -12,6 +12,8 @@ import type {
   AgentModelSummary,
   AgentPlan,
   AgentQuestionRequest,
+  AgentRateLimitSnapshot,
+  AgentRateLimitWindow,
   AgentRuntimeState,
   AgentTurnOutcome,
   AgentUndoResult,
@@ -622,6 +624,76 @@ const readTokenUsage = (value: unknown): TokenUsageBreakdown | null => {
   return Object.fromEntries(fields.map((field) => [field, usage[field]])) as TokenUsageBreakdown;
 };
 
+const readRateLimitWindow = (value: unknown): AgentRateLimitWindow | null => {
+  if (!value || typeof value !== "object") return null;
+  const window = value as Record<string, unknown>;
+  if (typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) {
+    return null;
+  }
+  return {
+    usedPercent: window.usedPercent,
+    windowDurationMins:
+      typeof window.windowDurationMins === "number" && Number.isFinite(window.windowDurationMins)
+        ? window.windowDurationMins
+        : null,
+    resetsAt:
+      typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt)
+        ? window.resetsAt
+        : null,
+  };
+};
+
+const readRateLimitSnapshot = (value: unknown): AgentRateLimitSnapshot | null => {
+  if (!value || typeof value !== "object") return null;
+  const snapshot = value as Record<string, unknown>;
+  const primary = readRateLimitWindow(snapshot.primary);
+  const secondary = readRateLimitWindow(snapshot.secondary);
+  if (!primary && !secondary) return null;
+  return {
+    limitId: typeof snapshot.limitId === "string" ? snapshot.limitId : null,
+    limitName: typeof snapshot.limitName === "string" ? snapshot.limitName : null,
+    primary,
+    secondary,
+  };
+};
+
+const mergeRateLimitWindow = (
+  current: AgentRateLimitWindow | null,
+  update: AgentRateLimitWindow | null,
+) => {
+  if (!update) return current;
+  if (!current) return update;
+  return {
+    usedPercent: update.usedPercent,
+    windowDurationMins: update.windowDurationMins ?? current.windowDurationMins,
+    resetsAt: update.resetsAt ?? current.resetsAt,
+  };
+};
+
+export const mergeAgentRateLimits = (
+  current: AgentRateLimitSnapshot | null,
+  update: AgentRateLimitSnapshot,
+): AgentRateLimitSnapshot => ({
+  limitId: update.limitId ?? current?.limitId ?? null,
+  limitName: update.limitName ?? current?.limitName ?? null,
+  primary: mergeRateLimitWindow(current?.primary ?? null, update.primary),
+  secondary: mergeRateLimitWindow(current?.secondary ?? null, update.secondary),
+});
+
+export const projectAgentRateLimitsUpdate = (
+  current: AgentRateLimitSnapshot | null,
+  message: AgentMessage,
+) => {
+  if (message.method !== "account/rateLimits/updated") return current;
+  const update = readRateLimitSnapshot(message.params?.rateLimits);
+  if (!update) return current;
+  if (update.limitId && update.limitId !== "codex") return current;
+  if (current?.limitId && update.limitId && current.limitId !== update.limitId) {
+    return current;
+  }
+  return mergeAgentRateLimits(current, update);
+};
+
 const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | null => {
   const contextCompaction = contextCompactionTimelineEntry(item, "completed");
   if (contextCompaction) return contextCompaction;
@@ -822,6 +894,7 @@ export function useAgentRuntime(
   const [runtime, setRuntime] = useState<AgentRuntimeState>(initialRuntime);
   const [account, setAccount] = useState<AgentAccountSummary | null>(null);
   const [accountUsage, setAccountUsage] = useState<AgentAccountUsage | null>(null);
+  const [rateLimits, setRateLimits] = useState<AgentRateLimitSnapshot | null>(null);
   const [models, setModels] = useState<AgentModelSummary[]>([]);
   const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLogEntry[]>([]);
   const [threadUsage, setThreadUsage] = useState<Record<string, ThreadTokenUsage>>({});
@@ -939,6 +1012,7 @@ export function useAgentRuntime(
     setRuntime(initialRuntime);
     setAccount(null);
     setAccountUsage(null);
+    setRateLimits(null);
     setModels([]);
     setRuntimeLogs([]);
     setThreadUsage({});
@@ -1295,6 +1369,33 @@ export function useAgentRuntime(
     }
   }, [workspacePath]);
 
+  const refreshAccountRateLimits = useCallback(async () => {
+    const scope = workspaceScopeRef.current;
+    try {
+      const response = await nativeBridge.readAgentRateLimits(
+        workspacePath,
+        executionTaskIdRef.current,
+      );
+      if (!agentRuntimeWorkspaceScopeMatches(
+        workspaceScopeRef.current,
+        workspacePath,
+        scope.generation,
+      )) return;
+      const snapshot = response.rateLimitsByLimitId?.codex ?? response.rateLimits;
+      setRateLimits((current) => current
+        ? mergeAgentRateLimits(snapshot, current)
+        : snapshot);
+    } catch {
+      if (agentRuntimeWorkspaceScopeMatches(
+        workspaceScopeRef.current,
+        workspacePath,
+        scope.generation,
+      )) {
+        setRateLimits(null);
+      }
+    }
+  }, [workspacePath]);
+
   const refreshRuntimeIdentity = useCallback(async () => {
     const scope = workspaceScopeRef.current;
     try {
@@ -1310,6 +1411,7 @@ export function useAgentRuntime(
       setAccount(nextAccount);
       setModels(nextModels);
       void refreshAccountUsage();
+      void refreshAccountRateLimits();
       setRuntime((current) => ({
         ...current,
         error:
@@ -1328,7 +1430,7 @@ export function useAgentRuntime(
         error: reason instanceof Error ? reason.message : String(reason),
       }));
     }
-  }, [refreshAccountUsage, workspacePath]);
+  }, [refreshAccountRateLimits, refreshAccountUsage, workspacePath]);
 
   const resolveTaskId = useCallback((message: AgentMessage) => {
     const threadId = readMessageThreadId(message);
@@ -1603,6 +1705,10 @@ export function useAgentRuntime(
             },
           }));
         }
+      }
+
+      if (message.method === "account/rateLimits/updated") {
+        setRateLimits((current) => projectAgentRateLimitsUpdate(current, message));
       }
 
       if (message.method === "turn/plan/updated" && Array.isArray(message.params?.plan)) {
@@ -1902,6 +2008,7 @@ export function useAgentRuntime(
       flushLiveDeltas,
       queueLiveDelta,
       recordUsage,
+      refreshAccountRateLimits,
       refreshAccountUsage,
       refreshRuntimeIdentity,
       resolveTaskId,
@@ -2119,6 +2226,7 @@ export function useAgentRuntime(
             appendRuntimeLog("system", "Agent runtime stopped.");
             setAccount(null);
             setAccountUsage(null);
+            setRateLimits(null);
             setModels([]);
             setThreadUsage({});
             setQuestionRequest(null);
@@ -3202,6 +3310,7 @@ export function useAgentRuntime(
     runtime: scopedRuntime,
     account: stateIsCurrentWorkspace ? account : null,
     accountUsage: stateIsCurrentWorkspace ? accountUsage : null,
+    rateLimits: stateIsCurrentWorkspace ? rateLimits : null,
     models: stateIsCurrentWorkspace ? models : [],
     timeline: activeTaskTimeline,
     runtimeLogs: stateIsCurrentWorkspace ? runtimeLogs : [],

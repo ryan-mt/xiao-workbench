@@ -221,6 +221,24 @@ export type AgentAccountUsage = {
   dailyUsageBuckets: Array<{ startDate: string; tokens: number }>;
 };
 
+export type AgentRateLimitWindow = {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+};
+
+export type AgentRateLimitSnapshot = {
+  limitId: string | null;
+  limitName: string | null;
+  primary: AgentRateLimitWindow | null;
+  secondary: AgentRateLimitWindow | null;
+};
+
+export type AgentRateLimitsResponse = {
+  rateLimits: AgentRateLimitSnapshot;
+  rateLimitsByLimitId: Record<string, AgentRateLimitSnapshot> | null;
+};
+
 export type AgentModelSummary = {
   id: string;
   model: string;

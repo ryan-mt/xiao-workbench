@@ -11,6 +11,7 @@ import {
   type AgentModelSummary,
   type AgentPlan,
   type AgentQuestionRequest,
+  type AgentRateLimitSnapshot,
   type AgentRuntimeState,
   type AgentSandboxMode,
   type ThreadTokenUsage,
@@ -70,6 +71,7 @@ type TaskWorkspaceProps = {
   taskStateLoading: boolean;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
+  rateLimits: AgentRateLimitSnapshot | null;
   latestRun: RunSnapshot | null;
   models: AgentModelSummary[];
   selectedModel: string | null;
@@ -152,6 +154,7 @@ export function TaskWorkspace({
   taskStateLoading,
   timeline,
   runtime,
+  rateLimits,
   latestRun,
   models,
   selectedModel,
@@ -288,6 +291,7 @@ export function TaskWorkspace({
       executionTaskId={executionTaskId}
       workspacePath={workspace.path}
       runtime={runtime}
+      rateLimits={rateLimits}
       models={models}
       selectedModel={selectedModel}
       selectedReasoningEffort={selectedReasoningEffort}

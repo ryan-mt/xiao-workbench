@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +27,30 @@ pub struct AgentAccountUsage {
 pub struct AgentDailyUsageBucket {
     pub start_date: String,
     pub tokens: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRateLimitWindow {
+    pub used_percent: f64,
+    pub window_duration_mins: Option<u64>,
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRateLimitSnapshot {
+    pub limit_id: Option<String>,
+    pub limit_name: Option<String>,
+    pub primary: Option<AgentRateLimitWindow>,
+    pub secondary: Option<AgentRateLimitWindow>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRateLimitsResponse {
+    pub rate_limits: AgentRateLimitSnapshot,
+    pub rate_limits_by_limit_id: Option<BTreeMap<String, AgentRateLimitSnapshot>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

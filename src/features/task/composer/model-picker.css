@@ -40,6 +40,43 @@
   border: 1px solid transparent;
 }
 
+.weekly-usage-chip {
+  display: inline-flex;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--brand) 24%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--brand-soft) 58%, transparent);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.weekly-usage-chip::before {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--brand);
+  content: "";
+}
+
+.weekly-usage-chip > span {
+  color: var(--muted);
+  font: inherit;
+}
+
+.weekly-usage-chip > strong {
+  color: var(--text-soft);
+  font-size: inherit;
+  font-weight: 650;
+}
+
 .model-picker__trigger > span,
 .reasoning-picker__trigger > span,
 .fast-mode__trigger > span {
@@ -270,6 +307,8 @@
 
   .composer__tools-left .reasoning-picker__trigger { max-width: 74px; }
   .composer__tools-left .fast-mode__trigger { width: 30px; max-width: none; padding: 0; }
+
+  .weekly-usage-chip > span { display: none; }
 }
 
 @media (max-width: 760px) {
@@ -302,6 +341,8 @@
     max-width: none;
     padding: 0;
   }
+
+  .weekly-usage-chip > span { display: none; }
 
   .model-picker__menu {
     left: -42px;

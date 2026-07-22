@@ -4,6 +4,7 @@ import type {
   AgentAccountSummary,
   AgentAccountUsage,
   AgentModelSummary,
+  AgentRateLimitsResponse,
 } from "../models/agent";
 import type {
   CodexUpdateResult,
@@ -105,6 +106,10 @@ export const nativeBridge = {
 
   readAgentUsage(projectPath: string, taskId: string | null) {
     return invoke<AgentAccountUsage>("read_agent_usage", { projectPath, taskId });
+  },
+
+  readAgentRateLimits(projectPath: string, taskId: string | null) {
+    return invoke<AgentRateLimitsResponse>("read_agent_rate_limits", { projectPath, taskId });
   },
 
   listAgentModels(projectPath: string, taskId: string | null) {

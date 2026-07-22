@@ -6,9 +6,10 @@ import {
 } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
-import type { AgentModelSummary } from "../../../core/models/agent";
+import type { AgentModelSummary, AgentRateLimitSnapshot } from "../../../core/models/agent";
 import { fastServiceTier } from "../../agent/hooks/agentProtocol";
 import { reasoningLabel } from "./ReasoningControl";
+import { WeeklyUsageIndicator } from "./WeeklyUsageIndicator";
 import "./model-picker.css";
 
 type ModelPickerProps = {
@@ -16,6 +17,7 @@ type ModelPickerProps = {
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
   fastMode: boolean;
+  rateLimits: AgentRateLimitSnapshot | null;
   disabled: boolean;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
@@ -45,6 +47,7 @@ export function ModelPicker({
   selectedModel,
   selectedReasoningEffort,
   fastMode,
+  rateLimits,
   disabled,
   onModelChange,
   onReasoningEffortChange,
@@ -287,6 +290,7 @@ export function ModelPicker({
           <span className="fast-mode__glyph" aria-hidden="true"><i /><i /></span>
         </button>
       </div>
+      <WeeklyUsageIndicator rateLimits={rateLimits} />
     </div>
   );
 }

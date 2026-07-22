@@ -2,7 +2,8 @@ use serde_json::{json, Value};
 
 use super::models::{
     AgentAccountSummary, AgentAccountUsage, AgentDailyUsageBucket, AgentModelSummary,
-    ModelListResponse, PersistentAgentSession, ThreadStartResponse, XiaoHistoryItem,
+    AgentRateLimitsResponse, ModelListResponse, PersistentAgentSession, ThreadStartResponse,
+    XiaoHistoryItem,
 };
 use super::runtime::AgentRuntime;
 use crate::xiao::models::{XiaoThreadBinding, XiaoThreadPersistence};
@@ -64,6 +65,16 @@ pub async fn read_account_usage(runtime: &AgentRuntime) -> Result<AgentAccountUs
         longest_streak_days: summary.get("longestStreakDays").and_then(read_u64),
         daily_usage_buckets,
     })
+}
+
+pub async fn read_account_rate_limits(
+    runtime: &AgentRuntime,
+) -> Result<AgentRateLimitsResponse, String> {
+    let result = runtime
+        .request("account/rateLimits/read".to_owned(), Value::Null)
+        .await?;
+    serde_json::from_value(result)
+        .map_err(|error| format!("Invalid account/rateLimits/read response: {error}"))
 }
 
 fn read_u64(value: &Value) -> Option<u64> {

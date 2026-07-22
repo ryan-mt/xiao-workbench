@@ -3534,6 +3534,7 @@ export function App() {
               taskStateLoading={taskWorkspaceStateLoading}
               timeline={agent.timeline}
               runtime={agent.runtime}
+              rateLimits={agent.rateLimits}
               latestRun={agent.latestRun}
               models={visibleModels}
               selectedModel={activeTask.model}

@@ -27,6 +27,7 @@ import {
   fileChangeTimelineEntry,
   normalizeFileChangeDiff,
   projectFileChangePatchUpdate,
+  projectAgentRateLimitsUpdate,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
   resetPendingInputReplayForTaskRestore,
@@ -67,6 +68,51 @@ describe("shouldClearAgentPlan", () => {
     expect(shouldClearAgentPlan("completed")).toBe(true);
     expect(shouldClearAgentPlan("failed")).toBe(false);
     expect(shouldClearAgentPlan("interrupted")).toBe(false);
+  });
+});
+
+describe("Codex rate-limit updates", () => {
+  it("applies the pushed percentages immediately and preserves sparse window metadata", () => {
+    const current = {
+      limitId: "codex",
+      limitName: "Codex",
+      primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+      secondary: { usedPercent: 20, windowDurationMins: 10_080, resetsAt: 1_800_500_000 },
+    };
+
+    expect(projectAgentRateLimitsUpdate(current, {
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 14, windowDurationMins: null, resetsAt: null },
+          secondary: { usedPercent: 23, windowDurationMins: null, resetsAt: null },
+        },
+      },
+    })).toEqual({
+      ...current,
+      primary: { ...current.primary, usedPercent: 14 },
+      secondary: { ...current.secondary, usedPercent: 23 },
+    });
+  });
+
+  it("ignores a pushed bucket that is not the Codex quota", () => {
+    const current = {
+      limitId: "codex",
+      limitName: "Codex",
+      primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: null },
+      secondary: { usedPercent: 20, windowDurationMins: 10_080, resetsAt: null },
+    };
+
+    expect(projectAgentRateLimitsUpdate(current, {
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "another-limit",
+          primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: null },
+        },
+      },
+    })).toBe(current);
   });
 });
 

@@ -272,6 +272,18 @@ pub async fn read_agent_usage(
 }
 
 #[tauri::command]
+pub async fn read_agent_rate_limits(
+    project_path: String,
+    task_id: Option<String>,
+    runtimes: State<'_, EnvironmentRuntimeRegistry>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<models::AgentRateLimitsResponse, String> {
+    let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
+    let runtime = runtimes.runtime(&context.environment.id)?;
+    service::read_account_rate_limits(&runtime).await
+}
+
+#[tauri::command]
 pub async fn list_agent_models(
     project_path: String,
     task_id: Option<String>,

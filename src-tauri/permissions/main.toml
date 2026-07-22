@@ -17,6 +17,7 @@ permissions = [
   "allow-stop-agent-runtime",
   "allow-agent-request",
   "allow-read-agent-account",
+  "allow-read-agent-rate-limits",
   "allow-read-agent-usage",
   "allow-list-agent-models",
   "allow-enqueue-xiao-run",

@@ -15,6 +15,7 @@ import type {
   AgentModelSummary,
   AgentPlan,
   AgentQuestionRequest,
+  AgentRateLimitSnapshot,
   AgentRuntimeState,
   AgentSandboxMode,
 } from "../../../core/models/agent";
@@ -56,6 +57,7 @@ type ComposerProps = {
   executionTaskId: string | null;
   workspacePath: string;
   runtime: AgentRuntimeState;
+  rateLimits: AgentRateLimitSnapshot | null;
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
@@ -185,6 +187,7 @@ export function Composer({
   executionTaskId,
   workspacePath,
   runtime,
+  rateLimits,
   models,
   selectedModel,
   selectedReasoningEffort,
@@ -1338,6 +1341,7 @@ export function Composer({
               selectedModel={selectedModel}
               selectedReasoningEffort={selectedReasoningEffort}
               fastMode={fastMode}
+              rateLimits={rateLimits}
               disabled={disabled || undoing || runtime.phase === "starting"}
               onModelChange={onModelChange}
               onReasoningEffortChange={onReasoningEffortChange}
