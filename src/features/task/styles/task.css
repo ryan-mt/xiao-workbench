@@ -517,6 +517,43 @@
   overflow: hidden;
 }
 
+.timeline-selection-toolbar {
+  position: absolute;
+  z-index: 8;
+  transform: translateX(-50%);
+  animation: timeline-selection-in 120ms cubic-bezier(0.22, 0.8, 0.2, 1) both;
+}
+
+.timeline-selection-toolbar button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--text) 14%, transparent);
+  font-size: var(--text-label);
+  font-weight: 600;
+}
+
+.timeline-selection-toolbar button:hover {
+  border-color: color-mix(in srgb, var(--brand) 35%, var(--line-strong));
+  background: var(--surface-hover);
+}
+
+.timeline-selection-toolbar button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--focus) 42%, transparent);
+  outline-offset: 2px;
+}
+
+@keyframes timeline-selection-in {
+  from { opacity: 0; transform: translate(-50%, 3px) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
 .task-workspace__jump-latest {
   position: absolute;
   z-index: 4;
@@ -3892,6 +3929,10 @@
   line-height: 1.5;
 }
 
+.composer.has-selected-context textarea {
+  padding-top: 10px;
+}
+
 .composer__input {
   position: relative;
   min-width: 0;
@@ -4232,6 +4273,58 @@
   padding: 11px 14px 2px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.composer__selected-context {
+  display: inline-flex;
+  width: fit-content;
+  max-width: min(520px, calc(100% - 28px));
+  height: 30px;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 14px 0;
+  padding: 0 5px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.composer__selected-context > svg {
+  flex: 0 0 auto;
+  color: var(--brand);
+}
+
+.composer__selected-context > strong {
+  flex: 0 0 auto;
+  color: var(--text-soft);
+  font-size: var(--text-micro);
+  font-weight: 620;
+}
+
+.composer__selected-context > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__selected-context > button {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--muted);
+}
+
+.composer__selected-context > button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .composer__review-context::-webkit-scrollbar {

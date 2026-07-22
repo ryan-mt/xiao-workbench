@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
+import { promptWithSelectedContext } from "../../../core/models/agent";
 import { QueuedMessages } from "./QueuedMessages";
 
 const followUps = [
@@ -54,5 +55,29 @@ describe("QueuedMessages", () => {
         onSendNow={vi.fn(async () => undefined)}
       />,
     )).toBe("");
+  });
+
+  it("does not expose selected context in the queued message", () => {
+    const markup = renderToStaticMarkup(
+      <QueuedMessages
+        followUps={[{
+          id: "queued-selection",
+          prompt: promptWithSelectedContext("thấy gì?", "Internal selected text"),
+          attachments: [],
+          createdAt: 3,
+        }]}
+        sendingFollowUpId={null}
+        failedFollowUpId={null}
+        canSteer={false}
+        onEdit={vi.fn()}
+        onRemove={vi.fn()}
+        onRetry={vi.fn()}
+        onSendNow={vi.fn(async () => undefined)}
+      />,
+    );
+
+    expect(markup).toContain("thấy gì?");
+    expect(markup).not.toContain("selected_text");
+    expect(markup).not.toContain("Internal selected text");
   });
 });

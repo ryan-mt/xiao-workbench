@@ -45,36 +45,42 @@
   height: 30px;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
-  padding: 0 7px;
-  border: 1px solid color-mix(in srgb, var(--brand) 24%, var(--line));
+  gap: 3px;
+  padding: 0 5px;
+  border: 0;
   border-radius: 7px;
-  background: color-mix(in srgb, var(--brand-soft) 58%, transparent);
+  background: transparent;
   color: var(--muted);
-  font-family: var(--font-mono);
   font-size: var(--text-micro);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.weekly-usage-chip::before {
-  width: 4px;
-  height: 4px;
+.weekly-usage-chip > svg {
   flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--brand);
-  content: "";
+  margin-right: 2px;
+  color: var(--muted);
 }
 
 .weekly-usage-chip > span {
   color: var(--muted);
-  font: inherit;
+  font-size: inherit;
 }
 
 .weekly-usage-chip > strong {
   color: var(--text-soft);
   font-size: inherit;
-  font-weight: 650;
+  font-weight: 620;
+}
+
+.weekly-usage-chip.is-low > svg,
+.weekly-usage-chip.is-low > strong {
+  color: var(--warning);
+}
+
+.weekly-usage-chip.is-critical > svg,
+.weekly-usage-chip.is-critical > strong {
+  color: var(--danger);
 }
 
 .model-picker__trigger > span,

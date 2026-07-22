@@ -3,7 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
-import type { TimelineEntry } from "../../../core/models/agent";
+import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
 import { isEnvironmentBlockedCommand } from "./commandPresentation";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 
@@ -215,7 +215,9 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__user-message-content">
-          <div className="activity__user-bubble">{entry.body ?? entry.title}</div>
+          <div className="activity__user-bubble">
+            {visiblePromptFromSelectedContext(entry.body ?? entry.title)}
+          </div>
           {sentAttachments.length > 0 && (
             <div className="activity__user-attachments" aria-label="Sent attachments">
               {sentAttachments.map((attachment) => {

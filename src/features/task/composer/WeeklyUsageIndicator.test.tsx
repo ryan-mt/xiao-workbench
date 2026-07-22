@@ -14,10 +14,10 @@ describe("WeeklyUsageIndicator", () => {
 
     expect(weeklyRateLimitWindow(rateLimits)).toBe(rateLimits.primary);
     const markup = renderToStaticMarkup(<WeeklyUsageIndicator rateLimits={rateLimits} />);
-    expect(markup).toContain("Week</span>");
     expect(markup).toContain("83%");
+    expect(markup).toContain("left</span>");
     expect(markup).not.toContain("5h");
-    expect(markup).toContain("class=\"weekly-usage-chip\"");
+    expect(markup).toContain("class=\"weekly-usage-chip is-normal\"");
   });
 
   it("finds the weekly window without assuming primary or secondary ordering", () => {
@@ -28,5 +28,19 @@ describe("WeeklyUsageIndicator", () => {
       primary: { usedPercent: 5, windowDurationMins: 300, resetsAt: null },
       secondary: weekly,
     })).toBe(weekly);
+  });
+
+  it("uses warning and critical tones only when remaining quota is low", () => {
+    const renderRemaining = (usedPercent: number) => renderToStaticMarkup(
+      <WeeklyUsageIndicator rateLimits={{
+        limitId: "codex",
+        limitName: null,
+        primary: { usedPercent, windowDurationMins: 10_080, resetsAt: null },
+        secondary: null,
+      }} />,
+    );
+
+    expect(renderRemaining(80)).toContain("is-low");
+    expect(renderRemaining(92)).toContain("is-critical");
   });
 });

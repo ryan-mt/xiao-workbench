@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { promptWithSelectedContext } from "../../core/models/agent";
 import type { WorkbenchTask } from "./task.types";
 import { forkTaskFromEntry } from "./taskFork";
 
@@ -148,6 +149,17 @@ describe("forkTaskFromEntry", () => {
 
     expect(forkTaskFromEntry(source, "user-1", { id: "fork", createdAt: 100 })?.task.title)
       .toBe("Build session controls (fork #3)");
+  });
+
+  it("restores only the visible question from a selected-context prompt", () => {
+    const source = sourceTask();
+    source.timeline[2]!.title = promptWithSelectedContext(
+      "thấy gì?",
+      "Hi! What would you like to work on?",
+    );
+
+    expect(forkTaskFromEntry(source, "user-2", { id: "fork", createdAt: 100 })?.task.draftText)
+      .toBe("thấy gì?");
   });
 
   it("rejects missing and non-user timeline entries", () => {

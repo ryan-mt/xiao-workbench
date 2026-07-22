@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
 import {
   contextUsedPercent,
+  visiblePromptFromSelectedContext,
   type AgentAttachment,
   type AgentFollowUp,
   type AgentGoal,
@@ -352,7 +353,7 @@ export const restoreTaskAfterUndo = (
   const restored = {
     ...task,
     title: result.resetTitle ? "New task" : task.title,
-    draftText: restoreComposer ? result.prompt : task.draftText,
+    draftText: restoreComposer ? visiblePromptFromSelectedContext(result.prompt) : task.draftText,
     timeline: result.timeline ?? task.timeline,
     plan: timelineReturned ? null : task.plan,
     updatedAt,
@@ -954,7 +955,7 @@ export const readBrowserTaskState = (workspacePath: string): StoredTaskState => 
       .filter((task) => !retiredFixtureTaskIds.has(task.id) && !isLegacyEmptyDraft(task))
       .map((task) => ({
         ...task,
-        draftText: task.draftText ?? "",
+        draftText: visiblePromptFromSelectedContext(task.draftText ?? ""),
         followUps: task.followUps ?? [],
         reasoningEffort: task.reasoningEffort ?? null,
         threadId: task.threadId ?? null,
@@ -994,7 +995,7 @@ const stateFromDocument = (document: XiaoWorkspaceDocument): StoredTaskState => 
   showArchived: false,
   tasks: document.tasks.map((task) => ({
     ...task,
-    draftText: task.draftText ?? "",
+    draftText: visiblePromptFromSelectedContext(task.draftText ?? ""),
     followUps: task.followUps ?? [],
     threadId: null,
     threadBinding: task.threadBinding ?? null,
@@ -2329,7 +2330,7 @@ export function App() {
         updatedAt,
         meta: "Now",
         group: "Active",
-        draftText: activeTask.draftText || prompt,
+        draftText: activeTask.draftText || visiblePromptFromSelectedContext(prompt),
       };
       persistedTasks = tasks.some((task) => task.id === materializedTask.id)
         ? tasks

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { TimelineEntry } from "../../../core/models/agent";
+import { promptWithSelectedContext, type TimelineEntry } from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
 import { statusLabel } from "./LiveTurnStatus";
 
@@ -23,6 +23,20 @@ const renderCompaction = (entry: TimelineEntry, attemptCount = 1) => renderToSta
 );
 
 describe("ActivityItem user message", () => {
+  it("shows only the user's question when selected context was sent internally", () => {
+    const markup = renderCompaction({
+      id: "user-selection-1",
+      kind: "user",
+      title: promptWithSelectedContext("thấy gì?", "Hi! What would you like to work on?"),
+      status: "active",
+      meta: "You",
+    });
+
+    expect(markup).toContain("thấy gì?");
+    expect(markup).not.toContain("selected_text");
+    expect(markup).not.toContain("Hi! What would you like to work on?");
+  });
+
   it("shows the fork action only while forking is available", () => {
     const entry: TimelineEntry = {
       id: "user-1",

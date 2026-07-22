@@ -11,6 +11,7 @@ import type {
   RunSnapshot,
 } from "../../../core/models/run";
 import {
+  accountRateLimitsRefreshIntervalMs,
   advanceAgentRuntimeWorkspaceScope,
   agentMessageRequiresWorkspaceRefresh,
   agentRuntimeEnvelopeMatches,
@@ -28,6 +29,7 @@ import {
   normalizeFileChangeDiff,
   projectFileChangePatchUpdate,
   projectAgentRateLimitsUpdate,
+  reconcileFetchedAgentRateLimits,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
   resetPendingInputReplayForTaskRestore,
@@ -72,6 +74,31 @@ describe("shouldClearAgentPlan", () => {
 });
 
 describe("Codex rate-limit updates", () => {
+  it("refreshes the account snapshot every 30 seconds", () => {
+    expect(accountRateLimitsRefreshIntervalMs).toBe(30_000);
+  });
+
+  it("lets a fetched snapshot replace stale percentages while preserving sparse metadata", () => {
+    const current = {
+      limitId: "codex",
+      limitName: "Codex",
+      primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1_800_000_000 },
+      secondary: { usedPercent: 24, windowDurationMins: 10_080, resetsAt: 1_800_500_000 },
+    };
+    const fetched = {
+      limitId: "codex",
+      limitName: null,
+      primary: { usedPercent: 12, windowDurationMins: null, resetsAt: null },
+      secondary: { usedPercent: 22, windowDurationMins: null, resetsAt: null },
+    };
+
+    expect(reconcileFetchedAgentRateLimits(current, fetched)).toEqual({
+      ...current,
+      primary: { ...current.primary, usedPercent: 12 },
+      secondary: { ...current.secondary, usedPercent: 22 },
+    });
+  });
+
   it("applies the pushed percentages immediately and preserves sparse window metadata", () => {
     const current = {
       limitId: "codex",

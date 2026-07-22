@@ -2,6 +2,7 @@ import type {
   AgentRateLimitSnapshot,
   AgentRateLimitWindow,
 } from "../../../core/models/agent";
+import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 
 const weeklyWindowMinutes = 7 * 24 * 60;
 
@@ -36,17 +37,19 @@ export function WeeklyUsageIndicator({ rateLimits }: WeeklyUsageIndicatorProps) 
   const weekly = weeklyRateLimitWindow(rateLimits);
   if (!weekly) return null;
   const remaining = remainingPercent(weekly.usedPercent);
+  const tone = remaining <= 10 ? "critical" : remaining <= 25 ? "low" : "normal";
   const description = `Codex weekly usage, ${remaining}% remaining. ${resetText(weekly.resetsAt)}`;
 
   return (
     <span
-      className="weekly-usage-chip"
+      className={`weekly-usage-chip is-${tone}`}
       aria-label={description}
       aria-live="polite"
       title={description}
     >
-      <span>Week</span>
+      <XiaoIcon name="runtime" size={12} aria-hidden="true" />
       <strong>{remaining}%</strong>
+      <span>left</span>
     </span>
   );
 }

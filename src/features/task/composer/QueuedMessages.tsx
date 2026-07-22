@@ -1,7 +1,11 @@
 import { useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
-import type { AgentFollowUp } from "../../../core/models/agent";
+import {
+  replaceVisiblePromptInSelectedContext,
+  visiblePromptFromSelectedContext,
+  type AgentFollowUp,
+} from "../../../core/models/agent";
 
 type QueuedMessagesProps = {
   followUps: AgentFollowUp[];
@@ -50,7 +54,10 @@ export function QueuedMessages({
                     event.preventDefault();
                     const nextPrompt = editingPrompt.trim();
                     if (!nextPrompt) return;
-                    onEdit(followUp.id, nextPrompt);
+                    onEdit(
+                      followUp.id,
+                      replaceVisiblePromptInSelectedContext(followUp.prompt, nextPrompt),
+                    );
                     setEditingId(null);
                   }}
                 >
@@ -71,7 +78,7 @@ export function QueuedMessages({
                 </form>
               ) : (
                 <div className="composer-queue__message">
-                  <strong>{followUp.prompt}</strong>
+                  <strong>{visiblePromptFromSelectedContext(followUp.prompt)}</strong>
                   <small>
                     {sending
                       ? "Sending now"
@@ -102,7 +109,7 @@ export function QueuedMessages({
                       disabled={sending}
                       onClick={() => {
                         setEditingId(followUp.id);
-                        setEditingPrompt(followUp.prompt);
+                        setEditingPrompt(visiblePromptFromSelectedContext(followUp.prompt));
                       }}
                     >
                       <XiaoIcon name="edit" size={13} /> Edit

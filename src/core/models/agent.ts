@@ -114,6 +114,38 @@ export type AgentFollowUp = {
   createdAt: number;
 };
 
+const selectedContextPrefix = [
+  "Use this text selected from the current conversation as context:",
+  "",
+  "<selected_text>",
+].join("\n") + "\n";
+const selectedContextSuffix = "\n</selected_text>\n\n";
+
+export const selectedContextPromptParts = (value: string) => {
+  if (!value.startsWith(selectedContextPrefix)) return null;
+  const suffixIndex = value.lastIndexOf(selectedContextSuffix);
+  if (suffixIndex < selectedContextPrefix.length) return null;
+  return {
+    context: value.slice(selectedContextPrefix.length, suffixIndex).trim(),
+    prompt: value.slice(suffixIndex + selectedContextSuffix.length).trim(),
+  };
+};
+
+export const promptWithSelectedContext = (prompt: string, selectedContext: string | null) => {
+  const context = selectedContext?.trim();
+  if (!context) return prompt;
+  const request = prompt.trim() || "Please respond to this selection.";
+  return `${selectedContextPrefix}${context}${selectedContextSuffix}${request}`;
+};
+
+export const visiblePromptFromSelectedContext = (value: string) =>
+  selectedContextPromptParts(value)?.prompt || value;
+
+export const replaceVisiblePromptInSelectedContext = (value: string, prompt: string) => {
+  const parts = selectedContextPromptParts(value);
+  return parts ? promptWithSelectedContext(prompt, parts.context) : prompt;
+};
+
 export type AgentUndoResult = {
   prompt: string;
   attachments: AgentAttachment[];

@@ -53,6 +53,6 @@ describe("ModelPicker Fast control", () => {
     });
 
     expect(markup.indexOf("fast-mode")).toBeLessThan(markup.indexOf("weekly-usage-chip"));
-    expect(markup).toContain("Week</span><strong>83%</strong>");
+    expect(markup).toContain("<strong>83%</strong><span>left</span>");
   });
 });

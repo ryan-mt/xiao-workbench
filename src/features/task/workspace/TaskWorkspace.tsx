@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import {
@@ -50,6 +50,12 @@ export const activeCollaboratorsFromTimeline = (timeline: TimelineEntry[]) => {
 };
 
 const liveOutputFollowThreshold = 72;
+
+type TimelineSelection = {
+  text: string;
+  left: number;
+  top: number;
+};
 
 export const distanceFromScrollBottom = ({
   scrollHeight,
@@ -228,9 +234,12 @@ export function TaskWorkspace({
   onToggleArchived,
 }: TaskWorkspaceProps) {
   const scrollArea = useRef<HTMLDivElement>(null);
+  const timelineShell = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
   const previousTaskId = useRef(taskId);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
+  const [selectedContext, setSelectedContext] = useState<string | null>(null);
   const taskActionsDisabled =
     environmentBusy || taskStateLoading || Boolean(taskStateError);
   const canFork =
@@ -251,6 +260,57 @@ export function TaskWorkspace({
   const resolveTimelineApproval = useEventCallback(onResolveApproval);
   const reviewTimelineChanges = useEventCallback(() => onFocusView("changes"));
   const activeCollaborators = activeCollaboratorsFromTimeline(timeline);
+
+  useEffect(() => {
+    setTimelineSelection(null);
+    setSelectedContext(null);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!timelineSelection) return;
+    const dismiss = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTimelineSelection(null);
+    };
+    window.addEventListener("keydown", dismiss);
+    return () => window.removeEventListener("keydown", dismiss);
+  }, [timelineSelection]);
+
+  const captureTimelineSelection = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const root = scrollArea.current;
+      const shell = timelineShell.current;
+      const selection = window.getSelection();
+      if (
+        !root ||
+        !shell ||
+        !selection ||
+        selection.isCollapsed ||
+        selection.rangeCount === 0 ||
+        !selection.anchorNode ||
+        !selection.focusNode ||
+        !root.contains(selection.anchorNode) ||
+        !root.contains(selection.focusNode)
+      ) {
+        setTimelineSelection(null);
+        return;
+      }
+
+      const text = selection.toString().trim();
+      if (!text) {
+        setTimelineSelection(null);
+        return;
+      }
+
+      const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
+      const shellRect = shell.getBoundingClientRect();
+      const left = Math.min(
+        Math.max(rangeRect.left - shellRect.left + rangeRect.width / 2, 72),
+        Math.max(72, shellRect.width - 72),
+      );
+      const top = Math.max(8, rangeRect.top - shellRect.top - 42);
+      setTimelineSelection({ text, left, top });
+    });
+  }, []);
 
   useLayoutEffect(() => {
     const node = scrollArea.current;
@@ -318,6 +378,7 @@ export function TaskWorkspace({
       plan={plan}
       collaborators={activeCollaborators}
       reviewContext={reviewContext}
+      selectedContext={selectedContext}
       questionRequest={questionRequest}
       draftText={draftText}
       followUps={followUps}
@@ -356,6 +417,10 @@ export function TaskWorkspace({
       onDefinitionOfDoneChange={onDefinitionOfDoneChange}
       onRemoveReviewContext={onRemoveReviewContext}
       onReviewContextSent={onReviewContextSent}
+      onClearSelectedContext={() => setSelectedContext(null)}
+      onSelectedContextSent={(submitted) => {
+        setSelectedContext((current) => current === submitted ? null : current);
+      }}
       onDraftChange={onDraftChange}
       onSubmissionStart={onSubmissionStart}
       onSubmissionSucceeded={onSubmissionSucceeded}
@@ -447,14 +512,19 @@ export function TaskWorkspace({
         onToggleArchived={onToggleArchived}
         onUndo={onUndo}
       />
-      <div className="task-workspace__timeline-shell">
+      <div className="task-workspace__timeline-shell" ref={timelineShell}>
         <div
           className="task-workspace__scroll"
           ref={scrollArea}
+          onPointerUp={captureTimelineSelection}
+          onKeyUp={(event) => {
+            if (event.shiftKey) captureTimelineSelection();
+          }}
           onScroll={(event) => {
             const following = shouldFollowLiveOutput(event.currentTarget);
             followLiveOutput.current = following;
             setShowJumpToLatest(!following);
+            setTimelineSelection(null);
           }}
         >
           <TaskTimeline
@@ -478,6 +548,27 @@ export function TaskWorkspace({
             onUndo={onUndo}
           />
         </div>
+        {timelineSelection ? (
+          <div
+            className="timeline-selection-toolbar"
+            role="toolbar"
+            aria-label="Actions for selected text"
+            style={{ left: timelineSelection.left, top: timelineSelection.top }}
+            onPointerDown={(event) => event.preventDefault()}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedContext(timelineSelection.text);
+                setTimelineSelection(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+            >
+              <XiaoIcon name="mention" size={13} />
+              <span>{hasThread ? "Follow up" : "Ask Xiao"}</span>
+            </button>
+          </div>
+        ) : null}
         {showJumpToLatest ? (
           <button
             className="task-workspace__jump-latest"

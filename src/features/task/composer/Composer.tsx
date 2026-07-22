@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
+import { promptWithSelectedContext, visiblePromptFromSelectedContext } from "../../../core/models/agent";
 import type {
   AgentApprovalPolicy,
   AgentAttachment,
@@ -77,6 +78,7 @@ type ComposerProps = {
   plan: AgentPlan | null;
   collaborators: AgentCollaborator[];
   reviewContext: AgentAttachment[];
+  selectedContext: string | null;
   questionRequest: AgentQuestionRequest | null;
   draftText: string;
   followUps: AgentFollowUp[];
@@ -114,6 +116,8 @@ type ComposerProps = {
   onDefinitionOfDoneChange: (value: AcceptanceContractDraft | null) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: (attachments: AgentAttachment[]) => void;
+  onClearSelectedContext: () => void;
+  onSelectedContextSent: (selectedContext: string) => void;
   onDraftChange: (draftText: string) => void;
   onSubmissionStart: () => number;
   onSubmissionSucceeded: (revision: number) => Promise<boolean>;
@@ -210,6 +214,7 @@ export function Composer({
   plan,
   collaborators,
   reviewContext,
+  selectedContext,
   questionRequest,
   draftText,
   followUps,
@@ -247,6 +252,8 @@ export function Composer({
   onDefinitionOfDoneChange,
   onRemoveReviewContext,
   onReviewContextSent,
+  onClearSelectedContext,
+  onSelectedContextSent,
   onDraftChange,
   onSubmissionStart,
   onSubmissionSucceeded,
@@ -297,7 +304,7 @@ export function Composer({
     !undoing &&
     (!definitionOfDoneAvailable || definitionOfDoneReady) &&
     !activeQuestionRequest &&
-    (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0) &&
+    (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0 || Boolean(selectedContext?.trim())) &&
     (runtime.phase === "ready" || currentTaskWorking);
   const defaultModel = models.find((model) => model.isDefault);
   const activeModel =
@@ -352,6 +359,11 @@ export function Composer({
   useEffect(() => {
     setValue((current) => current === draftText ? current : draftText);
   }, [draftText]);
+
+  useEffect(() => {
+    if (!selectedContext) return;
+    window.requestAnimationFrame(() => textarea.current?.focus());
+  }, [selectedContext]);
 
   useEffect(() => {
     if (!fileMention) {
@@ -662,9 +674,13 @@ export function Composer({
   const submit = async (delivery: ComposerDelivery = currentTaskWorking ? "queue" : "send") => {
     if (!canSubmit || submittingRef.current) return;
     const historyValue = value.trim();
-    const submittedValue = historyValue || (reviewContext.length
+    const plainValue = historyValue || (reviewContext.length
       ? "Address these review comments."
-      : "Review the attached context.");
+      : attachments.length
+        ? "Review the attached context."
+        : "Please respond to this selection.");
+    const submittedValue = promptWithSelectedContext(plainValue, selectedContext);
+    const submittedSelectedContext = selectedContext?.trim() ?? "";
     const submittedReviewContext = [...reviewContext];
     const submittedAttachments = [...attachments, ...submittedReviewContext];
     const submissionRevision = onSubmissionStart();
@@ -685,6 +701,7 @@ export function Composer({
 
       savePromptToHistory(historyValue);
       onReviewContextSent(submittedReviewContext);
+      if (submittedSelectedContext) onSelectedContextSent(submittedSelectedContext);
       if (!result.cleared || !mounted.current) return;
 
       resetPromptHistoryNavigation();
@@ -936,7 +953,7 @@ export function Composer({
                         <li className={failed ? "is-error" : sending ? "is-sending" : undefined} key={followUp.id}>
                           <span className="run-deck__queue-index">{index + 1}</span>
                           <div>
-                            <strong>{followUp.prompt}</strong>
+                            <strong>{visiblePromptFromSelectedContext(followUp.prompt)}</strong>
                             <small>
                               {sending
                                 ? "Starting now"
@@ -1005,7 +1022,7 @@ export function Composer({
           dragging ? "is-dragging" : ""
         } ${effectiveReasoningEffort === "ultra" ? "is-ultra" : ""} ${
           activeQuestionRequest ? "is-question-paused" : ""
-        } ${fastModeActive ? "is-fast" : ""}`}
+        } ${fastModeActive ? "is-fast" : ""} ${selectedContext ? "has-selected-context" : ""}`}
         aria-hidden={activeQuestionRequest ? true : undefined}
         onDragEnter={(event) => {
           event.preventDefault();
@@ -1018,6 +1035,20 @@ export function Composer({
         onDrop={onDrop}
       >
         <div className="composer__input">
+          {selectedContext ? (
+            <div className="composer__selected-context" aria-label="Selected conversation text">
+              <XiaoIcon name="mention" size={12} />
+              <strong>Quote</strong>
+              <span title={selectedContext}>{selectedContext.replace(/\s+/g, " ")}</span>
+              <button
+                type="button"
+                aria-label="Remove selected conversation text"
+                onClick={onClearSelectedContext}
+              >
+                <XiaoIcon name="close" size={12} />
+              </button>
+            </div>
+          ) : null}
           {slashQuery !== null ? (
             <div
               className="composer-slash-menu"

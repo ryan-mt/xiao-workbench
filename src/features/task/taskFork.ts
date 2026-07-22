@@ -1,4 +1,4 @@
-import type { AgentAttachment } from "../../core/models/agent";
+import { visiblePromptFromSelectedContext, type AgentAttachment } from "../../core/models/agent";
 import { completeTimelineMetadata } from "./taskPersistence";
 import type { WorkbenchTask } from "./task.types";
 
@@ -36,7 +36,7 @@ export const forkTaskFromEntry = (
       unread: false,
       createdAt: identity.createdAt,
       updatedAt: identity.createdAt,
-      draftText: selectedEntry.title,
+      draftText: visiblePromptFromSelectedContext(selectedEntry.title),
       followUps: [],
       threadId: null,
       threadBinding: null,

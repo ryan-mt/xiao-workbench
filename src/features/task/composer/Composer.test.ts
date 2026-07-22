@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentAttachment } from "../../../core/models/agent";
+import {
+  promptWithSelectedContext,
+  replaceVisiblePromptInSelectedContext,
+  visiblePromptFromSelectedContext,
+  type AgentAttachment,
+} from "../../../core/models/agent";
 import { workspaceTaskKey } from "../../../app/App";
 import {
   deliverComposerSubmission,
@@ -108,6 +113,34 @@ describe("composer sandbox permissions", () => {
       value: "danger-full-access",
       label: "No sandbox (full access)",
     });
+  });
+});
+
+describe("selected conversation context", () => {
+  it("keeps the selected text and the user's follow-up in the submitted prompt", () => {
+    expect(promptWithSelectedContext("Why does this fail?", "const ready = false;"))
+      .toBe([
+        "Use this text selected from the current conversation as context:",
+        "",
+        "<selected_text>",
+        "const ready = false;",
+        "</selected_text>",
+        "",
+        "Why does this fail?",
+      ].join("\n"));
+  });
+
+  it("provides a useful request when the user sends only the selection", () => {
+    expect(promptWithSelectedContext("", "Selected response"))
+      .toContain("Please respond to this selection.");
+  });
+
+  it("keeps internal context out of the user-facing prompt", () => {
+    const submitted = promptWithSelectedContext("thấy gì?", "Hi! What would you like to work on?");
+
+    expect(visiblePromptFromSelectedContext(submitted)).toBe("thấy gì?");
+    expect(replaceVisiblePromptInSelectedContext(submitted, "giải thích kỹ hơn"))
+      .toBe(promptWithSelectedContext("giải thích kỹ hơn", "Hi! What would you like to work on?"));
   });
 });
 

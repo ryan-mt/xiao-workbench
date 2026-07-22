@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
+import { visiblePromptFromSelectedContext } from "../../../core/models/agent";
 import type {
   AgentAccountSummary,
   AgentAccountUsage,
@@ -680,6 +681,13 @@ export const mergeAgentRateLimits = (
   secondary: mergeRateLimitWindow(current?.secondary ?? null, update.secondary),
 });
 
+export const reconcileFetchedAgentRateLimits = (
+  current: AgentRateLimitSnapshot | null,
+  fetched: AgentRateLimitSnapshot,
+) => current ? mergeAgentRateLimits(current, fetched) : fetched;
+
+export const accountRateLimitsRefreshIntervalMs = 30_000;
+
 export const projectAgentRateLimitsUpdate = (
   current: AgentRateLimitSnapshot | null,
   message: AgentMessage,
@@ -866,7 +874,7 @@ const historyFromTimeline = (timeline: TimelineEntry[]): XiaoHistoryItem[] =>
   });
 
 export const titleFromPrompt = (prompt: string) => {
-  const singleLine = prompt.replace(/\s+/g, " ").trim();
+  const singleLine = visiblePromptFromSelectedContext(prompt).replace(/\s+/g, " ").trim();
   if (singleLine.length <= 56) return singleLine;
   const shortened = singleLine.slice(0, 56).replace(/\s+\S*$/, "").trimEnd();
   return `${shortened || singleLine.slice(0, 56)}…`;
@@ -918,6 +926,7 @@ export function useAgentRuntime(
   const expectedEnvironmentIdRef = useRef(workspaceEnvironmentId);
   const activeEnvironmentIdRef = useRef<string | null>(null);
   const activeGenerationRef = useRef<number | null>(null);
+  const rateLimitsRefreshRevision = useRef(0);
   const finishedRunIds = useRef(new Set<string>());
   const replayedPendingInputs = useRef(new Set<string>());
   const sessionIds = useRef(new Map<string, string>());
@@ -1371,6 +1380,7 @@ export function useAgentRuntime(
 
   const refreshAccountRateLimits = useCallback(async () => {
     const scope = workspaceScopeRef.current;
+    const revision = ++rateLimitsRefreshRevision.current;
     try {
       const response = await nativeBridge.readAgentRateLimits(
         workspacePath,
@@ -1380,21 +1390,27 @@ export function useAgentRuntime(
         workspaceScopeRef.current,
         workspacePath,
         scope.generation,
-      )) return;
+      ) || revision !== rateLimitsRefreshRevision.current) return;
       const snapshot = response.rateLimitsByLimitId?.codex ?? response.rateLimits;
-      setRateLimits((current) => current
-        ? mergeAgentRateLimits(snapshot, current)
-        : snapshot);
+      setRateLimits((current) => reconcileFetchedAgentRateLimits(current, snapshot));
     } catch {
       if (agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
         workspacePath,
         scope.generation,
-      )) {
+      ) && revision === rateLimitsRefreshRevision.current) {
         setRateLimits(null);
       }
     }
   }, [workspacePath]);
+
+  useEffect(() => {
+    if (!isTauriHost()) return;
+    const timer = window.setInterval(() => {
+      void refreshAccountRateLimits();
+    }, accountRateLimitsRefreshIntervalMs);
+    return () => window.clearInterval(timer);
+  }, [refreshAccountRateLimits]);
 
   const refreshRuntimeIdentity = useCallback(async () => {
     const scope = workspaceScopeRef.current;
@@ -1736,6 +1752,7 @@ export function useAgentRuntime(
       }
 
       if (message.method === "account/rateLimits/updated") {
+        rateLimitsRefreshRevision.current += 1;
         setRateLimits((current) => projectAgentRateLimitsUpdate(current, message));
       }
 
