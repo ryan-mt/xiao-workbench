@@ -18,12 +18,13 @@ import {
   type TimelineEntry,
 } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
+import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
-import { TaskAcceptanceAction, TaskHeader } from "./TaskHeader";
+import { TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
 
 const useEventCallback = <Args extends unknown[], Result>(
@@ -97,6 +98,9 @@ type TaskWorkspaceProps = {
   hasThread: boolean;
   canUndo: boolean;
   undoing: boolean;
+  definitionOfDoneAvailable: boolean;
+  definitionOfDone: AcceptanceContractDraft | null;
+  definitionOfDoneError: string | null;
   contextUsage: ThreadTokenUsage | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
@@ -112,6 +116,7 @@ type TaskWorkspaceProps = {
   onAttachmentsChange: (attachments: AgentAttachment[]) => void;
   onCompact: () => Promise<boolean>;
   onUndo: () => void;
+  onDefinitionOfDoneChange: (value: AcceptanceContractDraft | null) => void;
   onForkTask: (entryId: string) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: (attachments: AgentAttachment[]) => void;
@@ -180,6 +185,9 @@ export function TaskWorkspace({
   hasThread,
   canUndo,
   undoing,
+  definitionOfDoneAvailable,
+  definitionOfDone,
+  definitionOfDoneError,
   contextUsage,
   showReasoningSummaries,
   expandToolOutput,
@@ -195,6 +203,7 @@ export function TaskWorkspace({
   onAttachmentsChange,
   onCompact,
   onUndo,
+  onDefinitionOfDoneChange,
   onForkTask,
   onRemoveReviewContext,
   onReviewContextSent,
@@ -320,6 +329,8 @@ export function TaskWorkspace({
       hasThread={hasThread}
       canUndo={canUndo}
       undoing={undoing}
+      definitionOfDoneAvailable={definitionOfDoneAvailable}
+      definitionOfDone={definitionOfDone}
       autoFocus={launchMode}
       onModelChange={onModelChange}
       onReasoningEffortChange={onReasoningEffortChange}
@@ -342,6 +353,7 @@ export function TaskWorkspace({
       onAttachmentsChange={onAttachmentsChange}
       onCompact={onCompact}
       onUndo={onUndo}
+      onDefinitionOfDoneChange={onDefinitionOfDoneChange}
       onRemoveReviewContext={onRemoveReviewContext}
       onReviewContextSent={onReviewContextSent}
       onDraftChange={onDraftChange}
@@ -352,7 +364,7 @@ export function TaskWorkspace({
         taskArchived || taskStateLoading || environmentBusy || Boolean(taskStateError)
       }
       disabledPlaceholder={taskStateLoading ? "Loading task history…" : undefined}
-      storageError={taskStateError}
+      storageError={taskStateError ?? definitionOfDoneError}
     />
   );
 
@@ -396,12 +408,15 @@ export function TaskWorkspace({
                 <span>{branch}</span>
               </button>
               <i aria-hidden="true">/</i>
-              <TaskAcceptanceAction
-                executionTaskId={executionTaskId}
-                iconSize={13}
-                label="Acceptance"
-                onOpen={() => onFocusView("verification")}
-              />
+              <span title={definitionOfDone
+                ? "This task will run acceptance checks before completion."
+                : "No acceptance checks are configured."}
+              >
+                <XiaoIcon name="check" size={13} />
+                <strong>{definitionOfDone
+                  ? `${definitionOfDone.gates.length} ${definitionOfDone.gates.length === 1 ? "check" : "checks"}`
+                  : "No checks"}</strong>
+              </span>
               <span className="task-launch__hint" aria-hidden="true">
                 <kbd>Enter</kbd> to send <i>&middot;</i> <kbd>Shift Enter</kbd> for a new line
               </span>

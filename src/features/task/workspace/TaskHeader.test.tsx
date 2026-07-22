@@ -154,6 +154,24 @@ describe("TaskAcceptanceAction", () => {
 });
 
 describe("TaskHeader retry action", () => {
+  it("surfaces verified and failed verification as completion states", () => {
+    const verified = renderHeader(run({
+      status: "completed",
+      agentOutcome: "completed",
+      verificationOutcome: "passed",
+    }));
+    const failed = renderHeader(run({
+      status: "needs_attention",
+      agentOutcome: "completed",
+      verificationOutcome: "failed",
+    }));
+
+    expect(verified).toContain("Verified");
+    expect(verified).toContain("task-header__runtime--verified");
+    expect(failed).toContain("Verification failed");
+    expect(failed).toContain("task-header__runtime--attention");
+  });
+
   it("hides full Retry when verification is interrupted after agent completion", () => {
     const markup = renderHeader(run({
       status: "interrupted",

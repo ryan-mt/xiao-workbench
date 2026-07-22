@@ -2642,6 +2642,107 @@
   color: var(--text);
 }
 
+.definition-of-done {
+  width: min(100%, var(--task-content-width));
+  margin: 0 auto 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.definition-of-done.is-configured {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--line));
+}
+
+.definition-of-done.is-incomplete {
+  border-color: color-mix(in srgb, var(--warning) 46%, var(--line));
+}
+
+.definition-of-done__toggle {
+  display: grid;
+  width: 100%;
+  min-height: 46px;
+  grid-template-columns: 28px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--muted-strong);
+  text-align: left;
+}
+
+.definition-of-done__toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.definition-of-done__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-deep);
+  color: var(--muted);
+}
+
+.definition-of-done.is-configured .definition-of-done__icon {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.definition-of-done__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.definition-of-done__copy strong,
+.definition-of-done__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.definition-of-done__copy strong {
+  color: var(--text-soft);
+  font-size: var(--text-label);
+  font-weight: 610;
+}
+
+.definition-of-done__copy small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+}
+
+.definition-of-done__toggle > svg {
+  color: var(--muted);
+  transition: transform 140ms ease;
+}
+
+.definition-of-done__toggle > svg.is-open {
+  transform: rotate(180deg);
+}
+
+.definition-of-done__editor {
+  max-height: min(520px, 52vh);
+  padding: 12px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  background: var(--surface-deep);
+}
+
+.definition-of-done__editor[hidden] {
+  display: none;
+}
+
+.definition-of-done__error {
+  margin: 10px 0 0;
+  color: var(--warning);
+  font-size: var(--text-micro);
+  line-height: 1.45;
+}
+
 .goal-strip,
 .goal-editor {
   display: flex;

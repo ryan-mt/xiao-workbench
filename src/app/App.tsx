@@ -14,6 +14,7 @@ import {
   type TimelineEntry,
 } from "../core/models/agent";
 import type {
+  AcceptanceContractDraft,
   AcceptanceContractVersionSummary,
   AcceptanceGate,
 } from "../core/models/verification";
@@ -1409,6 +1410,13 @@ export function App() {
   const [tasks, setTasks] = useState<WorkbenchTask[]>(initialTaskState.tasks);
   const [activeTaskId, setActiveTaskId] = useState(initialTaskState.activeTaskId);
   const [draftTask, setDraftTask] = useState(() => createDraftTask(preferences.taskRunDefaults));
+  const [pendingDefinitionsOfDone, setPendingDefinitionsOfDone] = useState<
+    Record<string, AcceptanceContractDraft | null>
+  >({});
+  const [definitionOfDoneError, setDefinitionOfDoneError] = useState<{
+    taskId: string;
+    message: string;
+  } | null>(null);
   const [openTaskIds, setOpenTaskIds] = useState<string[]>(
     initialTaskState.activeTaskId ? [initialTaskState.activeTaskId] : [],
   );
@@ -1449,6 +1457,19 @@ export function App() {
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
+  const definitionOfDoneChanged = Object.prototype.hasOwnProperty.call(
+    pendingDefinitionsOfDone,
+    activeTask.id,
+  );
+  const definitionOfDone = definitionOfDoneChanged
+    ? pendingDefinitionsOfDone[activeTask.id] ?? null
+    : activeTask.acceptanceContract
+      ? { name: activeTask.acceptanceContract.name, gates: activeTask.acceptanceContract.gates }
+      : null;
+  const definitionOfDoneAvailable = !activeTask.archived && activeTask.timelineEntryCount === 0;
+  const activeDefinitionOfDoneError = definitionOfDoneError?.taskId === activeTask.id
+    ? definitionOfDoneError.message
+    : null;
   const activeTaskTimelineReady = !hasUnloadedTimeline(activeTask);
   const executionTaskId = confirmedExecutionTaskId(
     confirmedNativeTasks,
@@ -2264,6 +2285,15 @@ export function App() {
 
     let persistedTasks = tasks;
     let persistedActiveTaskId = activeTaskId;
+    const submissionTaskId = activeTask.id;
+    const pendingDefinitionChanged = Object.prototype.hasOwnProperty.call(
+      pendingDefinitionsOfDone,
+      submissionTaskId,
+    );
+    const pendingDefinition = pendingDefinitionChanged
+      ? pendingDefinitionsOfDone[submissionTaskId] ?? null
+      : null;
+    const expectedDefinitionVersionId = activeTask.acceptanceContract?.versionId ?? null;
     if (!selectedTask) {
       const updatedAt = Date.now();
       const materializedTask: WorkbenchTask = {
@@ -2292,6 +2322,35 @@ export function App() {
       });
     } catch {
       return false;
+    }
+    if (pendingDefinitionChanged) {
+      try {
+        const savedContract = await nativeBridge.saveXiaoTaskAcceptanceContract({
+          projectPath: workspace.path,
+          taskId: submissionTaskId,
+          expectedCurrentVersionId: expectedDefinitionVersionId,
+          contract: pendingDefinition,
+        });
+        const saved = {
+          projectPath: workspace.path,
+          taskId: submissionTaskId,
+          contract: savedContract,
+        };
+        setTasks((current) => applyTaskAcceptanceContractSave(workspace.path, current, saved));
+        setPendingDefinitionsOfDone((current) => {
+          if (!Object.prototype.hasOwnProperty.call(current, submissionTaskId)) return current;
+          const next = { ...current };
+          delete next[submissionTaskId];
+          return next;
+        });
+        setDefinitionOfDoneError((current) => current?.taskId === submissionTaskId ? null : current);
+      } catch (reason) {
+        setDefinitionOfDoneError({
+          taskId: submissionTaskId,
+          message: `Definition of Done could not be saved. ${reason instanceof Error ? reason.message : String(reason)}`,
+        });
+        return false;
+      }
     }
     return agent.submit(prompt, attachments);
   };
@@ -3560,6 +3619,9 @@ export function App() {
               hasThread={agent.hasThread}
               canUndo={agent.canUndo && activeTask.followUps.length === 0}
               undoing={agent.undoing}
+              definitionOfDoneAvailable={definitionOfDoneAvailable}
+              definitionOfDone={definitionOfDone}
+              definitionOfDoneError={activeDefinitionOfDoneError}
               contextUsage={agent.contextUsage}
               showReasoningSummaries={preferences.showReasoningSummaries}
               expandToolOutput={preferences.expandToolOutput}
@@ -3607,6 +3669,11 @@ export function App() {
               }
               onCompact={agent.compact}
               onUndo={() => void undoTaskTurn()}
+              onDefinitionOfDoneChange={(contract) => {
+                const taskId = activeTask.id;
+                setPendingDefinitionsOfDone((current) => ({ ...current, [taskId]: contract }));
+                setDefinitionOfDoneError((current) => current?.taskId === taskId ? null : current);
+              }}
               onForkTask={forkTask}
               onRemoveReviewContext={removeReviewContext}
               onReviewContextSent={clearReviewContext}

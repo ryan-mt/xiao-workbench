@@ -19,11 +19,13 @@ import type {
   AgentRuntimeState,
   AgentSandboxMode,
 } from "../../../core/models/agent";
+import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import type { ManagedWorktreeSummary } from "../../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { fastServiceTier } from "../../agent/hooks/agentProtocol";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
+import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { ModelPicker } from "./ModelPicker";
 import {
   canNavigatePromptHistory,
@@ -86,6 +88,8 @@ type ComposerProps = {
   hasThread: boolean;
   canUndo: boolean;
   undoing: boolean;
+  definitionOfDoneAvailable: boolean;
+  definitionOfDone: AcceptanceContractDraft | null;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
   onFastModeChange: (fastMode: boolean) => void;
@@ -107,6 +111,7 @@ type ComposerProps = {
   onAttachmentsChange: (attachments: AgentAttachment[]) => void;
   onCompact: () => Promise<boolean>;
   onUndo: () => void;
+  onDefinitionOfDoneChange: (value: AcceptanceContractDraft | null) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   onReviewContextSent: (attachments: AgentAttachment[]) => void;
   onDraftChange: (draftText: string) => void;
@@ -216,6 +221,8 @@ export function Composer({
   hasThread,
   canUndo,
   undoing,
+  definitionOfDoneAvailable,
+  definitionOfDone,
   onModelChange,
   onReasoningEffortChange,
   onFastModeChange,
@@ -237,6 +244,7 @@ export function Composer({
   onAttachmentsChange,
   onCompact,
   onUndo,
+  onDefinitionOfDoneChange,
   onRemoveReviewContext,
   onReviewContextSent,
   onDraftChange,
@@ -260,6 +268,7 @@ export function Composer({
   const [runDeckCollapsed, setRunDeckCollapsed] = useState(false);
   const [agentsExpanded, setAgentsExpanded] = useState(false);
   const [queueExpanded, setQueueExpanded] = useState(false);
+  const [definitionOfDoneReady, setDefinitionOfDoneReady] = useState(true);
   const [fileMention, setFileMention] = useState<FileMention | null>(null);
   const [fileResults, setFileResults] = useState<FuzzyFileResult[]>([]);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
@@ -286,6 +295,7 @@ export function Composer({
     !disabled &&
     !compacting &&
     !undoing &&
+    (!definitionOfDoneAvailable || definitionOfDoneReady) &&
     !activeQuestionRequest &&
     (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0) &&
     (runtime.phase === "ready" || currentTaskWorking);
@@ -319,6 +329,10 @@ export function Composer({
     slashCommandDisabledReason(command, { canCompact, compacting, hasThread });
 
   useEffect(() => setGoalValue(goal?.objective ?? ""), [goal?.objective]);
+
+  useEffect(() => {
+    if (!definitionOfDoneAvailable) setDefinitionOfDoneReady(true);
+  }, [definitionOfDoneAvailable]);
 
   useEffect(() => {
     setRevealedRuntimeError(null);
@@ -758,6 +772,16 @@ export function Composer({
           <button type="button" onClick={() => onOpenView("runtime")}>View runtime</button>
         </div>
       )}
+      {definitionOfDoneAvailable ? (
+        <DefinitionOfDonePanel
+          projectPath={workspacePath}
+          taskId={executionTaskId}
+          value={definitionOfDone}
+          disabled={disabled || submitting}
+          onReadyChange={setDefinitionOfDoneReady}
+          onChange={onDefinitionOfDoneChange}
+        />
+      ) : null}
       {showRunDeck && (
         <section
           className={`run-deck ${runDeckCollapsed ? "is-collapsed" : ""} ${
