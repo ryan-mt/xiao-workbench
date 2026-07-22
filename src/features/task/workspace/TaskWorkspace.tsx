@@ -88,6 +88,7 @@ type TaskWorkspaceProps = {
   launchBrand: "logo" | "wordmark";
   workspace: WorkspaceSnapshot;
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
+  onSteer: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
@@ -168,6 +169,7 @@ export function TaskWorkspace({
   launchBrand,
   workspace,
   onSubmit,
+  onSteer,
   onQueueFollowUp,
   onRemoveFollowUp,
   onSendFollowUpNow,
@@ -281,6 +283,7 @@ export function TaskWorkspace({
       onInterrupt={onInterrupt}
       onOpenView={onFocusView}
       onSubmit={onSubmit}
+      onSteer={onSteer}
       onQueueFollowUp={onQueueFollowUp}
       onRemoveFollowUp={onRemoveFollowUp}
       onSendFollowUpNow={onSendFollowUpNow}

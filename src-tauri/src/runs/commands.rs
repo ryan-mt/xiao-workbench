@@ -3,7 +3,9 @@ use tauri::{AppHandle, State};
 
 use crate::xiao::repository::XiaoRepository;
 
-use super::models::{EnqueueRunRequest, PendingInputSnapshot, RunEventPage, RunSnapshot};
+use super::models::{
+    EnqueueRunRequest, PendingInputSnapshot, RunEventPage, RunSnapshot, SteerRunRequest,
+};
 use super::service::RunService;
 
 #[tauri::command]
@@ -13,6 +15,15 @@ pub fn enqueue_xiao_run(
     service: State<'_, RunService>,
 ) -> Result<RunSnapshot, String> {
     service.enqueue(&app, request)
+}
+
+#[tauri::command]
+pub async fn steer_xiao_run(
+    app: AppHandle,
+    request: SteerRunRequest,
+    service: State<'_, RunService>,
+) -> Result<String, String> {
+    service.steer(&app, request).await
 }
 
 #[tauri::command]

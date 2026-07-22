@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../../core/bridges/tauri";
+import type { AgentAttachment } from "../../../core/models/agent";
 import type {
   GitBranch,
   GitCheckSummary,
@@ -23,11 +24,51 @@ type ChangesPanelProps = {
   taskId: string | null;
   transitioning: boolean;
   workspaceActionable: boolean;
+  reviewContext: AgentAttachment[];
+  onStageReviewContext: (attachment: AgentAttachment) => void;
+  onRemoveReviewContext: (attachmentId: string) => void;
   onOpenBrowser: (url: string) => void;
   onRefresh: () => void;
 };
 
 type Worktree = { path: string; branch: string; head: string; isMain: boolean };
+type DiffLineKind = "add" | "delete" | "hunk" | "context";
+export type ParsedDiffLine = {
+  text: string;
+  kind: DiffLineKind;
+  oldLine: number | null;
+  newLine: number | null;
+};
+
+export const parseUnifiedDiff = (patch: string): ParsedDiffLine[] => {
+  let oldLine: number | null = null;
+  let newLine: number | null = null;
+  return patch.split("\n").map((text) => {
+    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      return { text, kind: "hunk", oldLine: null, newLine: null };
+    }
+    if (oldLine === null || newLine === null || text.startsWith("\\ No newline")) {
+      return { text, kind: "context", oldLine: null, newLine: null };
+    }
+    if (text.startsWith("+") && !text.startsWith("+++")) {
+      const line = { text, kind: "add" as const, oldLine: null, newLine };
+      newLine += 1;
+      return line;
+    }
+    if (text.startsWith("-") && !text.startsWith("---")) {
+      const line = { text, kind: "delete" as const, oldLine, newLine: null };
+      oldLine += 1;
+      return line;
+    }
+    const line = { text, kind: "context" as const, oldLine, newLine };
+    oldLine += 1;
+    newLine += 1;
+    return line;
+  });
+};
 
 const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 const directory = (path: string) => path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
@@ -49,6 +90,9 @@ export function ChangesPanel({
   taskId,
   transitioning,
   workspaceActionable,
+  reviewContext,
+  onStageReviewContext,
+  onRemoveReviewContext,
   onOpenBrowser,
   onRefresh,
 }: ChangesPanelProps) {
@@ -73,10 +117,21 @@ export function ChangesPanel({
   const [pullRequest, setPullRequest] = useState<GitPullRequestSummary | null>(null);
   const [shipChecks, setShipChecks] = useState<GitCheckSummary[]>([]);
   const [shipCommitOutput, setShipCommitOutput] = useState<string | null>(null);
+  const [diffSelection, setDiffSelection] = useState<{ start: number; end: number } | null>(null);
+  const [diffComment, setDiffComment] = useState("");
+  const [diffNotice, setDiffNotice] = useState<string | null>(null);
   const visibleGit = baseBranch ? comparison : git;
   const comparisonMode = Boolean(baseBranch);
   const preferredChange = visibleGit?.changes.find((change) => !change.patch.startsWith("Binary file")) ?? visibleGit?.changes[0] ?? null;
   const selectedChange = visibleGit?.changes.find((change) => change.path === selectedPath) ?? preferredChange;
+  const diffLines = useMemo(() => parseUnifiedDiff(selectedChange?.patch ?? ""), [selectedChange?.patch]);
+  const selectedSourceLines = useMemo(() => {
+    if (!diffSelection) return [];
+    return diffLines
+      .slice(diffSelection.start, diffSelection.end + 1)
+      .map((line) => line.newLine ?? line.oldLine)
+      .filter((line): line is number => line !== null);
+  }, [diffLines, diffSelection]);
   const filteredChanges = useMemo(() => {
     const value = query.trim().toLowerCase();
     return visibleGit?.changes.filter((change) => !value || change.path.toLowerCase().includes(value)) ?? [];
@@ -93,6 +148,47 @@ export function ChangesPanel({
   useEffect(() => {
     setQuery("");
   }, [workspace.path]);
+
+  useEffect(() => {
+    setDiffSelection(null);
+    setDiffComment("");
+    setDiffNotice(null);
+  }, [selectedChange?.path, selectedChange?.patch]);
+
+  const selectDiffLine = (index: number, extend: boolean) => {
+    const line = diffLines[index];
+    if (!line || (line.oldLine === null && line.newLine === null)) return;
+    setDiffSelection((current) => {
+      if (!extend || !current) return { start: index, end: index };
+      return { start: Math.min(current.start, index), end: Math.max(current.end, index) };
+    });
+    setDiffComment("");
+    setDiffNotice(null);
+  };
+
+  const stageDiffComment = () => {
+    if (!selectedChange || !diffSelection || !diffComment.trim()) return;
+    const selectedLines = diffLines.slice(diffSelection.start, diffSelection.end + 1);
+    if (!selectedSourceLines.length) return;
+    const lineStart = Math.min(...selectedSourceLines);
+    const lineEnd = Math.max(...selectedSourceLines);
+    const preview = selectedLines
+      .map((line) => `${line.oldLine ?? ""}\t${line.newLine ?? ""} | ${line.text}`)
+      .join("\n");
+    onStageReviewContext({
+      id: crypto.randomUUID(),
+      name: `${fileName(selectedChange.path)}:${lineStart}`,
+      path: selectedChange.path,
+      kind: "review",
+      lineStart,
+      lineEnd,
+      comment: diffComment.trim(),
+      preview,
+    });
+    setDiffNotice(`${fileName(selectedChange.path)}:${lineStart}${lineEnd !== lineStart ? `-${lineEnd}` : ""} added to the prompt`);
+    setDiffComment("");
+    setDiffSelection(null);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -347,13 +443,63 @@ export function ChangesPanel({
                     )}
                   </div>
                 </header>
-                <code className="change-diff-viewer__code">
-                  {selectedChange.patch ? selectedChange.patch.split("\n").map((line, index) => (
-                    <span className={line.startsWith("+") && !line.startsWith("+++") ? "diff-add" : line.startsWith("-") && !line.startsWith("---") ? "diff-delete" : line.startsWith("@@") ? "diff-hunk" : "diff-context"} key={`${index}-${line}`}>
-                      <i>{index + 1}</i><b>{line.startsWith("+") ? "+" : line.startsWith("-") ? "-" : ""}</b>{line || " "}
-                    </span>
-                  )) : <span className="diff-context"><i /><b />No textual patch is available.</span>}
-                </code>
+                {diffNotice && <div className="change-diff-viewer__notice"><XiaoIcon name="check" size={13} />{diffNotice}</div>}
+                <div className="change-diff-viewer__code" role="region" aria-label={`Changes in ${selectedChange.path}`}>
+                  {selectedChange.patch ? diffLines.map((line, index) => {
+                    const selectable = line.oldLine !== null || line.newLine !== null;
+                    const selected = Boolean(diffSelection && index >= diffSelection.start && index <= diffSelection.end);
+                    const commentAfter = Boolean(diffSelection && index === diffSelection.end);
+                    const lineNumber = line.newLine ?? line.oldLine;
+                    const stagedComments = reviewContext.filter(
+                      (attachment) => attachment.kind === "review" &&
+                        attachment.path === selectedChange.path &&
+                        lineNumber !== null &&
+                        (attachment.lineEnd ?? attachment.lineStart) === lineNumber,
+                    );
+                    return (
+                      <div className="change-diff-viewer__group" key={`${index}-${line.text}`}>
+                        <div className={`change-diff-viewer__line diff-${line.kind} ${selected ? "is-selected" : ""}`}>
+                          {selectable ? (
+                            <button className="change-diff-viewer__comment" type="button" aria-label={`Comment on ${selectedChange.path} line ${lineNumber}`} onClick={() => selectDiffLine(index, false)}><XiaoIcon name="add" size={12} /></button>
+                          ) : <span />}
+                          <button type="button" disabled={!selectable} onClick={(event) => selectDiffLine(index, event.shiftKey)}>{line.oldLine}</button>
+                          <button type="button" disabled={!selectable} onClick={(event) => selectDiffLine(index, event.shiftKey)}>{line.newLine}</button>
+                          <b>{line.kind === "add" ? "+" : line.kind === "delete" ? "-" : ""}</b>
+                          <code onClick={(event) => selectDiffLine(index, event.shiftKey)}>{line.text || " "}</code>
+                        </div>
+                        {stagedComments.map((staged) => (
+                          <article className="staged-line-comment" key={staged.id}>
+                            <span><XiaoIcon name="check" size={12} /></span>
+                            <div><strong>Staged for Xiao</strong><p>{staged.comment}</p></div>
+                            <button type="button" aria-label="Remove staged diff comment" onClick={() => staged.id && onRemoveReviewContext(staged.id)}><XiaoIcon name="close" size={12} /></button>
+                          </article>
+                        ))}
+                        {commentAfter && diffSelection && (
+                          <form className="line-comment" onSubmit={(event) => { event.preventDefault(); stageDiffComment(); }}>
+                            <label htmlFor="xiao-diff-comment">Comment</label>
+                            <textarea
+                              id="xiao-diff-comment"
+                              autoFocus
+                              rows={3}
+                              value={diffComment}
+                              placeholder="Tell Xiao what should change"
+                              onChange={(event) => setDiffComment(event.target.value)}
+                              onKeyDown={(event) => {
+                                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") stageDiffComment();
+                                if (event.key === "Escape") setDiffSelection(null);
+                              }}
+                            />
+                            <footer>
+                              <small>line {Math.min(...selectedSourceLines)}{Math.max(...selectedSourceLines) !== Math.min(...selectedSourceLines) ? `-${Math.max(...selectedSourceLines)}` : ""}</small>
+                              <button type="button" onClick={() => setDiffSelection(null)}>Cancel</button>
+                              <button className="button button--primary" type="submit" disabled={!diffComment.trim()}>Comment</button>
+                            </footer>
+                          </form>
+                        )}
+                      </div>
+                    );
+                  }) : <div className="change-diff-viewer__line diff-context"><span /><button type="button" disabled /><button type="button" disabled /><b /><code>No textual patch is available.</code></div>}
+                </div>
               </>
             ) : null}
           </main>

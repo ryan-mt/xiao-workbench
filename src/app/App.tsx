@@ -2282,6 +2282,28 @@ export function App() {
     );
   };
 
+  const steerTask = async (prompt: string, attachments: AgentAttachment[]) => {
+    const cleanPrompt = prompt.trim();
+    if (
+      !taskStateReady ||
+      activeTaskHistoryLoading ||
+      activeEnvironmentBusy ||
+      taskStateError ||
+      workspaceError ||
+      activeTask.archived ||
+      !cleanPrompt
+    ) return false;
+    setFailedFollowUpId(null);
+    return submitTaskFollowUpAfterPersistence(
+      {
+        path: taskWorkspacePath,
+        state: { tasks, activeTaskId, showArchived: false },
+      },
+      (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
+      () => agent.steer(cleanPrompt, attachments),
+    );
+  };
+
   const removeTaskFollowUp = (followUpId: string) => {
     if (sendingFollowUpId === followUpId) return;
     setTasks((current) => current.map((task) =>
@@ -2318,7 +2340,7 @@ export function App() {
           state: { tasks, activeTaskId, showArchived: false },
         },
         (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
-        () => agent.submit(followUp.prompt, followUp.attachments, followUp.id),
+        () => agent.steer(followUp.prompt, followUp.attachments, followUp.id),
       );
       if (!success) {
         applyCurrentTaskOperationCompletion(
@@ -3495,6 +3517,7 @@ export function App() {
                 void agent.retryRun(runId);
               }}
               onSubmit={submitTask}
+              onSteer={steerTask}
               onQueueFollowUp={queueTaskFollowUp}
               onRemoveFollowUp={removeTaskFollowUp}
               onSendFollowUpNow={sendTaskFollowUpNow}

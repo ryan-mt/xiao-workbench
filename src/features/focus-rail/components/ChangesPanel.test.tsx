@@ -47,7 +47,13 @@ vi.mock("../../../core/bridges/tauri", () => ({
   },
 }));
 
-import { ChangesPanel } from "./ChangesPanel";
+import { ChangesPanel, parseUnifiedDiff } from "./ChangesPanel";
+
+const reviewProps = {
+  reviewContext: [],
+  onStageReviewContext: vi.fn(),
+  onRemoveReviewContext: vi.fn(),
+};
 
 const workspace = (projectPath: string, taskId: string, changedPath: string): WorkspaceSnapshot => ({
   name: taskId,
@@ -82,7 +88,7 @@ const workspace = (projectPath: string, taskId: string, changedPath: string): Wo
       status: "modified",
       additions: 1,
       deletions: 0,
-      patch: "+changed",
+      patch: "@@ -1 +1 @@\n-old\n+changed",
       patchTruncated: false,
     }],
   },
@@ -135,6 +141,28 @@ const findLink = (
   return null;
 };
 
+const findForm = (
+  node: ReactNode,
+): ReactElement<{ onSubmit?: (event: { preventDefault: () => void }) => void }> | null => {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findForm(child);
+      if (match) return match;
+    }
+    return null;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return null;
+  const element = node as ReactElement<{ children?: ReactNode; onSubmit?: (event: { preventDefault: () => void }) => void }>;
+  if (element.type === "form") return element;
+  const children = element.props.children;
+  const items = Array.isArray(children) ? children : [children];
+  for (const child of items) {
+    const match = findForm(child);
+    if (match) return match;
+  }
+  return null;
+};
+
 describe("ChangesPanel workspace identity guard", () => {
   beforeEach(() => {
     stateHarness.callIndex = 0;
@@ -145,12 +173,15 @@ describe("ChangesPanel workspace identity guard", () => {
     bridge.getGitPullRequest.mockReset();
     bridge.createGitDraftPullRequest.mockReset();
     bridge.getGitPullRequestChecks.mockReset();
+    reviewProps.onStageReviewContext.mockReset();
+    reviewProps.onRemoveReviewContext.mockReset();
   });
 
   it("does not send task B with task A paths while the loaded snapshot is stale", () => {
     const taskAWorkspace = workspace("C:/project-a", "task-a", "src/task-a.ts");
     const onRefresh = vi.fn();
     const panel = ChangesPanel({
+      ...reviewProps,
       workspace: taskAWorkspace,
       taskId: "task-b",
       transitioning: false,
@@ -172,6 +203,7 @@ describe("ChangesPanel workspace identity guard", () => {
     const taskBWorkspace = workspace("C:/project-a", "task-b", "src/task-b.ts");
     const onRefresh = vi.fn();
     const panel = ChangesPanel({
+      ...reviewProps,
       workspace: taskBWorkspace,
       taskId: "task-b",
       transitioning: false,
@@ -197,6 +229,7 @@ describe("ChangesPanel workspace identity guard", () => {
 
   it("keeps Ship draft PR disabled until a commit message is present", () => {
     const panel = ChangesPanel({
+      ...reviewProps,
       workspace: workspace("C:/project-a", "task-b", "src/task-b.ts"),
       taskId: "task-b",
       transitioning: false,
@@ -229,6 +262,7 @@ describe("ChangesPanel workspace identity guard", () => {
     }]);
     const onOpenBrowser = vi.fn();
     const panel = ChangesPanel({
+      ...reviewProps,
       workspace: workspace("C:/project-a", "task-b", "src/task-b.ts"),
       taskId: "task-b",
       transitioning: false,
@@ -246,5 +280,42 @@ describe("ChangesPanel workspace identity guard", () => {
     expect(preventCheckNavigation).toHaveBeenCalledOnce();
     expect(onOpenBrowser).toHaveBeenNthCalledWith(1, pullRequestUrl);
     expect(onOpenBrowser).toHaveBeenNthCalledWith(2, checkUrl);
+  });
+
+  it("stages a selected diff line as review context for the composer", () => {
+    stateHarness.overrides.set(19, { start: 2, end: 2 });
+    stateHarness.overrides.set(20, "Use the shared helper here");
+    const panel = ChangesPanel({
+      ...reviewProps,
+      workspace: workspace("C:/project-a", "task-b", "src/task-b.ts"),
+      taskId: "task-b",
+      transitioning: false,
+      workspaceActionable: true,
+      onOpenBrowser: vi.fn(),
+      onRefresh: vi.fn(),
+    });
+
+    findForm(panel)?.props.onSubmit?.({ preventDefault: vi.fn() });
+
+    expect(reviewProps.onStageReviewContext).toHaveBeenCalledWith(expect.objectContaining({
+      path: "src/task-b.ts",
+      kind: "review",
+      lineStart: 1,
+      lineEnd: 1,
+      comment: "Use the shared helper here",
+      preview: "\t1 | +changed",
+    }));
+  });
+});
+
+describe("parseUnifiedDiff", () => {
+  it("tracks old and new source line numbers across a hunk", () => {
+    expect(parseUnifiedDiff("@@ -17,2 +17,3 @@\n context\n-old\n+new\n+extra")).toEqual([
+      { text: "@@ -17,2 +17,3 @@", kind: "hunk", oldLine: null, newLine: null },
+      { text: " context", kind: "context", oldLine: 17, newLine: 17 },
+      { text: "-old", kind: "delete", oldLine: 18, newLine: null },
+      { text: "+new", kind: "add", oldLine: null, newLine: 18 },
+      { text: "+extra", kind: "add", oldLine: null, newLine: 19 },
+    ]);
   });
 });

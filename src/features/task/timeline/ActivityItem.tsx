@@ -234,8 +234,6 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (assistantMessage) {
-    const additions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
-    const deletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);
     return (
       <article
         className="activity activity--assistant-message"
@@ -244,39 +242,17 @@ export const ActivityItem = memo(function ActivityItem({
         <div className="activity__assistant-message">
           {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
           {turnFiles.length > 0 && (
-            <section className="turn-changes" aria-label={`Edited ${turnFiles.length} ${turnFiles.length === 1 ? "file" : "files"}`}>
-              <header className="turn-changes__header">
-                <span className="turn-changes__mark"><XiaoIcon name="changes" size={16} /></span>
-                <span className="turn-changes__summary">
-                  <strong>Edited {turnFiles.length} {turnFiles.length === 1 ? "file" : "files"}</strong>
-                  <small><b>+{additions}</b><em>-{deletions}</em></small>
-                </span>
-                <span className="turn-changes__actions">
-                  {canUndo && onUndo ? (
-                    <button type="button" disabled={undoing} onClick={onUndo}>
-                      {undoing ? "Undoing" : "Undo"}
-                      <XiaoIcon name={undoing ? "pending" : "undo"} size={13} />
-                    </button>
-                  ) : null}
-                  <button className="turn-changes__review" type="button" onClick={onReviewChanges}>
-                    Review
-                  </button>
-                </span>
-              </header>
-              <div className="turn-changes__files">
-                {turnFiles.map((file) => (
-                  <button
-                    key={file.path}
-                    type="button"
-                    title={`Open ${file.path}`}
-                    onClick={() => onOpenResource(file.path)}
-                  >
-                    <span>{file.path}</span>
-                    <small><b>+{file.additions}</b><em>-{file.deletions}</em></small>
-                  </button>
-                ))}
-              </div>
-            </section>
+            <nav className="turn-change-actions" aria-label="Actions for edited files">
+              <button type="button" onClick={onReviewChanges}>
+                <XiaoIcon name="changes" size={13} /> Review changes
+              </button>
+              {canUndo && onUndo ? (
+                <button type="button" disabled={undoing} onClick={onUndo}>
+                  <XiaoIcon className={undoing ? "spin" : undefined} name={undoing ? "pending" : "undo"} size={13} />
+                  {undoing ? "Undoing" : "Undo"}
+                </button>
+              ) : null}
+            </nav>
           )}
           {entry.body && (
             <div className="activity__assistant-actions">
@@ -471,31 +447,29 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (entry.kind === "change" && entry.files?.length) {
-    const additions = entry.files.reduce((sum, file) => sum + file.additions, 0);
-    const deletions = entry.files.reduce((sum, file) => sum + file.deletions, 0);
+    const verb = entry.status === "active" ? "Editing" : entry.status === "error" ? "Edit failed" : "Edit";
     return (
       <article
         className={`activity activity--patch activity--${entry.status ?? "idle"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <div className="patch-activity__heading">
-          <strong>{entry.status === "active" ? "Editing" : entry.status === "error" ? "Edit failed" : "Edited"}</strong>
-          <span>{entry.files.length} {entry.files.length === 1 ? "file" : "files"}</span>
-          <small><b>+{additions}</b><em>-{deletions}</em></small>
-          {entry.status === "active" ? <i className="activity__pulse" /> : null}
-        </div>
         <div className="patch-activity__files">
           {entry.files.map((file) => {
             const lines = file.patch ? patchLines(file.patch) : [];
             const absolutePath = /^[A-Za-z]:[\\/]/.test(file.path)
               ? file.path
               : `${workspacePath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`;
+            const displayPath = file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? file.path;
             const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
             const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
             return (
               <details key={file.path} open={expandToolOutput}>
                 <summary>
-                  <span className="patch-activity__file-icon"><XiaoIcon name="mutation" size={14} /></span>
+                  <span className="patch-activity__file-icon">
+                    <XiaoIcon name="mutation" size={14} />
+                    {entry.status === "active" ? <i className="activity__pulse" /> : null}
+                  </span>
+                  <strong className="patch-activity__verb">{verb}</strong>
                   <span
                     className="patch-activity__path"
                     title={`Open ${absolutePath}`}
@@ -513,7 +487,7 @@ export const ActivityItem = memo(function ActivityItem({
                       onOpenResource(absolutePath);
                     }}
                   >
-                    <strong>{absolutePath}</strong>
+                    <strong>{displayPath}</strong>
                     {lineNumber && <small>line {lineNumber}</small>}
                   </span>
                   <span className="patch-activity__stats"><b>+{file.additions}</b><em>-{file.deletions}</em></span>
@@ -541,9 +515,6 @@ export const ActivityItem = memo(function ActivityItem({
             );
           })}
         </div>
-        <button className="patch-activity__review" type="button" onClick={onReviewChanges}>
-          Open review <XiaoIcon name="external" size={12} />
-        </button>
       </article>
     );
   }

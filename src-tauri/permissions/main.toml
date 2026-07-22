@@ -20,6 +20,7 @@ permissions = [
   "allow-read-agent-usage",
   "allow-list-agent-models",
   "allow-enqueue-xiao-run",
+  "allow-steer-xiao-run",
   "allow-list-xiao-runs",
   "allow-list-xiao-pending-inputs",
   "allow-load-xiao-run-events",

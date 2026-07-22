@@ -24,7 +24,7 @@ use crate::xiao::repository::XiaoRepository;
 use super::models::{
     EnqueueRunRequest, NewPendingInput, NewRun, PendingInputKind, PendingInputSnapshot,
     RunProtocolEnvelope, RunRecord, RunServiceErrorEnvelope, RunSnapshot, RunStatus,
-    RunUpdateEnvelope, RuntimeAttachment,
+    RunUpdateEnvelope, RuntimeAttachment, SteerRunRequest,
 };
 use super::repository::{
     bounded_diagnostic, new_uuid_v7, now_millis, CancelDisposition, CorrelatedRunEvent,
@@ -34,7 +34,7 @@ use super::RUN_CONCURRENCY_LIMIT;
 
 const THREAD_SOURCE: &str = "xiao-workbench";
 const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
-const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
+const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. Do not use a check-only command as a probe when its expected nonzero exit would merely tell you to run the corresponding formatter or fixer; after editing, run the formatter or fixer first and reserve its check-only form for final verification. Do not batch a command that may fail as part of normal probing with independent checks, because one expected failure makes the whole batch appear failed. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
 const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
 
 pub struct RunService {
@@ -263,6 +263,61 @@ impl RunService {
         emit_update(app, &mutation, None);
         self.wake();
         Ok(snapshot)
+    }
+
+    pub async fn steer(&self, app: &AppHandle, request: SteerRunRequest) -> Result<String, String> {
+        if request.client_user_message_id.trim().is_empty() || request.input.is_empty() {
+            return Err("A message is required to steer the active Xiao run.".to_owned());
+        }
+        let run = app.state::<XiaoRepository>().get_run(&request.run_id)?;
+        if run.workspace_path != request.project_path || run.task_id != request.task_id {
+            return Err("The active Xiao run did not match the requested task.".to_owned());
+        }
+        require_steer_route(&run)?;
+        let generation = run
+            .runtime_generation
+            .ok_or("The active Xiao run has no runtime generation.")?;
+        let thread_id = run
+            .thread_id
+            .as_deref()
+            .ok_or("The active Xiao run has no thread id.")?;
+        let turn_id = run
+            .turn_id
+            .as_deref()
+            .ok_or("The active Xiao run has no turn id.")?;
+        let runtime = {
+            let registry = app.state::<EnvironmentRuntimeRegistry>();
+            registry.require_thread_task(
+                &run.execution_environment_id,
+                thread_id,
+                &run.workspace_path,
+                &run.task_id,
+                &run.execution_root,
+            )?;
+            if registry.generation(&run.execution_environment_id)? != generation {
+                return Err("The Xiao run belongs to a stale runtime generation.".to_owned());
+            }
+            registry.runtime(&run.execution_environment_id)?
+        };
+        let result = runtime
+            .request_turn_steer(
+                generation,
+                turn_steer_params(
+                    thread_id,
+                    turn_id,
+                    &request.client_user_message_id,
+                    request.input,
+                ),
+            )
+            .await?;
+        let accepted_turn_id = result
+            .get("turnId")
+            .and_then(Value::as_str)
+            .ok_or("Codex turn/steer returned no turn id.")?;
+        if accepted_turn_id != turn_id {
+            return Err("Codex steered a different turn than Xiao requested.".to_owned());
+        }
+        Ok(accepted_turn_id.to_owned())
     }
 
     pub fn list(
@@ -868,6 +923,32 @@ fn turn_model_override<'a>(
     run_model.or(session_model)
 }
 
+fn require_steer_route(run: &RunRecord) -> Result<(), String> {
+    if !matches!(run.status, RunStatus::Running | RunStatus::WaitingForInput)
+        || run.cancel_requested
+        || run.runtime_generation.is_none()
+        || run.thread_id.is_none()
+        || run.turn_id.is_none()
+    {
+        return Err("The Xiao run is no longer available for steering.".to_owned());
+    }
+    Ok(())
+}
+
+fn turn_steer_params(
+    thread_id: &str,
+    turn_id: &str,
+    client_user_message_id: &str,
+    input: Vec<Value>,
+) -> Value {
+    json!({
+        "threadId": thread_id,
+        "clientUserMessageId": client_user_message_id,
+        "input": input,
+        "expectedTurnId": turn_id,
+    })
+}
+
 fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Result<Value, String> {
     let sandbox_policy = match run.sandbox_mode.as_str() {
         "danger-full-access" => json!({ "type": "dangerFullAccess" }),
@@ -1412,7 +1493,10 @@ fn lifecycle_event_key(
     turn_id: Option<&str>,
     item_id: Option<&str>,
 ) -> Option<String> {
-    if method == "thread/tokenUsage/updated" || method == "thread/name/updated" {
+    if matches!(
+        method,
+        "turn/plan/updated" | "thread/tokenUsage/updated" | "thread/name/updated"
+    ) {
         return None;
     }
     Some(format!(
@@ -1820,6 +1904,10 @@ mod tests {
         assert!(
             lifecycle_event_key("thread/tokenUsage/updated", 4, "thread", None, None).is_none()
         );
+        assert!(
+            lifecycle_event_key("turn/plan/updated", 4, "thread", Some("turn"), None).is_none(),
+            "each plan revision must be persisted and emitted instead of deduplicated",
+        );
     }
 
     #[test]
@@ -1916,6 +2004,26 @@ mod tests {
     }
 
     #[test]
+    fn steer_parameters_target_the_current_turn_without_starting_another_run() {
+        let params = turn_steer_params(
+            "thread-1",
+            "turn-1",
+            "message-1",
+            vec![json!({ "type": "text", "text": "Change direction" })],
+        );
+
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thread-1",
+                "clientUserMessageId": "message-1",
+                "input": [{ "type": "text", "text": "Change direction" }],
+                "expectedTurnId": "turn-1",
+            })
+        );
+    }
+
+    #[test]
     fn turn_parameters_are_native_scoped_and_emit_explicit_collaboration_modes() {
         let run = RunRecord {
             id: "run".to_owned(),
@@ -1944,7 +2052,7 @@ mod tests {
             history: Vec::new(),
             model: Some("gpt-test".to_owned()),
             reasoning_effort: Some("medium".to_owned()),
-            service_tier: None,
+            service_tier: Some("priority".to_owned()),
             mode: "default".to_owned(),
             approval_policy: "on-request".to_owned(),
             sandbox_mode: "workspace-write".to_owned(),
@@ -1972,6 +2080,7 @@ mod tests {
         );
         assert_eq!(params["threadId"], "thread");
         assert_eq!(params["model"], "gpt-test");
+        assert_eq!(params["serviceTier"], "priority");
         assert_eq!(params["collaborationMode"]["mode"], "default");
         assert_eq!(params["collaborationMode"]["settings"]["model"], "gpt-test");
         assert_eq!(
@@ -1988,6 +2097,8 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(failure_recovery.contains("active shell and tool schema"));
+        assert!(failure_recovery.contains("run the formatter or fixer first"));
+        assert!(failure_recovery.contains("whole batch appear failed"));
         assert!(failure_recovery.contains("at most one corrected recovery attempt"));
         assert!(failure_recovery.contains("Do not cycle through alternate wrappers"));
         assert!(params["additionalContext"]

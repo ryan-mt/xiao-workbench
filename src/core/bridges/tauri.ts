@@ -30,6 +30,7 @@ import type {
   PendingInputSnapshot,
   RunEventPage,
   RunSnapshot,
+  SteerRunRequest,
 } from "../models/run";
 import type {
   CreateRoutineRequest,
@@ -112,6 +113,10 @@ export const nativeBridge = {
 
   enqueueXiaoRun(request: EnqueueRunRequest) {
     return invoke<RunSnapshot>("enqueue_xiao_run", { request });
+  },
+
+  steerXiaoRun(request: SteerRunRequest) {
+    return invoke<string>("steer_xiao_run", { request });
   },
 
   listXiaoRuns(workspacePath: string, taskId: string | null = null, limit = 50) {

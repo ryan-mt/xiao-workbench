@@ -298,6 +298,9 @@ export function FocusRail({
             taskId={executionTaskId}
             transitioning={executionTransitioning}
             workspaceActionable={workspaceActionable}
+            reviewContext={reviewContext}
+            onStageReviewContext={onStageReviewContext}
+            onRemoveReviewContext={onRemoveReviewContext}
             onOpenBrowser={onOpenBrowser}
             onRefresh={onRefresh}
           />

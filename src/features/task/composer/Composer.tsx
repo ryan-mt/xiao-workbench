@@ -21,6 +21,7 @@ import type {
 import type { ManagedWorktreeSummary } from "../../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
+import { fastServiceTier } from "../../agent/hooks/agentProtocol";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { ModelPicker } from "./ModelPicker";
 import {
@@ -94,6 +95,7 @@ type ComposerProps = {
   onOpenView: (view: FocusView) => void;
   onInterrupt: () => Promise<void>;
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
+  onSteer: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
@@ -149,6 +151,15 @@ type ComposerSubmissionResult = {
   submitted: boolean;
   cleared: boolean;
 };
+
+export type ComposerDelivery = "queue" | "send" | "steer";
+
+export const deliverComposerSubmission = (
+  delivery: ComposerDelivery,
+  prompt: string,
+  attachments: AgentAttachment[],
+  handlers: Record<ComposerDelivery, (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>>,
+) => handlers[delivery](prompt, attachments);
 
 export const runComposerSubmission = async (
   submit: () => Promise<boolean>,
@@ -212,6 +223,7 @@ export function Composer({
   onOpenView,
   onInterrupt,
   onSubmit,
+  onSteer,
   onQueueFollowUp,
   onRemoveFollowUp,
   onSendFollowUpNow,
@@ -275,6 +287,7 @@ export function Composer({
   const activeModel =
     (selectedModel ? models.find((model) => model.model === selectedModel) : defaultModel) ??
     defaultModel;
+  const fastModeActive = Boolean(fastMode && fastServiceTier(activeModel));
   const effectiveReasoningEffort =
     selectedReasoningEffort || activeModel?.defaultReasoningEffort || "";
   const planSteps = plan?.steps ?? [];
@@ -632,7 +645,7 @@ export function Composer({
     );
   };
 
-  const submit = async (delivery: "queue" | "send" = currentTaskWorking ? "queue" : "send") => {
+  const submit = async (delivery: ComposerDelivery = currentTaskWorking ? "queue" : "send") => {
     if (!canSubmit || submittingRef.current) return;
     const historyValue = value.trim();
     const submittedValue = historyValue || (reviewContext.length
@@ -646,9 +659,12 @@ export function Composer({
     setSubmitting(true);
     try {
       const result = await runComposerSubmission(
-        () => delivery === "queue"
-          ? onQueueFollowUp(submittedValue, submittedAttachments)
-          : onSubmit(submittedValue, submittedAttachments),
+        () => deliverComposerSubmission(
+          delivery,
+          submittedValue,
+          submittedAttachments,
+          { queue: onQueueFollowUp, send: onSubmit, steer: onSteer },
+        ),
         () => onSubmissionSucceeded(submissionRevision),
       );
       if (!result.submitted) return;
@@ -928,7 +944,7 @@ export function Composer({
           dragging ? "is-dragging" : ""
         } ${effectiveReasoningEffort === "ultra" ? "is-ultra" : ""} ${
           activeQuestionRequest ? "is-question-paused" : ""
-        }`}
+        } ${fastModeActive ? "is-fast" : ""}`}
         aria-hidden={activeQuestionRequest ? true : undefined}
         onDragEnter={(event) => {
           event.preventDefault();
@@ -1184,7 +1200,7 @@ export function Composer({
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 const delivery = currentTaskWorking && (event.ctrlKey || event.metaKey) && canSteer
-                  ? "send"
+                  ? "steer"
                   : currentTaskWorking
                     ? "queue"
                     : "send";
@@ -1335,7 +1351,7 @@ export function Composer({
                 className="composer__steer"
                 type="button"
                 title="Send immediately to the current turn (Ctrl/Command+Enter)"
-                onClick={() => void submit("send")}
+                onClick={() => void submit("steer")}
               >
                 Steer now
               </button>

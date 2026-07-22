@@ -17,6 +17,7 @@ const APP_COMMANDS: &[&str] = &[
     "read_agent_usage",
     "list_agent_models",
     "enqueue_xiao_run",
+    "steer_xiao_run",
     "list_xiao_runs",
     "list_xiao_pending_inputs",
     "load_xiao_run_events",

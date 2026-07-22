@@ -146,6 +146,16 @@ pub struct EnqueueRunRequest {
     pub service_tier: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SteerRunRequest {
+    pub project_path: String,
+    pub task_id: String,
+    pub run_id: String,
+    pub client_user_message_id: String,
+    pub input: Vec<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NewRun {
     pub id: String,

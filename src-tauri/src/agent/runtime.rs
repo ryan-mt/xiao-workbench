@@ -500,6 +500,16 @@ impl AgentRuntime {
         }
     }
 
+    pub(crate) async fn request_turn_steer(
+        &self,
+        expected_generation: u64,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.request_with_generation(Some(expected_generation), "turn/steer".to_owned(), params)
+            .await
+            .map_err(RequestFailure::into_message)
+    }
+
     pub(crate) async fn request_turn_interrupt(
         &self,
         expected_generation: u64,

@@ -126,3 +126,11 @@ export type EnqueueRunRequest = {
   defaultReasoningEffort: string | null;
   serviceTier: string | null;
 };
+
+export type SteerRunRequest = {
+  projectPath: string;
+  taskId: string;
+  runId: string;
+  clientUserMessageId: string;
+  input: Array<Record<string, unknown>>;
+};

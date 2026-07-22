@@ -183,7 +183,7 @@ describe("ActivityItem timeline disclosures", () => {
     expect(markup).not.toContain("<details open=\"\"");
   });
 
-  it("renders a compact completed-turn file summary after the Markdown response", () => {
+  it("keeps completed-turn actions compact without repeating edited files", () => {
     const markup = renderToStaticMarkup(
       <ActivityItem
         entry={{
@@ -214,11 +214,9 @@ describe("ActivityItem timeline disclosures", () => {
     );
 
     expect(markup).toContain("Implemented the requested feature.");
-    expect(markup).toContain("Edited 2 files");
-    expect(markup).toContain("+25");
-    expect(markup).toContain("-2");
-    expect(markup).toContain("src/App.tsx");
-    expect(markup).toContain("Review");
+    expect(markup).not.toContain("Edited 2 files");
+    expect(markup).not.toContain("src/App.tsx");
+    expect(markup).toContain("Review changes");
     expect(markup).toContain("Undo");
   });
 });

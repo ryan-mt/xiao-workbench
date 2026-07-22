@@ -43,6 +43,24 @@ describe("compactCommandAttempts", () => {
     expect(attempts[0]).toMatchObject({ entry: passed, attempts: 2 });
     expect(attempts[1]).toMatchObject({ entry: elsewhere, attempts: 1 });
   });
+
+  it("treats cargo fmt as recovery for a failed cargo fmt check", () => {
+    const failedCheck = command(
+      "failed-check",
+      "powershell.exe -Command 'cargo fmt --check --manifest-path src-tauri/Cargo.toml'",
+      "error",
+    );
+    const formatted = command(
+      "formatted",
+      "powershell.exe -Command 'cargo fmt --manifest-path src-tauri/Cargo.toml'",
+      "success",
+    );
+
+    const attempts = compactCommandAttempts([failedCheck, formatted]);
+
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({ entry: formatted, attempts: 2 });
+  });
 });
 
 describe("isEnvironmentBlockedCommand", () => {

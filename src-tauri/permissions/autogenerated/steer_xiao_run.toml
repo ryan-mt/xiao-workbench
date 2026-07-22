@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-steer-xiao-run"
+description = "Enables the steer_xiao_run command without any pre-configured scope."
+commands.allow = ["steer_xiao_run"]
+
+[[permission]]
+identifier = "deny-steer-xiao-run"
+description = "Denies the steer_xiao_run command without any pre-configured scope."
+commands.deny = ["steer_xiao_run"]

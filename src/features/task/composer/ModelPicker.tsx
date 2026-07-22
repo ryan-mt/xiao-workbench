@@ -71,7 +71,7 @@ export function ModelPicker({
   const fastTier = fastServiceTier(activeModel);
   const fastModeEnabled = Boolean(fastMode && fastTier);
   const fastModeTitle = fastTier
-    ? `${fastTier.description || "Faster responses with increased usage."} Click to turn Fast mode ${fastModeEnabled ? "off" : "on"}.`
+    ? `${fastTier.description || "Faster responses with increased usage."} ${fastModeEnabled ? "Enabled." : "Available."}`
     : `${activeModel?.displayName ?? "This model"} does not offer Fast mode.`;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredModels = normalizedQuery
@@ -284,8 +284,7 @@ export function ModelPicker({
           disabled={disabled || !fastTier}
           onClick={() => onFastModeChange(!fastModeEnabled)}
         >
-          <i aria-hidden="true" />
-          <span>Fast {fastModeEnabled ? "on" : "off"}</span>
+          <span className="fast-mode__glyph" aria-hidden="true"><i /><i /></span>
         </button>
       </div>
     </div>

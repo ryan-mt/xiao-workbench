@@ -61,6 +61,23 @@ describe("ExecutionGroup status", () => {
     expect(markup).not.toContain("is-error");
   });
 
+  it("does not keep a group red after cargo fmt repairs a failed format check", () => {
+    const markup = renderGroup([
+      {
+        ...command("format-check", "error"),
+        command: "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
+      },
+      {
+        ...command("format", "success"),
+        command: "cargo fmt --manifest-path src-tauri/Cargo.toml",
+      },
+    ]);
+
+    expect(markup).toContain(">Executed<");
+    expect(markup).toContain("1 retry");
+    expect(markup).not.toContain("is-error");
+  });
+
   it("presents sandbox failures as an environment block instead of a product error", () => {
     const markup = renderGroup([{
       ...command("blocked", "error"),

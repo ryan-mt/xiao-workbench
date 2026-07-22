@@ -7,8 +7,11 @@ export type CommandAttemptGroup = {
 };
 
 const commandKey = (entry: TimelineEntry) => {
-  const command = entry.command?.replace(/\s+/g, " ").trim();
+  let command = entry.command?.replace(/\s+/g, " ").trim();
   if (!command) return null;
+  if (/\bcargo\s+fmt\b/.test(command)) {
+    command = command.replace(/\s+--check(?=\s|["']|$)/g, "").replace(/\s+/g, " ").trim();
+  }
   return `${entry.meta ?? ""}\u0000${command}`;
 };
 

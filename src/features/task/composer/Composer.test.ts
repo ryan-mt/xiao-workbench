@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentAttachment } from "../../../core/models/agent";
 import { workspaceTaskKey } from "../../../app/App";
 import {
+  deliverComposerSubmission,
   navigateComposerPromptHistory,
   runComposerSubmission,
   sandboxModeOptions,
@@ -200,5 +201,21 @@ describe("composer submission durability", () => {
       prompt: "Task A newer input",
       attachments: [attachment("a-new.txt")],
     });
+  });
+});
+
+describe("composer delivery", () => {
+  it("routes Steer now to the active-turn handler instead of the run queue", async () => {
+    const handlers = {
+      queue: vi.fn(async () => true),
+      send: vi.fn(async () => true),
+      steer: vi.fn(async () => true),
+    };
+
+    await expect(deliverComposerSubmission("steer", "Change direction", [], handlers))
+      .resolves.toBe(true);
+    expect(handlers.steer).toHaveBeenCalledWith("Change direction", []);
+    expect(handlers.queue).not.toHaveBeenCalled();
+    expect(handlers.send).not.toHaveBeenCalled();
   });
 });

@@ -43,7 +43,7 @@ use routines::commands::{
 use routines::service::RoutineService;
 use runs::commands::{
     cancel_xiao_run, enqueue_xiao_run, list_xiao_pending_inputs, list_xiao_runs,
-    load_xiao_run_events, resolve_xiao_run_input, retry_xiao_run,
+    load_xiao_run_events, resolve_xiao_run_input, retry_xiao_run, steer_xiao_run,
 };
 use runs::service::RunService;
 use system::commands::{check_codex_update, get_system_info, update_codex_cli};
@@ -154,6 +154,7 @@ pub fn run() {
             read_agent_usage,
             list_agent_models,
             enqueue_xiao_run,
+            steer_xiao_run,
             list_xiao_runs,
             list_xiao_pending_inputs,
             load_xiao_run_events,

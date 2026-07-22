@@ -2574,6 +2574,80 @@ export function useAgentRuntime(
     ],
   );
 
+  const steer = useCallback(
+    async (
+      prompt: string,
+      attachments: AgentAttachment[],
+      clientUserMessageId: string = crypto.randomUUID(),
+    ) => {
+      const cleanPrompt = prompt.trim();
+      if (!cleanPrompt || !isTauriHost()) return false;
+      const scope: AgentRuntimeTaskScope = {
+        workspacePath,
+        generation: workspaceScopeRef.current.generation,
+        taskId: activeTaskId,
+      };
+      const operationWorkspaceIsCurrent = () =>
+        agentRuntimeTaskWorkspaceScopeMatches(workspaceScopeRef.current, scope);
+      const operationIsActive = () => agentRuntimeTaskScopeMatches(
+        workspaceScopeRef.current,
+        activeTaskIdRef.current,
+        scope,
+      );
+      const activeRun = activeRunForTask(runProjectionRef.current, scope.taskId);
+      if (!operationIsActive() || !activeRun?.turnId) return false;
+
+      const currentTimeline = timelineCache.current.get(scope.taskId) ?? activeTaskTimeline;
+      const existingUserEntry = currentTimeline.some((entry) => entry.id === clientUserMessageId);
+      updateTimeline(scope.taskId, (current) =>
+        current.some((entry) => entry.id === clientUserMessageId)
+          ? current
+          : [
+              ...current,
+              {
+                id: clientUserMessageId,
+                runId: activeRun.id,
+                turnId: activeRun.turnId ?? undefined,
+                kind: "user",
+                title: cleanPrompt,
+                createdAt: Date.now(),
+                attachments: attachments.length ? attachments : undefined,
+                meta: "You",
+                status: "active",
+              },
+            ],
+      );
+      try {
+        const acceptedTurnId = await nativeBridge.steerXiaoRun({
+          projectPath: workspacePath,
+          taskId: scope.taskId,
+          runId: activeRun.id,
+          clientUserMessageId,
+          input: userInput(cleanPrompt, attachments),
+        });
+        if (acceptedTurnId !== activeRun.turnId) {
+          throw new Error("The steered message was accepted by a different turn.");
+        }
+        return operationWorkspaceIsCurrent();
+      } catch (reason) {
+        if (!operationWorkspaceIsCurrent()) return false;
+        if (!existingUserEntry) {
+          updateTimeline(scope.taskId, (current) =>
+            current.filter((entry) => entry.id !== clientUserMessageId),
+          );
+        }
+        if (operationIsActive()) {
+          setRuntime((current) => ({
+            ...current,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }));
+        }
+        return false;
+      }
+    },
+    [activeTaskId, activeTaskTimeline, updateTimeline, workspacePath],
+  );
+
   const compact = useCallback(async () => {
     const scope: AgentRuntimeTaskScope = {
       workspacePath,
@@ -3171,6 +3245,7 @@ export function useAgentRuntime(
     isTaskWorking: (taskId: string) => Boolean(activeRunForTask(scopedRunProjection, taskId)),
     connect,
     submit,
+    steer,
     compact,
     interrupt,
     retryRun,
