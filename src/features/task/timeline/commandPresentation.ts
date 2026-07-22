@@ -51,12 +51,5 @@ export const isEnvironmentBlockedCommand = (entry: TimelineEntry): boolean => {
   if (entry.kind !== "command" || entry.status !== "error") return false;
   const output = entry.body?.toLowerCase() ?? "";
   if (!output) return false;
-  if (
-    /spawn\s+(?:eperm|eacces|enoent)/.test(output) ||
-    output.includes("typescript-language-server was not found") ||
-    output.includes("could not determine executable to run") ||
-    output.includes("is not recognized as the name of a cmdlet") ||
-    output.includes("command not found")
-  ) return true;
-  return (output.match(/cannot find module/g) ?? []).length >= 3;
+  return /spawn\s+(?:eperm|eacces)/.test(output);
 };

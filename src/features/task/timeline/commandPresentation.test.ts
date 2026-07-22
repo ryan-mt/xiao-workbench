@@ -64,13 +64,22 @@ describe("compactCommandAttempts", () => {
 });
 
 describe("isEnvironmentBlockedCommand", () => {
-  it("recognizes sandbox and missing dependency failures", () => {
+  it("recognizes permission failures", () => {
     expect(isEnvironmentBlockedCommand(command(
       "sandbox",
       "npm test",
       "error",
       "Error: spawn EPERM\n    at ChildProcess.spawn",
     ))).toBe(true);
+  });
+
+  it("keeps unavailable tools and dependencies as command errors", () => {
+    expect(isEnvironmentBlockedCommand(command(
+      "lsp",
+      "xiao_lsp diagnostics",
+      "error",
+      "typescript-language-server was not found. Install it in the workspace or on PATH.",
+    ))).toBe(false);
     expect(isEnvironmentBlockedCommand(command(
       "deps",
       "npm run check",
@@ -80,7 +89,7 @@ describe("isEnvironmentBlockedCommand", () => {
         "Cannot find module 'vitest'",
         "Cannot find module 'react/jsx-runtime'",
       ].join("\n"),
-    ))).toBe(true);
+    ))).toBe(false);
   });
 
   it("keeps product and single-import failures as real command errors", () => {

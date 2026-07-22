@@ -1276,6 +1276,41 @@ export const submitTaskFollowUpAfterPersistence = async (
   return submit();
 };
 
+export const queuedFollowUpIdForAutoSend = ({
+  followUps,
+  runtimeReady,
+  taskStateReady,
+  timelineReady,
+  environmentBusy,
+  taskStateError,
+  workspaceError,
+  sendingFollowUpId,
+  failedFollowUpId,
+  nativeTaskConfirmed,
+}: {
+  followUps: readonly AgentFollowUp[];
+  runtimeReady: boolean;
+  taskStateReady: boolean;
+  timelineReady: boolean;
+  environmentBusy: boolean;
+  taskStateError: string | null;
+  workspaceError: string | null;
+  sendingFollowUpId: string | null;
+  failedFollowUpId: string | null;
+  nativeTaskConfirmed: boolean;
+}) =>
+  runtimeReady &&
+  taskStateReady &&
+  timelineReady &&
+  !environmentBusy &&
+  !taskStateError &&
+  !workspaceError &&
+  !sendingFollowUpId &&
+  !failedFollowUpId &&
+  nativeTaskConfirmed
+    ? followUps[0]?.id ?? null
+    : null;
+
 const mergeProject = (
   projects: XiaoProjectSummary[],
   project: XiaoProjectSummary,
@@ -2402,20 +2437,23 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    if (
-      agent.runtime.phase !== "ready" ||
-      sendingFollowUpId ||
-      failedFollowUpId ||
-      activeTask.followUps.length === 0
-    ) return;
-    void sendTaskFollowUpNow(activeTask.followUps[0].id);
-  }, [
-    activeTask.followUps,
-    agent.runtime.phase,
-    failedFollowUpId,
+  const autoSendFollowUpId = queuedFollowUpIdForAutoSend({
+    followUps: activeTask.followUps,
+    runtimeReady: agent.runtime.phase === "ready",
+    taskStateReady,
+    timelineReady: activeTaskTimelineReady,
+    environmentBusy: activeEnvironmentBusy,
+    taskStateError,
+    workspaceError,
     sendingFollowUpId,
-  ]);
+    failedFollowUpId,
+    nativeTaskConfirmed: Boolean(executionTaskId),
+  });
+
+  useEffect(() => {
+    if (!autoSendFollowUpId) return;
+    void sendTaskFollowUpNow(autoSendFollowUpId);
+  }, [activeTask.id, autoSendFollowUpId]);
 
   const patchActiveTask = (patch: Partial<WorkbenchTask>) => {
     setTasks((current) =>

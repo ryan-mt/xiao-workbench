@@ -31,6 +31,7 @@ import {
   createContinuationTask,
   isTaskWorkspaceStateLoading,
   markTaskUnreadAfterCompletion,
+  queuedFollowUpIdForAutoSend,
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
@@ -875,6 +876,44 @@ describe("follow-up task persistence barrier", () => {
       submitTaskFollowUpAfterPersistence(snapshot, persist, submit),
     ).resolves.toBe(false);
     expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("queued follow-up auto-send readiness", () => {
+  const followUps = [{
+    id: "queued-1",
+    prompt: "Continue after hydration",
+    attachments: [],
+    createdAt: 1,
+  }];
+  const readyState = {
+    followUps,
+    runtimeReady: true,
+    taskStateReady: true,
+    timelineReady: true,
+    environmentBusy: false,
+    taskStateError: null,
+    workspaceError: null,
+    sendingFollowUpId: null,
+    failedFollowUpId: null,
+    nativeTaskConfirmed: true,
+  };
+
+  it.each([
+    ["timeline hydration", { timelineReady: false }],
+    ["environment setup", { environmentBusy: true }],
+    ["task-state loading", { taskStateReady: false }],
+    ["native task confirmation", { nativeTaskConfirmed: false }],
+  ])("retries the same queued item after %s completes", (_name, blocked) => {
+    expect(queuedFollowUpIdForAutoSend({ ...readyState, ...blocked })).toBeNull();
+    expect(queuedFollowUpIdForAutoSend(readyState)).toBe("queued-1");
+  });
+
+  it("waits for explicit retry after a send failure", () => {
+    expect(queuedFollowUpIdForAutoSend({
+      ...readyState,
+      failedFollowUpId: "queued-1",
+    })).toBeNull();
   });
 });
 

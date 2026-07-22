@@ -89,4 +89,16 @@ describe("ExecutionGroup status", () => {
     expect(markup).toContain("is-warning");
     expect(markup).not.toContain("is-error");
   });
+
+  it("presents an unavailable LSP as an error instead of a sandbox block", () => {
+    const markup = renderGroup([{
+      ...command("lsp", "error"),
+      command: "xiao_lsp diagnostics",
+      body: "typescript-language-server was not found. Install it in the workspace or on PATH.",
+    }]);
+
+    expect(markup).toContain(">Executed with errors<");
+    expect(markup).toContain("is-error");
+    expect(markup).not.toContain("Environment blocked");
+  });
 });

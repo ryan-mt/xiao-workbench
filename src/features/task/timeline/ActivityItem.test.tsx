@@ -106,6 +106,20 @@ describe("ActivityItem command retries", () => {
     expect(markup).toContain(">Blocked<");
     expect(markup).toContain("3 attempts");
   });
+
+  it("shows an unavailable LSP as failed instead of blocked", () => {
+    const markup = renderCompaction({
+      id: "command-2",
+      kind: "command",
+      title: "xiao_lsp diagnostics",
+      body: "typescript-language-server was not found. Install it in the workspace or on PATH.",
+      status: "error",
+    });
+
+    expect(markup).toContain("activity--error");
+    expect(markup).toContain(">Failed<");
+    expect(markup).not.toContain(">Blocked<");
+  });
 });
 
 describe("ActivityItem context compaction", () => {
