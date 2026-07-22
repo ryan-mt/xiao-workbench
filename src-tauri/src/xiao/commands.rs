@@ -1,7 +1,8 @@
 use tauri::State;
 
 use super::models::{
-    XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument, XiaoWorkspaceUpdate,
+    XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument,
+    XiaoWorkspaceUpdate,
 };
 use super::repository::XiaoRepository;
 use super::service;
@@ -28,6 +29,16 @@ pub fn load_xiao_timeline_page(
     repository: State<'_, XiaoRepository>,
 ) -> Result<XiaoTimelinePage, String> {
     service::load_timeline_page(&repository, &workspace_path, &task_id, before, limit)
+}
+
+#[tauri::command]
+pub fn search_xiao_history(
+    workspace_path: String,
+    query: String,
+    limit: Option<usize>,
+    repository: State<'_, XiaoRepository>,
+) -> Result<Vec<XiaoHistorySearchResult>, String> {
+    service::search_history(&repository, &workspace_path, &query, limit)
 }
 
 #[tauri::command]

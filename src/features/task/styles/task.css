@@ -4858,3 +4858,26 @@
   height: 0;
   scroll-margin-top: 24px;
 }
+
+.timeline-search-hit {
+  animation: timeline-search-hit 1.8s ease-out;
+}
+
+@keyframes timeline-search-hit {
+  0%, 24% {
+    outline: 2px solid color-mix(in srgb, var(--brand) 68%, transparent);
+    outline-offset: 5px;
+    border-radius: 10px;
+    background-color: color-mix(in srgb, var(--brand) 12%, transparent);
+  }
+  100% {
+    outline-color: transparent;
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-search-hit {
+    animation: none;
+  }
+}

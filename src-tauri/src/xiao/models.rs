@@ -125,6 +125,18 @@ pub struct XiaoTimelinePage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XiaoHistorySearchResult {
+    pub task_id: String,
+    pub task_title: String,
+    pub task_archived: bool,
+    pub entry_id: String,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: i64,
+}
+
 fn default_true() -> bool {
     true
 }

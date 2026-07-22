@@ -21,6 +21,7 @@ import type {
 } from "../core/models/verification";
 import type { RoutineOpenRunTarget, RoutineSummary } from "../core/models/routine";
 import type {
+  XiaoHistorySearchResult,
   XiaoProjectSummary,
   XiaoWorkspaceDocument,
   XiaoWorkspaceMode,
@@ -1390,6 +1391,11 @@ export function App() {
       !window.matchMedia("(max-width: 760px)").matches,
   );
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+  const [historySearchTarget, setHistorySearchTarget] = useState<{
+    workspacePath: string;
+    taskId: string;
+    entryId: string;
+  } | null>(null);
   const [taskSwitcherOpen, setTaskSwitcherOpen] = useState(false);
   const [taskWorkspacePath, setTaskWorkspacePath] = useState("");
   const taskWorkspacePathRef = useRef(taskWorkspacePath);
@@ -2864,12 +2870,54 @@ export function App() {
     closeFocusPanel();
     window.requestAnimationFrame(() => {
       const anchor = document.getElementById(`timeline-entry-${entryId}`);
-      (anchor?.firstElementChild ?? anchor)?.scrollIntoView({
+      const target = anchor?.firstElementChild ?? anchor;
+      target?.scrollIntoView({
         behavior: "smooth",
         block: "center",
       });
+      if (target instanceof HTMLElement) {
+        target.classList.remove("timeline-search-hit");
+        void target.offsetWidth;
+        target.classList.add("timeline-search-hit");
+        window.setTimeout(() => target.classList.remove("timeline-search-hit"), 1_800);
+      }
     });
   };
+
+  const searchHistory = useCallback(
+    (query: string): Promise<XiaoHistorySearchResult[]> => {
+      if (
+        !isTauriHost() ||
+        !taskStateReadyRef.current ||
+        comparableWorkspacePath(taskWorkspacePathRef.current) !== comparableWorkspacePath(workspace.path)
+      ) return Promise.resolve([]);
+      return nativeBridge.searchXiaoHistory(workspace.path, query);
+    },
+    [workspace.path],
+  );
+
+  useEffect(() => {
+    if (!historySearchTarget) return;
+    if (
+      comparableWorkspacePath(historySearchTarget.workspacePath) !==
+      comparableWorkspacePath(taskWorkspacePath)
+    ) {
+      setHistorySearchTarget(null);
+      return;
+    }
+    if (activeTaskId !== historySearchTarget.taskId) return;
+    const targetTask = tasks.find((task) => task.id === historySearchTarget.taskId);
+    if (!targetTask) {
+      setHistorySearchTarget(null);
+      return;
+    }
+    if (targetTask.timeline.some((entry) => entry.id === historySearchTarget.entryId)) {
+      jumpToTimelineEntry(historySearchTarget.entryId);
+      setHistorySearchTarget(null);
+      return;
+    }
+    if (targetTask.timelineComplete) setHistorySearchTarget(null);
+  }, [activeTaskId, historySearchTarget, taskWorkspacePath, tasks]);
 
   const openTimelineResource = (target: string) => {
     const resource = resolveTimelineResource(target, workspace.execution.executionRoot);
@@ -3790,7 +3838,23 @@ export function App() {
         tasks={tasks}
         workspace={workspace}
         onClose={() => setCommandMenuOpen(false)}
+        onSearchHistory={searchHistory}
+        onSelectHistoryResult={(result) => {
+          setOpenTaskIds((current) => current.includes(result.taskId)
+            ? current
+            : [...current, result.taskId]);
+          setActiveTaskId(result.taskId);
+          setActivePage("tasks");
+          setHistorySearchTarget({
+            workspacePath: workspace.path,
+            taskId: result.taskId,
+            entryId: result.entryId,
+          });
+          setCommandMenuOpen(false);
+          closeSidebarOnNarrow();
+        }}
         onSelectTask={(taskId) => {
+          setOpenTaskIds((current) => current.includes(taskId) ? current : [...current, taskId]);
           setActiveTaskId(taskId);
           setActivePage("tasks");
           setCommandMenuOpen(false);

@@ -9,6 +9,7 @@ import {
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { XiaoHistorySearchResult } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import type { WorkbenchTask } from "../../task/task.types";
 import "../styles/command-menu.css";
@@ -18,6 +19,8 @@ type CommandMenuProps = {
   tasks: WorkbenchTask[];
   workspace: WorkspaceSnapshot;
   onClose: () => void;
+  onSearchHistory: (query: string) => Promise<XiaoHistorySearchResult[]>;
+  onSelectHistoryResult: (result: XiaoHistorySearchResult) => void;
   onSelectTask: (taskId: string) => void;
   onSelectView: (view: FocusView) => void;
 };
@@ -47,10 +50,15 @@ export function CommandMenu({
   tasks,
   workspace,
   onClose,
+  onSearchHistory,
+  onSelectHistoryResult,
   onSelectTask,
   onSelectView,
 }: CommandMenuProps) {
   const [query, setQuery] = useState("");
+  const [historyResults, setHistoryResults] = useState<XiaoHistorySearchResult[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const resultButtons = useRef<Array<HTMLButtonElement | null>>([]);
@@ -58,9 +66,46 @@ export function CommandMenu({
   useEffect(() => {
     if (!open) return;
     setQuery("");
+    setHistoryResults([]);
+    setHistoryLoading(false);
+    setHistoryError(null);
     const frame = requestAnimationFrame(() => input.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, [open]);
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!open || normalized.length < 2) {
+      setHistoryResults([]);
+      setHistoryLoading(false);
+      setHistoryError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setHistoryResults([]);
+    setHistoryLoading(true);
+    setHistoryError(null);
+    const timer = window.setTimeout(() => {
+      void onSearchHistory(normalized)
+        .then((results) => {
+          if (cancelled) return;
+          setHistoryResults(results);
+          setHistoryLoading(false);
+        })
+        .catch((reason) => {
+          if (cancelled) return;
+          setHistoryResults([]);
+          setHistoryLoading(false);
+          setHistoryError(reason instanceof Error ? reason.message : String(reason));
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [onSearchHistory, open, query]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -72,15 +117,15 @@ export function CommandMenu({
         ? tasks
             .filter(
               (task) =>
-                !task.archived &&
                 `${task.title} ${task.meta}`.toLowerCase().includes(normalized),
             )
             .slice(0, 6)
         : [],
+      history: normalized ? historyResults : [],
     };
-  }, [query, tasks]);
+  }, [historyResults, query, tasks]);
 
-  const resultCount = filtered.actions.length + filtered.tasks.length;
+  const resultCount = filtered.actions.length + filtered.tasks.length + filtered.history.length;
 
   useEffect(() => {
     if (!open) return;
@@ -106,7 +151,14 @@ export function CommandMenu({
       return;
     }
     const task = filtered.tasks[activeIndex - filtered.actions.length];
-    if (task) onSelectTask(task.id);
+    if (task) {
+      onSelectTask(task.id);
+      return;
+    }
+    const historyResult = filtered.history[
+      activeIndex - filtered.actions.length - filtered.tasks.length
+    ];
+    if (historyResult) onSelectHistoryResult(historyResult);
   };
 
   const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -142,8 +194,8 @@ export function CommandMenu({
           <input
             ref={input}
             value={query}
-            placeholder="Search tasks and commands"
-            aria-label="Search tasks and actions"
+            placeholder="Search tasks, messages, and commands"
+            aria-label="Search tasks, messages, and actions"
             aria-controls="command-menu-results"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onSearchKeyDown}
@@ -214,16 +266,50 @@ export function CommandMenu({
               </button>
             );
           })}
-          {filtered.actions.length === 0 && filtered.tasks.length === 0 && (
+          {filtered.history.length > 0 && <header>Messages</header>}
+          {filtered.history.map((result, historyIndex) => {
+            const index = filtered.actions.length + filtered.tasks.length + historyIndex;
+            return (
+              <button
+                className={activeIndex === index ? "is-active" : undefined}
+                key={`${result.taskId}:${result.entryId}`}
+                ref={(node) => {
+                  resultButtons.current[index] = node;
+                }}
+                onClick={() => onSelectHistoryResult(result)}
+                onFocus={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(index)}
+              >
+                <span className="command-menu__result-icon">
+                  <XiaoIcon name="result" size={17} />
+                </span>
+                <span className="command-menu__result-copy">
+                  <strong>{result.snippet}</strong>
+                  <small>
+                    {result.taskTitle} · {result.role === "user" ? "You" : "Xiao"}
+                    {result.taskArchived ? " · Archived" : ""}
+                  </small>
+                </span>
+                <kbd className="command-menu__result-key">Enter</kbd>
+              </button>
+            );
+          })}
+          {filtered.actions.length === 0 && filtered.tasks.length === 0 && filtered.history.length === 0 && !historyLoading && (
             <div className="command-menu__empty">
-              <strong>No matching action</strong>
-              <p>Try a task title, "runtime", or "changes".</p>
+              <strong>{historyError ? "History search unavailable" : "No matching result"}</strong>
+              <p>{historyError ?? "Try a task title, message, \"runtime\", or \"changes\"."}</p>
+            </div>
+          )}
+          {historyLoading && filtered.actions.length === 0 && filtered.tasks.length === 0 && (
+            <div className="command-menu__empty">
+              <strong>Searching history…</strong>
+              <p>Looking through this workspace’s saved conversations.</p>
             </div>
           )}
         </div>
 
         <footer>
-          <span>{query ? `${resultCount} ${resultCount === 1 ? "result" : "results"}` : `${actions.length} commands`}</span>
+          <span>{historyLoading ? "Searching…" : query ? `${resultCount} ${resultCount === 1 ? "result" : "results"}` : `${actions.length} commands`}</span>
           <span><kbd>&uarr;&darr;</kbd> navigate <kbd>Enter</kbd> open <kbd>Esc</kbd> close</span>
         </footer>
       </section>

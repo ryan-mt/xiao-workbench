@@ -64,6 +64,7 @@ const APP_COMMANDS: &[&str] = &[
     "set_browser_muted",
     "load_xiao_workspace",
     "load_xiao_timeline_page",
+    "search_xiao_history",
     "save_xiao_workspace",
     "list_xiao_projects",
     "open_xiao_project",

@@ -23,9 +23,9 @@ use crate::verification::models::AcceptanceContractVersionSummary;
 use crate::verification::repository::load_optional_acceptance_contract_version_from_connection;
 
 use super::models::{
-    XiaoLegacyStore, XiaoProjectSummary, XiaoTaskDocument, XiaoThreadBinding,
-    XiaoThreadPersistence, XiaoTimelinePage, XiaoWorkspaceDocument, XiaoWorkspaceMode,
-    XiaoWorkspaceUpdate, XIAO_DATABASE_SCHEMA_VERSION, XIAO_SCHEMA_VERSION,
+    XiaoHistorySearchResult, XiaoLegacyStore, XiaoProjectSummary, XiaoTaskDocument,
+    XiaoThreadBinding, XiaoThreadPersistence, XiaoTimelinePage, XiaoWorkspaceDocument,
+    XiaoWorkspaceMode, XiaoWorkspaceUpdate, XIAO_DATABASE_SCHEMA_VERSION, XIAO_SCHEMA_VERSION,
 };
 
 const DATABASE_FILE_NAME: &str = "xiao-state.sqlite3";
@@ -684,6 +684,22 @@ impl XiaoRepository {
                 task_id,
                 before,
                 limit,
+            )
+        })
+    }
+
+    pub fn search_history(
+        &self,
+        workspace_path: &str,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<XiaoHistorySearchResult>, String> {
+        self.with_connection(|connection| {
+            search_history_from_connection(
+                connection,
+                &normalize_workspace_path(workspace_path),
+                query,
+                limit.unwrap_or(20).clamp(1, 50),
             )
         })
     }
@@ -2294,6 +2310,131 @@ fn load_timeline_page_by_id(
         total,
         has_more: start > 0,
     })
+}
+
+fn search_history_from_connection(
+    connection: &Connection,
+    workspace_path: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<XiaoHistorySearchResult>, String> {
+    let query = query.trim();
+    if query.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    let normalized_query = query.to_lowercase();
+    let workspace_id = connection
+        .query_row(
+            "SELECT id FROM workspaces WHERE workspace_path = ?1",
+            [workspace_path],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not find Xiao workspace for history search: {error}"))?;
+    let Some(workspace_id) = workspace_id else {
+        return Ok(Vec::new());
+    };
+
+    let mut statement = connection
+        .prepare(
+            r#"SELECT t.task_id, t.title, t.archived, t.updated_at, e.entry_json
+               FROM task_timeline_entries e
+               JOIN tasks t ON t.workspace_id = e.workspace_id AND t.task_id = e.task_id
+               WHERE e.workspace_id = ?1
+                 AND (
+                   json_extract(e.entry_json, '$.kind') = 'user'
+                   OR (
+                     json_extract(e.entry_json, '$.kind') = 'result'
+                     AND json_extract(e.entry_json, '$.title') = 'Agent response'
+                   )
+                 )
+               ORDER BY t.updated_at DESC, e.position DESC"#,
+        )
+        .map_err(|error| format!("Could not prepare Xiao history search: {error}"))?;
+    let rows = statement
+        .query_map([workspace_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|error| format!("Could not query Xiao history: {error}"))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let (task_id, task_title, task_archived, task_updated_at, entry_json) =
+            row.map_err(|error| format!("Could not decode Xiao history row: {error}"))?;
+        let entry: serde_json::Value = parse_json(&entry_json, "history entry")?;
+        let kind = entry.get("kind").and_then(serde_json::Value::as_str);
+        let role = if kind == Some("user") {
+            "user"
+        } else {
+            "assistant"
+        };
+        let text = if role == "user" {
+            entry
+                .get("body")
+                .and_then(serde_json::Value::as_str)
+                .filter(|body| !body.trim().is_empty())
+                .or_else(|| entry.get("title").and_then(serde_json::Value::as_str))
+        } else {
+            entry.get("body").and_then(serde_json::Value::as_str)
+        };
+        let Some(text) = text else {
+            continue;
+        };
+        if !text.to_lowercase().contains(&normalized_query) {
+            continue;
+        }
+        let Some(entry_id) = entry.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let created_at = entry
+            .get("createdAt")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(task_updated_at);
+        results.push(XiaoHistorySearchResult {
+            task_id,
+            task_title,
+            task_archived,
+            entry_id: entry_id.to_owned(),
+            role: role.to_owned(),
+            snippet: history_search_snippet(text, &normalized_query),
+            created_at,
+        });
+        if results.len() == limit {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn history_search_snippet(text: &str, normalized_query: &str) -> String {
+    const MAX_CHARS: usize = 180;
+    const CONTEXT_BEFORE: usize = 48;
+
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars = compact.chars().collect::<Vec<_>>();
+    if chars.len() <= MAX_CHARS {
+        return compact;
+    }
+    let lower = compact.to_lowercase();
+    let match_start = lower
+        .find(normalized_query)
+        .map(|index| lower[..index].chars().count())
+        .unwrap_or(0)
+        .min(chars.len());
+    let start = match_start.saturating_sub(CONTEXT_BEFORE);
+    let end = (start + MAX_CHARS).min(chars.len());
+    format!(
+        "{}{}{}",
+        if start > 0 { "…" } else { "" },
+        chars[start..end].iter().collect::<String>(),
+        if end < chars.len() { "…" } else { "" },
+    )
 }
 
 fn load_task_execution_binding(
@@ -4161,6 +4302,69 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn history_search_returns_only_saved_conversation_messages() {
+        let directory = TestDirectory::new("history-search");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let mut searchable = task("searchable", 0);
+        searchable.title = "Archived investigation".to_owned();
+        searchable.archived = true;
+        searchable.timeline = vec![
+            serde_json::json!({
+                "id": "user-message",
+                "kind": "user",
+                "title": "KIỂM TRA lỗi đăng nhập",
+                "createdAt": 100
+            }),
+            serde_json::json!({
+                "id": "tool-output",
+                "kind": "command",
+                "title": "Command completed",
+                "body": "race condition appears in tool output",
+                "createdAt": 110
+            }),
+            serde_json::json!({
+                "id": "assistant-message",
+                "kind": "result",
+                "title": "Agent response",
+                "body": "I fixed the race condition in the session cache.",
+                "createdAt": 120
+            }),
+            serde_json::json!({
+                "id": "failure-message",
+                "kind": "result",
+                "title": "Turn failed",
+                "body": "race condition failure detail",
+                "createdAt": 130
+            }),
+        ];
+        searchable.timeline_entry_count = searchable.timeline.len();
+        repository
+            .save_workspace(update(document(&workspace, vec![searchable])))
+            .unwrap();
+
+        let user_results = repository
+            .search_history(&workspace.to_string_lossy(), "kiểm tra", None)
+            .unwrap();
+        assert_eq!(user_results.len(), 1);
+        assert_eq!(user_results[0].entry_id, "user-message");
+        assert_eq!(user_results[0].role, "user");
+        assert!(user_results[0].task_archived);
+
+        let assistant_results = repository
+            .search_history(&workspace.to_string_lossy(), "RACE CONDITION", None)
+            .unwrap();
+        assert_eq!(assistant_results.len(), 1);
+        assert_eq!(assistant_results[0].entry_id, "assistant-message");
+        assert_eq!(assistant_results[0].role, "assistant");
+        assert!(assistant_results[0].snippet.contains("race condition"));
+        assert!(repository
+            .search_history(&workspace.to_string_lossy(), "r", None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

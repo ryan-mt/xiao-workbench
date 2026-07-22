@@ -68,6 +68,7 @@ permissions = [
   "allow-set-browser-muted",
   "allow-load-xiao-workspace",
   "allow-load-xiao-timeline-page",
+  "allow-search-xiao-history",
   "allow-save-xiao-workspace",
   "allow-list-xiao-projects",
   "allow-open-xiao-project",

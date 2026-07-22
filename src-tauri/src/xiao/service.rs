@@ -5,7 +5,8 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 use super::models::{
-    XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument, XiaoWorkspaceUpdate,
+    XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument,
+    XiaoWorkspaceUpdate,
 };
 use super::repository::XiaoRepository;
 
@@ -25,6 +26,15 @@ pub fn load_timeline_page(
     limit: Option<usize>,
 ) -> Result<XiaoTimelinePage, String> {
     repository.load_timeline_page(workspace_path, task_id, before, limit)
+}
+
+pub fn search_history(
+    repository: &XiaoRepository,
+    workspace_path: &str,
+    query: &str,
+    limit: Option<usize>,
+) -> Result<Vec<XiaoHistorySearchResult>, String> {
+    repository.search_history(workspace_path, query, limit)
 }
 
 pub fn save_workspace(

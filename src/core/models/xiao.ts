@@ -81,3 +81,13 @@ export type XiaoTimelinePage = {
   total: number;
   hasMore: boolean;
 };
+
+export type XiaoHistorySearchResult = {
+  taskId: string;
+  taskTitle: string;
+  taskArchived: boolean;
+  entryId: string;
+  role: "user" | "assistant";
+  snippet: string;
+  createdAt: number;
+};

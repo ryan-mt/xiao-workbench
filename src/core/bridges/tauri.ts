@@ -21,6 +21,7 @@ import type {
   SystemInfo,
 } from "../models/workspace";
 import type {
+  XiaoHistorySearchResult,
   XiaoProjectSummary,
   XiaoTimelinePage,
   XiaoWorkspaceDocument,
@@ -413,6 +414,14 @@ export const nativeBridge = {
       workspacePath,
       taskId,
       before,
+      limit,
+    });
+  },
+
+  searchXiaoHistory(workspacePath: string, query: string, limit = 20) {
+    return invoke<XiaoHistorySearchResult[]>("search_xiao_history", {
+      workspacePath,
+      query,
       limit,
     });
   },

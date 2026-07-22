@@ -60,7 +60,7 @@ use workspace::commands::{
 };
 use xiao::commands::{
     list_xiao_projects, load_xiao_timeline_page, load_xiao_workspace, open_xiao_project,
-    save_xiao_workspace,
+    save_xiao_workspace, search_xiao_history,
 };
 use xiao::repository::XiaoRepository;
 
@@ -202,6 +202,7 @@ pub fn run() {
             set_browser_muted,
             load_xiao_workspace,
             load_xiao_timeline_page,
+            search_xiao_history,
             save_xiao_workspace,
             list_xiao_projects,
             open_xiao_project,
