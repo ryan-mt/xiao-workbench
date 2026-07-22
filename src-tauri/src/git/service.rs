@@ -1232,34 +1232,32 @@ fn checkpoint_directory(token: &str) -> Result<PathBuf, String> {
 }
 
 fn snapshot_workspace(directory: &Path, repository: &Path, workspace: &Path) -> Result<(), String> {
-    run_checkpoint_git(directory, repository, workspace, CHECKPOINT_ADD_ARGUMENTS)?;
-
     let tracked_pathspecs = directory.join("tracked-pathspecs");
     let mut tracked_paths = fs::read(&tracked_pathspecs).unwrap_or_default();
     tracked_paths.extend(existing_tracked_workspace_paths(workspace)?);
-    if tracked_paths.is_empty() {
-        return Ok(());
-    }
-    fs::write(&tracked_pathspecs, tracked_paths).map_err(|error| error.to_string())?;
+    if !tracked_paths.is_empty() {
+        fs::write(&tracked_pathspecs, tracked_paths).map_err(|error| error.to_string())?;
 
-    let pathspec_argument = format!(
-        "--pathspec-from-file={}",
-        tracked_pathspecs.to_string_lossy()
-    );
-    run_checkpoint_git(
-        directory,
-        repository,
-        workspace,
-        &[
-            "--literal-pathspecs",
-            "add",
-            "-A",
-            "-f",
-            &pathspec_argument,
-            "--pathspec-file-nul",
-        ],
-    )
-    .map(|_| ())
+        let pathspec_argument = format!(
+            "--pathspec-from-file={}",
+            tracked_pathspecs.to_string_lossy()
+        );
+        run_checkpoint_git(
+            directory,
+            repository,
+            workspace,
+            &[
+                "--literal-pathspecs",
+                "add",
+                "-A",
+                "-f",
+                &pathspec_argument,
+                "--pathspec-file-nul",
+            ],
+        )?;
+    }
+
+    run_checkpoint_git(directory, repository, workspace, CHECKPOINT_ADD_ARGUMENTS).map(|_| ())
 }
 
 fn existing_tracked_workspace_paths(workspace: &Path) -> Result<Vec<u8>, String> {
@@ -2286,6 +2284,25 @@ if (args[0] === "pr" && args[1] === "list") {{
         assert_eq!(read_text(&root.join("build/removed.js")), "restore me\n");
         assert_eq!(read_text(&root.join("build/generated.js")), "untracked\n");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_checkpoints_finalize_when_tracked_files_are_deleted() {
+        let root = temporary_directory("checkpoint-tracked-deletion");
+        fs::create_dir_all(root.join("xiao-website/app")).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("xiao-website/app/globals.css"), "body {}\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        let checkpoint = create_workspace_checkpoint(&root.to_string_lossy()).unwrap();
+
+        fs::remove_dir_all(root.join("xiao-website")).unwrap();
+        let patch = finish_workspace_checkpoint(&root.to_string_lossy(), &checkpoint).unwrap();
+
+        assert!(patch.contains("xiao-website/app/globals.css"));
         let _ = fs::remove_dir_all(root);
     }
 
