@@ -31,6 +31,7 @@ import {
   prependPromptHistory,
 } from "./promptHistory";
 import { QuestionDock } from "./QuestionDock";
+import { QueuedMessages } from "./QueuedMessages";
 import {
   filterSlashCommands,
   SLASH_COMMANDS,
@@ -97,6 +98,7 @@ type ComposerProps = {
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onSteer: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
+  onEditFollowUp: (followUpId: string, prompt: string) => void;
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
@@ -225,6 +227,7 @@ export function Composer({
   onSubmit,
   onSteer,
   onQueueFollowUp,
+  onEditFollowUp,
   onRemoveFollowUp,
   onSendFollowUpNow,
   onRetryFollowUp,
@@ -293,19 +296,15 @@ export function Composer({
   const planSteps = plan?.steps ?? [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
   const planComplete = planSteps.length > 0 && completedPlanSteps === planSteps.length;
-  const showRunDeck = planSteps.length > 0 || collaborators.length > 0 || followUps.length > 0;
+  const showRunDeck = planSteps.length > 0 || collaborators.length > 0;
   const runDeckNeedsAttention = Boolean(
     failedFollowUpId && followUps.some((followUp) => followUp.id === failedFollowUpId),
   );
-  const todoStackTitle = runDeckNeedsAttention
-    ? "Queue needs attention"
-    : planComplete
+  const todoStackTitle = planComplete
       ? "Tasks complete"
       : planSteps.length > 0
         ? "Tasks"
-        : collaborators.length > 0
-          ? "Agents"
-          : "Queue";
+        : "Agents";
   const normalizedSlashQuery = slashQuery?.trim().toLocaleLowerCase() ?? "";
   const filteredSlashCommands = filterSlashCommands(SLASH_COMMANDS, normalizedSlashQuery)
     .filter((command) => command.id !== "undo" || (canUndo && !undoing));
@@ -325,15 +324,10 @@ export function Composer({
 
   useEffect(() => {
     if (!showRunDeck) return;
-    if (currentTaskWorking || runDeckNeedsAttention) {
+    if (currentTaskWorking) {
       setRunDeckCollapsed(false);
     }
-  }, [currentTaskWorking, runDeckNeedsAttention, showRunDeck]);
-
-  useEffect(() => {
-    if (runDeckNeedsAttention) setQueueExpanded(true);
-    else if (followUps.length === 0) setQueueExpanded(false);
-  }, [followUps.length, runDeckNeedsAttention]);
+  }, [currentTaskWorking, showRunDeck]);
 
   useEffect(() => {
     setValue((current) => current === draftText ? current : draftText);
@@ -932,6 +926,16 @@ export function Composer({
           </div>
         </section>
       )}
+      <QueuedMessages
+        followUps={followUps}
+        sendingFollowUpId={sendingFollowUpId}
+        failedFollowUpId={failedFollowUpId}
+        canSteer={canSteer}
+        onEdit={onEditFollowUp}
+        onRemove={onRemoveFollowUp}
+        onRetry={onRetryFollowUp}
+        onSendNow={onSendFollowUpNow}
+      />
       {activeQuestionRequest ? (
         <QuestionDock
           key={String(activeQuestionRequest.requestId)}

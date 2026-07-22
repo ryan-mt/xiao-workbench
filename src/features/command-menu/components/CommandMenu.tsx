@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -24,20 +25,21 @@ type CommandMenuProps = {
 const actions: Array<{
   id: string;
   label: string;
-  hint: string;
+  description: string;
+  group: "Current task" | "Workspace" | "System" | "Automation";
   icon: XiaoIconName;
   view: FocusView;
 }> = [
-  { id: "plan", label: "Open task plan", hint: "Focus", icon: "plan", view: "plan" },
-  { id: "files", label: "Browse workspace files", hint: "Focus", icon: "files", view: "files" },
-  { id: "browser", label: "Open research browser", hint: "Focus", icon: "browser", view: "browser" },
-  { id: "run", label: "Open Xiao Break", hint: "Play", icon: "game", view: "run" },
-  { id: "changes", label: "Inspect working changes", hint: "Focus", icon: "changes", view: "changes" },
-  { id: "context", label: "Inspect session context", hint: "Focus", icon: "result", view: "context" },
-  { id: "extensions", label: "Manage plugins and skills", hint: "Focus", icon: "capability", view: "extensions" },
-  { id: "terminal", label: "Open workspace terminal", hint: "Focus", icon: "terminal", view: "terminal" },
-  { id: "schedule", label: "Schedule a background task", hint: "Focus", icon: "routine", view: "schedule" },
-  { id: "runtime", label: "Open native runtime", hint: "Focus", icon: "runtime", view: "runtime" },
+  { id: "plan", label: "Task plan", description: "Review steps and progress", group: "Current task", icon: "plan", view: "plan" },
+  { id: "changes", label: "Working changes", description: "Inspect the current diff", group: "Current task", icon: "changes", view: "changes" },
+  { id: "context", label: "Session context", description: "Review context and usage", group: "Current task", icon: "result", view: "context" },
+  { id: "files", label: "Workspace files", description: "Browse and open project files", group: "Workspace", icon: "files", view: "files" },
+  { id: "browser", label: "Research browser", description: "Open the embedded browser", group: "Workspace", icon: "browser", view: "browser" },
+  { id: "terminal", label: "Workspace terminal", description: "Run commands in this project", group: "Workspace", icon: "terminal", view: "terminal" },
+  { id: "extensions", label: "Plugins and skills", description: "Manage installed capabilities", group: "System", icon: "capability", view: "extensions" },
+  { id: "runtime", label: "Native runtime", description: "Inspect local runtime services", group: "System", icon: "runtime", view: "runtime" },
+  { id: "schedule", label: "Background task", description: "Schedule work for later", group: "Automation", icon: "routine", view: "schedule" },
+  { id: "run", label: "Xiao Break", description: "Take a short reset", group: "Automation", icon: "game", view: "run" },
 ];
 
 export function CommandMenu({
@@ -140,8 +142,9 @@ export function CommandMenu({
           <input
             ref={input}
             value={query}
-            placeholder="Find a task or action"
+            placeholder="Search tasks and commands"
             aria-label="Search tasks and actions"
+            aria-controls="command-menu-results"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onSearchKeyDown}
           />
@@ -151,32 +154,39 @@ export function CommandMenu({
         </div>
 
         <div className="command-menu__context">
-          <span>{workspace.name.slice(0, 1).toUpperCase()}</span>
+          <span><XiaoIcon name="folder" size={16} /></span>
           <div>
             <strong>{workspace.name}</strong>
             <small>{workspace.path}</small>
           </div>
+          <em>Workspace</em>
         </div>
 
         <div className="command-menu__results" id="command-menu-results">
-          <header>Jump to</header>
           {filtered.actions.map((action, index) => {
+            const previousAction = filtered.actions[index - 1];
             return (
-              <button
-                className={activeIndex === index ? "is-active" : undefined}
-                key={action.id}
-                ref={(node) => {
-                  resultButtons.current[index] = node;
-                }}
-                onClick={() => onSelectView(action.view)}
-                onFocus={() => setActiveIndex(index)}
-                onMouseEnter={() => setActiveIndex(index)}
-              >
-                <span><XiaoIcon name={action.icon} size={17} /></span>
-                <strong>{action.label}</strong>
-                <small>{action.hint}</small>
-                <XiaoIcon name="caret" size={14} />
-              </button>
+              <Fragment key={action.id}>
+                {action.group !== previousAction?.group ? <header>{action.group}</header> : null}
+                <button
+                  className={activeIndex === index ? "is-active" : undefined}
+                  ref={(node) => {
+                    resultButtons.current[index] = node;
+                  }}
+                  onClick={() => onSelectView(action.view)}
+                  onFocus={() => setActiveIndex(index)}
+                  onMouseEnter={() => setActiveIndex(index)}
+                >
+                  <span className="command-menu__result-icon">
+                    <XiaoIcon name={action.icon} size={17} />
+                  </span>
+                  <span className="command-menu__result-copy">
+                    <strong>{action.label}</strong>
+                    <small>{action.description}</small>
+                  </span>
+                  <kbd className="command-menu__result-key">Enter</kbd>
+                </button>
+              </Fragment>
             );
           })}
           {filtered.tasks.length > 0 && <header>Tasks</header>}
@@ -193,10 +203,14 @@ export function CommandMenu({
                 onFocus={() => setActiveIndex(index)}
                 onMouseEnter={() => setActiveIndex(index)}
               >
-                <span><XiaoIcon name="taskQueue" size={17} /></span>
-                <strong>{task.title}</strong>
-                <small>{task.archived ? "Archived" : task.meta}</small>
-                <XiaoIcon name="caret" size={14} />
+                <span className="command-menu__result-icon">
+                  <XiaoIcon name="taskQueue" size={17} />
+                </span>
+                <span className="command-menu__result-copy">
+                  <strong>{task.title}</strong>
+                  <small>{task.archived ? "Archived" : task.meta}</small>
+                </span>
+                <kbd className="command-menu__result-key">Enter</kbd>
               </button>
             );
           })}
@@ -209,8 +223,8 @@ export function CommandMenu({
         </div>
 
         <footer>
-          <span>{workspace.name}</span>
-          <span><kbd>↑↓</kbd> navigate <kbd>Enter</kbd> open <kbd>Esc</kbd> close</span>
+          <span>{query ? `${resultCount} ${resultCount === 1 ? "result" : "results"}` : `${actions.length} commands`}</span>
+          <span><kbd>&uarr;&darr;</kbd> navigate <kbd>Enter</kbd> open <kbd>Esc</kbd> close</span>
         </footer>
       </section>
     </div>

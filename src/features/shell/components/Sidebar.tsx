@@ -37,7 +37,6 @@ type SidebarProps = {
   onOpenAttention: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
-  onNewTask: () => void;
   onOpenTasks: () => void;
   onAddProject: () => void;
   onSelectProject: (path: string) => void;
@@ -119,7 +118,6 @@ export function Sidebar({
   onOpenAttention,
   onOpenProfile,
   onOpenSettings,
-  onNewTask,
   onOpenTasks,
   onAddProject,
   onSelectProject,
@@ -400,11 +398,6 @@ export function Sidebar({
               <span>Workspace</span>
               <strong>{workspace.name}</strong>
             </div>
-            <button className="sidebar__new-task" type="button" onClick={onNewTask}>
-              <XiaoIcon name="add" size={16} />
-              <span>New task</span>
-              <kbd>Ctrl T</kbd>
-            </button>
           </header>
 
           <div className="sidebar__primary-nav">
@@ -431,7 +424,7 @@ export function Sidebar({
         </div>
 
         <div className="sidebar__projects">
-          {projects.map((project, projectIndex) => {
+          {projects.map((project) => {
             const active = project.path === activeProjectPath;
             const expanded = active && expandedProjectPath === project.path;
             const menuOpen = projectMenu?.projectPath === project.path;
@@ -499,7 +492,7 @@ export function Sidebar({
                           <XiaoIcon name="caret" size={12} />
                         </span>
                         <span className="sidebar-project__index" aria-hidden="true">
-                          {String(projectIndex + 1).padStart(2, "0")}
+                          <XiaoIcon name="folder" size={14} />
                         </span>
                         <span className="sidebar-project__copy">
                           <span className="sidebar-project__title">

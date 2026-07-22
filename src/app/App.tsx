@@ -6,6 +6,7 @@ import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
 import {
   contextUsedPercent,
   type AgentAttachment,
+  type AgentFollowUp,
   type AgentGoal,
   type AgentPlan,
   type AgentTurnOutcome,
@@ -2272,14 +2273,25 @@ export function App() {
       !cleanPrompt
     ) return false;
     setFailedFollowUpId(null);
-    return submitTaskFollowUpAfterPersistence(
-      {
+    const followUp: AgentFollowUp = {
+      id: crypto.randomUUID(),
+      prompt: cleanPrompt,
+      attachments,
+      createdAt: Date.now(),
+    };
+    const nextTasks = tasks.map((task) => task.id === activeTask.id
+      ? { ...task, followUps: [...task.followUps, followUp] }
+      : task);
+    try {
+      await taskSaveDebouncer.persistImmediately({
         path: taskWorkspacePath,
-        state: { tasks, activeTaskId, showArchived: false },
-      },
-      (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
-      () => agent.submit(cleanPrompt, attachments),
-    );
+        state: { tasks: nextTasks, activeTaskId, showArchived: false },
+      });
+    } catch {
+      return false;
+    }
+    setTasks(nextTasks);
+    return true;
   };
 
   const steerTask = async (prompt: string, attachments: AgentAttachment[]) => {
@@ -2314,6 +2326,21 @@ export function App() {
     if (failedFollowUpId === followUpId) setFailedFollowUpId(null);
   };
 
+  const editTaskFollowUp = (followUpId: string, prompt: string) => {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt || sendingFollowUpId === followUpId) return;
+    setTasks((current) => current.map((task) =>
+      task.id === activeTask.id
+        ? {
+            ...task,
+            followUps: task.followUps.map((item) =>
+              item.id === followUpId ? { ...item, prompt: cleanPrompt } : item
+            ),
+          }
+        : task,
+    ));
+  };
+
   const sendTaskFollowUpNow = async (followUpId: string) => {
     if (
       sendingFollowUpId ||
@@ -2340,7 +2367,9 @@ export function App() {
           state: { tasks, activeTaskId, showArchived: false },
         },
         (snapshot) => taskSaveDebouncer.persistImmediately(snapshot),
-        () => agent.steer(followUp.prompt, followUp.attachments, followUp.id),
+        () => agent.runtime.phase === "working"
+          ? agent.steer(followUp.prompt, followUp.attachments, followUp.id)
+          : agent.submit(followUp.prompt, followUp.attachments, followUp.id),
       );
       if (!success) {
         applyCurrentTaskOperationCompletion(
@@ -2372,6 +2401,21 @@ export function App() {
       );
     }
   };
+
+  useEffect(() => {
+    if (
+      agent.runtime.phase !== "ready" ||
+      sendingFollowUpId ||
+      failedFollowUpId ||
+      activeTask.followUps.length === 0
+    ) return;
+    void sendTaskFollowUpNow(activeTask.followUps[0].id);
+  }, [
+    activeTask.followUps,
+    agent.runtime.phase,
+    failedFollowUpId,
+    sendingFollowUpId,
+  ]);
 
   const patchActiveTask = (patch: Partial<WorkbenchTask>) => {
     setTasks((current) =>
@@ -3337,10 +3381,6 @@ export function App() {
             attentionCount={attentionItems.length}
             attentionHydrationStatus={attentionHydrationStatus}
             onOpenMenu={() => setCommandMenuOpen(true)}
-            onNewTask={() => {
-              openNewTaskTab();
-              closeSidebarOnNarrow();
-            }}
             onOpenAttention={() => {
               setActivePage("attention");
               closeFocusPanel();
@@ -3519,6 +3559,7 @@ export function App() {
               onSubmit={submitTask}
               onSteer={steerTask}
               onQueueFollowUp={queueTaskFollowUp}
+              onEditFollowUp={editTaskFollowUp}
               onRemoveFollowUp={removeTaskFollowUp}
               onSendFollowUpNow={sendTaskFollowUpNow}
               onRetryFollowUp={() => setFailedFollowUpId(null)}

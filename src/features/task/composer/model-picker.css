@@ -81,11 +81,8 @@
 }
 
 .composer__tools-left .reasoning-picker__trigger.is-ultra {
-  color: #7652d8;
-}
-
-:root[data-theme="dark"] .composer__tools-left .reasoning-picker__trigger.is-ultra {
-  color: #b49af8;
+  background: var(--brand-soft);
+  color: var(--brand-strong);
 }
 
 .fast-mode__glyph {

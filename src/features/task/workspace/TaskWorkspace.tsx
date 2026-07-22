@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import {
@@ -47,6 +47,19 @@ export const activeCollaboratorsFromTimeline = (timeline: TimelineEntry[]) => {
   );
 };
 
+const liveOutputFollowThreshold = 72;
+
+export const distanceFromScrollBottom = ({
+  scrollHeight,
+  scrollTop,
+  clientHeight,
+}: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">) =>
+  Math.max(0, scrollHeight - scrollTop - clientHeight);
+
+export const shouldFollowLiveOutput = (
+  metrics: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
+) => distanceFromScrollBottom(metrics) <= liveOutputFollowThreshold;
+
 type TaskWorkspaceProps = {
   taskId: string;
   executionTaskId: string | null;
@@ -90,6 +103,7 @@ type TaskWorkspaceProps = {
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onSteer: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
+  onEditFollowUp: (followUpId: string, prompt: string) => void;
   onRemoveFollowUp: (followUpId: string) => void;
   onSendFollowUpNow: (followUpId: string) => Promise<void>;
   onRetryFollowUp: () => void;
@@ -171,6 +185,7 @@ export function TaskWorkspace({
   onSubmit,
   onSteer,
   onQueueFollowUp,
+  onEditFollowUp,
   onRemoveFollowUp,
   onSendFollowUpNow,
   onRetryFollowUp,
@@ -202,8 +217,8 @@ export function TaskWorkspace({
 }: TaskWorkspaceProps) {
   const scrollArea = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
-  const previousWorking = useRef(false);
-  const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
+  const previousTaskId = useRef(taskId);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const taskActionsDisabled =
     environmentBusy || taskStateLoading || Boolean(taskStateError);
   const canFork =
@@ -228,12 +243,43 @@ export function TaskWorkspace({
   useLayoutEffect(() => {
     const node = scrollArea.current;
     if (!node) return;
-    if (taskWorking && !previousWorking.current) {
+    if (previousTaskId.current !== taskId) {
+      previousTaskId.current = taskId;
       followLiveOutput.current = true;
+      setShowJumpToLatest(false);
     }
-    previousWorking.current = taskWorking;
     if (followLiveOutput.current) node.scrollTop = node.scrollHeight;
-  }, [taskId, taskWorking, timeline]);
+  }, [taskId, timeline]);
+
+  useLayoutEffect(() => {
+    const node = scrollArea.current;
+    const content = node?.firstElementChild;
+    if (!node || !content || typeof ResizeObserver === "undefined") return;
+
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (!followLiveOutput.current) return;
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        node.scrollTop = node.scrollHeight;
+        frame = null;
+      });
+    });
+    observer.observe(node);
+    observer.observe(content);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [taskId]);
+
+  const jumpToLatest = useCallback(() => {
+    const node = scrollArea.current;
+    if (!node) return;
+    followLiveOutput.current = true;
+    setShowJumpToLatest(false);
+    node.scrollTop = node.scrollHeight;
+  }, []);
 
   const composer = (
     <Composer
@@ -285,6 +331,7 @@ export function TaskWorkspace({
       onSubmit={onSubmit}
       onSteer={onSteer}
       onQueueFollowUp={onQueueFollowUp}
+      onEditFollowUp={onEditFollowUp}
       onRemoveFollowUp={onRemoveFollowUp}
       onSendFollowUpNow={onSendFollowUpNow}
       onRetryFollowUp={onRetryFollowUp}
@@ -311,18 +358,30 @@ export function TaskWorkspace({
       <section className="task-workspace task-workspace--launch">
         <div className="task-launch">
           <div className="task-launch__inner">
-            <div className="task-launch__brand" aria-label="XIAO">
-              {launchBrand === "logo" ? (
-                <img className="task-launch__logo" src="/xiao-mark.png" alt="" aria-hidden="true" />
-              ) : (
-                <span className="task-launch__wordmark" aria-hidden="true">
-                  <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
-                </span>
-              )}
-              <small>Local agent workspace</small>
+            <header className="task-launch__brand" aria-label="XIAO local agent workspace">
+              <span className="task-launch__mark">
+                {launchBrand === "logo" ? (
+                  <img className="task-launch__logo" src="/xiao-mark.png" alt="" aria-hidden="true" />
+                ) : (
+                  <span className="task-launch__wordmark" aria-hidden="true">
+                    <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
+                  </span>
+                )}
+              </span>
+              <span className="task-launch__brand-copy">
+                <strong>XIAO</strong>
+                <small>Local agent workspace</small>
+              </span>
+            </header>
+
+            <div className="task-launch__intro">
+              <h1>What should we work on?</h1>
+              <p>Describe the outcome. Xiao can inspect the code, make changes, and verify the result.</p>
             </div>
+
             {composer}
-            <div className="task-launch__context" aria-label="Task context">
+
+            <footer className="task-launch__context" aria-label="Task context">
               <span title={workspace.path}>
                 <XiaoIcon name="workspace" size={14} />
                 <strong>{workspace.name}</strong>
@@ -339,7 +398,10 @@ export function TaskWorkspace({
                 label="Acceptance"
                 onOpen={() => onFocusView("verification")}
               />
-            </div>
+              <span className="task-launch__hint" aria-hidden="true">
+                <kbd>Enter</kbd> to send <i>&middot;</i> <kbd>Shift Enter</kbd> for a new line
+              </span>
+            </footer>
           </div>
         </div>
       </section>
@@ -366,32 +428,46 @@ export function TaskWorkspace({
         onToggleArchived={onToggleArchived}
         onUndo={onUndo}
       />
-      <div
-        className="task-workspace__scroll"
-        ref={scrollArea}
-        onScroll={(event) => {
-          const node = event.currentTarget;
-          followLiveOutput.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
-        }}
-      >
-        <TaskTimeline
-          taskId={taskId}
-          timeline={timeline}
-          runtime={runtime}
-          latestRun={latestRun}
-          showReasoningSummaries={showReasoningSummaries}
-          expandToolOutput={expandToolOutput}
-          workspacePath={workspace.path}
-          onOpenResource={openTimelineResource}
-          historyLoading={taskStateLoading}
-          canFork={canFork}
-          onForkTask={forkTimelineTask}
-          onResolveApproval={resolveTimelineApproval}
-          onReviewChanges={reviewTimelineChanges}
-          canUndo={canUndo}
-          undoing={undoing}
-          onUndo={onUndo}
-        />
+      <div className="task-workspace__timeline-shell">
+        <div
+          className="task-workspace__scroll"
+          ref={scrollArea}
+          onScroll={(event) => {
+            const following = shouldFollowLiveOutput(event.currentTarget);
+            followLiveOutput.current = following;
+            setShowJumpToLatest(!following);
+          }}
+        >
+          <TaskTimeline
+            taskId={taskId}
+            timeline={timeline}
+            runtime={runtime}
+            latestRun={latestRun}
+            showReasoningSummaries={showReasoningSummaries}
+            expandToolOutput={expandToolOutput}
+            workspacePath={workspace.path}
+            onOpenResource={openTimelineResource}
+            historyLoading={taskStateLoading}
+            canFork={canFork}
+            onForkTask={forkTimelineTask}
+            onResolveApproval={resolveTimelineApproval}
+            onReviewChanges={reviewTimelineChanges}
+            canUndo={canUndo}
+            undoing={undoing}
+            onUndo={onUndo}
+          />
+        </div>
+        {showJumpToLatest ? (
+          <button
+            className="task-workspace__jump-latest"
+            type="button"
+            aria-label="Jump to latest message"
+            title="Jump to latest message"
+            onClick={jumpToLatest}
+          >
+            <XiaoIcon name="down" size={17} />
+          </button>
+        ) : null}
       </div>
       {composer}
     </section>

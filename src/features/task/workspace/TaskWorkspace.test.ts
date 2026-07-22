@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { TimelineEntry } from "../../../core/models/agent";
-import { activeCollaboratorsFromTimeline } from "./TaskWorkspace";
+import {
+  activeCollaboratorsFromTimeline,
+  distanceFromScrollBottom,
+  shouldFollowLiveOutput,
+} from "./TaskWorkspace";
 
 const collaboratorEntry = (
   id: string,
@@ -34,5 +38,21 @@ describe("activeCollaboratorsFromTimeline", () => {
     ];
 
     expect(activeCollaboratorsFromTimeline(timeline)).toHaveLength(2);
+  });
+});
+
+describe("live output scroll behavior", () => {
+  it("follows output while the viewport is near the bottom", () => {
+    const metrics = { scrollHeight: 1200, scrollTop: 528, clientHeight: 600 };
+
+    expect(distanceFromScrollBottom(metrics)).toBe(72);
+    expect(shouldFollowLiveOutput(metrics)).toBe(true);
+  });
+
+  it("pauses follow mode after the user scrolls away from the bottom", () => {
+    const metrics = { scrollHeight: 1200, scrollTop: 400, clientHeight: 600 };
+
+    expect(distanceFromScrollBottom(metrics)).toBe(200);
+    expect(shouldFollowLiveOutput(metrics)).toBe(false);
   });
 });

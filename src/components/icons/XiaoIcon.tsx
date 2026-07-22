@@ -1,6 +1,7 @@
 import {
   Activity,
   Archive,
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
@@ -78,6 +79,7 @@ export type XiaoIconName =
   | "copy"
   | "cpu"
   | "decline"
+  | "down"
   | "edit"
   | "enter"
   | "external"
@@ -141,6 +143,7 @@ const icons = {
   copy: Copy,
   cpu: Cpu,
   decline: X,
+  down: ArrowDown,
   edit: PenLine,
   enter: CornerDownLeft,
   external: ExternalLink,

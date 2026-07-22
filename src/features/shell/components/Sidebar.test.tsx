@@ -49,7 +49,6 @@ const renderSidebar = (
       attentionCount={attentionCount}
       attentionHydrationStatus={attentionHydrationStatus}
       onOpenMenu={noop}
-      onNewTask={noop}
       onOpenAttention={noop}
       onOpenProfile={noop}
       onOpenSettings={noop}
@@ -125,7 +124,7 @@ describe("Sidebar attention trigger", () => {
     const markup = renderSidebar(0);
 
     expect(markup).not.toContain('class="sidebar__rail"');
-    expect(markup).toContain(">New task</span>");
+    expect(markup).not.toContain('class="sidebar__new-task"');
     expect(markup).toContain(">Find anything</span>");
     expect(markup).toContain(">Projects</span>");
     expect(markup).not.toContain(">Tasks</span>");

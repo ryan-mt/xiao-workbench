@@ -270,18 +270,23 @@ export const ActivityItem = memo(function ActivityItem({
         className={`activity activity--context-compaction activity--${entry.status ?? "idle"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <div className="context-compaction">
+        <div className="context-compaction" role="status" aria-live="polite">
           <span className="context-compaction__glyph" aria-hidden="true">
             <i />
             <i />
             <b />
           </span>
           <span className="context-compaction__copy">
-            <small>Session context</small>
             <strong>{entry.title}</strong>
+            <small>{entry.status === "active" ? "Keeping the useful parts" : "Session context ready"}</small>
           </span>
+          <span className="context-compaction__meter" aria-hidden="true"><i /></span>
           {entry.status === "active" ? (
-            <i className="activity__pulse" aria-hidden="true" />
+            <span className="context-compaction__working" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
           ) : (
             <XiaoIcon
               className={`context-compaction__state context-compaction__state--${entry.status ?? "idle"}`}
