@@ -213,7 +213,7 @@ describe("attention projection", () => {
     const unread = task({ unread: true });
 
     expect(projectAttentionItems([unread], [], [])).toMatchObject([
-      { id: "unread:task-a", title: "Unread task", runId: null },
+      { id: "unread:task-a:40", title: "Unread task", runId: null },
     ]);
     expect(JSON.stringify(projectAttentionItems([unread], [], [])).toLowerCase()).not.toContain(
       "result",
@@ -224,6 +224,18 @@ describe("attention projection", () => {
       [],
     )).toHaveLength(1);
     expect(projectAttentionItems([unread], [run()], [pendingInput()])).toHaveLength(1);
+  });
+
+  it("gives later unread activity a new dismissal identity", () => {
+    const first = projectAttentionItems([
+      task({ unread: true, updatedAt: 40 }),
+    ], [], [])[0];
+    const dismissed = new Set([first.id]);
+    const later = projectAttentionItems([
+      task({ unread: true, updatedAt: 50 }),
+    ], [], [])[0];
+
+    expect(dismissed.has(later.id)).toBe(false);
   });
 
   it("ignores archived and missing tasks", () => {
@@ -265,7 +277,7 @@ describe("attention projection", () => {
       "pending:b",
       "run:run-c",
       "run:run-d",
-      "unread:task-e",
+      "unread:task-e:300",
     ]);
   });
 

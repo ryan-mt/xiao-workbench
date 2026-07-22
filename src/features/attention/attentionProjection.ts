@@ -125,7 +125,7 @@ export const projectAttentionItems = (
   for (const task of tasksById.values()) {
     if (!task.unread || tasksWithAttention.has(task.id)) continue;
     items.push({
-      id: `unread:${task.id}`,
+      id: `unread:${task.id}:${task.updatedAt}`,
       taskId: task.id,
       runId: null,
       kind: "unread",
