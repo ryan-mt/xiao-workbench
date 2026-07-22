@@ -20,6 +20,8 @@ import {
 } from "./markdownStream";
 
 const markdownPlugins = [remarkGfm];
+const maxMarkdownCharacters = 200_000;
+const highlightCacheLimit = 64;
 
 const copyText = async (text: string) => {
   if (navigator.clipboard?.writeText) {
@@ -161,6 +163,17 @@ type HighlightedCode = {
   language: string;
 };
 
+const highlightedCodeCache = new Map<string, HighlightedCode>();
+
+const rememberHighlightedCode = (key: string, value: HighlightedCode) => {
+  highlightedCodeCache.delete(key);
+  highlightedCodeCache.set(key, value);
+  if (highlightedCodeCache.size > highlightCacheLimit) {
+    const oldest = highlightedCodeCache.keys().next().value;
+    if (oldest) highlightedCodeCache.delete(oldest);
+  }
+};
+
 function InlineCode({
   children,
   className,
@@ -204,10 +217,18 @@ const CodeCard = memo(function CodeCard({
   const label = languageLabels[normalizedLanguage] ?? normalizedLanguage.toUpperCase();
   const lineCount = code ? code.split("\n").length : 0;
   const codeKind = shellLanguages.has(language) || shellLanguages.has(normalizedLanguage) ? "shell" : "source";
+  const cacheKey = `${normalizedLanguage}\u0000${code}`;
   const [highlighted, setHighlighted] = useState<HighlightedCode | null>(null);
+  const [wrapped, setWrapped] = useState(false);
 
   useEffect(() => {
     if (!code.trim() || code.length > 60_000 || ["code", "text", "txt", "plaintext"].includes(language)) {
+      return;
+    }
+
+    const cached = highlightedCodeCache.get(cacheKey);
+    if (cached) {
+      setHighlighted(cached);
       return;
     }
 
@@ -218,7 +239,11 @@ const CodeCard = memo(function CodeCard({
           const highlighter = await import("./highlightCode");
           if (!highlighter.isHighlightLanguage(normalizedLanguage)) return;
           const html = await highlighter.highlightCode(code, normalizedLanguage);
-          if (!cancelled) setHighlighted({ code, html, language });
+          if (!cancelled) {
+            const value = { code, html, language };
+            rememberHighlightedCode(cacheKey, value);
+            setHighlighted(value);
+          }
         } catch {
           // Keep the readable plain-code fallback when a grammar cannot be loaded.
         }
@@ -230,20 +255,35 @@ const CodeCard = memo(function CodeCard({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [code, language, normalizedLanguage, streaming]);
+  }, [cacheKey, code, language, normalizedLanguage, streaming]);
 
   const highlightedHtml =
     highlighted?.code === code && highlighted.language === language ? highlighted.html : null;
 
   return (
-    <div className="markdown-code" data-code-kind={codeKind} data-language={normalizedLanguage}>
+    <div
+      className="markdown-code"
+      data-code-kind={codeKind}
+      data-language={normalizedLanguage}
+      data-wrap={wrapped ? "true" : "false"}
+    >
       <header>
         <span>
           <XiaoIcon name={codeKind === "shell" ? "command" : "file"} size={13} />
           <strong>{label}</strong>
           <small>{lineCount} {lineCount === 1 ? "line" : "lines"}</small>
         </span>
-        <CopyButton text={code} />
+        <span className="markdown-code__actions">
+          <button
+            className="markdown-code__wrap"
+            type="button"
+            aria-pressed={wrapped}
+            onClick={() => setWrapped((value) => !value)}
+          >
+            {wrapped ? "No wrap" : "Wrap"}
+          </button>
+          <CopyButton text={code} />
+        </span>
       </header>
       {highlightedHtml ? (
         <div className="markdown-code__highlight" dangerouslySetInnerHTML={{ __html: highlightedHtml }} />
@@ -313,13 +353,13 @@ const MarkdownChunk = memo(function MarkdownChunk({
   );
 });
 
-export const MarkdownBody = memo(function MarkdownBody({
+const ProjectedMarkdownBody = memo(function ProjectedMarkdownBody({
   content,
-  streaming = false,
+  streaming,
   onOpenResource,
 }: {
   content: string;
-  streaming?: boolean;
+  streaming: boolean;
   onOpenResource?: (target: string) => boolean;
 }) {
   const projectionRef = useRef<MarkdownStreamProjection | undefined>(undefined);
@@ -349,5 +389,37 @@ export const MarkdownBody = memo(function MarkdownBody({
         ),
       )}
     </div>
+  );
+});
+
+export const MarkdownBody = memo(function MarkdownBody({
+  content,
+  streaming = false,
+  onOpenResource,
+}: {
+  content: string;
+  streaming?: boolean;
+  onOpenResource?: (target: string) => boolean;
+}) {
+  if (content.length > maxMarkdownCharacters) {
+    return (
+      <div className="markdown-body markdown-body--huge">
+        <div className="markdown-huge-text">
+          <header>
+            <span>Large response · shown as plain text</span>
+            <CopyButton text={content} />
+          </header>
+          <pre>{content}</pre>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ProjectedMarkdownBody
+      content={content}
+      streaming={streaming}
+      onOpenResource={onOpenResource}
+    />
   );
 });

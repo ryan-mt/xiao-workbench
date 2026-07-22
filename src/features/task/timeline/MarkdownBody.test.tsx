@@ -56,4 +56,21 @@ describe("MarkdownBody resource links", () => {
 
     expect(markup).toContain("<strong>now</strong>");
   });
+
+  it("offers line wrapping for fenced code", () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content={"```ts\nconst answer = 42;\n```"} />,
+    );
+
+    expect(markup).toContain('class="markdown-code__wrap"');
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain(">Wrap</button>");
+  });
+
+  it("falls back to plain text for responses too large to parse safely", () => {
+    const markup = renderToStaticMarkup(<MarkdownBody content={"a".repeat(200_001)} />);
+
+    expect(markup).toContain("markdown-body--huge");
+    expect(markup).toContain("Large response · shown as plain text");
+  });
 });

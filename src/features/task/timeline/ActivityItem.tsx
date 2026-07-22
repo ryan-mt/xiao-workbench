@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
@@ -111,6 +111,60 @@ const reasoningHeading = (body?: string) =>
     ?.match(/(?:^|\n)\s*(?:#{1,6}\s+|\*\*|__)?([^\n*_]{3,80})/)?.[1]
     ?.trim();
 
+const ReasoningActivity = memo(function ReasoningActivity({
+  entry,
+  index,
+  onOpenResource,
+}: {
+  entry: TimelineEntry;
+  index: number;
+  onOpenResource: (target: string) => boolean;
+}) {
+  const active = entry.status === "active";
+  const [open, setOpen] = useState(active);
+  const heading = reasoningHeading(entry.body);
+
+  useEffect(() => {
+    setOpen(active);
+  }, [active, entry.id]);
+
+  return (
+    <article
+      className={`activity activity--reasoning activity--${entry.status ?? "idle"}`}
+      style={{ "--activity-index": index } as React.CSSProperties}
+    >
+      <details
+        open={open}
+        onToggle={(event) => setOpen(event.currentTarget.open)}
+      >
+        <summary>
+          <span className="activity__reasoning-mark">
+            <XiaoIcon name="approach" size={13} />
+          </span>
+          <span className="activity__reasoning-summary">
+            <strong>{active ? "Thinking" : "Thought process"}</strong>
+            {heading && <span>{heading}</span>}
+          </span>
+          <span className={`activity__reasoning-state is-${active ? "live" : "done"}`}>
+            {active ? <i className="activity__pulse" /> : <XiaoIcon name="check" size={11} />}
+            {active ? "Live" : "Done"}
+          </span>
+          {entry.body ? <XiaoIcon className="activity__reasoning-caret" name="caret" size={12} /> : null}
+        </summary>
+        {entry.body && (
+          <div className="activity__reasoning-content">
+            <MarkdownBody
+              content={entry.body}
+              streaming={active}
+              onOpenResource={onOpenResource}
+            />
+          </div>
+        )}
+      </details>
+    </article>
+  );
+});
+
 export const ActivityItem = memo(function ActivityItem({
   entry,
   index,
@@ -145,7 +199,7 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <XiaoIcon name="approach" size={13} />
-        <strong>Thinking</strong>
+        <strong>Working through it</strong>
         {heading && <span>{heading}</span>}
         <i className="activity__pulse" />
       </article>
@@ -234,13 +288,22 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (assistantMessage) {
+    const streaming = entry.status === "active";
     return (
       <article
         className="activity activity--assistant-message"
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__assistant-message">
-          {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
+          <header className="activity__assistant-header">
+            <span className="activity__assistant-mark"><XiaoIcon name="result" size={13} /></span>
+            <strong>{streaming ? "Writing response" : "Response"}</strong>
+            {streaming ? <i className="activity__pulse" /> : null}
+            {entry.body && !streaming ? (
+              <span className="activity__assistant-copy"><CopyButton text={entry.body} /></span>
+            ) : null}
+          </header>
+          {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
           {turnFiles.length > 0 && (
             <nav className="turn-change-actions" aria-label="Actions for edited files">
               <button type="button" onClick={onReviewChanges}>
@@ -253,11 +316,6 @@ export const ActivityItem = memo(function ActivityItem({
                 </button>
               ) : null}
             </nav>
-          )}
-          {entry.body && (
-            <div className="activity__assistant-actions">
-              <CopyButton text={entry.body} />
-            </div>
           )}
         </div>
       </article>
@@ -300,24 +358,7 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (entry.kind === "thought") {
-    const heading = reasoningHeading(entry.body);
-    return (
-      <article
-        className={`activity activity--reasoning activity--${entry.status ?? "idle"}`}
-        style={{ "--activity-index": index } as React.CSSProperties}
-      >
-        <details>
-          <summary>
-            <XiaoIcon name="approach" size={13} />
-            <strong>{entry.status === "active" ? "Thinking" : "Thought"}</strong>
-            {heading && <span>{heading}</span>}
-            {entry.status === "active" ? <i className="activity__pulse" /> : null}
-            {entry.body ? <XiaoIcon className="activity__reasoning-caret" name="caret" size={12} /> : null}
-          </summary>
-          {entry.body && <div><MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} /></div>}
-        </details>
-      </article>
-    );
+    return <ReasoningActivity entry={entry} index={index} onOpenResource={onOpenResource} />;
   }
 
   if (entry.kind === "agent") {
@@ -391,6 +432,13 @@ export const ActivityItem = memo(function ActivityItem({
           : entry.status === "error"
             ? "Failed"
             : "Used";
+    const toolStateLabel = entry.status === "active"
+      ? "In progress"
+      : environmentBlocked
+        ? "Blocked"
+        : entry.status === "error"
+          ? "Failed"
+          : "Completed";
     const summary = (
       <>
         <span className="activity__tool-icon">
@@ -403,7 +451,13 @@ export const ActivityItem = memo(function ActivityItem({
             <small className="activity__tool-attempts">{attemptCount} attempts</small>
           )}
         </span>
-        {entry.status === "active" && <i className="activity__pulse" />}
+        <span className={`activity__tool-state is-${entry.status ?? "success"}`} aria-label={toolStateLabel} title={toolStateLabel}>
+          {entry.status === "active" ? (
+            <i className="activity__pulse" />
+          ) : (
+            <XiaoIcon name={entry.status === "error" ? "close" : "check"} size={11} />
+          )}
+        </span>
         {hasDetails && (
           <span className="activity__tool-caret">
             <XiaoIcon name="caret" size={13} />

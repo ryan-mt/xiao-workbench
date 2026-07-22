@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent } from "react";
 
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
@@ -299,6 +299,9 @@ export function Composer({
   const planSteps = plan?.steps ?? [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
   const planComplete = planSteps.length > 0 && completedPlanSteps === planSteps.length;
+  const planProgress = planSteps.length > 0
+    ? `${Math.round((completedPlanSteps / planSteps.length) * 100)}%`
+    : "0%";
   const showRunDeck = planSteps.length > 0 || collaborators.length > 0;
   const runDeckNeedsAttention = Boolean(
     failedFollowUpId && followUps.some((followUp) => followUp.id === failedFollowUpId),
@@ -761,6 +764,7 @@ export function Composer({
             currentTaskWorking ? "is-working" : ""
           } ${runDeckNeedsAttention ? "needs-attention" : ""}`}
           aria-label="Task status"
+          style={{ "--run-deck-progress": planProgress } as CSSProperties}
         >
           <header className="run-deck__header">
             <button
@@ -771,6 +775,13 @@ export function Composer({
               onClick={() => setRunDeckCollapsed((collapsed) => !collapsed)}
             >
               <span className="run-deck__identity">
+                <span className="run-deck__identity-mark" aria-hidden="true">
+                  <XiaoIcon
+                    className={currentTaskWorking && !planComplete ? "run-deck__signal-spin" : undefined}
+                    name={planComplete ? "check" : currentTaskWorking ? "pending" : "taskQueue"}
+                    size={13}
+                  />
+                </span>
                 <strong>{todoStackTitle}</strong>
               </span>
               <span className="run-deck__count" aria-label="Task summary">
