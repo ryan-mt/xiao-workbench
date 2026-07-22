@@ -3,7 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { XiaoIcon } from "../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../core/bridges/tauri";
 import type { RunSnapshot } from "../../core/models/run";
-import type { VerificationGateEvidence } from "../../core/models/verification";
+import type {
+  VerificationAttemptEvidence,
+  VerificationGateEvidence,
+} from "../../core/models/verification";
 import { runPresentation } from "./runPresentation";
 import { useVerificationEvidence } from "./useVerificationEvidence";
 import "./verification.css";
@@ -12,6 +15,8 @@ type VerificationEvidenceCardProps = {
   run: RunSnapshot;
   compact?: boolean;
   onReviewChanges?: () => void;
+  onFixFailures?: (prompt: string) => Promise<boolean>;
+  fixFailuresDisabled?: boolean;
 };
 
 export type ArtifactView =
@@ -119,6 +124,62 @@ const gateLabel = (gate: VerificationGateEvidence) => {
   }
 };
 
+export const canFixVerificationFailures = (
+  run: Pick<
+    RunSnapshot,
+    "acceptanceContractSnapshot" | "agentOutcome" | "status" | "verificationOutcome"
+  >,
+) => Boolean(
+  run.acceptanceContractSnapshot &&
+  run.agentOutcome === "completed" &&
+  run.status === "needs_attention" &&
+  run.verificationOutcome === "failed",
+);
+
+const fixEvidenceSummary = (value: unknown) => {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "Evidence summary could not be serialized.";
+  }
+};
+
+export const buildVerificationFixPrompt = (
+  run: Pick<RunSnapshot, "id">,
+  evidence?: VerificationAttemptEvidence,
+) => {
+  const attempt = evidence?.attempt;
+  const failedGates = evidence?.gates.filter((gate) => gate.result.outcome === "failed") ?? [];
+  const lines = [
+    `Fix the failures from Xiao verification${attempt ? ` attempt ${attempt.attemptNumber}` : ""} and verify again.`,
+    "Address the root causes in the current task changes, make only the necessary edits, and finish the turn so Xiao reruns the configured acceptance contract.",
+    `Source run: ${run.id}`,
+  ];
+
+  if (attempt) lines.push(`Contract: ${attempt.contractSnapshot.name}`);
+  if (attempt?.diagnostic) lines.push(`Attempt diagnostic: ${attempt.diagnostic}`);
+  failedGates.forEach((gate) => {
+    const exitCode = gate.result.exitCode === null ? "" : `, exit ${gate.result.exitCode}`;
+    lines.push(`Failed ${gateLabel(gate)} gate ${gate.result.gateIndex + 1}${exitCode}: ${gate.result.diagnostic ?? "No diagnostic was recorded."}`);
+    gate.evidence.forEach(({ evidence: item }) => {
+      lines.push(`Evidence (${readable(item.evidenceType)}): ${fixEvidenceSummary(item.summary)}`);
+    });
+  });
+
+  return lines.join("\n");
+};
+
+export async function startVerificationFix(
+  run: Pick<RunSnapshot, "id">,
+  evidence: VerificationAttemptEvidence | undefined,
+  submit: (prompt: string) => Promise<boolean>,
+) {
+  if (!await submit(buildVerificationFixPrompt(run, evidence))) {
+    throw new Error("Could not start a run to fix the verification failures.");
+  }
+}
+
 const statusIcon = (run: RunSnapshot) => {
   const presentation = runPresentation(run);
   if (presentation.kind === "verified") return "check" as const;
@@ -131,6 +192,8 @@ export function VerificationEvidenceCard({
   run,
   compact = false,
   onReviewChanges,
+  onFixFailures,
+  fixFailuresDisabled = false,
 }: VerificationEvidenceCardProps) {
   const mounted = useRef(true);
   const [localRun, setLocalRun] = useState(run);
@@ -140,7 +203,7 @@ export function VerificationEvidenceCard({
   const actionScope = actionScopeRef.current;
   actionScope.setRunId(currentRun.id);
   const [busyActionState, setBusyActionState] = useState<{
-    action: "cancel" | "rerun";
+    action: "cancel" | "fix" | "rerun";
     token: VerificationActionToken;
   } | null>(null);
   const [actionErrorState, setActionErrorState] = useState<{
@@ -240,6 +303,21 @@ export function VerificationEvidenceCard({
   };
 
   const canRerun = canRerunVerification(currentRun);
+  const canFix = Boolean(onFixFailures) && canFixVerificationFailures(currentRun);
+
+  const fixFailures = async () => {
+    if (!onFixFailures) return;
+    const token = actionScope.start();
+    setBusyActionState({ action: "fix", token });
+    setActionErrorState(null);
+    try {
+      await startVerificationFix(currentRun, attempts[0], onFixFailures);
+    } catch (reason) {
+      if (!mounted.current || !actionScope.isCurrent(token)) return;
+      setActionErrorState({ message: errorMessage(reason), token });
+      setBusyActionState(null);
+    }
+  };
 
   return (
     <article className={`verification-card verification-card--${presentation.kind} ${compact ? "verification-card--compact" : ""}`}>
@@ -267,6 +345,12 @@ export function VerificationEvidenceCard({
             <button className="button button--quiet" type="button" disabled={Boolean(busyAction)} onClick={() => void mutateRun("rerun")}>
               <XiaoIcon className={busyAction === "rerun" ? "is-spinning" : undefined} name={busyAction === "rerun" ? "pending" : "refresh"} size={12} />
               Rerun gates
+            </button>
+          ) : null}
+          {canFix ? (
+            <button className="button button--primary" type="button" disabled={Boolean(busyAction) || fixFailuresDisabled || (loading && !attempts.length)} onClick={() => void fixFailures()}>
+              <XiaoIcon className={busyAction === "fix" ? "is-spinning" : undefined} name={busyAction === "fix" ? "pending" : "refresh"} size={12} />
+              {busyAction === "fix" ? "Starting fix" : "Fix failures and verify again"}
             </button>
           ) : null}
         </div>

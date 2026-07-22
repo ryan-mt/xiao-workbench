@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { RunSnapshot } from "../../core/models/run";
+import type { VerificationAttemptEvidence } from "../../core/models/verification";
 import {
+  buildVerificationFixPrompt,
+  canFixVerificationFailures,
   canRerunVerification,
   createVerificationActionScope,
   loadVerificationArtifact,
+  startVerificationFix,
   type ArtifactView,
 } from "./VerificationEvidenceCard";
 
@@ -23,6 +27,53 @@ const rerunState = (
   agentOutcome,
   acceptanceContractSnapshot: withContract ? contractSnapshot : null,
 });
+
+const failedAttempt: VerificationAttemptEvidence = {
+  attempt: {
+    id: "attempt-1",
+    runId: "run-1",
+    requestKey: "initial:run-1",
+    attemptNumber: 2,
+    trigger: "initial",
+    contractSnapshot,
+    contractSnapshotSha256: "a".repeat(64),
+    expectedGateCount: 1,
+    status: "failed",
+    diagnostic: "Acceptance checks failed.",
+    startedAt: 1,
+    finishedAt: 2,
+    updatedAt: 2,
+    version: 1,
+  },
+  gates: [{
+    result: {
+      id: "gate-1",
+      verificationAttemptId: "attempt-1",
+      gateIndex: 0,
+      gateType: "command",
+      outcome: "failed",
+      durationMs: 10,
+      exitCode: 1,
+      diagnostic: "npm test failed",
+      startedAt: 1,
+      finishedAt: 2,
+    },
+    evidence: [{
+      evidence: {
+        id: "evidence-1",
+        runId: "run-1",
+        verificationAttemptId: "attempt-1",
+        gateResultId: "gate-1",
+        evidenceType: "commandOutput",
+        summary: { stderr: "expected true to be false" },
+        artifactId: null,
+        redactionState: "safe",
+        createdAt: 2,
+      },
+      artifact: null,
+    }],
+  }],
+};
 
 describe("verification action scope", () => {
   it("invalidates action settlements when the displayed run changes", () => {
@@ -54,6 +105,40 @@ describe("verification rerun eligibility", () => {
     expect(canRerunVerification(rerunState("needs_attention", "pending"))).toBe(false);
     expect(canRerunVerification(rerunState("interrupted", "interrupted"))).toBe(false);
     expect(canRerunVerification(rerunState("needs_attention", "completed", false))).toBe(false);
+  });
+});
+
+describe("verification fix loop", () => {
+  it("offers fixes only for completed work with a failed acceptance contract", () => {
+    const failed = {
+      ...rerunState("needs_attention"),
+      verificationOutcome: "failed" as const,
+    };
+
+    expect(canFixVerificationFailures(failed)).toBe(true);
+    expect(canFixVerificationFailures({ ...failed, verificationOutcome: "blocked" })).toBe(false);
+    expect(canFixVerificationFailures({ ...failed, status: "interrupted" })).toBe(false);
+    expect(canFixVerificationFailures({ ...failed, agentOutcome: "failed" })).toBe(false);
+  });
+
+  it("submits the failed gate evidence as a fix request that triggers verification again", async () => {
+    const submit = vi.fn().mockResolvedValue(true);
+
+    await startVerificationFix({ id: "run-1" }, failedAttempt, submit);
+
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0][0]).toBe(buildVerificationFixPrompt({ id: "run-1" }, failedAttempt));
+    expect(submit.mock.calls[0][0]).toContain("Fix the failures from Xiao verification attempt 2 and verify again.");
+    expect(submit.mock.calls[0][0]).toContain("npm test failed");
+    expect(submit.mock.calls[0][0]).toContain("expected true to be false");
+  });
+
+  it("reports when the fix run could not be started", async () => {
+    await expect(startVerificationFix(
+      { id: "run-1" },
+      failedAttempt,
+      vi.fn().mockResolvedValue(false),
+    )).rejects.toThrow("Could not start a run to fix the verification failures.");
   });
 });
 

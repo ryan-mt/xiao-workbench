@@ -471,6 +471,8 @@ export function TaskWorkspace({
             onForkTask={forkTimelineTask}
             onResolveApproval={resolveTimelineApproval}
             onReviewChanges={reviewTimelineChanges}
+            onFixVerificationFailures={(prompt) => onSubmit(prompt, [])}
+            fixVerificationFailuresDisabled={taskActionsDisabled || taskArchived}
             canUndo={canUndo}
             undoing={undoing}
             onUndo={onUndo}

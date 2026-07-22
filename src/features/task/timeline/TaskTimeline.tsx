@@ -27,6 +27,8 @@ type TaskTimelineProps = {
   ) => Promise<void>;
   taskId: string;
   onReviewChanges: () => void;
+  onFixVerificationFailures: (prompt: string) => Promise<boolean>;
+  fixVerificationFailuresDisabled: boolean;
   canUndo: boolean;
   undoing: boolean;
   onUndo: () => void;
@@ -137,6 +139,8 @@ export function TaskTimeline({
   taskId,
   onResolveApproval,
   onReviewChanges,
+  onFixVerificationFailures,
+  fixVerificationFailuresDisabled,
   canUndo,
   undoing,
   onUndo,
@@ -259,7 +263,12 @@ export function TaskTimeline({
       })}
       <LiveTurnStatus taskId={taskId} runtime={runtime} timeline={timeline} />
       {latestRun ? (
-        <VerificationEvidenceCard run={latestRun} onReviewChanges={onReviewChanges} />
+        <VerificationEvidenceCard
+          run={latestRun}
+          onReviewChanges={onReviewChanges}
+          onFixFailures={onFixVerificationFailures}
+          fixFailuresDisabled={fixVerificationFailuresDisabled}
+        />
       ) : null}
     </div>
   );
