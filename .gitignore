@@ -8,6 +8,7 @@ src-tauri/gen/
 .DS_Store
 
 # Local design and research artifacts
+.pi/
 .codex-*
 /Show
 *.md
