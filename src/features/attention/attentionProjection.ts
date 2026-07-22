@@ -111,7 +111,9 @@ export const projectAttentionItems = (
     const verification = run.verificationOutcome === "failed" ||
       run.verificationOutcome === "blocked";
     items.push({
-      id: `run:${run.id}`,
+      id: verification && run.latestVerificationAttemptId
+        ? `run:${run.id}:verification:${run.latestVerificationAttemptId}`
+        : `run:${run.id}`,
       taskId,
       runId: run.id,
       kind: verification ? "verification" : "failure",

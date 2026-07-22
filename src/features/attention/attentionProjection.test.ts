@@ -195,6 +195,24 @@ describe("attention projection", () => {
     ]);
   });
 
+  it("gives each failed verification attempt a new dismissal identity", () => {
+    const first = projectAttentionItems([task()], [run({
+      status: "needs_attention",
+      verificationOutcome: "failed",
+      latestVerificationAttemptId: "attempt-1",
+      version: 3,
+    })], [])[0];
+    const dismissed = new Set([first.id]);
+    const rerun = projectAttentionItems([task()], [run({
+      status: "needs_attention",
+      verificationOutcome: "failed",
+      latestVerificationAttemptId: "attempt-2",
+      version: 4,
+    })], [])[0];
+
+    expect(dismissed.has(rerun.id)).toBe(false);
+  });
+
   it("suppresses a run duplicate when the same run has a pending decision", () => {
     const terminalSnapshot = run({ status: "needs_attention", finishedAt: 30 });
     const activeReplacement = run({ status: "waiting_for_input" });

@@ -87,6 +87,8 @@ describe("prompt history navigation", () => {
     expect(canNavigatePromptHistory("down", "draft", 5, 5, false)).toBe(true);
     expect(canNavigatePromptHistory("up", "history", 0, 0, true)).toBe(true);
     expect(canNavigatePromptHistory("down", "history", 7, 7, true)).toBe(true);
+    expect(canNavigatePromptHistory("up", "history", 7, 7, true)).toBe(false);
+    expect(canNavigatePromptHistory("down", "history", 0, 0, true)).toBe(false);
     expect(canNavigatePromptHistory("up", "history", 2, 2, true)).toBe(false);
     expect(canNavigatePromptHistory("up", "history", 0, 3, true)).toBe(false);
   });

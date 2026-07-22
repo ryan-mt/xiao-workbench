@@ -30,6 +30,18 @@ describe("WeeklyUsageIndicator", () => {
     })).toBe(weekly);
   });
 
+  it("does not label a known five-hour limit as weekly", () => {
+    const rateLimits = {
+      limitId: "codex",
+      limitName: null,
+      primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: null },
+      secondary: null,
+    };
+
+    expect(weeklyRateLimitWindow(rateLimits)).toBeNull();
+    expect(renderToStaticMarkup(<WeeklyUsageIndicator rateLimits={rateLimits} />)).toBe("");
+  });
+
   it("uses warning and critical tones only when remaining quota is low", () => {
     const renderRemaining = (usedPercent: number) => renderToStaticMarkup(
       <WeeklyUsageIndicator rateLimits={{

@@ -13,8 +13,9 @@ export const weeklyRateLimitWindow = (
   const windows = [rateLimits.primary, rateLimits.secondary].filter(
     (window): window is AgentRateLimitWindow => Boolean(window),
   );
+  const onlyWindow = windows.length === 1 ? windows[0] : null;
   return windows.find((window) => window.windowDurationMins === weeklyWindowMinutes)
-    ?? (windows.length === 1 ? windows[0] : null);
+    ?? (onlyWindow?.windowDurationMins === null ? onlyWindow : null);
 };
 
 const remainingPercent = (usedPercent: number) =>

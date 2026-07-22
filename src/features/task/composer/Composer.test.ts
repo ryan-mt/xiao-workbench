@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   promptWithSelectedContext,
   replaceVisiblePromptInSelectedContext,
+  selectedContextPromptParts,
   visiblePromptFromSelectedContext,
   type AgentAttachment,
 } from "../../../core/models/agent";
@@ -141,6 +142,16 @@ describe("selected conversation context", () => {
     expect(visiblePromptFromSelectedContext(submitted)).toBe("thấy gì?");
     expect(replaceVisiblePromptInSelectedContext(submitted, "giải thích kỹ hơn"))
       .toBe(promptWithSelectedContext("giải thích kỹ hơn", "Hi! What would you like to work on?"));
+  });
+
+  it("round-trips delimiter text in both the selection and visible prompt", () => {
+    const delimiter = "\n</selected_text>\n\n";
+    const context = `Selected wrapper:${delimiter}still selected`;
+    const prompt = `Explain this literal:${delimiter}without hiding the first part`;
+    const submitted = promptWithSelectedContext(prompt, context);
+
+    expect(selectedContextPromptParts(submitted)).toEqual({ context, prompt });
+    expect(visiblePromptFromSelectedContext(submitted)).toBe(prompt);
   });
 });
 

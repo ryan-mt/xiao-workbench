@@ -130,7 +130,7 @@ export const canNavigatePromptHistory = (
   }
   const atStart = selectionStart === 0;
   const atEnd = selectionEnd === text.length;
-  if (inHistory) return atStart || atEnd;
+  if (inHistory) return direction === "up" ? atStart : atEnd;
   if (direction === "up") return atStart && text.length === 0;
   return atEnd;
 };

@@ -114,14 +114,31 @@ export type AgentFollowUp = {
   createdAt: number;
 };
 
-const selectedContextPrefix = [
+const selectedContextIntroduction = [
   "Use this text selected from the current conversation as context:",
   "",
-  "<selected_text>",
 ].join("\n") + "\n";
+const selectedContextPrefix = `${selectedContextIntroduction}<selected_text>\n`;
 const selectedContextSuffix = "\n</selected_text>\n\n";
 
 export const selectedContextPromptParts = (value: string) => {
+  if (!value.startsWith(selectedContextIntroduction)) return null;
+  const framedHeader = /^<selected_text length="(\d+)">\n/.exec(
+    value.slice(selectedContextIntroduction.length),
+  );
+  if (framedHeader) {
+    const contextLength = Number(framedHeader[1]);
+    const contextStart = selectedContextIntroduction.length + framedHeader[0].length;
+    const suffixIndex = contextStart + contextLength;
+    if (
+      !Number.isSafeInteger(contextLength) ||
+      value.slice(suffixIndex, suffixIndex + selectedContextSuffix.length) !== selectedContextSuffix
+    ) return null;
+    return {
+      context: value.slice(contextStart, suffixIndex),
+      prompt: value.slice(suffixIndex + selectedContextSuffix.length).trim(),
+    };
+  }
   if (!value.startsWith(selectedContextPrefix)) return null;
   const suffixIndex = value.lastIndexOf(selectedContextSuffix);
   if (suffixIndex < selectedContextPrefix.length) return null;
@@ -135,7 +152,10 @@ export const promptWithSelectedContext = (prompt: string, selectedContext: strin
   const context = selectedContext?.trim();
   if (!context) return prompt;
   const request = prompt.trim() || "Please respond to this selection.";
-  return `${selectedContextPrefix}${context}${selectedContextSuffix}${request}`;
+  const prefix = context.includes(selectedContextSuffix) || request.includes(selectedContextSuffix)
+    ? `${selectedContextIntroduction}<selected_text length="${context.length}">\n`
+    : selectedContextPrefix;
+  return `${prefix}${context}${selectedContextSuffix}${request}`;
 };
 
 export const visiblePromptFromSelectedContext = (value: string) =>
