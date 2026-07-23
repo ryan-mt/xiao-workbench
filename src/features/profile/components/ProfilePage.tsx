@@ -1,4 +1,10 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type {
@@ -128,6 +134,7 @@ export function ProfilePage({
   const [draftName, setDraftName] = useState(profile.name);
   const [draftAvatar, setDraftAvatar] = useState(profile.avatarDataUrl);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [inspectedDayIndex, setInspectedDayIndex] = useState<number | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const initials = profileInitials(profile.name);
   const accountDays = accountUsage?.dailyUsageBuckets.map((bucket) => ({
@@ -192,6 +199,8 @@ export function ProfilePage({
     },
   ];
   const maxTokenRow = Math.max(1, ...tokenRows.map((row) => row.value));
+  const resolvedInspectedDayIndex = inspectedDayIndex ?? days.length - 1;
+  const inspectedDay = days[resolvedInspectedDayIndex] ?? days[days.length - 1];
 
   const openEditor = () => {
     setDraftName(profile.name);
@@ -231,111 +240,128 @@ export function ProfilePage({
     setEditing(false);
   };
 
+  const inspectAdjacentDay = (event: KeyboardEvent<HTMLDivElement>) => {
+    const offsets: Partial<Record<string, number>> = {
+      ArrowLeft: -7,
+      ArrowRight: 7,
+      ArrowUp: -1,
+      ArrowDown: 1,
+    };
+    let nextIndex = resolvedInspectedDayIndex;
+    if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = days.length - 1;
+    else if (offsets[event.key]) nextIndex += offsets[event.key] ?? 0;
+    else return;
+
+    event.preventDefault();
+    setInspectedDayIndex(Math.max(0, Math.min(days.length - 1, nextIndex)));
+  };
+
   return (
     <section className="profile-page">
       <div className="profile-shell">
         <header className="profile-toolbar">
-          <div>
-            <span className="profile-eyebrow">Local account</span>
-            <h1>Profile &amp; usage</h1>
-            <p>Identity and Codex activity stored by Xiao on this device.</p>
+          <div className="profile-identity">
+            <button
+              className="profile-avatar"
+              type="button"
+              onClick={openEditor}
+              aria-label="Edit profile photo"
+            >
+              {profile.avatarDataUrl ? (
+                <img src={profile.avatarDataUrl} alt="" />
+              ) : initials ? (
+                initials
+              ) : (
+                <XiaoIcon name="user" size={24} />
+              )}
+            </button>
+            <div className="profile-identity__copy">
+              <div className="profile-identity__title">
+                <h1>{profile.name || "Set up your profile"}</h1>
+                <span className={`profile-connection ${connected ? "is-connected" : ""}`}>
+                  <i /> {connected ? "Connected" : "Reconnecting"}
+                </span>
+              </div>
+              <span className="profile-local-badge">Local profile</span>
+              <p>
+                <XiaoIcon name="secure" size={13} />
+                Your identity stays on this device. Account activity comes from Codex.
+              </p>
+            </div>
           </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close profile">
-            <XiaoIcon name="close" size={14} />
-          </button>
+          <div className="profile-toolbar__actions">
+            <button className="profile-edit-button" type="button" onClick={openEditor}>
+              <XiaoIcon name="edit" size={15} />
+              <span>Edit profile</span>
+            </button>
+            <button className="icon-button" type="button" onClick={onClose} aria-label="Close profile">
+              <XiaoIcon name="close" size={16} />
+            </button>
+          </div>
         </header>
 
-        <div className="profile-layout">
-          <aside className="profile-sidebar" aria-label="Local profile">
-            <div className="profile-identity">
-              <button className="profile-avatar" type="button" onClick={openEditor} aria-label="Edit profile">
-                {profile.avatarDataUrl ? (
-                  <img src={profile.avatarDataUrl} alt="" />
-                ) : initials ? (
-                  initials
-                ) : (
-                  <XiaoIcon name="user" size={24} />
-                )}
-              </button>
-              <div>
-                <span className="profile-eyebrow">Local identity</span>
-                <h2>{profile.name || "Set up your profile"}</h2>
-                <p>
-                  {profile.name
-                    ? "Used across Xiao tasks"
-                    : "Add the name and photo Xiao should use"}
-                </p>
+        <main className="profile-main">
+          <section
+            className="profile-source profile-account"
+            aria-labelledby="profile-account-title"
+          >
+            <header className="profile-source-heading">
+              <div className="profile-source-heading__title">
+                <span className="profile-source-heading__icon profile-source-heading__icon--codex">
+                  <img src="/codex-mark.png" alt="" />
+                </span>
+                <div>
+                  <h2 id="profile-account-title">
+                    {accountUsage ? "Codex account" : "Xiao activity"}
+                  </h2>
+                  <p>
+                    {accountUsage
+                      ? "Activity from your Codex account across all devices."
+                      : "Activity Xiao has recorded on this device."}
+                  </p>
+                </div>
               </div>
+              <span className="profile-source-heading__range">Last 365 days</span>
+            </header>
+
+            <div className="profile-lifetime">
+              <span>Lifetime tokens</span>
+              <strong title={fullNumber.format(activityUsage.totals.totalTokens)}>
+                {compactNumber(activityUsage.totals.totalTokens)}
+              </strong>
+              <small>{fullNumber.format(activityUsage.totals.totalTokens)} reported</small>
             </div>
 
-            <button className="profile-edit-button" type="button" onClick={openEditor}>
-              <XiaoIcon name="edit" size={14} />
-              <span>Edit local profile</span>
-            </button>
-
-            <dl className="profile-facts">
+            <dl className="profile-summary-grid">
               <div>
-                <dt>Codex</dt>
-                <dd className={connected ? "is-connected" : ""}>
-                  <i /> {connected ? "Connected" : "Reconnecting"}
-                </dd>
+                <dt>Current streak</dt>
+                <dd>{activityUsage.currentStreak}<small> days</small></dd>
               </div>
               <div>
-                <dt>Profile data</dt>
-                <dd>On this device</dd>
+                <dt>Active days</dt>
+                <dd>{activityUsage.activeDays}<small> days</small></dd>
               </div>
               <div>
-                <dt>Runtime</dt>
-                <dd>{runtime.phase}</dd>
+                <dt>Longest streak</dt>
+                <dd>{activityUsage.longestStreak}<small> days</small></dd>
+              </div>
+              <div>
+                <dt>Peak day</dt>
+                <dd title={fullNumber.format(peakDailyTokens)}>{compactNumber(peakDailyTokens)}</dd>
+              </div>
+              <div>
+                <dt>Longest turn</dt>
+                <dd>{compactDuration(accountUsage?.longestRunningTurnSec)}</dd>
               </div>
             </dl>
 
-            <p className="profile-privacy-note">
-              Xiao keeps your display name and photo local. Usage values come from Codex events.
-            </p>
-          </aside>
-
-          <main className="profile-main">
-            <section className="profile-section profile-activity" aria-labelledby="profile-activity-title">
-              <header className="profile-section-heading">
-                <div>
-                  <h2 id="profile-activity-title">Activity</h2>
-                  <p>Codex usage in your local timezone.</p>
-                </div>
-                <span>Last 365 days</span>
-              </header>
-
-              <dl className="profile-summary-grid">
-                <div className="profile-summary-grid__primary">
-                  <dt>Lifetime tokens</dt>
-                  <dd title={fullNumber.format(activityUsage.totals.totalTokens)}>
-                    {compactNumber(activityUsage.totals.totalTokens)}
-                  </dd>
-                  <small>{fullNumber.format(activityUsage.totals.totalTokens)} reported</small>
-                </div>
-                <div>
-                  <dt>Current streak</dt>
-                  <dd>{activityUsage.currentStreak}<small> days</small></dd>
-                </div>
-                <div>
-                  <dt>Active days</dt>
-                  <dd>{activityUsage.activeDays}</dd>
-                </div>
-                <div>
-                  <dt>Longest streak</dt>
-                  <dd>{activityUsage.longestStreak}<small> days</small></dd>
-                </div>
-                <div>
-                  <dt>Peak day</dt>
-                  <dd title={fullNumber.format(peakDailyTokens)}>{compactNumber(peakDailyTokens)}</dd>
-                </div>
-                <div>
-                  <dt>Longest turn</dt>
-                  <dd>{compactDuration(accountUsage?.longestRunningTurnSec)}</dd>
-                </div>
-              </dl>
-
-              <div className="profile-heatmap">
+            <figure className="profile-heatmap">
+              <figcaption>
+                <strong>Activity</strong>
+                <span>Last 365 days in your local timezone</span>
+              </figcaption>
+              <div className="profile-heatmap__scroll">
                 <div className="contribution-months" aria-hidden="true">
                   {monthLabels.map((day) => <span key={day.key}>{monthLabel.format(day.date)}</span>)}
                 </div>
@@ -345,13 +371,33 @@ export function ProfilePage({
                     <span>W</span>
                     <span>F</span>
                   </div>
-                  <div className="contribution-grid" aria-label="Token activity over the last year">
+                  <div
+                    className="contribution-grid"
+                    role="grid"
+                    tabIndex={0}
+                    aria-label={`Token activity over the last year. Inspecting ${dayLabel.format(inspectedDay.date)}, ${fullNumber.format(inspectedDay.tokens)} tokens.`}
+                    aria-activedescendant={
+                      inspectedDayIndex === null ? undefined : `profile-day-${inspectedDay.key}`
+                    }
+                    onBlur={() => setInspectedDayIndex(null)}
+                    onKeyDown={inspectAdjacentDay}
+                    onPointerLeave={() => setInspectedDayIndex(null)}
+                  >
                     {calendarCells.map((day, index) => day ? (
                       <span
+                        aria-label={`${dayLabel.format(day.date)}: ${fullNumber.format(day.tokens)} tokens`}
                         className={`contribution-day level-${day.level}`}
+                        data-active={
+                          inspectedDayIndex !== null && day.key === inspectedDay.key
+                            ? "true"
+                            : undefined
+                        }
                         data-date={day.key}
+                        id={`profile-day-${day.key}`}
                         key={day.key}
+                        role="gridcell"
                         title={`${dayLabel.format(day.date)}: ${fullNumber.format(day.tokens)} tokens`}
+                        onPointerEnter={() => setInspectedDayIndex(index - leadingPlaceholders)}
                       />
                     ) : (
                       <span
@@ -362,54 +408,85 @@ export function ProfilePage({
                     ))}
                   </div>
                 </div>
-                <footer className="profile-heatmap__legend">
+              </div>
+              <footer className="profile-heatmap__footer">
+                <span className="profile-heatmap__active" aria-live="polite">
+                  {dayLabel.format(inspectedDay.date)}
+                  <strong>{compactNumber(inspectedDay.tokens)} tokens</strong>
+                </span>
+                <span className="profile-heatmap__hint">Use arrow keys to inspect</span>
+                <span className="profile-heatmap__legend" aria-label="Activity intensity from less to more">
                   <span>Less</span>
                   {[0, 1, 2, 3, 4].map((level) => <i className={`level-${level}`} key={level} />)}
                   <span>More</span>
-                </footer>
-              </div>
-            </section>
+                </span>
+              </footer>
+            </figure>
+          </section>
 
-            <section className="profile-section profile-ledger" aria-labelledby="profile-ledger-title">
-              <header className="profile-section-heading">
+          <section
+            className="profile-source profile-device"
+            aria-labelledby="profile-device-title"
+          >
+            <header className="profile-source-heading">
+              <div className="profile-source-heading__title">
+                <span className="profile-source-heading__icon profile-source-heading__icon--xiao">
+                  <img src="/xiao-mark.png" alt="" />
+                </span>
                 <div>
-                  <h2 id="profile-ledger-title">Token breakdown</h2>
-                  <p>Observed usage emitted during Xiao tasks.</p>
+                  <h2 id="profile-device-title">This device</h2>
+                  <p>Usage recorded locally by Xiao on this device.</p>
                 </div>
-                <strong title={fullNumber.format(usage.totals.totalTokens)}>
-                  {compactNumber(usage.totals.totalTokens)} total
-                </strong>
-              </header>
+              </div>
+            </header>
 
-              <div className="profile-token-rows">
-                {tokenRows.map((row) => (
-                  <div className={`profile-token-row profile-token-row--${row.id}`} key={row.id}>
+            <div className="profile-device-total">
+              <span>Recorded locally</span>
+              <strong title={fullNumber.format(usage.totals.totalTokens)}>
+                {compactNumber(usage.totals.totalTokens)}
+              </strong>
+              <p>Xiao-observed usage from tasks run on this device.</p>
+            </div>
+
+            <div className="profile-token-rows">
+              {tokenRows.map((row) => (
+                <div className={`profile-token-row profile-token-row--${row.id}`} key={row.id}>
+                  <div className="profile-token-row__heading">
                     <div>
                       <strong>{row.label}</strong>
                       <span>{row.description}</span>
                     </div>
-                    <div className="profile-token-meter" aria-hidden="true">
-                      <i
-                        style={{
-                          width: `${row.value ? Math.max(3, (row.value / maxTokenRow) * 100) : 0}%`,
-                        }}
-                      />
-                    </div>
                     <strong title={fullNumber.format(row.value)}>{compactNumber(row.value)}</strong>
                   </div>
-                ))}
-              </div>
+                  <div
+                    className="profile-token-meter"
+                    role="meter"
+                    aria-label={`${row.label}: ${fullNumber.format(row.value)} tokens`}
+                    aria-valuemin={0}
+                    aria-valuemax={maxTokenRow}
+                    aria-valuenow={row.value}
+                  >
+                    <i
+                      style={{
+                        width: `${row.value ? Math.max(3, (row.value / maxTokenRow) * 100) : 0}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </main>
 
-              <footer className="profile-ledger__note">
-                <XiaoIcon name="result" size={15} />
-                <p>
-                  Source: <code>thread/tokenUsage/updated</code>. Xiao stores emitted deltas and
-                  does not estimate tokens from text.
-                </p>
-              </footer>
-            </section>
-          </main>
-        </div>
+        <footer className="profile-sources-note">
+          <XiaoIcon name="result" size={16} />
+          <p>
+            <strong>Sources are independent.</strong>{" "}
+            {accountUsage
+              ? "Account totals include all devices. This device shows Xiao’s local record only."
+              : "Codex account totals are unavailable. Xiao is showing its local record instead."}
+          </p>
+        </footer>
       </div>
 
       {editing ? (

@@ -44,7 +44,7 @@ const accountUsage: AgentAccountUsage = {
 describe("ProfilePage", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("uses a compact desktop profile hierarchy instead of the previous dashboard hero", () => {
+  it("separates account-wide and on-device usage into independent sources", () => {
     const markup = renderToStaticMarkup(
       <ProfilePage
         accountUsage={accountUsage}
@@ -57,16 +57,18 @@ describe("ProfilePage", () => {
     );
 
     expect(markup).toContain('class="profile-shell"');
-    expect(markup).toContain('aria-label="Local profile"');
-    expect(markup).toContain("Profile &amp; usage");
-    expect(markup).toContain("Edit local profile");
+    expect(markup).toContain('class="profile-source profile-account"');
+    expect(markup).toContain('class="profile-source profile-device"');
+    expect(markup).toContain("Codex account");
+    expect(markup).toContain("This device");
+    expect(markup).toContain("Edit profile");
     expect(markup).toContain("Activity");
-    expect(markup).toContain("Token breakdown");
+    expect(markup).toContain("Recorded locally");
+    expect(markup).toContain("Sources are independent");
     expect(markup).toContain("11.41B");
-    expect(markup).not.toContain("profile-hero");
-    expect(markup).not.toContain("profile-dashboard");
-    expect(markup).not.toContain("Codex lifetime");
-    expect(markup).not.toContain("Token flow through Xiao");
+    expect(markup).toContain('role="grid"');
+    expect(markup).not.toContain("profile-sidebar");
+    expect(markup).not.toContain("Runtime</dt>");
   });
 
   it("renders 365 real local dates aligned to the Sunday-first grid", () => {
@@ -107,7 +109,7 @@ describe("ProfilePage", () => {
 
     expect(markup.match(/data-date="/g)).toHaveLength(365);
     expect(markup.match(/contribution-day--placeholder/g)).toHaveLength(1);
-    expect(markup).toContain('class="contribution-day level-4" data-date="2025-07-21"');
-    expect(markup).toContain('class="contribution-day level-2" data-date="2026-07-20"');
+    expect(markup).toMatch(/class="contribution-day level-4"[^>]*data-date="2025-07-21"/);
+    expect(markup).toMatch(/class="contribution-day level-2"[^>]*data-date="2026-07-20"/);
   });
 });
