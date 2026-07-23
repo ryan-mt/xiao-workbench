@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
+import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type {
   AgentMcpElicitationField,
@@ -129,7 +130,7 @@ export function McpElicitationDock({ request, onResolve }: McpElicitationDockPro
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const firstField = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
+  const firstField = useRef<HTMLInputElement | HTMLButtonElement | null>(null);
   const unsupported = useMemo(
     () => request.fields.some((field) => field.kind === "unsupported"),
     [request.fields],
@@ -269,40 +270,47 @@ export function McpElicitationDock({ request, onResolve }: McpElicitationDockPro
                 );
               }
 
+              if (field.kind === "select") {
+                return (
+                  <div className="mcp-elicitation-field" key={field.name}>
+                    <span><strong>{field.label}{field.required ? " *" : ""}</strong>{field.description ? <small id={descriptionId}>{field.description}</small> : null}</span>
+                    <SelectMenu
+                      ref={index === 0 ? (node) => { firstField.current = node; } : undefined}
+                      ariaLabel={field.label}
+                      value={typeof draft[field.name] === "string" ? draft[field.name] as string : ""}
+                      disabled={submitting}
+                      ariaInvalid={Boolean(fieldError)}
+                      ariaDescribedBy={fieldError ? errorId : field.description ? descriptionId : undefined}
+                      options={[
+                        { value: "", label: "Choose an option" },
+                        ...field.options,
+                      ]}
+                      onValueChange={(value) => update(field.name, value)}
+                    />
+                    {fieldError ? <em id={errorId}>{fieldError}</em> : null}
+                  </div>
+                );
+              }
+
               return (
                 <label className="mcp-elicitation-field" key={field.name}>
                   <span><strong>{field.label}{field.required ? " *" : ""}</strong>{field.description ? <small id={descriptionId}>{field.description}</small> : null}</span>
-                  {field.kind === "select" ? (
-                    <select
-                      ref={index === 0 ? (node) => { firstField.current = node; } : undefined}
-                      value={typeof draft[field.name] === "string" ? draft[field.name] as string : ""}
-                      required={field.required}
-                      disabled={submitting}
-                      aria-invalid={Boolean(fieldError)}
-                      aria-describedby={fieldError ? errorId : field.description ? descriptionId : undefined}
-                      onChange={(event) => update(field.name, event.target.value)}
-                    >
-                      <option value="">Choose an option</option>
-                      {field.options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-                    </select>
-                  ) : (
-                    <input
-                      ref={index === 0 ? (node) => { firstField.current = node; } : undefined}
-                      type={field.kind === "number" ? "number" : inputType(field)}
-                      step={field.kind === "number" && field.integer ? 1 : field.kind === "number" ? "any" : undefined}
-                      min={field.kind === "number" ? field.minimum ?? undefined : undefined}
-                      max={field.kind === "number" ? field.maximum ?? undefined : undefined}
-                      minLength={field.kind === "text" ? field.minLength ?? undefined : undefined}
-                      maxLength={field.kind === "text" ? field.maxLength ?? undefined : undefined}
-                      required={field.required}
-                      disabled={submitting}
-                      value={typeof draft[field.name] === "string" ? draft[field.name] as string : ""}
-                      placeholder={field.kind === "text" && field.format === "date-time" ? "YYYY-MM-DDTHH:mm:ssZ" : undefined}
-                      aria-invalid={Boolean(fieldError)}
-                      aria-describedby={fieldError ? errorId : field.description ? descriptionId : undefined}
-                      onChange={(event) => update(field.name, event.target.value)}
-                    />
-                  )}
+                  <input
+                    ref={index === 0 ? (node) => { firstField.current = node; } : undefined}
+                    type={field.kind === "number" ? "number" : inputType(field)}
+                    step={field.kind === "number" && field.integer ? 1 : field.kind === "number" ? "any" : undefined}
+                    min={field.kind === "number" ? field.minimum ?? undefined : undefined}
+                    max={field.kind === "number" ? field.maximum ?? undefined : undefined}
+                    minLength={field.kind === "text" ? field.minLength ?? undefined : undefined}
+                    maxLength={field.kind === "text" ? field.maxLength ?? undefined : undefined}
+                    required={field.required}
+                    disabled={submitting}
+                    value={typeof draft[field.name] === "string" ? draft[field.name] as string : ""}
+                    placeholder={field.kind === "text" && field.format === "date-time" ? "YYYY-MM-DDTHH:mm:ssZ" : undefined}
+                    aria-invalid={Boolean(fieldError)}
+                    aria-describedby={fieldError ? errorId : field.description ? descriptionId : undefined}
+                    onChange={(event) => update(field.name, event.target.value)}
+                  />
                   {fieldError ? <em id={errorId}>{fieldError}</em> : null}
                 </label>
               );

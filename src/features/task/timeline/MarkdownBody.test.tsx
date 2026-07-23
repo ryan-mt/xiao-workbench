@@ -56,19 +56,21 @@ describe("MarkdownBody resource links", () => {
   });
 
   it("repairs incomplete emphasis while streaming", () => {
-    const markup = renderToStaticMarkup(<MarkdownBody content="Finishing **now" streaming />);
+    const markup = renderToStaticMarkup(<MarkdownBody content="Streaming **now" streaming />);
 
     expect(markup).toContain("<strong>now</strong>");
   });
 
-  it("offers line wrapping for fenced code", () => {
+  it("keeps fenced-code actions minimal without removing line wrapping", () => {
     const markup = renderToStaticMarkup(
       <MarkdownBody content={"```ts\nconst answer = 42;\n```"} />,
     );
 
-    expect(markup).toContain('class="markdown-code__wrap"');
+    expect(markup).toContain('class="markdown-code__actions"');
+    expect(markup).toContain('aria-label="Copy to clipboard"');
     expect(markup).toContain('aria-pressed="false"');
     expect(markup).toContain(">Wrap</button>");
+    expect(markup).not.toContain("lines</small>");
   });
 
   it("falls back to plain text for responses too large to parse safely", () => {

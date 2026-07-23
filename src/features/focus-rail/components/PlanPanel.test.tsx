@@ -15,7 +15,7 @@ const runtime: AgentRuntimeState = {
 };
 
 describe("PlanPanel", () => {
-  it("spins only the in-progress step indicator", () => {
+  it("renders a quiet checklist with one pulsing in-progress marker", () => {
     const markup = renderToStaticMarkup(
       <PlanPanel
         runtime={runtime}
@@ -30,8 +30,11 @@ describe("PlanPanel", () => {
       />,
     );
 
-    expect(markup.match(/is-spinning/g)).toHaveLength(1);
-    expect(markup).toContain("lucide-loader-circle");
-    expect(markup).toContain("lucide-circle-dashed");
+    expect(markup).toContain("1 of 3 complete");
+    expect(markup.match(/plan-list__check/g)).toHaveLength(3);
+    expect(markup).toContain('aria-label="In progress: Working"');
+    expect(markup).toContain("lucide-check");
+    expect(markup).not.toContain("lucide-loader-circle");
+    expect(markup).not.toContain("lucide-circle-dashed");
   });
 });

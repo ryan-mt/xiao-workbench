@@ -10,7 +10,7 @@ const entry = (id: string, kind: TimelineEntry["kind"]): TimelineEntry => ({
 });
 
 describe("timelineRows", () => {
-  it("groups adjacent commands without crossing conversation boundaries", () => {
+  it("keeps shell commands as individual tool parts", () => {
     const rows = timelineRows([
       entry("user", "user"),
       entry("command-1", "command"),
@@ -21,20 +21,31 @@ describe("timelineRows", () => {
 
     expect(rows.map((row) => row.kind)).toEqual([
       "entry",
-      "execution",
+      "entry",
+      "entry",
       "entry",
       "entry",
     ]);
-    expect(rows[1]).toMatchObject({
-      kind: "execution",
-      index: 1,
-      entries: [{ id: "command-1" }, { id: "command-2" }],
-    });
+    expect(rows[1]).toMatchObject({ kind: "entry", index: 1, entry: { id: "command-1" } });
+    expect(rows[2]).toMatchObject({ kind: "entry", index: 2, entry: { id: "command-2" } });
   });
 
-  it("keeps a single command as a normal timeline entry", () => {
-    expect(timelineRows([entry("command", "command")])).toEqual([
-      { kind: "entry", entry: entry("command", "command"), index: 0 },
+  it("groups only adjacent context-gathering parts", () => {
+    const rows = timelineRows([
+      entry("read-1", "explore"),
+      entry("read-2", "explore"),
+      entry("reasoning", "thought"),
+      entry("read-3", "explore"),
+    ]);
+
+    expect(rows).toEqual([
+      {
+        kind: "exploration",
+        entries: [entry("read-1", "explore"), entry("read-2", "explore")],
+        index: 0,
+      },
+      { kind: "entry", entry: entry("reasoning", "thought"), index: 2 },
+      { kind: "exploration", entries: [entry("read-3", "explore")], index: 3 },
     ]);
   });
 });
@@ -97,5 +108,30 @@ describe("completedTurnFiles", () => {
     ];
 
     expect(completedTurnFiles(timeline, 2)).toEqual([]);
+  });
+
+  it("reuses completed file summaries when unrelated live entries append", () => {
+    const result: TimelineEntry = {
+      ...entry("result", "result"),
+      title: "Agent response",
+      status: "success",
+    };
+    const timeline: TimelineEntry[] = [
+      entry("user", "user"),
+      {
+        ...entry("change", "change"),
+        status: "success",
+        files: [{ path: "src/App.tsx", additions: 1, deletions: 0 }],
+      },
+      result,
+    ];
+
+    const before = completedTurnFiles(timeline, 2);
+    const after = completedTurnFiles(
+      [...timeline, { ...entry("thinking", "thought"), status: "active" }],
+      2,
+    );
+
+    expect(after).toBe(before);
   });
 });

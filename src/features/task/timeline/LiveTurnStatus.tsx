@@ -1,31 +1,18 @@
-import { useEffect, useState } from "react";
-
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 
-const elapsedLabel = (elapsedMs: number) => {
-  const seconds = Math.floor(elapsedMs / 1_000);
-  if (seconds < 1) return null;
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+const entryHasVisibleContent = (entry: TimelineEntry) => {
+  if (entry.kind === "user" || entry.kind === "brief") return false;
+  if (entry.kind === "thought") return Boolean(entry.body?.trim());
+  if (entry.kind === "explore") return Boolean(entry.exploration?.length);
+  if (entry.kind === "change") return Boolean(entry.files?.length || entry.body?.trim());
+  if (entry.kind === "result" && entry.title === "Agent response") return Boolean(entry.body?.trim());
+  return true;
 };
 
-export const statusLabel = (timeline: TimelineEntry[]) => {
-  const active = [...timeline]
-    .reverse()
-    .find((entry) => entry.status === "active" || (entry.kind === "approval" && entry.status === "warning"));
-  if (active?.kind === "command") return "Running command";
-  if (active?.kind === "explore") return "Exploring workspace";
-  if (active?.kind === "change") return "Applying changes";
-  if (active?.kind === "agent") {
-    if (active.collaborationTool === "wait") return "Waiting for subagent results";
-    if (active.collaborationTool === "spawnAgent") return "Subagent working";
-    return "Coordinating subagents";
-  }
-  if (active?.kind === "result" && active.meta === "Context") return "Compacting context";
-  if (active?.kind === "result") return "Writing response";
-  if (active?.kind === "approval") return "Waiting for approval";
-  if (timeline.at(-1)?.kind === "result") return "Finishing";
-  return "Thinking";
+export const currentTurnHasVisibleContent = (timeline: TimelineEntry[]) => {
+  let start = timeline.length - 1;
+  while (start >= 0 && timeline[start].kind !== "user" && timeline[start].kind !== "brief") start -= 1;
+  return timeline.slice(start + 1).some(entryHasVisibleContent);
 };
 
 export function LiveTurnStatus({
@@ -37,25 +24,13 @@ export function LiveTurnStatus({
   runtime: AgentRuntimeState;
   timeline: TimelineEntry[];
 }) {
-  const [now, setNow] = useState(Date.now);
   const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
 
-  useEffect(() => {
-    if (!taskWorking) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [runtime.turnStartedAt, taskWorking]);
-
-  if (!taskWorking) return null;
-  const label = statusLabel(timeline);
-  const elapsed = runtime.turnStartedAt ? elapsedLabel(now - runtime.turnStartedAt) : null;
+  if (!taskWorking || currentTurnHasVisibleContent(timeline)) return null;
 
   return (
     <div className="live-turn-status" role="status" aria-live="polite">
-      <span className="live-turn-status__label">{label}</span>
-      {elapsed && <time>{elapsed}</time>}
-      <span className="live-turn-status__dots" aria-hidden="true"><i /><i /><i /></span>
+      <span className="live-turn-status__label is-active">Thinking</span>
     </div>
   );
 }

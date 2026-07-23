@@ -10,8 +10,14 @@ export type RunProjection = {
   runsById: Record<string, RunSnapshot>;
   runIdsByTask: Record<string, string[]>;
   pendingInputsById: Record<string, PendingInputSnapshot>;
-  appliedProtocolSequencesByRun: Record<string, number[]>;
+  appliedProtocolSequencesByRun: Record<string, AppliedProtocolSequenceSet>;
 };
+
+export type AppliedProtocolSequenceSet = {
+  ranges: Array<[start: number, end: number]>;
+};
+
+export const MAX_RETAINED_TERMINAL_RUNS = 200;
 
 export const emptyRunProjection = (): RunProjection => ({
   runsById: {},
@@ -84,17 +90,58 @@ export const activePendingInputIdsForRestore = (
 };
 
 const withSequence = (
-  current: Record<string, number[]>,
+  current: Record<string, AppliedProtocolSequenceSet>,
   runId: string,
   sequence: number | null | undefined,
 ) => {
   if (sequence == null) return current;
-  const existing = current[runId] ?? [];
-  if (existing.includes(sequence)) return current;
+  const existing = current[runId]?.ranges ?? [];
+  let low = 0;
+  let high = existing.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (existing[middle][1] < sequence) low = middle + 1;
+    else high = middle;
+  }
+  const candidate = existing[low];
+  if (candidate && candidate[0] <= sequence) return current;
+
+  let start = sequence;
+  let end = sequence;
+  let replaceFrom = low;
+  let replaceCount = 0;
+  const previous = existing[low - 1];
+  if (previous && previous[1] + 1 >= sequence) {
+    start = previous[0];
+    end = Math.max(end, previous[1]);
+    replaceFrom = low - 1;
+    replaceCount += 1;
+  }
+  if (candidate && candidate[0] <= end + 1) {
+    end = Math.max(end, candidate[1]);
+    replaceCount += 1;
+  }
+  const ranges = existing.slice();
+  ranges.splice(replaceFrom, replaceCount, [start, end]);
   return {
     ...current,
-    [runId]: [...existing, sequence].sort((left, right) => left - right),
+    [runId]: { ranges },
   };
+};
+
+const sequenceWasApplied = (
+  applied: AppliedProtocolSequenceSet | undefined,
+  sequence: number,
+) => {
+  const ranges = applied?.ranges ?? [];
+  let low = 0;
+  let high = ranges.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (ranges[middle][1] < sequence) low = middle + 1;
+    else high = middle;
+  }
+  return Boolean(ranges[low] && ranges[low][0] <= sequence);
 };
 
 export const projectRunSnapshots = (
@@ -254,8 +301,8 @@ export const acceptRunProtocol = (
   ) {
     return { projection, accepted: false };
   }
-  const applied = projection.appliedProtocolSequencesByRun[envelope.runId] ?? [];
-  if (envelope.sequence != null && applied.includes(envelope.sequence)) {
+  const applied = projection.appliedProtocolSequencesByRun[envelope.runId];
+  if (envelope.sequence != null && sequenceWasApplied(applied, envelope.sequence)) {
     return { projection, accepted: false };
   }
   return {
@@ -295,3 +342,62 @@ export const runStatusIsActive = (status: RunStatus) =>
   status === "running" ||
   status === "waiting_for_input" ||
   status === "verifying";
+
+export const runProjectionUiChanged = (
+  current: RunProjection,
+  next: RunProjection,
+) =>
+  current.runsById !== next.runsById ||
+  current.runIdsByTask !== next.runIdsByTask ||
+  current.pendingInputsById !== next.pendingInputsById;
+
+const runRecency = (snapshot: RunSnapshot) =>
+  snapshot.finishedAt ?? snapshot.startedAt ?? snapshot.queuedAt;
+
+export const pruneRunProjection = (
+  projection: RunProjection,
+  maxTerminalRuns = MAX_RETAINED_TERMINAL_RUNS,
+): RunProjection => {
+  const runs = Object.values(projection.runsById);
+  if (runs.length <= maxTerminalRuns) return projection;
+
+  const activeRuns = runs.filter((snapshot) => runStatusIsActive(snapshot.status));
+  const terminalRuns = runs
+    .filter((snapshot) => !runStatusIsActive(snapshot.status))
+    .sort((left, right) =>
+      runRecency(right) - runRecency(left) || right.id.localeCompare(left.id)
+    );
+  if (terminalRuns.length <= maxTerminalRuns) return projection;
+
+  const retainedIds = new Set([
+    ...activeRuns.map((snapshot) => snapshot.id),
+    ...terminalRuns.slice(0, Math.max(0, maxTerminalRuns)).map((snapshot) => snapshot.id),
+  ]);
+  const runsById = Object.fromEntries(
+    runs
+      .filter((snapshot) => retainedIds.has(snapshot.id))
+      .map((snapshot) => [snapshot.id, snapshot]),
+  );
+  const runIdsByTask = Object.fromEntries(
+    Object.entries(projection.runIdsByTask)
+      .map(([taskId, ids]) => [taskId, ids.filter((id) => retainedIds.has(id))] as const)
+      .filter(([, ids]) => ids.length > 0),
+  );
+  const pendingInputsById = Object.fromEntries(
+    Object.entries(projection.pendingInputsById).filter(([, pending]) =>
+      retainedIds.has(pending.runId) ||
+      (pending.resolvedAt == null && pending.invalidatedAt == null)
+    ),
+  );
+  const appliedProtocolSequencesByRun = Object.fromEntries(
+    Object.entries(projection.appliedProtocolSequencesByRun)
+      .filter(([runId]) => retainedIds.has(runId)),
+  );
+
+  return {
+    runsById,
+    runIdsByTask,
+    pendingInputsById,
+    appliedProtocolSequencesByRun,
+  };
+};

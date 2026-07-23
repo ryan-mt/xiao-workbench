@@ -1,16 +1,13 @@
-import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
+import { memo } from "react";
+
+import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentExplorationAction, TimelineEntry } from "../../../core/models/agent";
 
 type ExplorationGroupProps = {
   entries: TimelineEntry[];
   index: number;
   expandByDefault: boolean;
-};
-
-const iconByAction: Record<AgentExplorationAction["kind"], XiaoIconName> = {
-  list: "folderOpen",
-  read: "file",
-  search: "search",
+  isLive?: boolean;
 };
 
 const countLabel = (count: number, singular: string) =>
@@ -22,7 +19,12 @@ const actionLabel = (action: AgentExplorationAction) => {
   return "Listed";
 };
 
-export function ExplorationGroup({ entries, index, expandByDefault }: ExplorationGroupProps) {
+export const ExplorationGroup = memo(function ExplorationGroup({
+  entries,
+  index,
+  expandByDefault,
+  isLive = true,
+}: ExplorationGroupProps) {
   const actions = entries.flatMap((entry) =>
     (entry.exploration ?? []).map((action) => ({
       action,
@@ -33,7 +35,7 @@ export function ExplorationGroup({ entries, index, expandByDefault }: Exploratio
   const reads = actions.filter(({ action }) => action.kind === "read").length;
   const searches = actions.filter(({ action }) => action.kind === "search").length;
   const lists = actions.filter(({ action }) => action.kind === "list").length;
-  const active = entries.some((entry) => entry.status === "active");
+  const active = isLive && entries.some((entry) => entry.status === "active");
   const failed = entries.some((entry) => entry.status === "error");
   const counts = [
     reads ? countLabel(reads, "read") : null,
@@ -43,37 +45,42 @@ export function ExplorationGroup({ entries, index, expandByDefault }: Exploratio
 
   return (
     <article
-      className={`activity exploration-group ${active ? "is-active" : ""} ${failed ? "is-error" : ""}`}
+      className={`activity context-tool-group ${active ? "is-active" : ""} ${failed ? "is-error" : ""}`}
       style={{ "--activity-index": index } as React.CSSProperties}
+      aria-busy={active}
     >
       <details open={expandByDefault}>
         <summary>
-          <span className="exploration-group__mark">
-            <XiaoIcon name="search" size={13} />
+          <span className={`context-tool-group__status${active ? " is-active" : ""}`}>
+            {active ? "Gathering context" : "Gathered context"}
           </span>
-          <strong>{active ? "Exploring" : "Explored"}</strong>
-          <span>{counts.join(", ") || countLabel(entries.length, "action")}</span>
-          {active ? <i className="activity__pulse" /> : null}
-          <XiaoIcon className="exploration-group__caret" name="caret" size={12} />
+          <span className="context-tool-group__summary">
+            {counts.join(", ") || countLabel(entries.length, "action")}
+          </span>
+          <XiaoIcon className="context-tool-group__caret" name="caret" size={12} />
         </summary>
-        <div className="exploration-group__items">
+        <div className="context-tool-group__items">
           {actions.map(({ action, entryId, status }, actionIndex) => (
             <div
-              className={`exploration-group__item is-${status ?? "idle"}`}
+              className={`context-tool-group__item is-${status ?? "idle"}`}
               key={`${entryId}-${actionIndex}-${action.command}`}
               title={action.command}
             >
-              <span><XiaoIcon name={iconByAction[action.kind]} size={13} /></span>
-              <div>
-                <strong>{actionLabel(action)}</strong>
-                <code>{action.kind === "search" ? action.query || action.label : action.label}</code>
-                {action.path && action.path !== action.label ? <small>{action.path}</small> : null}
-              </div>
-              {status === "active" ? <i className="activity__pulse" /> : null}
+              <strong className={status === "active" && isLive ? "is-active" : undefined}>
+                {actionLabel(action)}
+              </strong>
+              <span>{action.kind === "search" ? action.query || action.label : action.label}</span>
+              {action.path && action.path !== action.label ? <code>{action.path}</code> : null}
             </div>
           ))}
         </div>
       </details>
     </article>
   );
-}
+}, (previous, next) =>
+  previous.index === next.index &&
+  previous.expandByDefault === next.expandByDefault &&
+  previous.isLive === next.isLive &&
+  previous.entries.length === next.entries.length &&
+  previous.entries.every((entry, index) => entry === next.entries[index])
+);

@@ -5,7 +5,7 @@
   min-width: 0;
   min-height: 0;
   grid-template-rows: 40px minmax(0, 1fr) auto;
-  padding: 10px 10px 9px;
+  padding: 10px 12px 9px;
   background: var(--canvas);
 }
 
@@ -15,11 +15,11 @@
   grid-template-columns: 8px 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 7px;
-  padding: 0 11px;
-  border: 1px solid var(--line-strong);
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
-  background: var(--surface-raised);
+  padding: 0 4px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   font-size: var(--text-caption);
 }
@@ -57,8 +57,9 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: 0 0 10px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
   background: var(--surface);
 }
 

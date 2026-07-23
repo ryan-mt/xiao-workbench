@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
+import { SelectMenu } from "../../components/SelectMenu";
 import { XiaoIcon } from "../../components/icons/XiaoIcon";
 import type { TimelineEntry } from "../../core/models/agent";
 import type {
@@ -314,16 +315,18 @@ export function ObservatoryPanel({
       </nav>
 
       {view !== "handoff" && runs.length ? (
-        <label className="observatory-run-picker">
+        <div className="observatory-run-picker">
           <span>Run</span>
-          <select value={selectedRun?.id ?? ""} onChange={(event) => setSelectedRunId(event.target.value)}>
-            {runs.map((run, index) => (
-              <option key={run.id} value={run.id}>
-                {index === 0 ? "Latest" : checkpointTime(run.queuedAt)} · {statusLabel(run.status)} · {shortId(run.id)}
-              </option>
-            ))}
-          </select>
-        </label>
+          <SelectMenu
+            ariaLabel="Observable run"
+            value={selectedRun?.id ?? ""}
+            options={runs.map((run, index) => ({
+              value: run.id,
+              label: `${index === 0 ? "Latest" : checkpointTime(run.queuedAt)} · ${statusLabel(run.status)} · ${shortId(run.id)}`,
+            }))}
+            onValueChange={setSelectedRunId}
+          />
+        </div>
       ) : null}
 
       {error ? <p className="observatory-error" role="alert">{error}</p> : null}

@@ -28,6 +28,7 @@ import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
+import "../styles/timeline.css";
 
 const useEventCallback = <Args extends unknown[], Result>(
   callback: (...args: Args) => Result,
@@ -268,6 +269,7 @@ export function TaskWorkspace({
   const forkTimelineTask = useEventCallback(onForkTask);
   const resolveTimelineApproval = useEventCallback(onResolveApproval);
   const reviewTimelineChanges = useEventCallback(() => onFocusView("changes"));
+  const undoTimelineTurn = useEventCallback(onUndo);
   const activeCollaborators = activeCollaboratorsFromTimeline(timeline);
 
   useEffect(() => {
@@ -556,7 +558,7 @@ export function TaskWorkspace({
             fixVerificationFailuresDisabled={taskActionsDisabled || taskArchived}
             canUndo={canUndo}
             undoing={undoing}
-            onUndo={onUndo}
+            onUndo={undoTimelineTurn}
           />
         </div>
         {timelineSelection ? (

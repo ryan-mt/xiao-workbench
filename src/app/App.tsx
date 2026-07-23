@@ -2882,6 +2882,7 @@ export function App() {
 
   const openFocusView = (view: FocusView, preserveResourceRequest = false) => {
     if (!preserveResourceRequest) invalidateFocusResourceRequest();
+    setActivePage("tasks");
     setFocusView(view);
     setFocusPanelOpen(true);
     closeSidebarOnNarrow();

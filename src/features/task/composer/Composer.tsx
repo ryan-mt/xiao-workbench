@@ -1,8 +1,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from "react";
 
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
+import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
 import { promptWithSelectedContext, visiblePromptFromSelectedContext } from "../../../core/models/agent";
@@ -26,7 +27,6 @@ import type { AcceptanceContractDraft } from "../../../core/models/verification"
 import type { ManagedWorktreeSummary } from "../../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
-import { fastServiceTier } from "../../agent/hooks/agentProtocol";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { ModelPicker } from "./ModelPicker";
@@ -319,28 +319,19 @@ export function Composer({
     !interactiveRequestOpen &&
     (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0 || Boolean(selectedContext?.trim())) &&
     (runtime.phase === "ready" || currentTaskWorking);
-  const defaultModel = models.find((model) => model.isDefault);
-  const activeModel =
-    (selectedModel ? models.find((model) => model.model === selectedModel) : defaultModel) ??
-    defaultModel;
-  const fastModeActive = Boolean(fastMode && fastServiceTier(activeModel));
-  const effectiveReasoningEffort =
-    selectedReasoningEffort || activeModel?.defaultReasoningEffort || "";
   const planSteps = plan?.steps ?? [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
-  const planComplete = planSteps.length > 0 && completedPlanSteps === planSteps.length;
-  const planProgress = planSteps.length > 0
-    ? `${Math.round((completedPlanSteps / planSteps.length) * 100)}%`
-    : "0%";
+  const activePlanStep = planSteps.find((step) => step.status === "inProgress")
+    ?? planSteps.find((step) => step.status === "pending")
+    ?? [...planSteps].reverse().find((step) => step.status === "completed");
   const showRunDeck = planSteps.length > 0 || collaborators.length > 0;
   const runDeckNeedsAttention = Boolean(
     failedFollowUpId && followUps.some((followUp) => followUp.id === failedFollowUpId),
   );
-  const todoStackTitle = planComplete
-      ? "Tasks complete"
-      : planSteps.length > 0
-        ? "Tasks"
-        : "Agents";
+  const runDeckLabel = planSteps.length > 0
+    ? `${completedPlanSteps}/${planSteps.length} tasks`
+    : `${collaborators.length} active ${collaborators.length === 1 ? "agent" : "agents"}`;
+  const runDeckPreview = activePlanStep?.step ?? collaborators[0]?.message ?? "Agent activity";
   const normalizedSlashQuery = slashQuery?.trim().toLocaleLowerCase() ?? "";
   const filteredSlashCommands = filterSlashCommands(SLASH_COMMANDS, normalizedSlashQuery)
     .filter((command) => command.id !== "undo" || (canUndo && !undoing));
@@ -426,10 +417,16 @@ export function Composer({
   useEffect(() => {
     if (!addMenuOpen) return;
     const close = (event: MouseEvent) => {
-      if (!addMenu.current?.contains(event.target as Node)) setAddMenuOpen(false);
+      const target = event.target;
+      if (
+        target instanceof Element
+        && target.closest("[data-select-menu-popover]")
+      ) return;
+      if (!addMenu.current?.contains(target as Node)) setAddMenuOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (document.querySelector("[data-select-menu-popover]")) return;
       setAddMenuOpen(false);
       window.requestAnimationFrame(() => addMenuTrigger.current?.focus());
     };
@@ -837,7 +834,6 @@ export function Composer({
             currentTaskWorking ? "is-working" : ""
           } ${runDeckNeedsAttention ? "needs-attention" : ""}`}
           aria-label="Task status"
-          style={{ "--run-deck-progress": planProgress } as CSSProperties}
         >
           <header className="run-deck__header">
             <button
@@ -848,19 +844,10 @@ export function Composer({
               onClick={() => setRunDeckCollapsed((collapsed) => !collapsed)}
             >
               <span className="run-deck__identity">
-                <span className="run-deck__identity-mark" aria-hidden="true">
-                  <XiaoIcon
-                    className={currentTaskWorking && !planComplete ? "run-deck__signal-spin" : undefined}
-                    name={planComplete ? "check" : currentTaskWorking ? "pending" : "taskQueue"}
-                    size={13}
-                  />
-                </span>
-                <strong>{todoStackTitle}</strong>
+                <strong aria-label="Task summary">{runDeckLabel}</strong>
               </span>
-              <span className="run-deck__count" aria-label="Task summary">
-                {planSteps.length > 0
-                  ? `${completedPlanSteps} / ${planSteps.length}`
-                  : `${collaborators.length || followUps.length}`}
+              <span className="run-deck__preview" aria-hidden={!runDeckCollapsed}>
+                {runDeckCollapsed ? runDeckPreview : ""}
               </span>
               <span className="run-deck__chevron"><XiaoIcon name="caret" size={12} /></span>
             </button>
@@ -898,12 +885,9 @@ export function Composer({
                           <span className="run-deck__step-mark" aria-hidden="true">
                             {step.status === "completed" ? (
                               <XiaoIcon name="check" size={10} strokeWidth={2.1} />
-                            ) : step.status === "inProgress" ? (
-                              <XiaoIcon className="run-deck__signal-spin" name="pending" size={14} />
-                            ) : <XiaoIcon name="todoPending" size={14} />}
+                            ) : step.status === "inProgress" ? <i /> : null}
                           </span>
-                          <span>{step.step}</span>
-                          {step.status !== "pending" ? <small>{step.status === "inProgress" ? "Now" : "Done"}</small> : null}
+                          <span className="run-deck__step-text">{step.step}</span>
                         </li>
                       );
                     })}
@@ -932,7 +916,7 @@ export function Composer({
                   >
                     {collaborators.map((collaborator) => (
                       <li key={collaborator.threadId}>
-                        <XiaoIcon className="run-deck__signal-spin" name="pending" size={13} />
+                        <span className="run-deck__agent-dot" aria-hidden="true" />
                         <span>{collaborator.message ?? "Subagent working"}</span>
                       </li>
                     ))}
@@ -1039,9 +1023,9 @@ export function Composer({
       <div
         className={`composer ${currentTaskWorking ? "is-working" : ""} ${
           dragging ? "is-dragging" : ""
-        } ${effectiveReasoningEffort === "ultra" ? "is-ultra" : ""} ${
-          interactiveRequestOpen ? "is-question-paused" : ""
-        } ${fastModeActive ? "is-fast" : ""} ${selectedContext ? "has-selected-context" : ""}`}
+        } ${interactiveRequestOpen ? "is-question-paused" : ""} ${
+          selectedContext ? "has-selected-context" : ""
+        }`}
         aria-hidden={interactiveRequestOpen ? true : undefined}
         onDragEnter={(event) => {
           event.preventDefault();
@@ -1219,6 +1203,7 @@ export function Composer({
             autoFocus={autoFocus}
             value={value}
             disabled={disabled || compacting || undoing}
+            aria-label="Prompt"
             aria-keyshortcuts="ArrowUp ArrowDown Control+Enter Meta+Enter"
             aria-autocomplete={slashQuery !== null || fileMention ? "list" : undefined}
             aria-controls={slashQuery !== null ? "composer-slash-commands" : undefined}
@@ -1244,7 +1229,7 @@ export function Composer({
               syncFileMention(event.target.value, event.target.selectionStart);
               syncSlashCommand(event.target.value, event.target.selectionStart);
               event.currentTarget.style.height = "auto";
-              event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 150)}px`;
+              event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 180)}px`;
             }}
             onKeyDown={(event) => {
               if (slashQuery !== null) {
@@ -1343,51 +1328,63 @@ export function Composer({
                   }
                 }}
               >
-                <XiaoIcon name="add" size={18} />
+                <XiaoIcon name="add" size={16} />
               </button>
               {addMenuOpen && (
                 <div className="composer-add__menu" role="dialog" aria-label="Context and task settings">
                   <button onClick={() => void selectAttachments(false)}>
-                    <XiaoIcon name="files" size={16} />
                     <span><strong>Files</strong><small>Attach files or paste images with Ctrl/Command V</small></span>
                   </button>
                   <button onClick={() => void selectAttachments(true)}>
-                    <XiaoIcon name="folder" size={16} />
                     <span><strong>Folder</strong><small>Add a folder as context</small></span>
                   </button>
                   <button onClick={() => { setGoalEditorOpen(true); setAddMenuOpen(false); }}>
-                    <XiaoIcon name="target" size={16} />
                     <span><strong>Goal</strong><small>Set a persistent objective</small></span>
                   </button>
                   <button onClick={() => { onModeChange(mode === "plan" ? "default" : "plan"); setAddMenuOpen(false); }}>
-                    <XiaoIcon name="plan" size={16} />
                     <span><strong>Plan mode</strong><small>{mode === "plan" ? "Turn plan mode off" : "Plan before implementation"}</small></span>
                   </button>
                   <button onClick={() => { onOpenView("extensions"); setAddMenuOpen(false); }}>
-                    <XiaoIcon name="capability" size={16} />
                     <span><strong>Capabilities</strong><small>Inspect skills, plugins, MCP, and apps</small></span>
                   </button>
-                  <div className="composer-add__settings">
-                    <span>Run environment</span>
-                    <label title={isolationUnavailableReason ?? undefined}>
-                      <span>Workspace</span>
-                      <select
-                        aria-label="Workspace mode"
-                        value={workspaceMode}
-                        disabled={disabled || environmentBusy}
-                        onChange={(event) =>
-                          void onWorkspaceModeChange(event.target.value as XiaoWorkspaceMode)
-                        }
+                  <details className="composer-add__settings-disclosure">
+                    <summary>
+                      <span>Run settings</span>
+                      <small>
+                        {workspaceMode === "managed-worktree" ? "Worktree" : "Local"}
+                        {" · "}
+                        {approvalPolicy === "on-request"
+                          ? "Ask approval"
+                          : approvalPolicy === "untrusted"
+                            ? "Untrusted only"
+                            : "Never ask"}
+                      </small>
+                    </summary>
+                    <div className="composer-add__settings">
+                      <span>Environment</span>
+                      <div
+                        className="composer-add__setting"
+                        title={isolationUnavailableReason ?? undefined}
                       >
-                        <option value="local">Local project</option>
-                        <option
-                          value="managed-worktree"
-                          disabled={!isolationAvailable && workspaceMode !== "managed-worktree"}
-                        >
-                          Isolated worktree
-                        </option>
-                      </select>
-                    </label>
+                        <span>Workspace</span>
+                        <SelectMenu
+                          className="composer-settings-select"
+                          ariaLabel="Workspace mode"
+                          value={workspaceMode}
+                          disabled={disabled || environmentBusy}
+                          options={[
+                            { value: "local", label: "Local project" },
+                            {
+                              value: "managed-worktree",
+                              label: "Isolated worktree",
+                              disabled: !isolationAvailable && workspaceMode !== "managed-worktree",
+                            },
+                          ]}
+                          onValueChange={(value) =>
+                            void onWorkspaceModeChange(value as XiaoWorkspaceMode)
+                          }
+                        />
+                      </div>
                     {managedWorktree ? (
                       <small title={managedWorktree.checkoutPath}>
                         {managedWorktree.branch} · {managedWorktree.sizeComplete ? "" : "≥"}
@@ -1397,49 +1394,50 @@ export function Composer({
                     ) : null}
                     {environmentBusy ? <small>Preparing execution environment…</small> : null}
                     {environmentError ? <small className="is-error">{environmentError}</small> : null}
-                    <span>Run permissions</span>
-                    <label>
-                      <span>Approval</span>
-                      <select
-                        aria-label="Approval policy"
-                        value={approvalPolicy}
-                        disabled={disabled}
-                        onChange={(event) =>
-                          onApprovalPolicyChange(event.target.value as AgentApprovalPolicy)
-                        }
-                      >
-                        <option value="on-request">Ask approval</option>
-                        <option value="untrusted">Untrusted only</option>
-                        <option value="never">Never ask</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Sandbox</span>
-                      <select
-                        aria-label="Sandbox mode"
-                        value={sandboxMode}
-                        disabled={
-                          disabled || runtime.phase === "starting" || runtime.phase === "working"
-                        }
-                        onChange={(event) =>
-                          onSandboxModeChange(event.target.value as AgentSandboxMode)
-                        }
-                      >
-                        {sandboxModeOptions.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
+                      <span>Permissions</span>
+                      <div className="composer-add__setting">
+                        <span>Approval</span>
+                        <SelectMenu
+                          className="composer-settings-select"
+                          ariaLabel="Approval policy"
+                          value={approvalPolicy}
+                          disabled={disabled}
+                          options={[
+                            { value: "on-request", label: "Ask approval" },
+                            { value: "untrusted", label: "Untrusted only" },
+                            { value: "never", label: "Never ask" },
+                          ]}
+                          onValueChange={(value) =>
+                            onApprovalPolicyChange(value as AgentApprovalPolicy)
+                          }
+                        />
+                      </div>
+                      <div className="composer-add__setting">
+                        <span>Sandbox</span>
+                        <SelectMenu
+                          className="composer-settings-select"
+                          ariaLabel="Sandbox mode"
+                          value={sandboxMode}
+                          disabled={
+                            disabled || runtime.phase === "starting" || runtime.phase === "working"
+                          }
+                          options={sandboxModeOptions}
+                          onValueChange={(value) =>
+                            onSandboxModeChange(value as AgentSandboxMode)
+                          }
+                        />
+                      </div>
                     {sandboxMode === "danger-full-access" ? (
                       <small className="is-warning">
                         No sandbox allows commands to access files and the network outside this workspace.
                       </small>
                     ) : null}
-                  </div>
+                    </div>
+                  </details>
                 </div>
               )}
             </div>
-            {mode === "plan" && <span className="composer-mode"><XiaoIcon name="plan" size={13} /> Plan</span>}
+            {mode === "plan" && <span className="composer-mode">Plan</span>}
             <ModelPicker
               models={models}
               selectedModel={selectedModel}
@@ -1454,8 +1452,8 @@ export function Composer({
           </div>
           <div className="composer__actions">
             {currentTaskWorking && (
-              <button className="composer__stop" aria-label="Stop current turn" onClick={() => void onInterrupt()}>
-                <XiaoIcon name="close" size={16} />
+              <button className="composer__stop" type="button" aria-label="Stop current turn" onClick={() => void onInterrupt()}>
+                <span aria-hidden="true" />
               </button>
             )}
             {canSteer && canSubmit && (
@@ -1474,7 +1472,7 @@ export function Composer({
               disabled={!canSubmit}
               onClick={() => void submit(currentTaskWorking ? "queue" : "send")}
             >
-              <XiaoIcon name={currentTaskWorking ? "taskQueue" : "send"} size={18} strokeWidth={1.9} />
+              <XiaoIcon name="send" size={14} strokeWidth={2} />
             </button>
           </div>
         </div>

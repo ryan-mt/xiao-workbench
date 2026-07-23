@@ -59,10 +59,12 @@ import {
   activeRunForTask,
   emptyRunProjection,
   latestRunForTask,
+  pruneRunProjection,
   reconcileListedPendingInputs,
   reconcileListedRunSnapshots,
   projectRunSnapshots,
   projectRunUpdate,
+  runProjectionUiChanged,
   runSnapshotBaselineForIds,
   runStatusIsActive,
   shouldRestorePendingInput,
@@ -157,6 +159,7 @@ export type AgentRuntimeTaskScope = AgentRuntimeWorkspaceScope & {
 
 type RunProjectionPublicationOptions = {
   operationScope?: AgentRuntimeTaskScope;
+  force?: boolean;
 };
 
 export const runtimeAfterListenerAttachSuccess = (
@@ -2102,10 +2105,29 @@ export function useAgentRuntime(
 
   const publishRunProjection = useCallback((
     next: RunProjection,
-    { operationScope }: RunProjectionPublicationOptions = {},
+    { operationScope, force = false }: RunProjectionPublicationOptions = {},
   ) => {
-    runProjectionRef.current = next;
-    setRunProjection(next);
+    const previous = runProjectionRef.current;
+    if (!force && !runProjectionUiChanged(previous, next)) {
+      runProjectionRef.current = next;
+      return;
+    }
+    const bounded = pruneRunProjection(next);
+    runProjectionRef.current = bounded;
+    if (bounded !== next) {
+      const retainedRunIds = new Set(Object.keys(bounded.runsById));
+      for (const runId of finishedRunIds.current) {
+        if (!retainedRunIds.has(runId)) finishedRunIds.current.delete(runId);
+      }
+      const retainedPendingInputIds = new Set(Object.keys(bounded.pendingInputsById));
+      for (const pendingInputId of replayedPendingInputs.current) {
+        if (!retainedPendingInputIds.has(pendingInputId)) {
+          replayedPendingInputs.current.delete(pendingInputId);
+        }
+      }
+    }
+    if (!force && !runProjectionUiChanged(previous, bounded)) return;
+    setRunProjection(bounded);
     if (
       operationScope &&
       !agentRuntimeTaskScopeMatches(
@@ -2114,7 +2136,7 @@ export function useAgentRuntime(
         operationScope,
       )
     ) return;
-    const activeRun = activeRunForTask(next, activeTaskIdRef.current);
+    const activeRun = activeRunForTask(bounded, activeTaskIdRef.current);
     if (activeRun) {
       activeEnvironmentIdRef.current = activeRun.executionEnvironmentId;
       activeGenerationRef.current = activeRun.runtimeGeneration;
@@ -2147,7 +2169,7 @@ export function useAgentRuntime(
   }, []);
 
   useEffect(() => {
-    publishRunProjection(runProjectionRef.current);
+    publishRunProjection(runProjectionRef.current, { force: true });
   }, [activeTaskId, publishRunProjection]);
 
   const retryAttentionHydration = useCallback(() => {

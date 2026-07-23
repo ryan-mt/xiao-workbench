@@ -14,10 +14,12 @@ import {
   latestRunForTask,
   mergeListedPendingInputs,
   mergeListedRunSnapshots,
+  pruneRunProjection,
   projectRunSnapshots,
   projectRunUpdate,
   reconcileListedPendingInputs,
   reconcileListedRunSnapshots,
+  runProjectionUiChanged,
   runSnapshotBaselineForIds,
   runsForTask,
   shouldRestorePendingInput,
@@ -453,13 +455,13 @@ describe("native run projection", () => {
     const pendingInputsById = {
       "pending-b": pendingInput({ id: "pending-b", runId: unrelated.id }),
     };
-    const current = {
+    const current: ReturnType<typeof emptyRunProjection> = {
       ...beforeRequest,
       pendingInputsById,
       appliedProtocolSequencesByRun: {
-        omitted: [1],
-        retained: [2],
-        unrelated: [3],
+        omitted: { ranges: [[1, 1]] },
+        retained: { ranges: [[2, 2]] },
+        unrelated: { ranges: [[3, 3]] },
       },
     };
 
@@ -475,8 +477,8 @@ describe("native run projection", () => {
       "task-b": [unrelated.id],
     });
     expect(reconciled.appliedProtocolSequencesByRun).toEqual({
-      retained: [2],
-      unrelated: [3],
+      retained: { ranges: [[2, 2]] },
+      unrelated: { ranges: [[3, 3]] },
     });
     expect(reconciled.pendingInputsById).toBe(pendingInputsById);
   });
@@ -500,7 +502,82 @@ describe("native run projection", () => {
 
     const duplicate = acceptRunProtocol(projection, protocol({ sequence: 8 }));
     expect(duplicate.accepted).toBe(false);
-    expect(projection.appliedProtocolSequencesByRun["run-a"]).toEqual([4, 8]);
+    expect(projection.appliedProtocolSequencesByRun["run-a"]).toEqual({
+      ranges: [[4, 4], [8, 8]],
+    });
+  });
+
+  it("does not publish sequence-only bookkeeping as a visible projection change", () => {
+    const running = run({
+      status: "running",
+      runtimeGeneration: 2,
+      threadId: "thread-a",
+      turnId: "turn-a",
+      version: 2,
+    });
+    const projection = projectRunSnapshots(emptyRunProjection(), [running]);
+    const sequenceOnly = acceptRunProtocol(projection, protocol({ sequence: 8 })).projection;
+    const withPending = acceptRunProtocol(
+      sequenceOnly,
+      protocol({ sequence: 9, pendingInput: pendingInput() }),
+    ).projection;
+
+    expect(runProjectionUiChanged(projection, sequenceOnly)).toBe(false);
+    expect(runProjectionUiChanged(sequenceOnly, withPending)).toBe(true);
+  });
+
+  it("bounds terminal frontend state while retaining active runs and live inputs", () => {
+    const terminalRuns = Array.from({ length: 5 }, (_, index) => run({
+      id: `terminal-${index}`,
+      idempotencyKey: `terminal-${index}`,
+      status: "completed",
+      queuedAt: index,
+      finishedAt: index,
+    }));
+    const active = run({
+      id: "active",
+      taskId: "task-b",
+      idempotencyKey: "active",
+      status: "running",
+      queuedAt: 10,
+    });
+    const projected = projectRunSnapshots(emptyRunProjection(), [...terminalRuns, active]);
+    const projection: typeof projected = {
+      ...projected,
+      pendingInputsById: {
+        settled: pendingInput({
+          id: "settled",
+          runId: "terminal-0",
+          resolvedAt: 20,
+        }),
+        live: pendingInput({
+          id: "live",
+          runId: "missing-run",
+        }),
+      },
+      appliedProtocolSequencesByRun: {
+        "terminal-0": { ranges: [[1, 1]] },
+        "terminal-4": { ranges: [[2, 2]] },
+        active: { ranges: [[3, 3]] },
+      },
+    };
+
+    const pruned = pruneRunProjection(projection, 2);
+
+    expect(Object.keys(pruned.runsById).sort()).toEqual([
+      "active",
+      "terminal-3",
+      "terminal-4",
+    ]);
+    expect(pruned.runIdsByTask).toEqual({
+      "task-a": ["terminal-4", "terminal-3"],
+      "task-b": ["active"],
+    });
+    expect(pruned.pendingInputsById).toEqual({ live: projection.pendingInputsById.live });
+    expect(pruned.appliedProtocolSequencesByRun).toEqual({
+      "terminal-4": { ranges: [[2, 2]] },
+      active: { ranges: [[3, 3]] },
+    });
   });
 
   it("continues rejecting old duplicate sequences after a long run", () => {
@@ -519,6 +596,9 @@ describe("native run projection", () => {
     }
 
     expect(acceptRunProtocol(projection, protocol({ sequence: 1 })).accepted).toBe(false);
+    expect(projection.appliedProtocolSequencesByRun["run-a"]).toEqual({
+      ranges: [[1, 401]],
+    });
   });
 
   it("never reopens a settled pending input from stale updates or restore data", () => {

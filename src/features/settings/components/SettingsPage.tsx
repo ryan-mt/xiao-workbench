@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 
+import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import type {
   AgentAccountSummary,
@@ -51,51 +52,42 @@ const sections: Array<{
   id: SettingsSection;
   label: string;
   icon: XiaoIconName;
-  eyebrow: string;
-  description: string;
 }> = [
   {
     id: "general",
     label: "General",
     icon: "settings",
-    eyebrow: "Workspace",
-    description: "Tune the interface without adding noise to the workbench.",
   },
   {
     id: "agent",
     label: "Agent feed",
     icon: "approach",
-    eyebrow: "Conversation",
-    description: "Choose what Xiao surfaces while Codex works.",
-  },
-  {
-    id: "models",
-    label: "Models",
-    icon: "cpu",
-    eyebrow: "OpenAI",
-    description: "Keep the composer model list focused on what you use.",
-  },
-  {
-    id: "runtime",
-    label: "Runtime",
-    icon: "runtime",
-    eyebrow: "System",
-    description: "Inspect the local Codex connection and installation.",
   },
   {
     id: "shortcuts",
     label: "Shortcuts",
     icon: "command",
-    eyebrow: "Keyboard",
-    description: "A compact reference for Xiao's active commands.",
   },
   {
     id: "archived",
     label: "Archive",
     icon: "archive",
-    eyebrow: "Data",
-    description: "Restore work that was moved out of the active workspace.",
   },
+  {
+    id: "models",
+    label: "Models",
+    icon: "cpu",
+  },
+  {
+    id: "runtime",
+    label: "Runtime",
+    icon: "runtime",
+  },
+];
+
+const sectionGroups: Array<{ label: string; ids: SettingsSection[] }> = [
+  { label: "Xiao", ids: ["general", "agent", "shortcuts", "archived"] },
+  { label: "Codex", ids: ["models", "runtime"] },
 ];
 
 const shortcuts = [
@@ -210,19 +202,17 @@ function SettingsGroup({
 
 function SectionHeader({
   section,
-  meta,
+  onClose,
 }: {
   section: (typeof sections)[number];
-  meta: string;
+  onClose: () => void;
 }) {
   return (
     <header className="settings-section__header">
-      <div>
-        <span>{section.eyebrow}</span>
-        <h2 id={`${section.id}-heading`}>{section.label}</h2>
-        <p>{section.description}</p>
-      </div>
-      <small>{meta}</small>
+      <h1 id={`${section.id}-heading`}>{section.label}</h1>
+      <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
+        <XiaoIcon name="close" size={14} />
+      </button>
     </header>
   );
 }
@@ -282,167 +272,155 @@ export function SettingsPage({
     onPreferencesChange({ hiddenModels });
   };
 
-  const sectionMeta = activeSection === "general"
-    ? selectedTheme.label
-    : activeSection === "models"
-      ? `${visibleModels.length} shown`
-      : activeSection === "runtime"
-        ? runtimeLabel(runtime.phase)
-        : activeSection === "shortcuts"
-          ? `${shortcuts.length} commands`
-          : activeSection === "archived"
-            ? `${archivedTasks.length} tasks`
-            : notificationPermission;
+  const updateTitle = codexUpdating
+    ? "Updating Codex"
+    : codexUpdateChecking && !codexUpdate
+      ? "Checking for updates"
+      : codexUpdateError
+        ? "Update check unavailable"
+        : codexUpdate?.updateAvailable
+          ? `Codex ${codexUpdate.latestVersion} is available`
+          : codexUpdate
+            ? "Codex is up to date"
+            : "Codex update status";
+  const updateDescription = codexUpdateError
+    ?? (codexUpdate?.updateAvailable
+      ? `Installed ${codexUpdate.currentVersion} via ${codexUpdate.installationSource}. ${codexUpdate.canUpdate ? `Xiao will use ${codexUpdate.updateMethod}.` : "Use the original installer to update."}`
+      : codexUpdate
+        ? `${codexUpdate.currentVersion} is the latest published release.`
+        : "Xiao checks the official Codex npm release when the native app starts.");
 
   return (
     <section className="settings-page">
-      <header className="settings-header">
-        <div className="settings-header__identity">
-          <span className="settings-header__mark"><XiaoIcon name="settings" size={15} /></span>
-          <div>
-            <h1>Settings</h1>
-            <p>Local preferences for your Xiao workspace.</p>
-          </div>
-        </div>
-        <div className="settings-header__actions">
-          <div className={`settings-runtime-status is-${runtime.phase}`} role="status">
-            <i />
-            <span>{runtimeLabel(runtime.phase)}</span>
-          </div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close settings">
-            <XiaoIcon name="close" size={14} />
-          </button>
-        </div>
-      </header>
-
-      <nav className="settings-nav" aria-label="Settings sections">
-        <div className="settings-nav__track">
-          {sections.map((section) => (
-            <button
-              type="button"
-              className={activeSection === section.id ? "is-active" : undefined}
-              aria-current={activeSection === section.id ? "page" : undefined}
-              aria-controls={`settings-panel-${section.id}`}
-              key={section.id}
-              onClick={() => setActiveSection(section.id)}
-            >
-              <XiaoIcon name={section.icon} size={14} />
-              <span>{section.label}</span>
-              {section.id === "archived" && archivedTasks.length > 0
-                ? <small>{archivedTasks.length}</small>
-                : null}
-            </button>
+      <aside className="settings-sidebar">
+        <header className="settings-sidebar__header">
+          <strong>Settings</strong>
+          <span>Local preferences</span>
+        </header>
+        <nav className="settings-nav" aria-label="Settings sections">
+          {sectionGroups.map((group) => (
+            <div className="settings-nav__group" key={group.label}>
+              <span className="settings-nav__label">{group.label}</span>
+              <div className="settings-nav__items">
+                {group.ids.map((sectionId) => {
+                  const section = sections.find((item) => item.id === sectionId)!;
+                  return (
+                    <button
+                      type="button"
+                      className={activeSection === section.id ? "is-active" : undefined}
+                      aria-current={activeSection === section.id ? "page" : undefined}
+                      aria-controls={`settings-panel-${section.id}`}
+                      key={section.id}
+                      onClick={() => setActiveSection(section.id)}
+                    >
+                      <XiaoIcon name={section.icon} size={14} />
+                      <span>{section.label}</span>
+                      {section.id === "archived" && archivedTasks.length > 0
+                        ? <small>{archivedTasks.length}</small>
+                        : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           ))}
-        </div>
-      </nav>
+        </nav>
+        <footer className={`settings-sidebar__footer is-${runtime.phase}`} role="status">
+          <span>Xiao desktop</span>
+          <span><i />{runtimeLabel(runtime.phase)}</span>
+        </footer>
+      </aside>
 
-      <div className="settings-content">
+      <main className="settings-main">
+        <div className="settings-content">
+          <SectionHeader section={activeSectionDefinition} onClose={onClose} />
         <div className="settings-content__inner">
           <section
             className={`settings-section settings-section--${activeSection}`}
             id={`settings-panel-${activeSection}`}
             aria-labelledby={`${activeSection}-heading`}
           >
-            <SectionHeader section={activeSectionDefinition} meta={sectionMeta} />
-
             {activeSection === "general" && (
               <div className="settings-stack">
-                <SettingsGroup
-                  className="settings-group--themes"
-                  title="Theme"
-                  description="Color, contrast, and surface character. Changes apply immediately."
-                  meta={`${themePresets.length} presets`}
-                >
-                  <fieldset className="theme-grid">
-                    <legend className="settings-sr-only">Theme</legend>
-                    {themePresets.map((option) => (
-                      <label
-                        className={theme === option.id ? "theme-preset is-selected" : "theme-preset"}
-                        key={option.id}
-                      >
-                        <input
-                          checked={theme === option.id}
-                          name="theme"
-                          type="radio"
-                          value={option.id}
-                          onChange={() => onThemeChange(option.id)}
-                        />
-                        <span className="theme-preset__swatch" aria-hidden="true">
-                          {option.swatches.map((swatch) => (
-                            <i key={swatch} style={{ backgroundColor: swatch }} />
-                          ))}
-                        </span>
-                        <span className="theme-preset__copy">
-                          <strong>{option.label}</strong>
-                          <small>{option.description}</small>
-                        </span>
-                        <span className="theme-preset__check" aria-hidden="true">
-                          {theme === option.id ? <XiaoIcon name="check" size={12} strokeWidth={2.2} /> : null}
-                        </span>
-                      </label>
-                    ))}
-                  </fieldset>
+                <SettingsGroup title="Appearance">
+                  <div className="settings-list">
+                    <SettingRow
+                      title="Theme"
+                      description="Color and contrast across the Xiao desktop."
+                    >
+                      <SelectMenu
+                        className="settings-theme-select"
+                        ariaLabel="Theme"
+                        value={theme}
+                        options={themePresets.map((option) => ({
+                          value: option.id,
+                          label: option.label,
+                        }))}
+                        leading={(
+                          <span className="settings-theme-select__swatch" aria-hidden="true">
+                            {selectedTheme.swatches.map((swatch) => (
+                              <i key={swatch} style={{ backgroundColor: swatch }} />
+                            ))}
+                          </span>
+                        )}
+                        onValueChange={(nextTheme) => onThemeChange(nextTheme as Theme)}
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title="Start screen mark"
+                      description="Choose the mark above the new-task composer."
+                    >
+                      <div className="settings-choice" role="group" aria-label="Start screen mark">
+                        <button
+                          type="button"
+                          className={preferences.launchBrand === "logo" ? "is-selected" : undefined}
+                          aria-pressed={preferences.launchBrand === "logo"}
+                          onClick={() => onPreferencesChange({ launchBrand: "logo" })}
+                        >
+                          Logo
+                        </button>
+                        <button
+                          type="button"
+                          className={preferences.launchBrand === "wordmark" ? "is-selected" : undefined}
+                          aria-pressed={preferences.launchBrand === "wordmark"}
+                          onClick={() => onPreferencesChange({ launchBrand: "wordmark" })}
+                        >
+                          XIAO
+                        </button>
+                      </div>
+                    </SettingRow>
+                  </div>
                 </SettingsGroup>
 
-                <div className="settings-grid settings-grid--two">
-                  <SettingsGroup title="Appearance" description="Small choices that shape a new task.">
-                    <div className="settings-list">
-                      <SettingRow
-                        title="Start screen mark"
-                        description="Choose the symbol above the new-task composer."
-                      >
-                        <div className="settings-choice" role="group" aria-label="Start screen mark">
-                          <button
-                            type="button"
-                            className={preferences.launchBrand === "logo" ? "is-selected" : undefined}
-                            aria-pressed={preferences.launchBrand === "logo"}
-                            onClick={() => onPreferencesChange({ launchBrand: "logo" })}
-                          >
-                            Logo
-                          </button>
-                          <button
-                            type="button"
-                            className={preferences.launchBrand === "wordmark" ? "is-selected" : undefined}
-                            aria-pressed={preferences.launchBrand === "wordmark"}
-                            onClick={() => onPreferencesChange({ launchBrand: "wordmark" })}
-                          >
-                            XIAO
-                          </button>
-                        </div>
-                      </SettingRow>
-                    </div>
-                  </SettingsGroup>
-
-                  <SettingsGroup title="Behavior" description="Keep the workspace calm or information-dense.">
-                    <div className="settings-list">
-                      <SettingRow
-                        title="Focused new tasks"
-                        description="Collapse side panels for a blank task."
-                      >
-                        <Toggle
-                          label="Focused new tasks"
-                          checked={preferences.focusNewTasks}
-                          onChange={(focusNewTasks) => onPreferencesChange({ focusNewTasks })}
-                        />
-                      </SettingRow>
-                      <SettingRow
-                        title="Wrap long code"
-                        description="Wrap previews instead of horizontal scrolling."
-                      >
-                        <Toggle
-                          label="Wrap long code"
-                          checked={preferences.wrapCode}
-                          onChange={(wrapCode) => onPreferencesChange({ wrapCode })}
-                        />
-                      </SettingRow>
-                    </div>
-                  </SettingsGroup>
-                </div>
+                <SettingsGroup title="Behavior">
+                  <div className="settings-list">
+                    <SettingRow
+                      title="Focused new tasks"
+                      description="Collapse side panels for a blank task."
+                    >
+                      <Toggle
+                        label="Focused new tasks"
+                        checked={preferences.focusNewTasks}
+                        onChange={(focusNewTasks) => onPreferencesChange({ focusNewTasks })}
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title="Wrap long code"
+                      description="Wrap previews instead of horizontal scrolling."
+                    >
+                      <Toggle
+                        label="Wrap long code"
+                        checked={preferences.wrapCode}
+                        onChange={(wrapCode) => onPreferencesChange({ wrapCode })}
+                      />
+                    </SettingRow>
+                  </div>
+                </SettingsGroup>
               </div>
             )}
 
             {activeSection === "agent" && (
-              <div className="settings-grid settings-grid--two">
+              <div className="settings-stack">
                 <SettingsGroup title="Timeline" description="Control the detail level of the live feed.">
                   <div className="settings-list">
                     <SettingRow
@@ -516,143 +494,133 @@ export function SettingsPage({
                     </button>
                   ) : null}
                 </label>
-                <div className="model-settings-list">
-                  {visibleModels.map((model) => {
-                    const visible = !preferences.hiddenModels.includes(model.model);
-                    return (
-                      <article key={model.id}>
-                        <span className="model-settings-list__icon">◎</span>
-                        <div>
-                          <strong>
-                            {model.displayName}
-                            {model.isDefault ? <small>Default</small> : null}
-                          </strong>
-                          <p>{model.description || model.model}</p>
-                          <code>
-                            {model.model}
-                            {model.contextWindow
-                              ? ` · ${new Intl.NumberFormat().format(model.contextWindow)} context`
-                              : ""}
-                          </code>
-                        </div>
-                        <Toggle
-                          label={`Show ${model.displayName}`}
-                          checked={visible}
-                          onChange={() => toggleModel(model.model)}
-                        />
-                      </article>
-                    );
-                  })}
-                  {!visibleModels.length ? (
-                    <div className="settings-empty">
-                      <strong>No matching models</strong>
-                      <p>Try a different name or model ID.</p>
-                    </div>
-                  ) : null}
-                </div>
+                <SettingsGroup title="Available models" meta={`${visibleModels.length} shown`}>
+                  <div className="model-settings-list">
+                    {visibleModels.map((model) => {
+                      const visible = !preferences.hiddenModels.includes(model.model);
+                      return (
+                        <article key={model.id}>
+                          <div>
+                            <strong>
+                              {model.displayName}
+                              {model.isDefault ? <small>Default</small> : null}
+                            </strong>
+                            <p>{model.description || model.model}</p>
+                            <code>
+                              {model.model}
+                              {model.contextWindow
+                                ? ` · ${new Intl.NumberFormat().format(model.contextWindow)} context`
+                                : ""}
+                            </code>
+                          </div>
+                          <Toggle
+                            label={`Show ${model.displayName}`}
+                            checked={visible}
+                            onChange={() => toggleModel(model.model)}
+                          />
+                        </article>
+                      );
+                    })}
+                    {!visibleModels.length ? (
+                      <div className="settings-empty">
+                        <strong>No matching models</strong>
+                        <p>Try a different name or model ID.</p>
+                      </div>
+                    ) : null}
+                  </div>
+                </SettingsGroup>
               </div>
             )}
 
             {activeSection === "runtime" && (
               <div className="settings-stack">
-                <div className={`runtime-card is-${runtime.phase}`}>
-                  <div>
-                    <span className="runtime-card__pulse"><i /></span>
-                    <div>
-                      <strong>{runtimeTitle(runtime.phase)}</strong>
-                      <p>{runtimeDescription(runtime)}</p>
-                    </div>
-                  </div>
-                  <button
-                    className="button button--quiet"
-                    type="button"
-                    disabled={codexUpdating || runtime.phase === "starting" || runtime.phase === "working"}
-                    onClick={onReconnect}
-                  >
-                    <XiaoIcon name="refresh" size={13} />
-                    Reconnect
-                  </button>
-                </div>
-
-                <div className="runtime-grid">
-                  <div><span>Account</span><strong>{account?.authenticated ? account.email ?? "Authenticated" : "Not authenticated"}</strong><small>{account?.planType ?? account?.authMode ?? "Codex CLI"}</small></div>
-                  <div><span>Codex</span><strong>{system.codexVersion ?? "Detecting"}</strong><small>{runtime.eventsSeen.toLocaleString()} events observed</small></div>
-                  <div><span>Platform</span><strong>{system.platform}</strong><small>Native Xiao host</small></div>
-                  <div><span>Shell</span><strong>{system.shell}</strong><small>Workspace commands</small></div>
-                </div>
-
-                <div className={`codex-update-card ${codexUpdate?.updateAvailable ? "is-available" : ""}`}>
-                  <span className="codex-update-card__icon">
-                    <XiaoIcon
-                      className={codexUpdateChecking || codexUpdating ? "is-spinning" : undefined}
-                      name={codexUpdateChecking || codexUpdating ? "pending" : "refresh"}
-                      size={16}
-                    />
-                  </span>
-                  <div className="codex-update-card__copy">
-                    <strong>
-                      {codexUpdating
-                        ? "Updating Codex"
-                        : codexUpdateChecking && !codexUpdate
-                          ? "Checking for updates"
-                          : codexUpdateError
-                            ? "Update check unavailable"
-                            : codexUpdate?.updateAvailable
-                              ? `Codex ${codexUpdate.latestVersion} is available`
-                              : codexUpdate
-                                ? "Codex is up to date"
-                                : "Codex update status"}
-                    </strong>
-                    <p>
-                      {codexUpdateError
-                        ?? (codexUpdate?.updateAvailable
-                          ? `Installed ${codexUpdate.currentVersion} via ${codexUpdate.installationSource}. ${codexUpdate.canUpdate ? `Xiao will use ${codexUpdate.updateMethod}.` : "Use the original installer to update."}`
-                          : codexUpdate
-                            ? `${codexUpdate.currentVersion} is the latest published release.`
-                            : "Xiao checks the official Codex npm release when the native app starts.")}
-                    </p>
-                    {codexUpdateResult
-                      ? <small>Updated {codexUpdateResult.previousVersion} to {codexUpdateResult.version}.</small>
-                      : null}
-                  </div>
-                  <div className="codex-update-card__actions">
-                    <button
-                      className="button button--quiet"
-                      type="button"
-                      disabled={codexUpdateChecking || codexUpdating}
-                      onClick={onCheckCodexUpdate}
-                    >
-                      Check
-                    </button>
-                    {codexUpdate?.updateAvailable && codexUpdate.canUpdate ? (
+                <SettingsGroup title="Connection">
+                  <div className="settings-list">
+                    <SettingRow title={runtimeTitle(runtime.phase)} description={runtimeDescription(runtime)}>
                       <button
-                        className="button button--primary"
+                        className="button button--quiet"
                         type="button"
-                        disabled={codexUpdating || runtime.phase === "working" || runtime.phase === "starting"}
-                        onClick={onUpdateCodex}
+                        disabled={codexUpdating || runtime.phase === "starting" || runtime.phase === "working"}
+                        onClick={onReconnect}
                       >
-                        {codexUpdating ? "Updating" : "Update Codex"}
+                        Reconnect
                       </button>
-                    ) : null}
+                    </SettingRow>
                   </div>
-                </div>
+                </SettingsGroup>
 
-                <div className="settings-note">
-                  <XiaoIcon name="target" size={15} />
-                  <p>Provider and server controls stay hidden because this build uses one real local Codex runtime.</p>
-                </div>
+                <SettingsGroup title="Environment">
+                  <div className="settings-list">
+                    <SettingRow title="Account" description={account?.planType ?? account?.authMode ?? "Codex CLI"}>
+                      <span className="settings-value">
+                        {account?.authenticated ? account.email ?? "Authenticated" : "Not authenticated"}
+                      </span>
+                    </SettingRow>
+                    <SettingRow title="Codex" description={`${runtime.eventsSeen.toLocaleString()} events observed`}>
+                      <span className="settings-value settings-value--mono">{system.codexVersion ?? "Detecting"}</span>
+                    </SettingRow>
+                    <SettingRow title="Platform" description="Native Xiao host">
+                      <span className="settings-value settings-value--mono">{system.platform}</span>
+                    </SettingRow>
+                    <SettingRow title="Shell" description="Workspace commands">
+                      <span className="settings-value settings-value--mono">{system.shell}</span>
+                    </SettingRow>
+                  </div>
+                </SettingsGroup>
+
+                <SettingsGroup
+                  title="Updates"
+                  meta={codexUpdate?.updateAvailable ? "Available" : undefined}
+                  className={codexUpdate?.updateAvailable ? "settings-group--update" : ""}
+                >
+                  <div className="settings-list">
+                    <SettingRow title={updateTitle} description={updateDescription}>
+                      <div className="codex-update-card__actions">
+                        <button
+                          className="button button--quiet"
+                          type="button"
+                          disabled={codexUpdateChecking || codexUpdating}
+                          onClick={onCheckCodexUpdate}
+                        >
+                          {codexUpdateChecking ? "Checking" : "Check"}
+                        </button>
+                        {codexUpdate?.updateAvailable && codexUpdate.canUpdate ? (
+                          <button
+                            className="button button--primary"
+                            type="button"
+                            disabled={codexUpdating || runtime.phase === "working" || runtime.phase === "starting"}
+                            onClick={onUpdateCodex}
+                          >
+                            {codexUpdating ? "Updating" : "Update Codex"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </SettingRow>
+                  </div>
+                  {codexUpdateResult ? (
+                    <p className="settings-update-result">
+                      Updated {codexUpdateResult.previousVersion} to {codexUpdateResult.version}.
+                    </p>
+                  ) : null}
+                </SettingsGroup>
+
+                <p className="settings-note">
+                  Provider and server controls stay hidden because this build uses one real local Codex runtime.
+                </p>
               </div>
             )}
 
             {activeSection === "shortcuts" && (
-              <div className="shortcut-grid">
-                {shortcuts.map((shortcut) => (
-                  <div key={shortcut.action}>
-                    <strong>{shortcut.action}</strong>
-                    <span>{shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}</span>
-                  </div>
-                ))}
-              </div>
+              <SettingsGroup title="Keyboard">
+                <div className="shortcut-grid">
+                  {shortcuts.map((shortcut) => (
+                    <div key={shortcut.action}>
+                      <strong>{shortcut.action}</strong>
+                      <span>{shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}</span>
+                    </div>
+                  ))}
+                </div>
+              </SettingsGroup>
             )}
 
             {activeSection === "archived" && (
@@ -663,7 +631,6 @@ export function SettingsPage({
                 </div>
               ) : archivedTasksError ? (
                 <div className="archived-tasks-state" role="alert">
-                  <XiaoIcon name="archive" size={19} />
                   <strong>Couldn't load archived tasks</strong>
                   <p>{archivedTasksError}</p>
                   <button type="button" onClick={onReloadArchivedTasks}>
@@ -673,7 +640,6 @@ export function SettingsPage({
                 </div>
               ) : sortedArchivedTasks.length === 0 ? (
                 <div className="archived-tasks-state">
-                  <XiaoIcon name="archive" size={19} />
                   <strong>No archived tasks</strong>
                   <p>Tasks you archive will appear here.</p>
                 </div>
@@ -700,6 +666,7 @@ export function SettingsPage({
           </section>
         </div>
       </div>
+    </main>
     </section>
   );
 }

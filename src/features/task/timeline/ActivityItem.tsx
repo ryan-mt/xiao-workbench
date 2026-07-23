@@ -1,10 +1,9 @@
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
 import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
-import { isEnvironmentBlockedCommand } from "./commandPresentation";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 
 type ActivityItemProps = {
@@ -29,6 +28,12 @@ type ActivityItemProps = {
   undoing?: boolean;
   onUndo?: () => void;
   attemptCount?: number;
+  isLive?: boolean;
+};
+
+const isEnvironmentBlockedCommand = (entry: TimelineEntry): boolean => {
+  if (entry.kind !== "command" || entry.status !== "error") return false;
+  return /spawn\s+(?:eperm|eacces)/.test(entry.body?.toLowerCase() ?? "");
 };
 
 const iconByKind: Record<TimelineEntry["kind"], XiaoIconName> = {
@@ -114,53 +119,29 @@ const reasoningHeading = (body?: string) =>
 const ReasoningActivity = memo(function ReasoningActivity({
   entry,
   index,
+  isLive,
   onOpenResource,
 }: {
   entry: TimelineEntry;
   index: number;
+  isLive: boolean;
   onOpenResource: (target: string) => boolean;
 }) {
-  const active = entry.status === "active";
-  const [open, setOpen] = useState(active);
-  const heading = reasoningHeading(entry.body);
-
-  useEffect(() => {
-    setOpen(active);
-  }, [active, entry.id]);
+  const active = isLive && entry.status === "active";
 
   return (
     <article
       className={`activity activity--reasoning activity--${entry.status ?? "idle"}`}
       style={{ "--activity-index": index } as React.CSSProperties}
+      aria-busy={active}
     >
-      <details
-        open={open}
-        onToggle={(event) => setOpen(event.currentTarget.open)}
-      >
-        <summary>
-          <span className="activity__reasoning-mark">
-            <XiaoIcon name="approach" size={13} />
-          </span>
-          <span className="activity__reasoning-summary">
-            <strong>{active ? "Thinking" : "Thought process"}</strong>
-            {heading && <span>{heading}</span>}
-          </span>
-          <span className={`activity__reasoning-state is-${active ? "live" : "done"}`}>
-            {active ? <i className="activity__pulse" /> : <XiaoIcon name="check" size={11} />}
-            {active ? "Live" : "Done"}
-          </span>
-          {entry.body ? <XiaoIcon className="activity__reasoning-caret" name="caret" size={12} /> : null}
-        </summary>
-        {entry.body && (
-          <div className="activity__reasoning-content">
-            <MarkdownBody
-              content={entry.body}
-              streaming={active}
-              onOpenResource={onOpenResource}
-            />
-          </div>
-        )}
-      </details>
+      {entry.body ? (
+        <MarkdownBody
+          content={entry.body}
+          streaming={active}
+          onOpenResource={onOpenResource}
+        />
+      ) : null}
     </article>
   );
 });
@@ -182,26 +163,26 @@ export const ActivityItem = memo(function ActivityItem({
   undoing = false,
   onUndo,
   attemptCount = 1,
+  isLive = true,
 }: ActivityItemProps) {
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
   const assistantMessage = entry.kind === "result" && entry.title === "Agent response";
   const contextCompaction = entry.kind === "result" && entry.meta === "Context";
+  const browserTool = entry.kind === "result" && entry.meta?.toLowerCase() === "browser tool";
 
   if (entry.kind === "thought" && entry.status !== "active" && !entry.body?.trim()) return null;
 
   if (entry.kind === "thought" && !showReasoningSummaries) {
-    if (entry.status !== "active") return null;
+    if (entry.status !== "active" || !isLive) return null;
     const heading = reasoningHeading(entry.body);
     return (
       <article
         className="activity activity--thinking-projection"
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <XiaoIcon name="approach" size={13} />
-        <strong>Working through it</strong>
+        <strong className="is-active">Thinking</strong>
         {heading && <span>{heading}</span>}
-        <i className="activity__pulse" />
       </article>
     );
   }
@@ -248,7 +229,7 @@ export const ActivityItem = memo(function ActivityItem({
           {entry.kind === "user" && entry.meta ? (
             <span className={`activity__user-state is-${entry.status ?? "idle"}`}>
               <XiaoIcon
-                className={entry.status === "active" ? "spin" : undefined}
+                className={entry.status === "active" && isLive ? "spin" : undefined}
                 name={entry.status === "error" ? "close" : entry.status === "success" ? "check" : "pending"}
                 size={11}
               />
@@ -290,22 +271,21 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (assistantMessage) {
-    const streaming = entry.status === "active";
+    const streaming = entry.status === "active" && isLive;
     return (
       <article
         className="activity activity--assistant-message"
         style={{ "--activity-index": index } as React.CSSProperties}
+        aria-busy={streaming}
       >
         <div className="activity__assistant-message">
-          <header className="activity__assistant-header">
-            <span className="activity__assistant-mark"><XiaoIcon name="result" size={13} /></span>
-            <strong>{streaming ? "Writing response" : "Response"}</strong>
-            {streaming ? <i className="activity__pulse" /> : null}
-            {entry.body && !streaming ? (
-              <span className="activity__assistant-copy"><CopyButton text={entry.body} /></span>
-            ) : null}
-          </header>
           {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
+          {entry.body && !streaming ? (
+            <footer className="activity__assistant-meta">
+              <CopyButton text={entry.body} label="Copy response" />
+              <span>{entry.meta && entry.meta !== "Streaming" ? entry.meta : "Xiao"}</span>
+            </footer>
+          ) : null}
           {turnFiles.length > 0 && (
             <nav className="turn-change-actions" aria-label="Actions for edited files">
               <button type="button" onClick={onReviewChanges}>
@@ -324,43 +304,57 @@ export const ActivityItem = memo(function ActivityItem({
     );
   }
 
+  if (browserTool) {
+    const query = entry.title.replace(/^Searched:\s*/i, "").trim();
+    return (
+      <article
+        className={`activity activity--command activity--${entry.status ?? "success"}`}
+        style={{ "--activity-index": index } as React.CSSProperties}
+      >
+        <div className="activity__tool-disclosure activity__tool-disclosure--static">
+          <div className="activity__tool-summary-row">
+            <span className="activity__tool-summary">
+              <strong>Web search</strong>
+              {query && query !== "Web search" ? <span title={query}>{query}</span> : null}
+            </span>
+          </div>
+        </div>
+      </article>
+    );
+  }
+
   if (contextCompaction) {
+    const active = entry.status === "active" && isLive;
+    const label = active
+      ? "Compacting session"
+      : entry.status === "active"
+        ? "Session compaction stopped"
+      : entry.status === "error" || entry.status === "warning"
+        ? "Session compaction failed"
+        : "Session compacted";
     return (
       <article
         className={`activity activity--context-compaction activity--${entry.status ?? "idle"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <div className="context-compaction" role="status" aria-live="polite">
-          <span className="context-compaction__glyph" aria-hidden="true">
-            <i />
-            <i />
-            <b />
-          </span>
-          <span className="context-compaction__copy">
-            <strong>{entry.title}</strong>
-            <small>{entry.status === "active" ? "Keeping the useful parts" : "Session context ready"}</small>
-          </span>
-          <span className="context-compaction__meter" aria-hidden="true"><i /></span>
-          {entry.status === "active" ? (
-            <span className="context-compaction__working" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-          ) : (
-            <XiaoIcon
-              className={`context-compaction__state context-compaction__state--${entry.status ?? "idle"}`}
-              name={entry.status === "success" ? "check" : "close"}
-              size={15}
-            />
-          )}
+        <div className="context-compaction" role="status" aria-live="polite" aria-busy={active}>
+          <span className="context-compaction__line" aria-hidden="true" />
+          <strong className={active ? "is-active" : undefined}>{label}</strong>
+          <span className="context-compaction__line" aria-hidden="true" />
         </div>
       </article>
     );
   }
 
   if (entry.kind === "thought") {
-    return <ReasoningActivity entry={entry} index={index} onOpenResource={onOpenResource} />;
+    return (
+      <ReasoningActivity
+        entry={entry}
+        index={index}
+        isLive={isLive}
+        onOpenResource={onOpenResource}
+      />
+    );
   }
 
   if (entry.kind === "agent") {
@@ -378,7 +372,13 @@ export const ActivityItem = memo(function ActivityItem({
               {entry.meta && <small>{entry.meta}</small>}
             </span>
             <span className={`agent-activity__state is-${entry.status ?? "idle"}`}>
-              {entry.status === "active" ? "Working" : entry.status === "error" ? "Needs attention" : "Done"}
+              {entry.status === "active" && isLive
+                ? "Working"
+                : entry.status === "active"
+                  ? "Stopped"
+                  : entry.status === "error"
+                    ? "Needs attention"
+                    : "Done"}
             </span>
           </header>
           {collaborators.length > 0 && (
@@ -419,45 +419,24 @@ export const ActivityItem = memo(function ActivityItem({
     const environmentBlocked = isEnvironmentBlockedCommand(entry);
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
-    const toolAction = entry.command
-      ? entry.status === "active"
-        ? "Running"
-        : environmentBlocked
-          ? "Blocked"
-          : entry.status === "error"
-            ? "Failed"
-            : "Ran"
-      : entry.status === "active"
-        ? "Using"
-        : environmentBlocked
-          ? "Blocked"
-          : entry.status === "error"
-            ? "Failed"
-            : "Used";
-    const toolStateLabel = entry.status === "active"
-      ? "In progress"
-      : environmentBlocked
-        ? "Blocked"
-        : entry.status === "error"
-          ? "Failed"
-          : "Completed";
+    const active = entry.status === "active" && isLive;
+    const toolTitle = environmentBlocked
+      ? "Shell blocked"
+      : entry.status === "error"
+        ? "Shell failed"
+        : entry.command
+          ? "Shell"
+          : entry.title;
+    const terminalText = entry.command
+      ? `$ ${entry.command}${entry.body ? `\n\n${entry.body}` : ""}`
+      : entry.body ?? "";
     const summary = (
       <>
-        <span className="activity__tool-icon">
-          <XiaoIcon name="command" size={14} />
-        </span>
         <span className="activity__tool-summary">
-          <strong>{toolAction}</strong>
-          <code title={toolDetail}>{toolDetail}</code>
+          <strong className={active ? "is-active" : undefined}>{toolTitle}</strong>
+          {entry.command ? <span title={toolDetail}>{toolDetail}</span> : null}
           {attemptCount > 1 && (
             <small className="activity__tool-attempts">{attemptCount} attempts</small>
-          )}
-        </span>
-        <span className={`activity__tool-state is-${entry.status ?? "success"}`} aria-label={toolStateLabel} title={toolStateLabel}>
-          {entry.status === "active" ? (
-            <i className="activity__pulse" />
-          ) : (
-            <XiaoIcon name={entry.status === "error" ? "close" : "check"} size={11} />
           )}
         </span>
         {hasDetails && (
@@ -478,22 +457,10 @@ export const ActivityItem = memo(function ActivityItem({
             <summary>{summary}</summary>
             <div className="activity__tool-details">
               {entry.meta && <div className="activity__tool-meta">{entry.meta}</div>}
-              {entry.command && (
-                <div className="command-block">
-                  <header>
-                    <span>Command</span>
-                    <CopyButton text={entry.command} />
-                  </header>
-                  <pre><code>{entry.command}</code></pre>
-                </div>
-              )}
-              {entry.body && (
-                <div className="activity__result">
-                  <header>
-                    <span>Output</span>
-                    <CopyButton text={entry.body} />
-                  </header>
-                  <pre>{entry.body}</pre>
+              {terminalText && (
+                <div className="activity__terminal">
+                  <span className="activity__terminal-copy"><CopyButton text={terminalText} /></span>
+                  <pre tabIndex={0} aria-label="Shell output"><code>{terminalText}</code></pre>
                 </div>
               )}
             </div>
@@ -508,7 +475,7 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (entry.kind === "change" && entry.files?.length) {
-    const verb = entry.status === "active" ? "Editing" : entry.status === "error" ? "Edit failed" : "Edit";
+    const verb = entry.status === "error" ? "Edit failed" : "Edit";
     return (
       <article
         className={`activity activity--patch activity--${entry.status ?? "idle"}`}
@@ -521,35 +488,37 @@ export const ActivityItem = memo(function ActivityItem({
               ? file.path
               : `${workspacePath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`;
             const displayPath = file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? file.path;
+            const directory = file.path.split(/[\\/]/).slice(0, -1).join("/");
             const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
             const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
             return (
               <details key={file.path} open={expandToolOutput}>
                 <summary>
-                  <span className="patch-activity__file-icon">
-                    <XiaoIcon name="mutation" size={14} />
-                    {entry.status === "active" ? <i className="activity__pulse" /> : null}
-                  </span>
-                  <strong className="patch-activity__verb">{verb}</strong>
-                  <span
-                    className="patch-activity__path"
-                    title={`Open ${absolutePath}`}
-                    role="link"
-                    tabIndex={0}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onOpenResource(absolutePath);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter" && event.key !== " ") return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onOpenResource(absolutePath);
-                    }}
-                  >
-                    <strong>{displayPath}</strong>
-                    {lineNumber && <small>line {lineNumber}</small>}
+                  <span className="patch-activity__title">
+                    <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
+                      {verb}
+                    </strong>
+                    <span
+                      className="patch-activity__path"
+                      title={`Open ${absolutePath}`}
+                      role="link"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onOpenResource(absolutePath);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onOpenResource(absolutePath);
+                      }}
+                    >
+                      <strong>{displayPath}</strong>
+                      {directory ? <small>{directory}</small> : null}
+                      {lineNumber ? <small>line {lineNumber}</small> : null}
+                    </span>
                   </span>
                   <span className="patch-activity__stats"><b>+{file.additions}</b><em>-{file.deletions}</em></span>
                   <XiaoIcon className="patch-activity__caret" name="caret" size={13} />
@@ -591,7 +560,7 @@ export const ActivityItem = memo(function ActivityItem({
             <XiaoIcon name={iconByKind[entry.kind]} size={14} />
           </span>
           <span>{entry.meta ?? entry.kind}</span>
-          {entry.status === "active" && <i className="activity__pulse" />}
+          {entry.status === "active" && isLive && <i className="activity__pulse" />}
           {entry.body && (
             <span className="activity__header-action">
               <CopyButton text={entry.body} />
@@ -599,7 +568,13 @@ export const ActivityItem = memo(function ActivityItem({
           )}
         </header>
         <h2>{entry.title}</h2>
-        {entry.body && <MarkdownBody content={entry.body} streaming={entry.status === "active"} onOpenResource={onOpenResource} />}
+        {entry.body && (
+          <MarkdownBody
+            content={entry.body}
+            streaming={entry.status === "active" && isLive}
+            onOpenResource={onOpenResource}
+          />
+        )}
         {entry.files && (
           <div className="change-list">
             <header>

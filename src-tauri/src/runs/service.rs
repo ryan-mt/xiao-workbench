@@ -2497,7 +2497,7 @@ mod tests {
             input: vec![json!({ "type": "text", "text": "prompt" })],
             history: Vec::new(),
             model: Some("gpt-test".to_owned()),
-            reasoning_effort: Some("medium".to_owned()),
+            reasoning_effort: Some("ultra".to_owned()),
             service_tier: Some("priority".to_owned()),
             mode: "default".to_owned(),
             approval_policy: "on-request".to_owned(),
@@ -2526,12 +2526,13 @@ mod tests {
         );
         assert_eq!(params["threadId"], "thread");
         assert_eq!(params["model"], "gpt-test");
+        assert_eq!(params["effort"], "ultra");
         assert_eq!(params["serviceTier"], "priority");
         assert_eq!(params["collaborationMode"]["mode"], "default");
         assert_eq!(params["collaborationMode"]["settings"]["model"], "gpt-test");
         assert_eq!(
             params["collaborationMode"]["settings"]["reasoning_effort"],
-            "medium"
+            "ultra"
         );
         assert!(params.get("additionalContext").is_some());
         assert_eq!(

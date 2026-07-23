@@ -68,8 +68,14 @@ export function ModelPicker({
       (activeModel?.supportedReasoningEfforts ?? []).map((option) => [option.reasoningEffort, option]),
     ).values(),
   ];
+  const selectedEffortSupported = Boolean(
+    selectedReasoningEffort &&
+      reasoningOptions.some((option) => option.reasoningEffort === selectedReasoningEffort),
+  );
   const effectiveEffort = activeModel
-    ? selectedReasoningEffort || activeModel.defaultReasoningEffort
+    ? selectedEffortSupported
+      ? selectedReasoningEffort
+      : activeModel.defaultReasoningEffort
     : "";
   const fastTier = fastServiceTier(activeModel);
   const fastModeEnabled = Boolean(fastMode && fastTier);
@@ -119,6 +125,12 @@ export function ModelPicker({
   useEffect(() => {
     if (disabled || !models.length) closeMenu();
   }, [disabled, models.length]);
+
+  useEffect(() => {
+    if (activeModel && selectedReasoningEffort && !selectedEffortSupported) {
+      onReasoningEffortChange(null);
+    }
+  }, [activeModel, onReasoningEffortChange, selectedEffortSupported, selectedReasoningEffort]);
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -287,7 +299,7 @@ export function ModelPicker({
           disabled={disabled || !fastTier}
           onClick={() => onFastModeChange(!fastModeEnabled)}
         >
-          <span className="fast-mode__glyph" aria-hidden="true"><i /><i /></span>
+          <span>Fast</span>
         </button>
       </div>
       <WeeklyUsageIndicator rateLimits={rateLimits} />

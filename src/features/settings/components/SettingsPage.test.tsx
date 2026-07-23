@@ -66,28 +66,29 @@ const renderSettings = (theme: Theme) => renderToStaticMarkup(
 );
 
 describe("SettingsPage", () => {
-  it("uses a compact horizontal section rail instead of a nested sidebar", () => {
+  it("uses a grouped settings sidebar and a focused content pane", () => {
     const markup = renderSettings("system");
 
+    expect(markup).toContain('class="settings-sidebar"');
     expect(markup).toContain('class="settings-nav"');
+    expect(markup).toContain('class="settings-main"');
     expect(markup).toContain('aria-label="Settings sections"');
+    expect(markup).toContain('class="settings-nav__label">Xiao</span>');
+    expect(markup).toContain('class="settings-nav__label">Codex</span>');
     expect(markup).toContain("Agent feed");
     expect(markup).toContain("Shortcuts");
-    expect(markup).not.toContain("settings-index");
+    expect(markup).not.toContain("settings-header__mark");
   });
 
-  it("renders all theme presets and marks the active palette", () => {
+  it("renders the selected theme in an accessible custom listbox trigger", () => {
     const markup = renderSettings("moss");
 
-    expect(markup.match(/name="theme"/g)).toHaveLength(6);
-    expect(markup).toContain("Paper");
-    expect(markup).toContain("Graphite");
+    expect(markup).toContain('aria-label="Theme"');
+    expect(markup).toContain('aria-haspopup="listbox"');
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain("Moss");
-    expect(markup).toContain("Dusk");
-    expect(markup).toContain("Ember");
-    expect(markup).toContain(
-      '<label class="theme-preset is-selected"><input type="radio" name="theme" checked="" value="moss"/>',
-    );
+    expect(markup).toContain('class="settings-theme-select__swatch"');
+    expect(markup).not.toContain("<select");
   });
 
   it("keeps the runtime and close controls accessible", () => {

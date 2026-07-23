@@ -2,8 +2,6 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
 import { ActivityItem } from "./ActivityItem";
-import { compactCommandAttempts } from "./commandPresentation";
-import { ExecutionGroup } from "./ExecutionGroup";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
@@ -36,8 +34,7 @@ type TaskTimelineProps = {
 
 export type TimelineRow =
   | { kind: "entry"; entry: TimelineEntry; index: number }
-  | { kind: "exploration"; entries: TimelineEntry[]; index: number }
-  | { kind: "execution"; entries: TimelineEntry[]; index: number };
+  | { kind: "exploration"; entries: TimelineEntry[]; index: number };
 
 export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   const rows: TimelineRow[] = [];
@@ -45,50 +42,32 @@ export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
 
   while (index < timeline.length) {
     const entry = timeline[index];
-    if (entry.kind === "command") {
-      let end = index + 1;
-      while (end < timeline.length && timeline[end].kind === "command") end += 1;
-      const entries = timeline.slice(index, end);
-      if (entries.length > 1) rows.push({ kind: "execution", entries, index });
-      else rows.push({ kind: "entry", entry, index });
-      index = end;
-      continue;
-    }
-
-    if (entry.kind !== "explore" && entry.kind !== "thought") {
+    if (entry.kind !== "explore") {
       rows.push({ kind: "entry", entry, index });
       index += 1;
       continue;
     }
 
     let end = index + 1;
-    while (end < timeline.length && ["explore", "thought"].includes(timeline[end].kind)) {
-      end += 1;
-    }
-    const segment = timeline.slice(index, end);
-    const explorationEntries = segment.filter((item) => item.kind === "explore");
-    if (!explorationEntries.length) {
-      segment.forEach((item, offset) =>
-        rows.push({ kind: "entry", entry: item, index: index + offset }),
-      );
-      index = end;
-      continue;
-    }
-
-    const lastExplorationId = explorationEntries.at(-1)?.id;
-    for (let offset = 0; offset < segment.length; offset += 1) {
-      const item = segment[offset];
-      if (item.kind === "thought") {
-        rows.push({ kind: "entry", entry: item, index: index + offset });
-      } else if (item.id === lastExplorationId) {
-        rows.push({ kind: "exploration", entries: explorationEntries, index: index + offset });
-      }
-    }
+    while (end < timeline.length && timeline[end].kind === "explore") end += 1;
+    rows.push({ kind: "exploration", entries: timeline.slice(index, end), index });
     index = end;
   }
 
   return rows;
 };
+
+type CompletedTurnFilesCacheEntry = {
+  changes: TimelineEntry[];
+  files: NonNullable<TimelineEntry["files"]>;
+};
+
+const emptyCompletedTurnFiles: NonNullable<TimelineEntry["files"]> = [];
+const completedTurnFilesCache = new WeakMap<TimelineEntry, CompletedTurnFilesCacheEntry>();
+
+const sameEntries = (left: TimelineEntry[], right: TimelineEntry[]) =>
+  left.length === right.length &&
+  left.every((entry, index) => entry === right[index]);
 
 export const completedTurnFiles = (
   timeline: TimelineEntry[],
@@ -100,7 +79,7 @@ export const completedTurnFiles = (
     result.title !== "Agent response" ||
     result.status !== "success"
   ) {
-    return [];
+    return emptyCompletedTurnFiles;
   }
 
   let start = resultIndex - 1;
@@ -108,10 +87,19 @@ export const completedTurnFiles = (
     start -= 1;
   }
 
+  const changes: TimelineEntry[] = [];
+  for (let index = start + 1; index < resultIndex; index += 1) {
+    const entry = timeline[index];
+    if (entry.kind === "change" && entry.status !== "error" && entry.files) {
+      changes.push(entry);
+    }
+  }
+  const cached = completedTurnFilesCache.get(result);
+  if (cached && sameEntries(cached.changes, changes)) return cached.files;
+
   const files = new Map<string, NonNullable<TimelineEntry["files"]>[number]>();
-  for (const entry of timeline.slice(start + 1, resultIndex)) {
-    if (entry.kind !== "change" || entry.status === "error" || !entry.files) continue;
-    for (const file of entry.files) {
+  for (const entry of changes) {
+    for (const file of entry.files ?? []) {
       const current = files.get(file.path);
       files.set(file.path, current
         ? {
@@ -122,7 +110,9 @@ export const completedTurnFiles = (
         : { ...file });
     }
   }
-  return [...files.values()];
+  const summary = [...files.values()];
+  completedTurnFilesCache.set(result, { changes, files: summary });
+  return summary;
 };
 
 export function TaskTimeline({
@@ -147,12 +137,15 @@ export function TaskTimeline({
 }: TaskTimelineProps) {
   const rows = timelineRows(timeline);
   let latestCompletedResponseIndex = -1;
+  let latestTurnStartIndex = -1;
   for (let index = 0; index < timeline.length; index += 1) {
     const entry = timeline[index];
+    if (entry.kind === "user" || entry.kind === "brief") latestTurnStartIndex = index;
     if (entry.kind === "result" && entry.title === "Agent response" && entry.status === "success") {
       latestCompletedResponseIndex = index;
     }
   }
+  const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
   return (
     <div className="timeline" aria-live="polite">
       {historyLoading ? (
@@ -184,57 +177,13 @@ export function TaskTimeline({
                 entries={row.entries}
                 expandByDefault={expandToolOutput}
                 index={row.index}
+                isLive={taskWorking && row.index >= latestTurnStartIndex}
               />
             </div>
           );
         }
 
-        if (row.kind === "execution") {
-          const attempts = compactCommandAttempts(row.entries);
-          return (
-            <ExecutionGroup
-              entries={row.entries}
-              expandByDefault={expandToolOutput}
-              index={row.index}
-              key={`execution-${row.entries[0]?.id ?? row.index}`}
-            >
-              {attempts.map(({ entry, entryIds, attempts: attemptCount }, offset) => (
-                <div
-                  className="execution-group__entry"
-                  id={`timeline-entry-${entry.id}`}
-                  key={entry.id}
-                >
-                  {entryIds.filter((id) => id !== entry.id).map((id) => (
-                    <span
-                      aria-hidden="true"
-                      className="timeline-entry-anchor-target"
-                      id={`timeline-entry-${id}`}
-                      key={id}
-                    />
-                  ))}
-                  <ActivityItem
-                    entry={entry}
-                    attemptCount={attemptCount}
-                    index={row.index + offset}
-                    showReasoningSummaries={showReasoningSummaries}
-                    expandToolOutput={expandToolOutput}
-                    workspacePath={workspacePath}
-                    onOpenResource={onOpenResource}
-                    taskId={taskId}
-                    canFork={canFork}
-                    onForkTask={onForkTask}
-                    onResolveApproval={onResolveApproval}
-                    onReviewChanges={onReviewChanges}
-                    canUndo={false}
-                    undoing={undoing}
-                    onUndo={onUndo}
-                  />
-                </div>
-              ))}
-            </ExecutionGroup>
-          );
-        }
-
+        const latestCompletedResponse = row.index === latestCompletedResponseIndex;
         return (
           <div
             className="timeline-entry-anchor"
@@ -254,9 +203,10 @@ export function TaskTimeline({
               onResolveApproval={onResolveApproval}
               onReviewChanges={onReviewChanges}
               turnFiles={completedTurnFiles(timeline, row.index)}
-              canUndo={canUndo && row.index === latestCompletedResponseIndex}
-              undoing={undoing}
-              onUndo={onUndo}
+              canUndo={canUndo && latestCompletedResponse}
+              undoing={latestCompletedResponse && undoing}
+              onUndo={latestCompletedResponse ? onUndo : undefined}
+              isLive={taskWorking && row.index >= latestTurnStartIndex}
             />
           </div>
         );

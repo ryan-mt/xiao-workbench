@@ -33,4 +33,15 @@ describe("ExplorationGroup disclosure", () => {
 
     expect(markup).toContain("<details open=\"\"");
   });
+
+  it("uses compact context language", () => {
+    const markup = renderToStaticMarkup(
+      <ExplorationGroup entries={[activeExploration]} index={0} expandByDefault={false} />,
+    );
+
+    expect(markup).toContain("context-tool-group");
+    expect(markup).toContain("Gathering context");
+    expect(markup).toContain("1 read");
+    expect(markup).not.toContain("Exploring");
+  });
 });

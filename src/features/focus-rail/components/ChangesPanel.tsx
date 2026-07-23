@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
+import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../../core/bridges/tauri";
 import type { AgentAttachment } from "../../../core/models/agent";
@@ -378,21 +379,24 @@ export function ChangesPanel({
           <XiaoIcon name="branch" size={14} />
           <strong>{git.branch}</strong>
           <span>vs</span>
-          <select
-            aria-label="Compare changes against branch"
+          <SelectMenu
+            className="changes-review__branch-picker"
+            compact
+            ariaLabel="Compare changes against branch"
             title={branchError ?? "Compare without checking out another branch"}
             value={baseBranch}
             disabled={blocked || comparisonLoading}
-            onChange={(event) => {
+            options={[
+              { value: "", label: "HEAD" },
+              ...branches
+                .filter((branch) => !branch.current)
+                .map((branch) => ({ value: branch.name, label: branch.name })),
+            ]}
+            onValueChange={(value) => {
               setComparison(null);
-              setBaseBranch(event.target.value);
+              setBaseBranch(value);
             }}
-          >
-            <option value="">HEAD</option>
-            {branches.filter((branch) => !branch.current).map((branch) => (
-              <option key={branch.name} value={branch.name}>{branch.name}</option>
-            ))}
-          </select>
+          />
           {comparisonLoading ? <XiaoIcon className="spin" name="pending" size={12} /> : null}
           {git.workspaceScoped && <small>workspace scope</small>}
         </div>

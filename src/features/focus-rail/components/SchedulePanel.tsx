@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type {
   MissedRunPolicy,
@@ -323,23 +324,25 @@ function SchedulePanelWorkspace({
         />
 
         <div className="routine-form__row">
-          <label>
+          <div className="routine-form__field">
             <span>Repeats</span>
-            <select
+            <SelectMenu
+              ariaLabel="Repeat schedule"
               value={form.scheduleKind}
-              onChange={(event) => changeForm((current) => {
-                const scheduleKind = event.target.value as RoutineScheduleKind;
+              options={[
+                { value: "one_shot", label: "One time" },
+                { value: "daily", label: "Every day" },
+              ]}
+              onValueChange={(value) => changeForm((current) => {
+                const scheduleKind = value as RoutineScheduleKind;
                 return {
                   ...current,
                   scheduleKind,
                   timezone: scheduleKind === "one_shot" ? localTimezone() : current.timezone,
                 };
               })}
-            >
-              <option value="one_shot">One time</option>
-              <option value="daily">Every day</option>
-            </select>
-          </label>
+            />
+          </div>
           <label>
             <span>{form.scheduleKind === "one_shot" ? "Run at" : "Local time"}</span>
             {form.scheduleKind === "one_shot" ? (
@@ -368,19 +371,21 @@ function SchedulePanelWorkspace({
               onChange={(event) => changeForm((current) => ({ ...current, timezone: event.target.value }))}
             />
           </label>
-          <label>
+          <div className="routine-form__field">
             <span>If Xiao was closed</span>
-            <select
+            <SelectMenu
+              ariaLabel="Missed run policy"
               value={form.missedRunPolicy}
-              onChange={(event) => changeForm((current) => ({
+              options={[
+                { value: "run_once", label: "Run once on return" },
+                { value: "skip", label: "Skip missed work" },
+              ]}
+              onValueChange={(value) => changeForm((current) => ({
                 ...current,
-                missedRunPolicy: event.target.value as MissedRunPolicy,
+                missedRunPolicy: value as MissedRunPolicy,
               }))}
-            >
-              <option value="run_once">Run once on return</option>
-              <option value="skip">Skip missed work</option>
-            </select>
-          </label>
+            />
+          </div>
         </div>
 
         <label className="routine-check">

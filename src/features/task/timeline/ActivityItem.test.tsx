@@ -1,11 +1,19 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { promptWithSelectedContext, type TimelineEntry } from "../../../core/models/agent";
+import {
+  promptWithSelectedContext,
+  type AgentRuntimeState,
+  type TimelineEntry,
+} from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
-import { statusLabel } from "./LiveTurnStatus";
+import { currentTurnHasVisibleContent, LiveTurnStatus } from "./LiveTurnStatus";
 
-const renderCompaction = (entry: TimelineEntry, attemptCount = 1) => renderToStaticMarkup(
+const renderCompaction = (
+  entry: TimelineEntry,
+  attemptCount = 1,
+  isLive = true,
+) => renderToStaticMarkup(
   <ActivityItem
     entry={entry}
     attemptCount={attemptCount}
@@ -19,6 +27,7 @@ const renderCompaction = (entry: TimelineEntry, attemptCount = 1) => renderToSta
     onForkTask={() => undefined}
     onResolveApproval={async () => undefined}
     onReviewChanges={() => undefined}
+    isLive={isLive}
   />,
 );
 
@@ -117,7 +126,7 @@ describe("ActivityItem command retries", () => {
     }, 3);
 
     expect(markup).toContain("activity--warning");
-    expect(markup).toContain(">Blocked<");
+    expect(markup).toContain(">Shell blocked<");
     expect(markup).toContain("3 attempts");
   });
 
@@ -131,13 +140,31 @@ describe("ActivityItem command retries", () => {
     });
 
     expect(markup).toContain("activity--error");
-    expect(markup).toContain(">Failed<");
-    expect(markup).not.toContain(">Blocked<");
+    expect(markup).toContain(">Shell failed<");
+    expect(markup).not.toContain(">Shell blocked<");
+  });
+});
+
+describe("ActivityItem browser tools", () => {
+  it("renders web searches as a flat tool row instead of a generic card", () => {
+    const markup = renderCompaction({
+      id: "search-1",
+      kind: "result",
+      title: "Searched: site:github.com/example/project message part",
+      meta: "Browser tool",
+      status: "success",
+    });
+
+    expect(markup).toContain("activity__tool-summary-row");
+    expect(markup).toContain(">Web search<");
+    expect(markup).toContain("site:github.com/example/project message part");
+    expect(markup).not.toContain("activity__body");
+    expect(markup).not.toContain("Browser tool");
   });
 });
 
 describe("ActivityItem context compaction", () => {
-  it("renders the active compaction animation hook", () => {
+  it("renders the active compaction as a quiet divider", () => {
     const markup = renderCompaction({
       id: "compact-1",
       kind: "result",
@@ -148,16 +175,13 @@ describe("ActivityItem context compaction", () => {
     });
 
     expect(markup).toContain("activity--context-compaction activity--active");
-    expect(markup).toContain("context-compaction__glyph");
-    expect(markup).toContain("Compacting context");
-    expect(statusLabel([{
-      id: "compact-1",
-      kind: "result",
-      title: "Compacting context",
-      createdAt: 1,
-      meta: "Context",
-      status: "active",
-    }])).toBe("Compacting context");
+    expect(markup).toContain("class=\"context-compaction\"");
+    expect(markup).toContain("aria-busy=\"true\"");
+    expect(markup).toContain("Compacting session");
+    expect(markup).not.toContain("Compacting context");
+    expect(markup.match(/context-compaction__line/g)).toHaveLength(2);
+    expect(markup).not.toContain("context-compaction__glyph");
+    expect(markup).not.toContain("context-compaction__meter");
   });
 
   it("settles the same marker into its completed state", () => {
@@ -171,8 +195,81 @@ describe("ActivityItem context compaction", () => {
     });
 
     expect(markup).toContain("activity--context-compaction activity--success");
-    expect(markup).toContain("context-compaction__state--success");
-    expect(markup).toContain("Context compacted");
+    expect(markup).toContain("class=\"context-compaction\"");
+    expect(markup).toContain("Session compacted");
+    expect(markup).not.toContain("Context compacted");
+    expect(markup.match(/context-compaction__line/g)).toHaveLength(2);
+  });
+});
+
+describe("live turn presentation", () => {
+  const workingRuntime: AgentRuntimeState = {
+    phase: "working",
+    taskId: "task-1",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    turnStartedAt: 1,
+    error: null,
+    eventsSeen: 1,
+  };
+
+  it("shows a quiet thinking row before the first visible part", () => {
+    const markup = renderToStaticMarkup(
+      <LiveTurnStatus
+        taskId="task-1"
+        runtime={workingRuntime}
+        timeline={[{
+          id: "user-1",
+          kind: "user",
+          title: "Please fix this",
+        }, {
+          id: "thought-1",
+          kind: "thought",
+          title: "Reasoning",
+          status: "active",
+        }]}
+      />,
+    );
+
+    expect(markup).toContain(">Thinking<");
+    expect(markup).not.toContain("Finishing");
+  });
+
+  it("does not append a duplicate finishing row after response content exists", () => {
+    expect(currentTurnHasVisibleContent([{
+      id: "user-1",
+      kind: "user",
+      title: "Please fix this",
+    }, {
+      id: "response-1",
+      kind: "result",
+      title: "Agent response",
+      body: "Done.",
+      status: "success",
+    }])).toBe(true);
+  });
+
+  it("keeps the quiet thinking state before the first visible part arrives", () => {
+    expect(currentTurnHasVisibleContent([{
+      id: "user-1",
+      kind: "user",
+      title: "Please fix this",
+    }])).toBe(false);
+  });
+
+  it("does not animate stale active entries after their run stops", () => {
+    const markup = renderCompaction({
+      id: "response-stale",
+      kind: "result",
+      title: "Agent response",
+      body: "The last visible response.",
+      status: "active",
+    }, 1, false);
+
+    expect(markup).toContain("The last visible response.");
+    expect(markup).not.toContain("aria-busy=\"true\"");
+    expect(markup).not.toContain("is-streaming");
+    expect(markup).toContain("Copy response");
   });
 });
 
@@ -206,8 +303,8 @@ describe("ActivityItem timeline disclosures", () => {
 
     expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
     expect(markup).toContain("line 10");
-    expect(markup).toContain(">Editing<");
-    expect(markup).toContain("activity__pulse");
+    expect(markup).toContain(">Edit<");
+    expect(markup).toContain("patch-activity__verb is-active");
     expect(markup).not.toContain("<details open=\"\"");
   });
 
@@ -242,6 +339,8 @@ describe("ActivityItem timeline disclosures", () => {
     );
 
     expect(markup).toContain("Implemented the requested feature.");
+    expect(markup).not.toContain(">Response<");
+    expect(markup).not.toContain("activity__assistant-header");
     expect(markup).not.toContain("Edited 2 files");
     expect(markup).not.toContain("src/App.tsx");
     expect(markup).toContain("Review changes");
@@ -272,12 +371,5 @@ describe("ActivityItem agent collaboration", () => {
     expect(markup).toContain("thread-child");
     expect(markup).toContain("Reading the backend");
     expect(markup).toContain("Working");
-    expect(statusLabel([{
-      id: "collab-1",
-      kind: "agent",
-      title: "Waiting for subagent results",
-      status: "active",
-      collaborationTool: "wait",
-    }])).toBe("Waiting for subagent results");
   });
 });
