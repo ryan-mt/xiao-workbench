@@ -1,5 +1,7 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useLayoutEffect, useState } from "react";
 
+import { isTauriHost } from "../../../core/bridges/tauri";
 import { normalizeTheme, resolveTheme, type Theme } from "../themeCatalog";
 
 export type { Theme } from "../themeCatalog";
@@ -26,6 +28,9 @@ export function useTheme() {
       document
         .querySelector('meta[name="theme-color"]')
         ?.setAttribute("content", resolved.metaColor);
+      if (isTauriHost()) {
+        void getCurrentWindow().setTheme(resolved.windowTheme).catch(() => undefined);
+      }
     };
     apply();
     media.addEventListener("change", apply);

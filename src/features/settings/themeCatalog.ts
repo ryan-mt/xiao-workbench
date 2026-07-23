@@ -71,5 +71,10 @@ export const resolveTheme = (theme: Theme, prefersDark: boolean) => {
     : theme;
   const preset = themePresets.find((candidate) => candidate.id === id);
   if (!preset) throw new Error(`Unknown Xiao theme: ${id}`);
-  return { id, scheme: preset.scheme, metaColor: preset.metaColor };
+  return {
+    id,
+    scheme: preset.scheme,
+    metaColor: preset.metaColor,
+    windowTheme: theme === "system" ? null : preset.scheme,
+  };
 };

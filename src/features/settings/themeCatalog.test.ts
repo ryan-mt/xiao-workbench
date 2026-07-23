@@ -17,10 +17,30 @@ describe("theme catalog", () => {
   });
 
   it("resolves system mode and preserves explicit palette schemes", () => {
-    expect(resolveTheme("system", false)).toMatchObject({ id: "light", scheme: "light" });
-    expect(resolveTheme("system", true)).toMatchObject({ id: "dark", scheme: "dark" });
-    expect(resolveTheme("moss", true)).toMatchObject({ id: "moss", scheme: "light" });
-    expect(resolveTheme("dusk", false)).toMatchObject({ id: "dusk", scheme: "dark" });
-    expect(resolveTheme("ember", false)).toMatchObject({ id: "ember", scheme: "dark" });
+    expect(resolveTheme("system", false)).toMatchObject({
+      id: "light",
+      scheme: "light",
+      windowTheme: null,
+    });
+    expect(resolveTheme("system", true)).toMatchObject({
+      id: "dark",
+      scheme: "dark",
+      windowTheme: null,
+    });
+    expect(resolveTheme("moss", true)).toMatchObject({
+      id: "moss",
+      scheme: "light",
+      windowTheme: "light",
+    });
+    expect(resolveTheme("dusk", false)).toMatchObject({
+      id: "dusk",
+      scheme: "dark",
+      windowTheme: "dark",
+    });
+    expect(resolveTheme("ember", false)).toMatchObject({
+      id: "ember",
+      scheme: "dark",
+      windowTheme: "dark",
+    });
   });
 });
