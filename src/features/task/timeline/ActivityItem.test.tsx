@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
@@ -204,6 +206,22 @@ describe("ActivityItem browser tools", () => {
     expect(markup).toContain("site:github.com/example/project message part");
     expect(markup).not.toContain("activity__body");
     expect(markup).not.toContain("Browser tool");
+  });
+});
+
+describe("ActivityItem image security policy", () => {
+  it("allows the network image schemes accepted by timeline attachments", () => {
+    const config = JSON.parse(readFileSync(
+      new URL("../../../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    )) as { app: { security: { csp: string } } };
+    const imageDirective = config.app.security.csp
+      .split(";")
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith("img-src "));
+    const sources = imageDirective?.split(/\s+/) ?? [];
+
+    expect(sources).toEqual(expect.arrayContaining(["http:", "https:"]));
   });
 });
 

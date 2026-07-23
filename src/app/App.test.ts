@@ -23,6 +23,7 @@ import {
   clearTaskReviewContext,
   archivedProjectTaskState,
   beginNativeTaskConfirmation,
+  canChangeDraftLaunchProject,
   captureTaskOperationScope,
   clearVisibleTaskUnread,
   completeUndoRecovery,
@@ -39,6 +40,7 @@ import {
   shouldAutoConnectAgentRuntime,
   shouldInvalidateTaskWorkspaceState,
   shouldLoadTaskWorkspaceState,
+  shouldCreateDraftWhenOpeningNewTaskTab,
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
   taskIsVisible,
@@ -227,6 +229,41 @@ describe("continuation task acceptance contract", () => {
     expect(continuation.timeline).toEqual(source.timeline);
     expect(continuation.timeline).not.toBe(source.timeline);
     expect(source.acceptanceContract).toEqual(sourceContract);
+  });
+});
+
+describe("new-task draft lifecycle", () => {
+  it("reuses an already-open draft when New task is opened again", () => {
+    expect(shouldCreateDraftWhenOpeningNewTaskTab(true)).toBe(false);
+    expect(shouldCreateDraftWhenOpeningNewTaskTab(false)).toBe(true);
+  });
+
+  it.each([
+    ["draft text", { draftText: "unsaved prompt" }],
+    ["composer attachments", { attachmentCount: 1 }],
+    ["review context", { reviewContextCount: 1 }],
+    ["definition of done", { definitionOfDoneChanged: true }],
+  ])("locks project changes while the draft has unsaved %s", (_name, change) => {
+    expect(canChangeDraftLaunchProject({
+      selectedTask: false,
+      hasActiveRuns: false,
+      draftText: "",
+      attachmentCount: 0,
+      reviewContextCount: 0,
+      definitionOfDoneChanged: false,
+      ...change,
+    })).toBe(false);
+  });
+
+  it("allows project changes for a clean, idle draft", () => {
+    expect(canChangeDraftLaunchProject({
+      selectedTask: false,
+      hasActiveRuns: false,
+      draftText: "",
+      attachmentCount: 0,
+      reviewContextCount: 0,
+      definitionOfDoneChanged: false,
+    })).toBe(true);
   });
 });
 

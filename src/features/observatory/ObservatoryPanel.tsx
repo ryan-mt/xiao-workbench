@@ -86,13 +86,19 @@ const workspaceRelativePath = (root: string, path: string) => {
   return relative;
 };
 
-const loadRunEvents = async (runId: string, initialAfterSequence = -1) => {
+export const loadRunEvents = async (
+  runId: string,
+  initialAfterSequence = -1,
+  loadPage: typeof nativeBridge.loadXiaoRunEvents = nativeBridge.loadXiaoRunEvents,
+) => {
   const events: RunEventRecord[] = [];
   let afterSequence = initialAfterSequence;
   while (true) {
-    const page = await nativeBridge.loadXiaoRunEvents(runId, afterSequence, 200);
+    const page = await loadPage(runId, afterSequence, 200);
     events.push(...page.events);
-    if (events.length >= MAX_OBSERVATORY_EVENTS) return events.slice(0, MAX_OBSERVATORY_EVENTS);
+    if (events.length > MAX_OBSERVATORY_EVENTS) {
+      events.splice(0, events.length - MAX_OBSERVATORY_EVENTS);
+    }
     if (page.events.length < 200 || page.nextSequence === null) return events;
     if (page.nextSequence <= afterSequence) throw new Error("Run event history did not advance.");
     afterSequence = page.nextSequence;

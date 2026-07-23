@@ -220,4 +220,21 @@ describe("Sidebar task group disclosure", () => {
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain(">Show more</span><small>+2</small>");
   });
+
+  it("keeps an active task visible when it falls beyond a collapsed group's limit", () => {
+    const now = Date.now();
+    const tasks = Array.from({ length: 7 }, (_, index) =>
+      task(`Recent task ${index + 1}`, now - index),
+    );
+    const activeTask = tasks[6]!;
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks,
+      activeTaskId: activeTask.id,
+    });
+
+    expect(markup).toContain(activeTask.title);
+    expect(markup).toContain('class="task-list__item is-selected"');
+    expect(markup).toContain(">Show more</span><small>+1</small>");
+  });
 });

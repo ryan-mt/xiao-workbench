@@ -1360,6 +1360,31 @@ export const createContinuationTask = (
       : null,
   });
 
+export const shouldCreateDraftWhenOpeningNewTaskTab = (draftTabOpen: boolean) =>
+  !draftTabOpen;
+
+export const canChangeDraftLaunchProject = ({
+  selectedTask,
+  hasActiveRuns,
+  draftText,
+  attachmentCount,
+  reviewContextCount,
+  definitionOfDoneChanged,
+}: {
+  selectedTask: boolean;
+  hasActiveRuns: boolean;
+  draftText: string;
+  attachmentCount: number;
+  reviewContextCount: number;
+  definitionOfDoneChanged: boolean;
+}) =>
+  !selectedTask &&
+  !hasActiveRuns &&
+  draftText.length === 0 &&
+  attachmentCount === 0 &&
+  reviewContextCount === 0 &&
+  !definitionOfDoneChanged;
+
 export function App() {
   const { profile, saveProfile } = useLocalProfile();
   const [activeProjectPath, setActiveProjectPath] = useState<string | undefined>(readActiveProjectPath);
@@ -2090,11 +2115,14 @@ export function App() {
   );
   const activeComposerAttachments =
     restoredAttachmentsByTask[workspaceTaskKey(taskWorkspacePath, activeTask.id)] ?? [];
-  const canChangeLaunchProject =
-    !selectedTask &&
-    !agent.hasActiveRuns &&
-    activeComposerAttachments.length === 0 &&
-    !definitionOfDoneChanged;
+  const canChangeLaunchProject = canChangeDraftLaunchProject({
+    selectedTask: Boolean(selectedTask),
+    hasActiveRuns: agent.hasActiveRuns,
+    draftText: activeTask.draftText,
+    attachmentCount: activeComposerAttachments.length,
+    reviewContextCount: pendingReviewContext.length,
+    definitionOfDoneChanged,
+  });
   const attentionTaskStateReady = attentionTaskStateMatchesWorkspace(
     taskStateReady,
     taskWorkspacePath,
@@ -3033,7 +3061,9 @@ export function App() {
     newTaskLauncherProjectRef.current = null;
     setActiveTaskId(null);
     setDraftTabOpen(true);
-    setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    if (shouldCreateDraftWhenOpeningNewTaskTab(draftTabOpen)) {
+      setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    }
     setActivePage("tasks");
     closeFocusPanel();
   };

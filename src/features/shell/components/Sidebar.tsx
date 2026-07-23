@@ -540,9 +540,16 @@ export function Sidebar({
                           0,
                           groupTasks.length - collapsedTaskGroupLimit,
                         );
-                        const renderedTasks = groupExpanded
-                          ? groupTasks
-                          : groupTasks.slice(0, collapsedTaskGroupLimit);
+                        const collapsedTasks = groupTasks.slice(0, collapsedTaskGroupLimit);
+                        const activeTask = groupTasks.find((task) => task.id === activeTaskId);
+                        let renderedTasks = groupExpanded ? groupTasks : collapsedTasks;
+                        if (
+                          !groupExpanded &&
+                          activeTask &&
+                          !collapsedTasks.some((task) => task.id === activeTask.id)
+                        ) {
+                          renderedTasks = [...collapsedTasks.slice(0, -1), activeTask];
+                        }
                         return (
                           <section className="task-group" aria-labelledby={groupId} key={group}>
                             <h3 id={groupId}>
