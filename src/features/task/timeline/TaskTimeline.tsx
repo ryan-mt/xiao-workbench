@@ -6,7 +6,7 @@ import type { RunSnapshot } from "../../../core/models/run";
 import { ActivityItem, TimelineImages } from "./ActivityItem";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
-import { ToolCallGroup } from "./ToolCallGroup";
+import { ToolCallGroup, toolCallRecovery } from "./ToolCallGroup";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
 
 type TaskTimelineProps = {
@@ -218,6 +218,7 @@ function TaskTimelineView({
         }
 
         if (row.kind === "toolGroup") {
+          const recovery = toolCallRecovery(row.entries);
           return (
             <div
               className="timeline-tool-group-anchor"
@@ -255,6 +256,7 @@ function TaskTimelineView({
                     onReviewChanges={onReviewChanges}
                     canUndo={false}
                     undoing={false}
+                    recovered={recovery.recoveredIds.has(entry.id)}
                     isLive={taskWorking && row.index >= latestTurnStartIndex}
                     key={entry.id}
                   />

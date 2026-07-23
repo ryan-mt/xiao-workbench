@@ -531,6 +531,11 @@
   color: var(--danger);
 }
 
+.timeline .tool-call-group.is-recovered > details > summary > strong,
+.timeline .tool-call-group.is-recovered .tool-call-group__action {
+  color: var(--success);
+}
+
 .timeline .tool-call-group__action {
   display: inline-flex;
   flex: 0 0 auto;
@@ -637,6 +642,13 @@
   color: var(--muted);
   font-size: 12px;
   font-weight: 430;
+}
+
+.timeline .activity__tool-recovered {
+  flex: 0 0 auto;
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 520;
 }
 
 .timeline .activity__tool-caret {

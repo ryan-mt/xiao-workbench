@@ -117,6 +117,7 @@ type ActivityItemProps = {
   undoing?: boolean;
   onUndo?: () => void;
   attemptCount?: number;
+  recovered?: boolean;
   isLive?: boolean;
 };
 
@@ -252,6 +253,7 @@ export const ActivityItem = memo(function ActivityItem({
   undoing = false,
   onUndo,
   attemptCount = 1,
+  recovered = false,
   isLive = true,
 }: ActivityItemProps) {
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
@@ -513,16 +515,21 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (entry.kind === "command") {
     const environmentBlocked = isEnvironmentBlockedCommand(entry);
+    const noSearchMatches = entry.title === "Search found no matches";
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
     const active = entry.status === "active" && isLive;
-    const toolTitle = environmentBlocked
-      ? "Shell blocked"
-      : entry.status === "error"
-        ? "Shell failed"
-        : entry.command
-          ? "Shell"
-          : entry.title;
+    const toolTitle = recovered
+      ? "Shell retry"
+      : environmentBlocked
+        ? "Shell blocked"
+        : entry.status === "error"
+          ? "Shell failed"
+          : noSearchMatches
+            ? "No matches"
+            : entry.command
+              ? "Shell"
+              : entry.title;
     const terminalText = entry.command
       ? `$ ${entry.command}${entry.body ? `\n\n${entry.body}` : ""}`
       : entry.body ?? "";
@@ -533,6 +540,9 @@ export const ActivityItem = memo(function ActivityItem({
           {entry.command ? <span title={toolDetail}>{toolDetail}</span> : null}
           {attemptCount > 1 && (
             <small className="activity__tool-attempts">{attemptCount} attempts</small>
+          )}
+          {recovered && (
+            <small className="activity__tool-recovered">recovered</small>
           )}
         </span>
         {hasDetails && (
@@ -545,7 +555,7 @@ export const ActivityItem = memo(function ActivityItem({
 
     return (
       <article
-        className={`activity activity--command activity--${environmentBlocked ? "warning" : entry.status ?? "idle"}`}
+        className={`activity activity--command activity--${environmentBlocked || recovered ? "warning" : entry.status ?? "idle"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         {hasDetails ? (

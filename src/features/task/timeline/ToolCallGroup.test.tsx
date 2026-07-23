@@ -33,7 +33,7 @@ describe("ToolCallGroup", () => {
     expect(markup).not.toContain("<details open=\"\"");
   });
 
-  it("keeps failures in the same group and reports them in the summary", () => {
+  it("keeps unresolved failures in the same group and reports them in the summary", () => {
     const markup = renderToStaticMarkup(
       <ToolCallGroup
         entries={[
@@ -51,5 +51,32 @@ describe("ToolCallGroup", () => {
     expect(markup).toContain("tool-call-group is-error");
     expect(markup).toContain(">Used tools<");
     expect(markup).toContain("Show 3 calls · 1 failed");
+  });
+
+  it("presents a corrected shell call as recovered instead of leaving the group red", () => {
+    const markup = renderToStaticMarkup(
+      <ToolCallGroup
+        entries={[
+          tool("one", {
+            title: "Command did not complete",
+            command: "\"powershell.exe\" -Command \"rg -n '[invalid' src\"",
+            status: "error",
+          }),
+          tool("two", {
+            title: "Command completed",
+            command: "\"powershell.exe\" -Command \"rg -n -F 'valid' src\"",
+            status: "success",
+          }),
+        ]}
+        expandByDefault={false}
+        index={0}
+      >
+        <span>Tool details</span>
+      </ToolCallGroup>,
+    );
+
+    expect(markup).toContain("tool-call-group is-recovered");
+    expect(markup).not.toContain("tool-call-group is-error");
+    expect(markup).toContain("Show 2 calls · 1 recovered");
   });
 });

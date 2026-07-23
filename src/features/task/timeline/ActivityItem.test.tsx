@@ -15,6 +15,7 @@ const renderCompaction = (
   entry: TimelineEntry,
   attemptCount = 1,
   isLive = true,
+  recovered = false,
 ) => renderToStaticMarkup(
   <ActivityItem
     entry={entry}
@@ -29,6 +30,7 @@ const renderCompaction = (
     onForkTask={() => undefined}
     onResolveApproval={async () => undefined}
     onReviewChanges={() => undefined}
+    recovered={recovered}
     isLive={isLive}
   />,
 );
@@ -144,6 +146,22 @@ describe("ActivityItem command retries", () => {
     expect(markup).toContain("activity--error");
     expect(markup).toContain(">Shell failed<");
     expect(markup).not.toContain(">Shell blocked<");
+  });
+
+  it("shows a failed shell attempt as recovered after a corrected call succeeds", () => {
+    const markup = renderCompaction({
+      id: "command-3",
+      kind: "command",
+      title: "Run search",
+      command: "rg -n '[invalid' src",
+      body: "regex parse error",
+      status: "error",
+    }, 1, true, true);
+
+    expect(markup).toContain("activity--warning");
+    expect(markup).toContain(">Shell retry<");
+    expect(markup).toContain(">recovered<");
+    expect(markup).not.toContain(">Shell failed<");
   });
 });
 

@@ -222,6 +222,36 @@ describe("tool image output", () => {
   });
 });
 
+describe("command exit projection", () => {
+  it("treats ripgrep exit 1 as an empty search instead of a failed tool call", () => {
+    expect(timelineEntryFromItem({
+      id: "rg-empty",
+      type: "commandExecution",
+      command: "\"powershell.exe\" -Command \"rg -n -F 'missing' src\"",
+      status: "failed",
+      exitCode: 1,
+      aggregatedOutput: "",
+    })).toMatchObject({
+      title: "Search found no matches",
+      status: "success",
+    });
+  });
+
+  it("keeps ripgrep parser failures visible", () => {
+    expect(timelineEntryFromItem({
+      id: "rg-parser-error",
+      type: "commandExecution",
+      command: "\"powershell.exe\" -Command \"rg -n '[invalid' src\"",
+      status: "failed",
+      exitCode: 2,
+      aggregatedOutput: "regex parse error",
+    })).toMatchObject({
+      title: "Command did not complete",
+      status: "error",
+    });
+  });
+});
+
 describe("streaming file changes", () => {
   const changes = [{
     path: "src/App.tsx",

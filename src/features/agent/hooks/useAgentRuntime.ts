@@ -864,14 +864,34 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
 
   if (item.type === "commandExecution") {
     const commandStatus = typeof item.status === "string" ? item.status : "inProgress";
-    const failed = commandStatus === "failed" || commandStatus === "declined";
+    const command = typeof item.command === "string" ? item.command : "Running command";
+    const payload = /(?:^|\s)(?:-Command|\/c)\s+(?:"|')?(.+)$/i.exec(command)?.[1] ?? command;
+    const commandTool = payload
+      .match(/^\s*(?:&\s*)?["']?([^\s"';&|]+)/)?.[1]
+      ?.split(/[\\/]/)
+      .at(-1)
+      ?.replace(/\.(?:exe|cmd|bat|ps1)$/i, "")
+      .toLowerCase();
+    const rawFailed = commandStatus === "failed" || commandStatus === "declined";
+    const noSearchMatches =
+      rawFailed &&
+      item.exitCode === 1 &&
+      (commandTool === "rg" || commandTool === "ripgrep");
+    const failed = rawFailed && !noSearchMatches;
     const exploration = readExplorationActions(item);
     if (exploration) {
       return {
         id,
         kind: "explore",
         createdAt,
-        title: commandStatus === "inProgress" ? "Exploring workspace" : failed ? "Exploration failed" : "Explored workspace",
+        title:
+          commandStatus === "inProgress"
+            ? "Exploring workspace"
+            : noSearchMatches
+              ? "No workspace matches"
+              : failed
+                ? "Exploration failed"
+                : "Explored workspace",
         command: typeof item.command === "string" ? item.command : undefined,
         body: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined,
         meta: typeof item.cwd === "string" ? item.cwd : "Workspace",
@@ -886,10 +906,12 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
       title:
         commandStatus === "inProgress"
           ? "Xiao is running a command"
+          : noSearchMatches
+            ? "Search found no matches"
           : failed
             ? "Command did not complete"
             : "Command completed",
-      command: typeof item.command === "string" ? item.command : "Running command",
+      command,
       body: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined,
       meta: typeof item.cwd === "string" ? item.cwd : "Workspace",
       status: commandStatus === "inProgress" ? "active" : failed ? "error" : "success",

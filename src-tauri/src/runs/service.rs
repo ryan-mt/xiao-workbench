@@ -6,9 +6,9 @@ use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
-use crate::agent::models::PersistentAgentSession;
+use crate::agent::models::AgentSession;
 use crate::agent::runtime::EnvironmentRuntimeRegistry;
-use crate::agent::service::prepare_persistent_xiao_session;
+use crate::agent::service::prepare_xiao_session;
 use crate::execution::service::resolve_execution_context;
 use crate::git::models::WorkspaceCheckpointCapture;
 use crate::git::service::{
@@ -823,7 +823,7 @@ async fn prepare_before_turn(
     (
         RunRecord,
         Arc<crate::agent::runtime::AgentRuntime>,
-        PersistentAgentSession,
+        AgentSession,
     ),
     String,
 > {
@@ -854,7 +854,7 @@ async fn prepare_before_turn(
         let registry = app.state::<EnvironmentRuntimeRegistry>();
         registry.runtime(&claimed.execution_environment_id)?
     };
-    let session = prepare_persistent_xiao_session(
+    let session = prepare_xiao_session(
         &runtime,
         &claimed.execution_root,
         &claimed.workspace_path,
@@ -972,7 +972,7 @@ fn turn_steer_params(
     })
 }
 
-fn turn_start_params(run: &RunRecord, session: &PersistentAgentSession) -> Result<Value, String> {
+fn turn_start_params(run: &RunRecord, session: &AgentSession) -> Result<Value, String> {
     let sandbox_policy = match run.sandbox_mode.as_str() {
         "danger-full-access" => json!({ "type": "dangerFullAccess" }),
         "read-only" => json!({ "type": "readOnly" }),
@@ -2656,7 +2656,7 @@ mod tests {
             finished_at: None,
             version: 1,
         };
-        let session = PersistentAgentSession {
+        let session = AgentSession {
             thread_id: "thread".to_owned(),
             model: Some("gpt-test".to_owned()),
             materialized: false,
@@ -2728,7 +2728,7 @@ mod tests {
         let mut plan_run = run.clone();
         plan_run.mode = "plan".to_owned();
         plan_run.model = Some("advertised-default".to_owned());
-        let unbound_session = PersistentAgentSession {
+        let unbound_session = AgentSession {
             thread_id: "thread".to_owned(),
             model: None,
             materialized: false,
@@ -2739,7 +2739,13 @@ mod tests {
             plan_params["collaborationMode"]["settings"]["model"],
             "advertised-default"
         );
-        assert!(plan_params.get("additionalContext").is_none());
+        assert_eq!(
+            plan_params["additionalContext"]["xiao.command-failure-recovery"]["value"],
+            COMMAND_FAILURE_RECOVERY_INSTRUCTIONS
+        );
+        assert!(plan_params["additionalContext"]
+            .get("xiao.execution-lifecycle")
+            .is_none());
 
         plan_run.mode = "default".to_owned();
         let default_params = turn_start_params(&plan_run, &unbound_session).unwrap();

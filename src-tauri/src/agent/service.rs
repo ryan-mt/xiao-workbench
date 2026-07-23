@@ -2,11 +2,10 @@ use serde_json::{json, Value};
 
 use super::models::{
     AgentAccountSummary, AgentAccountUsage, AgentDailyUsageBucket, AgentModelSummary,
-    AgentRateLimitsResponse, ModelListResponse, PersistentAgentSession, ThreadStartResponse,
-    XiaoHistoryItem,
+    AgentRateLimitsResponse, AgentSession, ModelListResponse, ThreadStartResponse, XiaoHistoryItem,
 };
 use super::runtime::AgentRuntime;
-use crate::xiao::models::{XiaoThreadBinding, XiaoThreadPersistence};
+use crate::xiao::models::XiaoThreadBinding;
 
 const MODEL_PAGE_SIZE: u64 = 100;
 
@@ -129,7 +128,7 @@ pub async fn list_models(runtime: &AgentRuntime) -> Result<Vec<AgentModelSummary
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn prepare_persistent_xiao_session(
+pub(crate) async fn prepare_xiao_session(
     runtime: &AgentRuntime,
     workspace_path: &str,
     project_path: &str,
@@ -141,12 +140,12 @@ pub(crate) async fn prepare_persistent_xiao_session(
     approval_policy: &str,
     sandbox: &str,
     enable_lsp_tools: bool,
-) -> Result<PersistentAgentSession, String> {
+) -> Result<AgentSession, String> {
     if workspace_path.trim().is_empty() {
         return Err("A workspace path is required to prepare a Xiao session.".to_owned());
     }
 
-    if let Some(binding) = resumable_persistent_binding(binding)? {
+    if let Some(binding) = reusable_xiao_binding(binding)? {
         if runtime.is_thread_bound(&binding.thread_id, project_path, task_id, workspace_path)? {
             runtime
                 .request(
@@ -159,40 +158,18 @@ pub(crate) async fn prepare_persistent_xiao_session(
                     )?,
                 )
                 .await?;
-            return Ok(PersistentAgentSession {
+            return Ok(AgentSession {
                 thread_id: binding.thread_id.clone(),
                 model: model.map(str::to_owned),
                 materialized: true,
             });
         }
-        let result = runtime
-            .request(
-                "thread/resume".to_owned(),
-                json!({
-                    "threadId": binding.thread_id,
-                    "cwd": workspace_path,
-                    "runtimeWorkspaceRoots": [workspace_path],
-                    "approvalPolicy": approval_policy,
-                    "sandbox": sandbox,
-                    "excludeTurns": false,
-                }),
-            )
-            .await?;
-        let response: ThreadStartResponse = serde_json::from_value(result)
-            .map_err(|error| format!("Invalid thread/resume response: {error}"))?;
-        validate_persistent_thread(&response, &binding.thread_id)?;
-        runtime.bind_thread_to_task(&response.thread.id, project_path, task_id, workspace_path)?;
-        return Ok(PersistentAgentSession {
-            thread_id: response.thread.id,
-            model: response.model.or_else(|| model.map(str::to_owned)),
-            materialized: true,
-        });
     }
 
     let result = runtime
         .request(
             "thread/start".to_owned(),
-            persistent_thread_start_request(
+            xiao_thread_start_request(
                 workspace_path,
                 model,
                 service_tier,
@@ -204,7 +181,7 @@ pub(crate) async fn prepare_persistent_xiao_session(
         .await?;
     let response: ThreadStartResponse = serde_json::from_value(result)
         .map_err(|error| format!("Invalid thread/start response: {error}"))?;
-    validate_persistent_thread(&response, &response.thread.id)?;
+    validate_xiao_thread(&response, &response.thread.id)?;
     let history_items = history_items_for_injection(history)?;
     let materialized = !history_items.is_empty();
     if materialized {
@@ -219,7 +196,7 @@ pub(crate) async fn prepare_persistent_xiao_session(
             .await?;
     }
     runtime.bind_thread_to_task(&response.thread.id, project_path, task_id, workspace_path)?;
-    Ok(PersistentAgentSession {
+    Ok(AgentSession {
         thread_id: response.thread.id,
         model: response.model.or_else(|| model.map(str::to_owned)),
         materialized,
@@ -251,13 +228,13 @@ fn persistent_thread_settings_request(
     }))
 }
 
-fn resumable_persistent_binding(
+fn reusable_xiao_binding(
     binding: Option<&XiaoThreadBinding>,
 ) -> Result<Option<&XiaoThreadBinding>, String> {
     let Some(binding) = binding else {
         return Ok(None);
     };
-    if binding.persistence != XiaoThreadPersistence::Persistent || !binding.materialized {
+    if !binding.materialized {
         return Ok(None);
     }
     if binding.thread_source.as_deref() != Some("xiao-workbench") {
@@ -266,23 +243,23 @@ fn resumable_persistent_binding(
     Ok(Some(binding))
 }
 
-fn validate_persistent_thread(
+fn validate_xiao_thread(
     response: &ThreadStartResponse,
     expected_thread_id: &str,
 ) -> Result<(), String> {
     if response.thread.id != expected_thread_id
-        || response.thread.ephemeral != Some(false)
+        || response.thread.ephemeral != Some(true)
         || response.thread.thread_source.as_deref() != Some("xiao-workbench")
     {
         return Err(
-            "Codex returned a thread that does not match Xiao's persistent ownership binding."
+            "Codex returned a thread that does not match Xiao's isolated ownership binding."
                 .to_owned(),
         );
     }
     Ok(())
 }
 
-fn persistent_thread_start_request(
+fn xiao_thread_start_request(
     workspace_path: &str,
     model: Option<&str>,
     service_tier: Option<&str>,
@@ -290,6 +267,8 @@ fn persistent_thread_start_request(
     sandbox: &str,
     enable_lsp_tools: bool,
 ) -> Value {
+    // Xiao persists durable history itself. Keeping the Codex rollout ephemeral prevents
+    // other Codex clients that share the user's CODEX_HOME from indexing Xiao conversations.
     let mut params = json!({
         "cwd": workspace_path,
         "runtimeWorkspaceRoots": [workspace_path],
@@ -297,7 +276,7 @@ fn persistent_thread_start_request(
         "serviceTier": service_tier,
         "approvalPolicy": approval_policy,
         "sandbox": sandbox,
-        "ephemeral": false,
+        "ephemeral": true,
         "serviceName": "Xiao Workbench",
         "threadSource": "xiao-workbench",
     });
@@ -335,10 +314,11 @@ fn history_item_to_response_item(item: XiaoHistoryItem) -> Result<Value, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::xiao::models::XiaoThreadPersistence;
 
     #[test]
-    fn persistent_sessions_are_source_tagged_and_non_ephemeral() {
-        let params = persistent_thread_start_request(
+    fn xiao_sessions_are_source_tagged_and_ephemeral() {
+        let params = xiao_thread_start_request(
             "C:/workspace",
             Some("gpt-test"),
             Some("priority"),
@@ -347,7 +327,7 @@ mod tests {
             true,
         );
 
-        assert_eq!(params["ephemeral"], false);
+        assert_eq!(params["ephemeral"], true);
         assert_eq!(params["threadSource"], "xiao-workbench");
         assert_eq!(params["serviceName"], "Xiao Workbench");
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["C:/workspace"]));
@@ -389,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn materialized_persistent_binding_requires_xiao_ownership() {
+    fn materialized_binding_requires_xiao_ownership() {
         let wrong_source = XiaoThreadBinding {
             thread_id: "owned".to_owned(),
             persistence: XiaoThreadPersistence::Persistent,
@@ -397,43 +377,51 @@ mod tests {
             thread_source: Some("another-client".to_owned()),
             cli_version: None,
         };
-        assert!(resumable_persistent_binding(Some(&wrong_source)).is_err());
+        assert!(reusable_xiao_binding(Some(&wrong_source)).is_err());
 
         let provisional = XiaoThreadBinding {
             materialized: false,
             ..wrong_source
         };
-        assert!(resumable_persistent_binding(Some(&provisional))
-            .unwrap()
-            .is_none());
+        assert!(reusable_xiao_binding(Some(&provisional)).unwrap().is_none());
     }
 
     #[test]
-    fn persistent_thread_validation_rejects_wrong_source_or_id() {
+    fn isolated_thread_validation_rejects_persistent_wrong_source_or_id() {
         let valid = ThreadStartResponse {
+            thread: super::super::models::ThreadRecord {
+                id: "owned".to_owned(),
+                ephemeral: Some(true),
+                thread_source: Some("xiao-workbench".to_owned()),
+            },
+            model: Some("gpt-test".to_owned()),
+        };
+        assert!(validate_xiao_thread(&valid, "owned").is_ok());
+        assert!(validate_xiao_thread(&valid, "other").is_err());
+
+        let wrong_source = ThreadStartResponse {
+            thread: super::super::models::ThreadRecord {
+                id: "owned".to_owned(),
+                ephemeral: Some(true),
+                thread_source: Some("another-client".to_owned()),
+            },
+            model: None,
+        };
+        assert!(validate_xiao_thread(&wrong_source, "owned").is_err());
+
+        let persistent = ThreadStartResponse {
             thread: super::super::models::ThreadRecord {
                 id: "owned".to_owned(),
                 ephemeral: Some(false),
                 thread_source: Some("xiao-workbench".to_owned()),
             },
-            model: Some("gpt-test".to_owned()),
-        };
-        assert!(validate_persistent_thread(&valid, "owned").is_ok());
-        assert!(validate_persistent_thread(&valid, "other").is_err());
-
-        let wrong_source = ThreadStartResponse {
-            thread: super::super::models::ThreadRecord {
-                id: "owned".to_owned(),
-                ephemeral: Some(false),
-                thread_source: Some("another-client".to_owned()),
-            },
             model: None,
         };
-        assert!(validate_persistent_thread(&wrong_source, "owned").is_err());
+        assert!(validate_xiao_thread(&persistent, "owned").is_err());
     }
 
     #[test]
-    fn persistent_sessions_restore_xiao_history() {
+    fn recreated_sessions_restore_xiao_history() {
         let items = history_items_for_injection(vec![
             XiaoHistoryItem {
                 role: "user".to_owned(),

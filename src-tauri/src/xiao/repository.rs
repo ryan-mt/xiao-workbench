@@ -1890,11 +1890,13 @@ fn validate_task(task: &XiaoTaskDocument) -> Result<(), String> {
 }
 
 fn prepare_task_for_save(task: &mut XiaoTaskDocument) -> Result<(), String> {
-    if task
-        .thread_binding
-        .as_ref()
-        .is_some_and(|binding| binding.persistence == XiaoThreadPersistence::Persistent)
-    {
+    if task.thread_binding.as_ref().is_some_and(|binding| {
+        binding.materialized
+            && matches!(
+                binding.persistence,
+                XiaoThreadPersistence::Ephemeral | XiaoThreadPersistence::Persistent
+            )
+    }) {
         task.thread_binding = None;
         task.thread_id = None;
     }
@@ -1945,7 +1947,8 @@ fn upsert_task(
                 pinned = excluded.pinned, unread = excluded.unread, model = excluded.model,
                 reasoning_effort = excluded.reasoning_effort,
                 thread_binding_json = CASE
-                    WHEN json_extract(tasks.thread_binding_json, '$.persistence') = 'persistent'
+                    WHEN json_extract(tasks.thread_binding_json, '$.persistence')
+                         IN ('ephemeral', 'persistent')
                     THEN tasks.thread_binding_json
                     ELSE excluded.thread_binding_json
                 END,
@@ -4093,14 +4096,14 @@ mod tests {
     }
 
     #[test]
-    fn generic_task_save_cannot_forge_persistent_thread_ownership() {
+    fn generic_task_save_cannot_forge_materialized_thread_ownership() {
         let directory = TestDirectory::new("forged-thread-binding");
         let workspace = directory.workspace("workspace");
         let repository = XiaoRepository::open(&directory.path).unwrap();
         let mut forged = task("task", 0);
         forged.thread_binding = Some(XiaoThreadBinding {
             thread_id: "foreign-thread".to_owned(),
-            persistence: XiaoThreadPersistence::Persistent,
+            persistence: XiaoThreadPersistence::Ephemeral,
             materialized: true,
             thread_source: Some("xiao-workbench".to_owned()),
             cli_version: Some("fake".to_owned()),

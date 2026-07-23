@@ -665,7 +665,7 @@ impl XiaoRepository {
             }
             let binding = XiaoThreadBinding {
                 thread_id: attachment.thread_id.clone(),
-                persistence: XiaoThreadPersistence::Persistent,
+                persistence: XiaoThreadPersistence::Ephemeral,
                 materialized: attachment.materialized,
                 thread_source: Some(attachment.thread_source.clone()),
                 cli_version: Some(attachment.cli_version.clone()),
@@ -675,7 +675,7 @@ impl XiaoRepository {
                     r#"UPDATE tasks SET thread_binding_json = ?1
                      WHERE workspace_id = ?2 AND task_id = ?3"#,
                     params![
-                        json_string(&binding, "persistent thread binding")?,
+                        json_string(&binding, "Xiao thread binding")?,
                         current.workspace_id,
                         current.task_id
                     ],
@@ -1175,7 +1175,7 @@ impl XiaoRepository {
             }
             let binding = XiaoThreadBinding {
                 thread_id: attachment.thread_id.clone(),
-                persistence: XiaoThreadPersistence::Persistent,
+                persistence: XiaoThreadPersistence::Ephemeral,
                 materialized: attachment.materialized,
                 thread_source: Some(attachment.thread_source.clone()),
                 cli_version: Some(attachment.cli_version.clone()),
@@ -1185,7 +1185,7 @@ impl XiaoRepository {
                     r#"UPDATE tasks SET thread_binding_json = ?1
                        WHERE workspace_id = ?2 AND task_id = ?3"#,
                     params![
-                        json_string(&binding, "persistent thread binding")?,
+                        json_string(&binding, "Xiao thread binding")?,
                         run.workspace_id,
                         run.task_id,
                     ],
@@ -2364,7 +2364,7 @@ fn mark_task_thread_materialized(
     };
     let binding = XiaoThreadBinding {
         thread_id: thread_id.clone(),
-        persistence: XiaoThreadPersistence::Persistent,
+        persistence: XiaoThreadPersistence::Ephemeral,
         materialized: true,
         thread_source: run.thread_source.clone(),
         cli_version: run.cli_version.clone(),
@@ -4464,7 +4464,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_native_binding_survives_stale_workspace_save() {
+    fn native_ephemeral_binding_survives_stale_workspace_save() {
         let directory = TestDirectory::new("thread-authority");
         let repository = repository_with_tasks(&directory.0, &["task-a"]);
         let workspace = workspace_path(&directory.0);
@@ -4478,7 +4478,7 @@ mod tests {
                 &run.id,
                 &RuntimeAttachment {
                     generation: 1,
-                    thread_id: "persistent".to_owned(),
+                    thread_id: "runtime-thread".to_owned(),
                     thread_source: "xiao-workbench".to_owned(),
                     cli_version: "test".to_owned(),
                     materialized: true,
@@ -4508,7 +4508,9 @@ mod tests {
             })
             .unwrap();
         let defaults = repository.run_task_defaults(&workspace, "task-a").unwrap();
-        assert_eq!(defaults.thread_binding.unwrap().thread_id, "persistent");
+        let binding = defaults.thread_binding.unwrap();
+        assert_eq!(binding.thread_id, "runtime-thread");
+        assert_eq!(binding.persistence, XiaoThreadPersistence::Ephemeral);
     }
 
     #[test]

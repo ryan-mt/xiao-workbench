@@ -134,7 +134,7 @@ pub(crate) struct ThreadRecord {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PersistentAgentSession {
+pub(crate) struct AgentSession {
     pub thread_id: String,
     pub model: Option<String>,
     pub materialized: bool,
