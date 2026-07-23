@@ -3518,7 +3518,6 @@ export function App() {
       ) : null}
       <AppShell
         sidebarOpen={sidebarOpen}
-        focusRailOverlay={focusView === "files"}
         onCloseSidebar={closeSidebar}
         statusBar={
           <StatusBar

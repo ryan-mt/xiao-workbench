@@ -29,7 +29,31 @@ type TreeNodeProps = {
   onOpen: (node: FileNode) => void;
 };
 
+export const OPEN_FILE_RENDER_BATCH_SIZE = 400;
+
 const fileName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+
+export const visibleFileLines = (
+  lines: string[],
+  limit = OPEN_FILE_RENDER_BATCH_SIZE,
+) => lines.slice(0, limit);
+
+export const indexReviewAttachmentsByLine = (
+  attachments: AgentAttachment[],
+  activeFile: string | null,
+) => {
+  const indexed = new Map<number, AgentAttachment[]>();
+  if (!activeFile) return indexed;
+  for (const attachment of attachments) {
+    if (attachment.kind !== "review" || attachment.path !== activeFile) continue;
+    const line = attachment.lineEnd ?? attachment.lineStart;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 1) continue;
+    const current = indexed.get(line);
+    if (current) current.push(attachment);
+    else indexed.set(line, [attachment]);
+  }
+  return indexed;
+};
 
 const nodeMatches = (node: FileNode, query: string, childrenByPath: Map<string, FileNode[]>): boolean => {
   if (!query) return true;
@@ -154,13 +178,21 @@ export function OpenFilePanel({
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null);
   const [comment, setComment] = useState("");
   const [stagedNotice, setStagedNotice] = useState<string | null>(null);
-  const [visibleLines, setVisibleLines] = useState(1200);
+  const [visibleLines, setVisibleLines] = useState(OPEN_FILE_RENDER_BATCH_SIZE);
   const executionRootRef = useRef(workspace.execution.executionRoot);
   const fileScopeRef = useRef(`${taskId ?? ""}\u0000${workspace.execution.executionRoot}`);
   const fileRequestId = useRef(0);
 
   const lines = useMemo(() => content?.replace(/\r\n?/g, "\n").split("\n") ?? [], [content]);
   const extension = activeFile?.split(".").at(-1) ?? "text";
+  const highlightedLines = useMemo(
+    () => visibleFileLines(lines, visibleLines).map((line) => highlightLine(line, extension)),
+    [extension, lines, visibleLines],
+  );
+  const reviewAttachmentsByLine = useMemo(
+    () => indexReviewAttachmentsByLine(reviewContext, activeFile),
+    [activeFile, reviewContext],
+  );
 
   useEffect(() => {
     const nextScope = `${taskId ?? ""}\u0000${workspace.execution.executionRoot}`;
@@ -176,7 +208,7 @@ export function OpenFilePanel({
     setTreeError(null);
     setSelection(null);
     setStagedNotice(null);
-    setVisibleLines(1200);
+    setVisibleLines(OPEN_FILE_RENDER_BATCH_SIZE);
     onActiveFileChange(null);
   }, [onActiveFileChange, taskId, workspace.execution.executionRoot]);
 
@@ -190,7 +222,7 @@ export function OpenFilePanel({
     setSelection(null);
     setComment("");
     setStagedNotice(null);
-    setVisibleLines(1200);
+    setVisibleLines(OPEN_FILE_RENDER_BATCH_SIZE);
 
     void nativeBridge.readWorkspaceFile(workspace.path, taskId, activeFile)
       .then((nextContent) => {
@@ -340,16 +372,11 @@ export function OpenFilePanel({
             </header>
             {stagedNotice && <div className="open-file-editor__notice"><XiaoIcon name="check" size={13} />{stagedNotice}</div>}
             <div className="code-reader" role="region" aria-label={`Contents of ${activeFile}`}>
-              {lines.slice(0, visibleLines).map((line, index) => {
+              {highlightedLines.map((highlightedLine, index) => {
                 const lineNumber = index + 1;
                 const selected = selection && lineNumber >= selection.start && lineNumber <= selection.end;
                 const commentAfter = selection && lineNumber === selection.end;
-                const stagedComments = reviewContext.filter(
-                  (attachment) =>
-                    attachment.kind === "review" &&
-                    attachment.path === activeFile &&
-                    (attachment.lineEnd ?? attachment.lineStart) === lineNumber,
-                );
+                const stagedComments = reviewAttachmentsByLine.get(lineNumber) ?? [];
                 return (
                   <div className="code-reader__group" key={lineNumber}>
                     <div className={`code-reader__line ${selected ? "is-selected" : ""}`}>
@@ -364,7 +391,7 @@ export function OpenFilePanel({
                         type="button"
                         onClick={(event) => selectLine(lineNumber, event.shiftKey)}
                       >{lineNumber}</button>
-                      <code onClick={(event) => selectLine(lineNumber, event.shiftKey)}>{highlightLine(line, extension) || " "}</code>
+                      <code onClick={(event) => selectLine(lineNumber, event.shiftKey)}>{highlightedLine || " "}</code>
                     </div>
                     {stagedComments.map((staged) => (
                       <article className="staged-line-comment" key={staged.id}>
@@ -399,8 +426,8 @@ export function OpenFilePanel({
                 );
               })}
               {lines.length > visibleLines && (
-                <button className="code-reader__more" type="button" onClick={() => setVisibleLines((count) => count + 1200)}>
-                  Show {Math.min(1200, lines.length - visibleLines).toLocaleString()} more lines
+                <button className="code-reader__more" type="button" onClick={() => setVisibleLines((count) => count + OPEN_FILE_RENDER_BATCH_SIZE)}>
+                  Show {Math.min(OPEN_FILE_RENDER_BATCH_SIZE, lines.length - visibleLines).toLocaleString()} more lines
                   <small>{(lines.length - visibleLines).toLocaleString()} remaining</small>
                 </button>
               )}

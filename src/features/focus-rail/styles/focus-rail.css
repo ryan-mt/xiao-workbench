@@ -2,6 +2,8 @@
   position: relative;
   display: grid;
   contain: layout paint;
+  container-name: focus-rail;
+  container-type: inline-size;
   min-width: 0;
   min-height: 0;
   grid-template-rows: 44px minmax(0, 1fr);
@@ -2177,6 +2179,7 @@
 .open-file-editor__notice { display: flex; min-height: 32px; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--success) 20%, var(--line)); background: var(--success-soft); color: var(--success); font-size: var(--text-micro); }
 
 .code-reader { min-height: 0; overflow: auto; padding: 8px 0 120px; background: var(--code-surface); font-family: var(--font-mono); font-size: 11px; line-height: 1.7; }
+.code-reader__group { content-visibility: auto; contain-intrinsic-block-size: auto 19px; }
 .code-reader__line { display: grid; position: relative; width: max-content; min-width: 100%; grid-template-columns: 24px 42px minmax(0, 1fr); }
 .code-reader__line:hover { background: var(--surface-hover); }
 .code-reader__line.is-selected { background: color-mix(in srgb, #f2c94c 22%, var(--code-surface)); }
@@ -2237,6 +2240,13 @@
 
 .focus-rail .is-spinning { animation: rail-spin 850ms linear infinite; }
 @keyframes rail-spin { to { transform: rotate(360deg); } }
+
+@container focus-rail (max-width: 760px) {
+  .open-file-panel { grid-template-columns: minmax(0, 1fr); }
+  .open-file-panel:not(.has-active-file) .open-file-editor,
+  .open-file-panel.has-active-file .open-file-browser { display: none; }
+  .open-file-editor__back { display: grid; }
+}
 
 @media (max-width: 700px) {
   .review-tabs-bar { grid-template-columns: 38px minmax(0, 1fr) auto; }
