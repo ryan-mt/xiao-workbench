@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
@@ -32,6 +33,24 @@ const withWindow = (action: (window: ReturnType<typeof getCurrentWindow>) => Pro
   void action(getCurrentWindow());
 };
 
+type TabOverflowEdges = {
+  left: boolean;
+  right: boolean;
+};
+
+export const tabOverflowEdges = ({
+  clientWidth,
+  scrollLeft,
+  scrollWidth,
+}: Pick<HTMLElement, "clientWidth" | "scrollLeft" | "scrollWidth">): TabOverflowEdges => {
+  const maximum = Math.max(0, scrollWidth - clientWidth);
+  const position = Math.min(maximum, Math.max(0, scrollLeft));
+  return {
+    left: position > 1,
+    right: maximum - position > 1,
+  };
+};
+
 export function TitleBar({
   tabs,
   activeTabId,
@@ -43,6 +62,47 @@ export function TitleBar({
   onNewTab,
   update,
 }: TitleBarProps) {
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const activeTabRef = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState<TabOverflowEdges>({
+    left: false,
+    right: false,
+  });
+  const syncOverflow = useCallback(() => {
+    const node = tabsRef.current;
+    if (!node) return;
+    const next = tabOverflowEdges(node);
+    setOverflow((current) =>
+      current.left === next.left && current.right === next.right ? current : next
+    );
+  }, []);
+
+  useEffect(() => {
+    const node = tabsRef.current;
+    if (!node) return;
+    syncOverflow();
+    window.addEventListener("resize", syncOverflow);
+    if (typeof ResizeObserver === "undefined") {
+      return () => window.removeEventListener("resize", syncOverflow);
+    }
+    const observer = new ResizeObserver(syncOverflow);
+    observer.observe(node);
+    for (const tab of node.children) observer.observe(tab);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", syncOverflow);
+    };
+  }, [syncOverflow, tabs.length]);
+
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+    const frame = window.requestAnimationFrame(syncOverflow);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTabId, syncOverflow]);
+
   return (
     <header className="title-bar" data-tauri-drag-region>
       <div className="title-bar__nav" data-tauri-drag-region>
@@ -66,13 +126,22 @@ export function TitleBar({
         </button>
       </div>
 
-      <div className="title-bar__tabs" role="tablist" aria-label="Open tasks">
+      <div
+        className="title-bar__tabs"
+        role="tablist"
+        aria-label="Open tasks"
+        data-overflow-left={overflow.left || undefined}
+        data-overflow-right={overflow.right || undefined}
+        ref={tabsRef}
+        onScroll={syncOverflow}
+      >
         {tabs.map((tab) => {
           const active = tab.id === activeTabId;
           return (
             <div
               className={`title-bar__tab ${active ? "is-active" : ""} ${tab.working ? "is-working" : ""}`}
               key={tab.id}
+              ref={active ? activeTabRef : undefined}
               onAuxClick={(event) => {
                 if (event.button === 1) onCloseTab(tab.id);
               }}

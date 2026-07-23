@@ -1,3 +1,5 @@
+import { memo, useMemo } from "react";
+
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
@@ -47,7 +49,12 @@ const isContextEntry = (entry: TimelineEntry) =>
 
 const isCompactToolEntry = (entry: TimelineEntry) => entry.kind === "command";
 
+const timelineRowsCache = new WeakMap<TimelineEntry[], TimelineRow[]>();
+
 export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
+  const cached = timelineRowsCache.get(timeline);
+  if (cached) return cached;
+
   const rows: TimelineRow[] = [];
   let index = 0;
 
@@ -74,6 +81,7 @@ export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
     index = end;
   }
 
+  timelineRowsCache.set(timeline, rows);
   return rows;
 };
 
@@ -135,7 +143,7 @@ export const completedTurnFiles = (
   return summary;
 };
 
-export function TaskTimeline({
+function TaskTimelineView({
   timeline,
   runtime,
   latestRun,
@@ -155,16 +163,22 @@ export function TaskTimeline({
   undoing,
   onUndo,
 }: TaskTimelineProps) {
-  const rows = timelineRows(timeline);
-  let latestCompletedResponseIndex = -1;
-  let latestTurnStartIndex = -1;
-  for (let index = 0; index < timeline.length; index += 1) {
-    const entry = timeline[index];
-    if (entry.kind === "user" || entry.kind === "brief") latestTurnStartIndex = index;
-    if (entry.kind === "result" && entry.title === "Agent response" && entry.status === "success") {
-      latestCompletedResponseIndex = index;
+  const rows = useMemo(() => timelineRows(timeline), [timeline]);
+  const { latestCompletedResponseIndex, latestTurnStartIndex } = useMemo(() => {
+    let completedResponseIndex = -1;
+    let turnStartIndex = -1;
+    for (let index = 0; index < timeline.length; index += 1) {
+      const entry = timeline[index];
+      if (entry.kind === "user" || entry.kind === "brief") turnStartIndex = index;
+      if (entry.kind === "result" && entry.title === "Agent response" && entry.status === "success") {
+        completedResponseIndex = index;
+      }
     }
-  }
+    return {
+      latestCompletedResponseIndex: completedResponseIndex,
+      latestTurnStartIndex: turnStartIndex,
+    };
+  }, [timeline]);
   const taskWorking = runtime.phase === "working" && runtime.taskId === taskId;
   return (
     <div className="timeline" aria-live="polite">
@@ -295,3 +309,6 @@ export function TaskTimeline({
     </div>
   );
 }
+
+export const TaskTimeline = memo(TaskTimelineView);
+TaskTimeline.displayName = "TaskTimeline";

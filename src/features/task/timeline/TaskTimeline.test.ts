@@ -80,6 +80,17 @@ describe("timelineRows", () => {
       { kind: "exploration", entries: [entry("read-3", "explore")], index: 3 },
     ]);
   });
+
+  it("reuses a projection while the immutable timeline is unchanged", () => {
+    const timeline = [
+      entry("user", "user"),
+      entry("command", "command"),
+      entry("result", "result"),
+    ];
+
+    expect(timelineRows(timeline)).toBe(timelineRows(timeline));
+    expect(timelineRows([...timeline])).not.toBe(timelineRows(timeline));
+  });
 });
 
 describe("completedTurnFiles", () => {

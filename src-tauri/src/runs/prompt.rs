@@ -5,7 +5,7 @@ pub(crate) const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task pla
 pub(crate) const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting and multiline arguments. Do not use a check-only command as a probe when its expected nonzero exit would merely tell you to run the corresponding formatter or fixer; after editing, run the formatter or fixer first and reserve its check-only form for final verification. Do not batch a command that may fail as part of normal probing with independent checks, because one expected failure makes the whole batch appear failed. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
 pub(crate) const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
 pub(crate) const FULL_ACCESS_INSTRUCTIONS: &str = "This Xiao turn runs with the sandbox disabled. Xiao does not restrict filesystem, process, or network access to the execution root. The execution root and runtime workspace roots identify the active project; they are not access boundaries. Use access outside the project only when it is in scope for the user's task. Full access does not make an unavailable tool, disconnected integration, or external service available.";
-pub(crate) const GOAL_LIFECYCLE_INSTRUCTIONS: &str = "This task has an active Xiao goal. Treat the current turn as one real iteration toward that objective: inspect the latest state, choose the next concrete milestone, perform meaningful work, and verify the result before ending the turn. Preserve and update an existing plan when the work is multi-step. Use update_goal with status complete only when the objective is genuinely achieved and no required work remains. If the goal remains active, leave durable progress and a clear next step so the automatic continuation advances instead of restarting or merely restating the goal. Do not mark the goal complete because a turn ended, time is short, or the remaining work is difficult.";
+pub(crate) const GOAL_LIFECYCLE_INSTRUCTIONS: &str = "This task has an active Xiao goal. At the start of every goal turn, call get_goal before planning or editing; use its objective, status, and budget as authoritative, and do not ask the user to repeat them. Treat the turn as one real iteration toward that objective: inspect the latest workspace and plan, choose the next concrete milestone, perform meaningful work, and verify the result before ending the turn. Honor any newer user request that narrows, pauses, or asks only about the work. Preserve and update an existing plan when the work is multi-step. Use update_goal with status complete only when the objective is genuinely achieved and no required work remains. If the goal remains active, leave durable progress and a clear next step so the automatic continuation advances instead of restarting or merely restating the goal. Do not mark the goal complete because a turn ended, time is short, or the remaining work is difficult.";
 pub(crate) const VERIFICATION_LOOP_INSTRUCTIONS: &str = "This run has a Xiao acceptance contract. Treat its gates as completion conditions. After making changes, run the relevant checks and inspect their actual output. If a gate fails, fix the cause and verify again when it is safe to do so. Do not present the work as verified merely because the agent turn completed; Xiao's recorded verification outcome is authoritative.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,7 @@ const FULL_ACCESS: PromptSection = PromptSection {
 };
 const GOAL_LIFECYCLE: PromptSection = PromptSection {
     key: "xiao.goal-lifecycle",
-    version: 1,
+    version: 2,
     source: PromptSource::Task,
     content: GOAL_LIFECYCLE_INSTRUCTIONS,
 };
@@ -141,7 +141,13 @@ mod tests {
                 "xiao.verification-loop",
             ]
         );
-        assert!(sections.iter().all(|section| section.version == 1));
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.version)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 1, 1, 2, 1]
+        );
         assert_eq!(
             sections
                 .iter()
@@ -192,6 +198,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("automatic continuation"));
+        assert!(iterative["xiao.goal-lifecycle"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("call get_goal"));
         assert!(iterative["xiao.verification-loop"]["value"]
             .as_str()
             .unwrap()

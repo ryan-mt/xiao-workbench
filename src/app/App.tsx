@@ -3573,7 +3573,9 @@ export function App() {
             approvalPolicy={activeTask.approvalPolicy}
             workspaceMode={activeTask.workspaceMode}
             workingTaskCount={agent.workingTaskIds.length}
+            runtimeError={agent.runtime.error}
             onOpenRuntime={() => openFocusView("runtime")}
+            onOpenCapabilities={() => openFocusView("extensions")}
             onOpenChanges={() => openFocusView("changes")}
             onOpenContext={() => openFocusView("context")}
           />

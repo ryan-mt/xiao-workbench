@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { SelectMenu, type SelectMenuOption } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
@@ -288,16 +288,26 @@ export function TaskWorkspace({
     !compacting &&
     !undoing &&
     followUps.length === 0;
-  const activeModel =
-    (selectedModel ? models.find((model) => model.model === selectedModel) : models.find((model) => model.isDefault)) ??
-    models.find((model) => model.isDefault);
+  const activeModel = useMemo(
+    () =>
+      (
+        selectedModel
+          ? models.find((model) => model.model === selectedModel)
+          : models.find((model) => model.isDefault)
+      ) ?? models.find((model) => model.isDefault),
+    [models, selectedModel],
+  );
   const contextPercent = contextUsedPercent(contextUsage, activeModel?.contextWindow);
   const openTimelineResource = useEventCallback(onOpenResource);
   const forkTimelineTask = useEventCallback(onForkTask);
   const resolveTimelineApproval = useEventCallback(onResolveApproval);
   const reviewTimelineChanges = useEventCallback(() => onFocusView("changes"));
+  const fixTimelineVerification = useEventCallback((prompt: string) => onSubmit(prompt, []));
   const undoTimelineTurn = useEventCallback(onUndo);
-  const activeCollaborators = activeCollaboratorsFromTimeline(timeline);
+  const activeCollaborators = useMemo(
+    () => activeCollaboratorsFromTimeline(timeline),
+    [timeline],
+  );
 
   useEffect(() => {
     setTimelineSelection(null);
@@ -595,7 +605,7 @@ export function TaskWorkspace({
             onForkTask={forkTimelineTask}
             onResolveApproval={resolveTimelineApproval}
             onReviewChanges={reviewTimelineChanges}
-            onFixVerificationFailures={(prompt) => onSubmit(prompt, [])}
+            onFixVerificationFailures={fixTimelineVerification}
             fixVerificationFailuresDisabled={taskActionsDisabled || taskArchived}
             canUndo={canUndo}
             undoing={undoing}
