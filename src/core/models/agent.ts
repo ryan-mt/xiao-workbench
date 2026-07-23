@@ -44,6 +44,74 @@ export type AgentQuestionRequest = {
   receivedAt: number;
 };
 
+export type AgentMcpElicitationOption = {
+  value: string;
+  label: string;
+};
+
+type AgentMcpElicitationFieldBase = {
+  name: string;
+  label: string;
+  description: string;
+  required: boolean;
+};
+
+export type AgentMcpElicitationField = AgentMcpElicitationFieldBase & (
+  | {
+      kind: "text";
+      format: "text" | "email" | "uri" | "date" | "date-time";
+      minLength: number | null;
+      maxLength: number | null;
+      defaultValue: string | null;
+    }
+  | {
+      kind: "number";
+      integer: boolean;
+      minimum: number | null;
+      maximum: number | null;
+      defaultValue: number | null;
+    }
+  | {
+      kind: "boolean";
+      defaultValue: boolean | null;
+    }
+  | {
+      kind: "select";
+      options: AgentMcpElicitationOption[];
+      defaultValue: string | null;
+    }
+  | {
+      kind: "multi-select";
+      options: AgentMcpElicitationOption[];
+      minItems: number | null;
+      maxItems: number | null;
+      defaultValue: string[];
+    }
+  | {
+      kind: "unsupported";
+      schemaType: string;
+    }
+);
+
+export type AgentMcpElicitationRequest = {
+  requestId: number | string;
+  pendingInputId: string;
+  runId: string;
+  taskId: string;
+  threadId: string;
+  turnId: string;
+  serverName: string;
+  message: string;
+  fields: AgentMcpElicitationField[];
+  receivedAt: number;
+};
+
+export type AgentMcpElicitationResponse = {
+  action: "accept" | "decline";
+  content: Record<string, unknown> | null;
+  _meta: null;
+};
+
 export type AgentApprovalRequestKind = "action" | "permissions";
 
 export type AgentCollaboratorStatus =

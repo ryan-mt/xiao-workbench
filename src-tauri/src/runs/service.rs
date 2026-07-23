@@ -527,6 +527,7 @@ impl RunService {
         require_pending_route(&run, &pending)?;
         let request_id: Value = serde_json::from_str(&pending.request_id)
             .map_err(|_| "The Xiao input request id is invalid.".to_owned())?;
+        validate_pending_input_result(pending.kind, &result)?;
         let registry = app.state::<EnvironmentRuntimeRegistry>();
         registry.reply(
             &run.execution_environment_id,
@@ -1256,27 +1257,49 @@ fn apply_runtime_message(
     if let Some(kind) = pending_input_kind(method) {
         let request_id = message
             .get("id")
+            .cloned()
             .ok_or("Codex input request did not include a request id.")?;
-        let Some((turn_id, item_id)) = pending_input_route(kind, turn_id, item_id)? else {
+        if kind == PendingInputKind::McpElicitation && !is_supported_mcp_elicitation(&safe_message)
+        {
             app.state::<EnvironmentRuntimeRegistry>().reply(
                 &route.execution_environment_id,
                 generation,
-                request_id.clone(),
+                request_id,
                 mcp_elicitation_decline_result(),
             )?;
             return Ok(());
-        };
-        let request_id = serde_json::to_string(request_id)
+        }
+        let encoded_request_id = serde_json::to_string(&request_id)
             .map_err(|error| format!("Could not encode Codex request id: {error}"))?;
+        let pending_route = pending_input_route(
+            kind,
+            turn_id,
+            item_id,
+            route.turn_id.as_deref(),
+            &encoded_request_id,
+        );
+        let (turn_id, item_id) = match pending_route {
+            Ok(route) => route,
+            Err(_) if kind == PendingInputKind::McpElicitation => {
+                app.state::<EnvironmentRuntimeRegistry>().reply(
+                    &route.execution_environment_id,
+                    generation,
+                    request_id,
+                    mcp_elicitation_decline_result(),
+                )?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let (mutation, pending) = {
             let repository = app.state::<XiaoRepository>();
             repository.open_pending_input(NewPendingInput {
                 run_id: route.id.clone(),
                 runtime_generation: generation,
-                request_id,
+                request_id: encoded_request_id,
                 thread_id: thread_id.to_owned(),
-                turn_id: turn_id.to_owned(),
-                item_id: item_id.to_owned(),
+                turn_id,
+                item_id,
                 kind,
                 safe_summary: safe_message
                     .get("params")
@@ -1295,7 +1318,7 @@ fn apply_runtime_message(
                 Some(pending.clone()),
             );
         }
-        if route.approval_policy == "never" || kind == PendingInputKind::McpElicitation {
+        if route.approval_policy == "never" {
             auto_decline_pending(app, &route, &pending, kind)?;
         }
         return Ok(());
@@ -1679,17 +1702,54 @@ fn pending_input_kind(method: &str) -> Option<PendingInputKind> {
     }
 }
 
-fn pending_input_route<'a>(
+fn pending_input_route(
     kind: PendingInputKind,
-    turn_id: Option<&'a str>,
-    item_id: Option<&'a str>,
-) -> Result<Option<(&'a str, &'a str)>, String> {
+    turn_id: Option<&str>,
+    item_id: Option<&str>,
+    active_turn_id: Option<&str>,
+    request_id: &str,
+) -> Result<(String, String), String> {
     if kind == PendingInputKind::McpElicitation {
-        return Ok(None);
+        let active_turn_id =
+            active_turn_id.ok_or("Codex MCP elicitation did not match an active turn.")?;
+        if turn_id.is_some_and(|turn_id| turn_id != active_turn_id) {
+            return Err("Codex MCP elicitation targeted another turn.".to_owned());
+        }
+        return Ok((
+            active_turn_id.to_owned(),
+            format!("mcp-elicitation:{request_id}"),
+        ));
     }
     let turn_id = turn_id.ok_or("Codex input request did not include a turn id.")?;
     let item_id = item_id.ok_or("Codex input request did not include an item id.")?;
-    Ok(Some((turn_id, item_id)))
+    Ok((turn_id.to_owned(), item_id.to_owned()))
+}
+
+fn is_supported_mcp_elicitation(message: &Value) -> bool {
+    let Some(params) = message.get("params").and_then(Value::as_object) else {
+        return false;
+    };
+    params.get("mode").and_then(Value::as_str) == Some("form")
+        && params.get("serverName").and_then(Value::as_str).is_some()
+        && params.get("message").and_then(Value::as_str).is_some()
+        && params
+            .get("requestedSchema")
+            .and_then(Value::as_object)
+            .is_some_and(|schema| {
+                let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                    return false;
+                };
+                let required_fields_are_present = match schema.get("required") {
+                    None => true,
+                    Some(Value::Array(required)) => required.iter().all(|name| {
+                        name.as_str()
+                            .is_some_and(|name| properties.contains_key(name))
+                    }),
+                    Some(_) => false,
+                };
+                schema.get("type").and_then(Value::as_str) == Some("object")
+                    && required_fields_are_present
+            })
 }
 
 fn mcp_elicitation_decline_result() -> Value {
@@ -1702,6 +1762,37 @@ fn auto_decline_result(kind: PendingInputKind) -> Value {
         PendingInputKind::Permissions => json!({ "permissions": {}, "scope": "turn" }),
         PendingInputKind::Question => json!({ "answers": {} }),
         _ => json!({ "decision": "decline" }),
+    }
+}
+
+fn validate_pending_input_result(kind: PendingInputKind, result: &Value) -> Result<(), String> {
+    if kind != PendingInputKind::McpElicitation {
+        return Ok(());
+    }
+    let result = result
+        .as_object()
+        .ok_or("The MCP elicitation response must be an object.")?;
+    let action = result
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or("The MCP elicitation response has no action.")?;
+    let content = result
+        .get("content")
+        .ok_or("The MCP elicitation response has no content field.")?;
+    let metadata = result
+        .get("_meta")
+        .ok_or("The MCP elicitation response has no _meta field.")?;
+    if !metadata.is_null() && !metadata.is_object() {
+        return Err("The MCP elicitation response metadata must be an object or null.".to_owned());
+    }
+    match action {
+        "accept" if content.is_object() => Ok(()),
+        "accept" => Err("An accepted MCP elicitation response must contain an object.".to_owned()),
+        "decline" | "cancel" if content.is_null() => Ok(()),
+        "decline" | "cancel" => {
+            Err("A declined MCP elicitation response cannot contain form values.".to_owned())
+        }
+        _ => Err("The MCP elicitation response action is invalid.".to_owned()),
     }
 }
 
@@ -2192,16 +2283,128 @@ mod tests {
     }
 
     #[test]
-    fn mcp_elicitation_auto_decline_does_not_require_turn_or_item_ids() {
+    fn mcp_form_elicitation_routes_without_an_item_id() {
         assert_eq!(
-            pending_input_route(PendingInputKind::McpElicitation, None, None),
-            Ok(None)
+            pending_input_route(
+                PendingInputKind::McpElicitation,
+                Some("turn"),
+                None,
+                Some("turn"),
+                "7",
+            ),
+            Ok(("turn".to_owned(), "mcp-elicitation:7".to_owned()))
         );
+        assert_eq!(
+            pending_input_route(
+                PendingInputKind::McpElicitation,
+                None,
+                None,
+                Some("active-turn"),
+                "7",
+            ),
+            Ok(("active-turn".to_owned(), "mcp-elicitation:7".to_owned(),))
+        );
+        assert!(pending_input_route(
+            PendingInputKind::McpElicitation,
+            Some("stale-turn"),
+            None,
+            Some("active-turn"),
+            "7",
+        )
+        .is_err());
+        assert!(
+            pending_input_route(PendingInputKind::McpElicitation, None, None, None, "7",).is_err()
+        );
+        assert!(is_supported_mcp_elicitation(&json!({
+            "params": {
+                "mode": "form",
+                "serverName": "calendar",
+                "message": "Choose a calendar",
+                "requestedSchema": { "type": "object", "properties": {} },
+            }
+        })));
+        assert!(!is_supported_mcp_elicitation(&json!({
+            "params": {
+                "mode": "url",
+                "serverName": "calendar",
+                "message": "Sign in",
+                "url": "https://example.com",
+            }
+        })));
+        assert!(!is_supported_mcp_elicitation(&json!({
+            "params": {
+                "mode": "form",
+                "serverName": "calendar",
+                "message": "Choose a calendar",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": ["missing"],
+                },
+            }
+        })));
+        assert!(!is_supported_mcp_elicitation(&json!({
+            "params": {
+                "mode": "form",
+                "serverName": "calendar",
+                "message": "Choose a calendar",
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": "calendar",
+                },
+            }
+        })));
         assert_eq!(
             mcp_elicitation_decline_result(),
             json!({ "action": "decline", "content": null, "_meta": null })
         );
-        assert!(pending_input_route(PendingInputKind::Question, None, None).is_err());
+        assert!(pending_input_route(PendingInputKind::Question, None, None, None, "7").is_err());
+    }
+
+    #[test]
+    fn mcp_elicitation_results_require_protocol_shaped_content() {
+        assert!(validate_pending_input_result(
+            PendingInputKind::McpElicitation,
+            &json!({ "action": "accept", "content": { "calendar": "work" }, "_meta": null }),
+        )
+        .is_ok());
+        assert!(validate_pending_input_result(
+            PendingInputKind::McpElicitation,
+            &json!({ "action": "decline", "content": null, "_meta": null }),
+        )
+        .is_ok());
+        assert!(validate_pending_input_result(
+            PendingInputKind::McpElicitation,
+            &json!({ "action": "cancel", "content": null, "_meta": {} }),
+        )
+        .is_ok());
+        assert!(validate_pending_input_result(
+            PendingInputKind::McpElicitation,
+            &json!({ "action": "accept", "content": null, "_meta": null }),
+        )
+        .is_err());
+        assert!(validate_pending_input_result(
+            PendingInputKind::McpElicitation,
+            &json!({ "action": "decline", "content": { "calendar": "work" }, "_meta": null }),
+        )
+        .is_err());
+        for invalid in [
+            json!({ "content": null, "_meta": null }),
+            json!({ "action": "decline", "_meta": null }),
+            json!({ "action": "decline", "content": null }),
+            json!({ "action": "decline", "content": null, "_meta": "invalid" }),
+            json!({ "action": "unknown", "content": null, "_meta": null }),
+        ] {
+            assert!(
+                validate_pending_input_result(PendingInputKind::McpElicitation, &invalid).is_err()
+            );
+        }
+        assert!(validate_pending_input_result(
+            PendingInputKind::Question,
+            &json!({ "answers": {} }),
+        )
+        .is_ok());
     }
 
     #[test]

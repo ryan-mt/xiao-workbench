@@ -7,6 +7,8 @@ import {
   type AgentAttachment,
   type AgentFollowUp,
   type AgentGoal,
+  type AgentMcpElicitationRequest,
+  type AgentMcpElicitationResponse,
   type AgentMode,
   type AgentModelSummary,
   type AgentPlan,
@@ -94,6 +96,7 @@ type TaskWorkspaceProps = {
   plan: AgentPlan | null;
   reviewContext: AgentAttachment[];
   questionRequest: AgentQuestionRequest | null;
+  mcpElicitationRequest: AgentMcpElicitationRequest | null;
   draftText: string;
   followUps: AgentFollowUp[];
   sendingFollowUpId: string | null;
@@ -132,6 +135,10 @@ type TaskWorkspaceProps = {
   onResolveQuestion: (
     requestId: number | string,
     answers: Record<string, string[]>,
+  ) => Promise<boolean>;
+  onResolveMcpElicitation: (
+    requestId: number | string,
+    response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
@@ -181,6 +188,7 @@ export function TaskWorkspace({
   plan,
   reviewContext,
   questionRequest,
+  mcpElicitationRequest,
   draftText,
   followUps,
   sendingFollowUpId,
@@ -217,6 +225,7 @@ export function TaskWorkspace({
   onSubmissionStart,
   onSubmissionSucceeded,
   onResolveQuestion,
+  onResolveMcpElicitation,
   onModelChange,
   onReasoningEffortChange,
   onFastModeChange,
@@ -380,6 +389,7 @@ export function TaskWorkspace({
       reviewContext={reviewContext}
       selectedContext={selectedContext}
       questionRequest={questionRequest}
+      mcpElicitationRequest={mcpElicitationRequest}
       draftText={draftText}
       followUps={followUps}
       sendingFollowUpId={sendingFollowUpId}
@@ -425,6 +435,7 @@ export function TaskWorkspace({
       onSubmissionStart={onSubmissionStart}
       onSubmissionSucceeded={onSubmissionSucceeded}
       onResolveQuestion={onResolveQuestion}
+      onResolveMcpElicitation={onResolveMcpElicitation}
       disabled={
         taskArchived || taskStateLoading || environmentBusy || Boolean(taskStateError)
       }

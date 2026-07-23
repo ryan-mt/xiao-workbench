@@ -12,6 +12,8 @@ import type {
   AgentCollaborator,
   AgentFollowUp,
   AgentGoal,
+  AgentMcpElicitationRequest,
+  AgentMcpElicitationResponse,
   AgentMode,
   AgentModelSummary,
   AgentPlan,
@@ -28,6 +30,7 @@ import { fastServiceTier } from "../../agent/hooks/agentProtocol";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { ModelPicker } from "./ModelPicker";
+import { McpElicitationDock } from "./McpElicitationDock";
 import {
   canNavigatePromptHistory,
   navigatePromptHistory,
@@ -80,6 +83,7 @@ type ComposerProps = {
   reviewContext: AgentAttachment[];
   selectedContext: string | null;
   questionRequest: AgentQuestionRequest | null;
+  mcpElicitationRequest: AgentMcpElicitationRequest | null;
   draftText: string;
   followUps: AgentFollowUp[];
   sendingFollowUpId: string | null;
@@ -124,6 +128,10 @@ type ComposerProps = {
   onResolveQuestion: (
     requestId: number | string,
     answers: Record<string, string[]>,
+  ) => Promise<boolean>;
+  onResolveMcpElicitation: (
+    requestId: number | string,
+    response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
   disabled?: boolean;
   disabledPlaceholder?: string;
@@ -216,6 +224,7 @@ export function Composer({
   reviewContext,
   selectedContext,
   questionRequest,
+  mcpElicitationRequest,
   draftText,
   followUps,
   sendingFollowUpId,
@@ -258,6 +267,7 @@ export function Composer({
   onSubmissionStart,
   onSubmissionSucceeded,
   onResolveQuestion,
+  onResolveMcpElicitation,
   disabled = false,
   disabledPlaceholder = "Restore this task to continue",
   storageError = null,
@@ -296,6 +306,9 @@ export function Composer({
   const slashCommandOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const currentTaskWorking = runtime.phase === "working" && runtime.taskId === taskId;
   const activeQuestionRequest = questionRequest?.taskId === taskId ? questionRequest : null;
+  const activeMcpElicitationRequest =
+    mcpElicitationRequest?.taskId === taskId ? mcpElicitationRequest : null;
+  const interactiveRequestOpen = Boolean(activeQuestionRequest || activeMcpElicitationRequest);
   const canSteer = currentTaskWorking && Boolean(runtime.threadId && runtime.turnId);
   const canSubmit =
     !submitting &&
@@ -303,7 +316,7 @@ export function Composer({
     !compacting &&
     !undoing &&
     (!definitionOfDoneAvailable || definitionOfDoneReady) &&
-    !activeQuestionRequest &&
+    !interactiveRequestOpen &&
     (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0 || Boolean(selectedContext?.trim())) &&
     (runtime.phase === "ready" || currentTaskWorking);
   const defaultModel = models.find((model) => model.isDefault);
@@ -968,7 +981,7 @@ export function Composer({
                           <button
                             className="run-deck__send"
                             type="button"
-                            disabled={sending || Boolean(activeQuestionRequest) || (!canSteer && !failed)}
+                            disabled={sending || interactiveRequestOpen || (!canSteer && !failed)}
                             title={canSteer
                               ? "Send this message to the current turn"
                               : failed
@@ -1016,14 +1029,20 @@ export function Composer({
           request={activeQuestionRequest}
           onResolve={onResolveQuestion}
         />
+      ) : activeMcpElicitationRequest ? (
+        <McpElicitationDock
+          key={activeMcpElicitationRequest.pendingInputId}
+          request={activeMcpElicitationRequest}
+          onResolve={onResolveMcpElicitation}
+        />
       ) : null}
       <div
         className={`composer ${currentTaskWorking ? "is-working" : ""} ${
           dragging ? "is-dragging" : ""
         } ${effectiveReasoningEffort === "ultra" ? "is-ultra" : ""} ${
-          activeQuestionRequest ? "is-question-paused" : ""
+          interactiveRequestOpen ? "is-question-paused" : ""
         } ${fastModeActive ? "is-fast" : ""} ${selectedContext ? "has-selected-context" : ""}`}
-        aria-hidden={activeQuestionRequest ? true : undefined}
+        aria-hidden={interactiveRequestOpen ? true : undefined}
         onDragEnter={(event) => {
           event.preventDefault();
           setDragging(true);

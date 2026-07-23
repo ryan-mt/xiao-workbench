@@ -3746,6 +3746,122 @@
 }
 
 .question-dock__footer small { color: var(--muted); font-size: var(--text-micro); }
+
+.mcp-elicitation-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.mcp-elicitation-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mcp-elicitation-field > span,
+.mcp-elicitation-field > legend {
+  display: grid;
+  gap: 2px;
+  padding: 0;
+  color: var(--text-soft);
+  font-size: var(--text-label);
+}
+
+.mcp-elicitation-field strong,
+.mcp-elicitation-field > legend {
+  font-weight: 590;
+}
+
+.mcp-elicitation-field small {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: 1.4;
+}
+
+.mcp-elicitation-field > input:not([type="checkbox"]),
+.mcp-elicitation-field > select {
+  width: 100%;
+  min-height: 39px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-label);
+}
+
+.mcp-elicitation-field > input:focus,
+.mcp-elicitation-field > select:focus {
+  border-color: var(--info);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 12%, transparent);
+}
+
+.mcp-elicitation-field > input[aria-invalid="true"],
+.mcp-elicitation-field > select[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.mcp-elicitation-field > em {
+  color: var(--danger);
+  font-size: var(--text-micro);
+  font-style: normal;
+}
+
+.mcp-elicitation-field.is-boolean,
+.mcp-elicitation-options > label {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-soft);
+}
+
+.mcp-elicitation-field.is-boolean > input,
+.mcp-elicitation-options input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--info);
+}
+
+.mcp-elicitation-field.is-boolean > span {
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-elicitation-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.mcp-elicitation-options > label {
+  min-height: 36px;
+  padding-block: 6px;
+  font-size: var(--text-label);
+}
+
+.mcp-elicitation-field.is-unsupported {
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+.mcp-elicitation-dock .question-dock__count i {
+  font-family: var(--font-sans);
+  font-size: var(--text-micro);
+}
+
 .composer.is-question-paused { display: none; }
 
 .composer {

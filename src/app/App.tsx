@@ -1456,6 +1456,7 @@ export function App() {
   const notifiedRuntimeErrorRef = useRef<string | null>(null);
   const notifiedApprovalRef = useRef<string | null>(null);
   const notifiedQuestionRef = useRef<string | null>(null);
+  const notifiedMcpElicitationRef = useRef<string | null>(null);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<ArchivedTaskItem[]>([]);
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
@@ -2204,6 +2205,26 @@ export function App() {
       new Notification("Xiao has a question", { body: question.questions[0]?.question });
     }
   }, [agent.questionRequest, preferences.notifyApprovals]);
+
+  useEffect(() => {
+    const request = agent.mcpElicitationRequest;
+    if (!request) {
+      notifiedMcpElicitationRef.current = null;
+      return;
+    }
+    const requestId = String(request.requestId);
+    if (
+      preferences.notifyApprovals &&
+      notifiedMcpElicitationRef.current !== requestId &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      notifiedMcpElicitationRef.current = requestId;
+      new Notification("An MCP server needs information", {
+        body: `${request.serverName}: ${request.message}`,
+      });
+    }
+  }, [agent.mcpElicitationRequest, preferences.notifyApprovals]);
 
   const changeTaskWorkspaceMode = async (workspaceMode: XiaoWorkspaceMode) => {
     if (workspaceMode === activeTask.workspaceMode) return;
@@ -3686,6 +3707,7 @@ export function App() {
               plan={activeTask.plan}
               reviewContext={pendingReviewContext}
               questionRequest={agent.questionRequest}
+              mcpElicitationRequest={agent.mcpElicitationRequest}
               draftText={activeTask.draftText}
               followUps={activeTask.followUps}
               sendingFollowUpId={sendingFollowUpId}
@@ -3755,6 +3777,7 @@ export function App() {
               onRemoveReviewContext={removeReviewContext}
               onReviewContextSent={clearReviewContext}
               onResolveQuestion={agent.resolveQuestion}
+              onResolveMcpElicitation={agent.resolveMcpElicitation}
               onDraftChange={(draftText) =>
                 updateTaskDraft(taskWorkspacePath, activeTask.id, draftText)
               }

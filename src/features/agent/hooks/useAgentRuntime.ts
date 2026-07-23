@@ -9,6 +9,8 @@ import type {
   AgentAttachment,
   AgentApprovalPolicy,
   AgentGoal,
+  AgentMcpElicitationRequest,
+  AgentMcpElicitationResponse,
   AgentMessage,
   AgentModelSummary,
   AgentPlan,
@@ -73,6 +75,11 @@ import {
   type LiveTimelineDelta,
 } from "./liveTimelineDeltas";
 import { collaborationTimelineEntry } from "./collaborationTimeline";
+import {
+  enqueueAgentMcpElicitationRequest,
+  readMcpElicitationRequest,
+  removeAgentMcpElicitationRequest,
+} from "./mcpElicitation";
 
 const MAX_RUNTIME_LOGS = 240;
 const LIVE_DELTA_FLUSH_MS = 33;
@@ -907,6 +914,8 @@ export function useAgentRuntime(
   const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLogEntry[]>([]);
   const [threadUsage, setThreadUsage] = useState<Record<string, ThreadTokenUsage>>({});
   const [questionRequest, setQuestionRequest] = useState<AgentQuestionRequest | null>(null);
+  const [mcpElicitationRequests, setMcpElicitationRequests] =
+    useState<AgentMcpElicitationRequest[]>([]);
   const [compactingTaskId, setCompactingTaskId] = useState<string | null>(null);
   const [undoingScope, setUndoingScope] = useState<AgentRuntimeTaskScope | null>(null);
   const [listenersReady, setListenersReady] = useState(!isTauriHost());
@@ -921,6 +930,7 @@ export function useAgentRuntime(
   const executionTaskIdRef = useRef(executionTaskId);
   const activeTimelineReadyRef = useRef(activeTaskTimelineComplete);
   const questionRequestRef = useRef<AgentQuestionRequest | null>(null);
+  const mcpElicitationRequestsRef = useRef<AgentMcpElicitationRequest[]>([]);
   const runProjectionRef = useRef<RunProjection>(emptyRunProjection());
   const workspaceListedRunIds = useRef(new Set<string>());
   const expectedEnvironmentIdRef = useRef(workspaceEnvironmentId);
@@ -963,6 +973,15 @@ export function useAgentRuntime(
     workspacePath,
     generation: 0,
   });
+  const updateMcpElicitationRequests = useCallback((
+    update: (current: AgentMcpElicitationRequest[]) => AgentMcpElicitationRequest[],
+  ) => {
+    const current = mcpElicitationRequestsRef.current;
+    const next = update(current);
+    if (next === current) return;
+    mcpElicitationRequestsRef.current = next;
+    setMcpElicitationRequests(next);
+  }, []);
   const previousWorkspaceScope = workspaceScopeRef.current;
   const nextWorkspaceScope = advanceAgentRuntimeWorkspaceScope(
     previousWorkspaceScope,
@@ -979,6 +998,7 @@ export function useAgentRuntime(
     executionTaskIdRef.current = executionTaskId;
     activeTimelineReadyRef.current = activeTaskTimelineComplete;
     questionRequestRef.current = null;
+    mcpElicitationRequestsRef.current = [];
     runProjectionRef.current = emptyRunProjection();
     workspaceListedRunIds.current.clear();
     expectedEnvironmentIdRef.current = workspaceEnvironmentId;
@@ -1026,6 +1046,7 @@ export function useAgentRuntime(
     setRuntimeLogs([]);
     setThreadUsage({});
     setQuestionRequest(null);
+    setMcpElicitationRequests([]);
     setCompactingTaskId(null);
     setUndoingScope(null);
     setListenersReady(!isTauriHost());
@@ -1092,6 +1113,10 @@ export function useAgentRuntime(
     timelineCache.current.set(activeTaskId, activeTaskTimeline);
     taskApprovalPolicies.current.set(activeTaskId, activeTaskApprovalPolicy);
     setQuestionRequest((current) => current?.taskId === activeTaskId ? current : null);
+    updateMcpElicitationRequests((current) => {
+      const next = current.filter((request) => request.taskId === activeTaskId);
+      return next.length === current.length ? current : next;
+    });
     setRuntime((current) => ({
       ...current,
       threadId:
@@ -1104,6 +1129,7 @@ export function useAgentRuntime(
     activeTaskId,
     activeTaskTimeline,
     activeTaskTimelineComplete,
+    updateMcpElicitationRequests,
   ]);
 
   const updateTimeline = useCallback(
@@ -1500,7 +1526,20 @@ export function useAgentRuntime(
           pending.runId === route.runId &&
           String(messageFromPendingInput(pending).id) === String(requestId)
         );
+        const resolvedMcpRequest = mcpElicitationRequestsRef.current.find((request) =>
+          request.runId === route.runId &&
+          request.taskId === route.taskId &&
+          String(request.requestId) === String(requestId)
+        );
+        if (resolvedMcpRequest) {
+          updateMcpElicitationRequests((current) =>
+            removeAgentMcpElicitationRequest(current, resolvedMcpRequest)
+          );
+        }
         if (!pendingInput) return;
+        if (pendingInput.kind === "mcp_elicitation") {
+          return;
+        }
         if (pendingInput.kind !== "question") {
           updateTimeline(route.taskId, (current) =>
             settleResolvedApprovalEntry(current, pendingInput.id)
@@ -1591,32 +1630,20 @@ export function useAgentRuntime(
       }
 
       if (message.method === "mcpServer/elicitation/request" && message.id != null) {
-        const serverName = typeof message.params?.serverName === "string"
-          ? message.params.serverName
-          : "MCP server";
-        const requestMessage = typeof message.params?.message === "string"
-          ? message.params.message
-          : "The MCP server requested interactive input that Xiao cannot collect yet.";
-        const entryId = `elicitation-${route?.pendingInput?.id ?? String(message.id)}`;
-        updateTimeline(taskId, (current) =>
-          current.some((entry) => entry.id === entryId)
-            ? current
-            : [
-                ...current,
-                {
-                  id: entryId,
-                  kind: "approval",
-                  title: "MCP input request declined",
-                  createdAt: Date.now(),
-                  body: [
-                    requestMessage,
-                    "Interactive MCP elicitation is not available in Xiao yet, so the native run service declined this request.",
-                  ].join("\n\n"),
-                  meta: serverName,
-                  status: "error",
-                },
-              ],
-        );
+        const pendingInput = route?.pendingInput;
+        const request = pendingInput
+          ? readMcpElicitationRequest(message, taskId, pendingInput.id, route.runId)
+          : null;
+        if (request && taskId === activeTaskIdRef.current) {
+          updateMcpElicitationRequests((current) =>
+            enqueueAgentMcpElicitationRequest(current, request)
+          );
+        } else if (!request && taskId === activeTaskIdRef.current) {
+          setRuntime((current) => ({
+            ...current,
+            error: "Codex sent an invalid MCP elicitation request.",
+          }));
+        }
         return;
       }
 
@@ -1988,6 +2015,10 @@ export function useAgentRuntime(
         settleThinking(taskId);
         liveAgentEntries.current.delete(taskId);
         setQuestionRequest((current) => current?.taskId === taskId ? null : current);
+        updateMcpElicitationRequests((current) => {
+          const next = current.filter((request) => request.taskId !== taskId);
+          return next.length === current.length ? current : next;
+        });
         if (!route) {
           setRuntime((current) => ({
             ...current,
@@ -2063,6 +2094,7 @@ export function useAgentRuntime(
       resolveTaskId,
       scheduleWorkspaceRefresh,
       settleThinking,
+      updateMcpElicitationRequests,
       updateTimeline,
       workspacePath,
     ],
@@ -2165,6 +2197,10 @@ export function useAgentRuntime(
               setQuestionRequest((current) =>
                 current?.pendingInputId === pending.id ? null : current,
               );
+              updateMcpElicitationRequests((current) => {
+                const next = current.filter((request) => request.pendingInputId !== pending.id);
+                return next.length === current.length ? current : next;
+              });
             }
             const run = event.payload.snapshot;
             const runIsTerminal =
@@ -2186,6 +2222,10 @@ export function useAgentRuntime(
             }
             if (runIsTerminal) {
               setQuestionRequest((current) => current?.runId === run.id ? null : current);
+              updateMcpElicitationRequests((current) => {
+                const next = current.filter((request) => request.runId !== run.id);
+                return next.length === current.length ? current : next;
+              });
               const outcome: AgentTurnOutcome = run.status === "completed"
                 ? "completed"
                 : run.status === "failed"
@@ -2271,6 +2311,7 @@ export function useAgentRuntime(
             compactingTasks.current.clear();
             syncedGoals.current.clear();
             questionRequestRef.current = null;
+            mcpElicitationRequestsRef.current = [];
             undoingScopeRef.current = null;
             appendRuntimeLog("system", "Agent runtime stopped.");
             setAccount(null);
@@ -2279,6 +2320,7 @@ export function useAgentRuntime(
             setModels([]);
             setThreadUsage({});
             setQuestionRequest(null);
+            setMcpElicitationRequests([]);
             setCompactingTaskId(null);
             setUndoingScope(null);
             setRuntime(
@@ -2346,6 +2388,7 @@ export function useAgentRuntime(
     handleMessage,
     listenerRetryRevision,
     publishRunProjection,
+    updateMcpElicitationRequests,
     workspacePath,
   ]);
 
@@ -3336,6 +3379,50 @@ export function useAgentRuntime(
     [activeTaskId, workspacePath],
   );
 
+  const resolveMcpElicitation = useCallback(
+    async (
+      requestId: number | string,
+      response: AgentMcpElicitationResponse,
+    ) => {
+      const scope: AgentRuntimeTaskScope = {
+        workspacePath,
+        generation: workspaceScopeRef.current.generation,
+        taskId: activeTaskId,
+      };
+      const operationIsActive = () => agentRuntimeTaskScopeMatches(
+        workspaceScopeRef.current,
+        activeTaskIdRef.current,
+        scope,
+      );
+      if (!operationIsActive()) return false;
+      try {
+        const request = mcpElicitationRequestsRef.current.find((candidate) =>
+          candidate.taskId === scope.taskId &&
+          String(candidate.requestId) === String(requestId)
+        );
+        if (!request) {
+          throw new Error("This MCP form is no longer attached to a live Xiao run.");
+        }
+        await nativeBridge.resolveXiaoRunInput(request.pendingInputId, response);
+        if (!operationIsActive()) return false;
+        updateMcpElicitationRequests((current) =>
+          removeAgentMcpElicitationRequest(current, request)
+        );
+        setRuntime((current) => ({ ...current, error: null }));
+        return true;
+      } catch (reason) {
+        if (operationIsActive()) {
+          setRuntime((current) => ({
+            ...current,
+            error: reason instanceof Error ? reason.message : String(reason),
+          }));
+        }
+        return false;
+      }
+    },
+    [activeTaskId, updateMcpElicitationRequests, workspacePath],
+  );
+
   const stateIsCurrentWorkspace = stateWorkspacePath === workspacePath;
   const scopedRunProjection = stateIsCurrentWorkspace
     ? runProjection
@@ -3366,6 +3453,10 @@ export function useAgentRuntime(
     questionRequest:
       stateIsCurrentWorkspace && questionRequest?.taskId === activeTaskId
         ? questionRequest
+        : null,
+    mcpElicitationRequest:
+      stateIsCurrentWorkspace
+        ? mcpElicitationRequests.find((request) => request.taskId === activeTaskId) ?? null
         : null,
     contextUsage: activeThreadId && stateIsCurrentWorkspace
       ? threadUsage[activeThreadId] ?? null
@@ -3412,6 +3503,7 @@ export function useAgentRuntime(
     setGoal,
     clearGoal,
     resolveQuestion,
+    resolveMcpElicitation,
     resolveApproval,
   };
 }
