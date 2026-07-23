@@ -865,7 +865,12 @@ export function Composer({
           </header>
 
           <div className="run-deck__body" id="composer-run-deck" aria-hidden={runDeckCollapsed}>
-            <div className="run-deck__body-inner">
+            <div
+              className="run-deck__body-inner"
+              aria-label="Task progress details"
+              role="region"
+              tabIndex={runDeckCollapsed ? -1 : 0}
+            >
               {planSteps.length > 0 ? (
                 <section className="run-deck__section" aria-label="Task progress">
                   <ol className="run-deck__steps">

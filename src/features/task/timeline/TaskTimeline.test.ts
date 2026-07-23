@@ -30,6 +30,30 @@ describe("timelineRows", () => {
     expect(rows[2]).toMatchObject({ kind: "entry", index: 2, entry: { id: "command-2" } });
   });
 
+  it("groups adjacent browser searches with other context tools", () => {
+    const browserTool = (id: string): TimelineEntry => ({
+      ...entry(id, "result"),
+      meta: "Browser tool",
+    });
+    const rows = timelineRows([
+      entry("read-1", "explore"),
+      browserTool("search-1"),
+      browserTool("search-2"),
+      entry("command", "command"),
+    ]);
+
+    expect(rows.map((row) => row.kind)).toEqual(["exploration", "entry"]);
+    expect(rows[0]).toMatchObject({
+      kind: "exploration",
+      index: 0,
+      entries: [
+        { id: "read-1" },
+        { id: "search-1" },
+        { id: "search-2" },
+      ],
+    });
+  });
+
   it("groups only adjacent context-gathering parts", () => {
     const rows = timelineRows([
       entry("read-1", "explore"),

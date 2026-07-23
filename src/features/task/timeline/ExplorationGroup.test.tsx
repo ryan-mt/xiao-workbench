@@ -44,4 +44,25 @@ describe("ExplorationGroup disclosure", () => {
     expect(markup).toContain("1 read");
     expect(markup).not.toContain("Exploring");
   });
+
+  it("includes browser searches in the collapsed context summary", () => {
+    const browserSearch: TimelineEntry = {
+      id: "browser-search",
+      kind: "result",
+      title: "Searched: opencode v2 tool grouping",
+      meta: "Browser tool",
+      status: "success",
+    };
+    const markup = renderToStaticMarkup(
+      <ExplorationGroup
+        entries={[activeExploration, browserSearch]}
+        index={0}
+        expandByDefault={false}
+      />,
+    );
+
+    expect(markup).toContain("1 read");
+    expect(markup).toContain("1 search");
+    expect(markup).toContain("opencode v2 tool grouping");
+  });
 });

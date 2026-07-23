@@ -371,5 +371,7 @@ describe("ActivityItem agent collaboration", () => {
     expect(markup).toContain("thread-child");
     expect(markup).toContain("Reading the backend");
     expect(markup).toContain("Working");
+    expect(markup).toContain("agent-progress-indicator");
+    expect(markup).not.toContain("agent-activity__state is-active");
   });
 });

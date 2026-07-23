@@ -2515,10 +2515,17 @@
 
 .run-deck__body-inner {
   min-height: 0;
-  max-height: min(300px, 40vh);
+  max-height: min(220px, 32vh);
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 12px 14px;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
+}
+
+.run-deck__body-inner:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--focus) 38%, transparent);
+  outline-offset: -2px;
 }
 
 .run-deck__section + .run-deck__section {

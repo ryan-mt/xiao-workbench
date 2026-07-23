@@ -25,13 +25,27 @@ export const ExplorationGroup = memo(function ExplorationGroup({
   expandByDefault,
   isLive = true,
 }: ExplorationGroupProps) {
-  const actions = entries.flatMap((entry) =>
-    (entry.exploration ?? []).map((action) => ({
+  const actions = entries.flatMap((entry) => {
+    if (entry.kind === "result" && entry.meta?.toLowerCase() === "browser tool") {
+      const query = entry.title.replace(/^Searched:\s*/i, "").trim();
+      return [{
+        action: {
+          kind: "search" as const,
+          command: entry.title,
+          label: query || "Web search",
+          query,
+        },
+        entryId: entry.id,
+        status: entry.status,
+      }];
+    }
+
+    return (entry.exploration ?? []).map((action) => ({
       action,
       entryId: entry.id,
       status: entry.status,
-    })),
-  );
+    }));
+  });
   const reads = actions.filter(({ action }) => action.kind === "read").length;
   const searches = actions.filter(({ action }) => action.kind === "search").length;
   const lists = actions.filter(({ action }) => action.kind === "list").length;

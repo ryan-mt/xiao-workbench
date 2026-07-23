@@ -452,6 +452,12 @@
   margin-top: 12px;
 }
 
+.timeline-entry-anchor:has(.activity--command)
+  + .timeline-entry-anchor
+  .activity--command {
+  margin-top: 4px;
+}
+
 .timeline .activity__tool-disclosure,
 .timeline .activity__tool-disclosure--static {
   width: 100%;
@@ -769,14 +775,14 @@
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 0;
-  border-radius: 8px;
-  background: var(--surface-deep);
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
 }
 
 .timeline .agent-activity > header {
   display: grid;
-  min-height: 40px;
+  min-height: 36px;
   grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
@@ -785,7 +791,17 @@
 
 .timeline .agent-activity__icon {
   display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
+}
+
+.timeline .agent-progress-indicator rect {
+  fill: currentColor;
+  opacity: 0.18;
+  animation: agent-progress-dot 1200ms ease-in-out infinite;
 }
 
 .timeline .agent-activity__heading {
@@ -867,6 +883,18 @@
 .timeline .agent-activity__prompt p {
   margin: 6px 0 0;
   white-space: pre-wrap;
+}
+
+@keyframes agent-progress-dot {
+  0%,
+  55%,
+  100% {
+    opacity: 0.18;
+  }
+
+  22% {
+    opacity: 1;
+  }
 }
 
 .timeline .activity__body {
@@ -1033,11 +1061,14 @@
 }
 
 .timeline .markdown-body a {
-  color: var(--text-soft);
+  color: var(--brand);
   font-weight: inherit;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--text-soft) 28%, transparent);
+  text-decoration: none;
   text-underline-offset: 2px;
+}
+
+.timeline .markdown-body a:hover {
+  text-decoration: underline;
 }
 
 .timeline .markdown-body :not(pre) > code {
@@ -1077,7 +1108,7 @@
 
 .timeline .markdown-body th,
 .timeline .markdown-body td {
-  padding: 10px 12px;
+  padding: 12px;
   border: 0;
   border-bottom: 1px solid var(--line);
   color: var(--text-soft);
@@ -1094,8 +1125,19 @@
   display: block;
   max-width: 100%;
   height: auto;
-  margin: 20px 0;
-  border-radius: 6px;
+  margin: 24px 0;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline .agent-progress-indicator rect {
+    animation: none;
+    opacity: 0.3;
+  }
+
+  .timeline .agent-progress-indicator rect:nth-child(13) {
+    opacity: 1;
+  }
 }
 
 .timeline .markdown-code {

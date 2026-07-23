@@ -6,6 +6,37 @@ import { isTauriHost } from "../../../core/bridges/tauri";
 import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 
+const agentProgressDots = Array.from({ length: 25 }, (_, index) => ({
+  index,
+  x: 1.5 + (index % 5) * 3,
+  y: 1.5 + Math.floor(index / 5) * 3,
+  delay: ((index % 5) + Math.floor(index / 5)) * 70,
+}));
+
+function AgentProgressIndicator() {
+  return (
+    <svg
+      className="agent-progress-indicator"
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      {agentProgressDots.map((dot) => (
+        <rect
+          key={dot.index}
+          x={dot.x}
+          y={dot.y}
+          width="2"
+          height="2"
+          style={{ animationDelay: `${dot.delay}ms` }}
+        />
+      ))}
+    </svg>
+  );
+}
+
 type ActivityItemProps = {
   entry: TimelineEntry;
   index: number;
@@ -359,6 +390,14 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (entry.kind === "agent") {
     const collaborators = entry.collaborators ?? [];
+    const active = entry.status === "active" && isLive;
+    const stateLabel = entry.status === "error"
+      ? "Needs attention"
+      : entry.status === "warning"
+        ? "Warning"
+        : entry.status === "active" && !isLive
+          ? "Stopped"
+          : null;
     return (
       <article
         className={`activity activity--agent activity--${entry.status ?? "idle"}`}
@@ -366,20 +405,18 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="agent-activity">
           <header>
-            <span className="agent-activity__icon"><XiaoIcon name="cpu" size={14} /></span>
+            <span className="agent-activity__icon">
+              {active ? <AgentProgressIndicator /> : <XiaoIcon name="cpu" size={14} />}
+            </span>
             <span className="agent-activity__heading">
               <strong>{entry.title}</strong>
               {entry.meta && <small>{entry.meta}</small>}
             </span>
-            <span className={`agent-activity__state is-${entry.status ?? "idle"}`}>
-              {entry.status === "active" && isLive
-                ? "Working"
-                : entry.status === "active"
-                  ? "Stopped"
-                  : entry.status === "error"
-                    ? "Needs attention"
-                    : "Done"}
-            </span>
+            {stateLabel && (
+              <span className={`agent-activity__state is-${entry.status ?? "idle"}`}>
+                {stateLabel}
+              </span>
+            )}
           </header>
           {collaborators.length > 0 && (
             <ul className="agent-activity__agents">

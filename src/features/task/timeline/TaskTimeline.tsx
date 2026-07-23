@@ -36,20 +36,27 @@ export type TimelineRow =
   | { kind: "entry"; entry: TimelineEntry; index: number }
   | { kind: "exploration"; entries: TimelineEntry[]; index: number };
 
+const isContextEntry = (entry: TimelineEntry) =>
+  entry.kind === "explore" ||
+  (
+    entry.kind === "result" &&
+    entry.meta?.toLowerCase() === "browser tool"
+  );
+
 export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   const rows: TimelineRow[] = [];
   let index = 0;
 
   while (index < timeline.length) {
     const entry = timeline[index];
-    if (entry.kind !== "explore") {
+    if (!isContextEntry(entry)) {
       rows.push({ kind: "entry", entry, index });
       index += 1;
       continue;
     }
 
     let end = index + 1;
-    while (end < timeline.length && timeline[end].kind === "explore") end += 1;
+    while (end < timeline.length && isContextEntry(timeline[end])) end += 1;
     rows.push({ kind: "exploration", entries: timeline.slice(index, end), index });
     index = end;
   }
