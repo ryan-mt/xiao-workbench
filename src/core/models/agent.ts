@@ -169,6 +169,7 @@ export type AgentAttachment = {
   path: string;
   kind: "directory" | "file" | "image" | "review";
   url?: string;
+  mime?: string;
   lineStart?: number;
   lineEnd?: number;
   comment?: string;

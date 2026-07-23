@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
@@ -34,6 +34,64 @@ function AgentProgressIndicator() {
         />
       ))}
     </svg>
+  );
+}
+
+const directImageSource = (value: string | undefined) => {
+  const source = value?.trim();
+  if (!source) return null;
+  return /^data:image\//i.test(source) || /^https?:\/\//i.test(source) ? source : null;
+};
+
+function TimelineImage({
+  name,
+  source,
+}: {
+  name: string;
+  source: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="activity__image-fallback" role="img" aria-label={`${name}: image unavailable`}>
+        <XiaoIcon name="file" size={14} />
+        <span>{name}</span>
+        <small>Image unavailable</small>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={source}
+      alt={name}
+      decoding="async"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+export function TimelineImages({
+  attachments,
+}: {
+  attachments: TimelineEntry["attachments"];
+}) {
+  const images = attachments?.flatMap((attachment) => {
+    if (attachment.kind !== "image") return [];
+    const source = directImageSource(attachment.url);
+    return source ? [{ attachment, source }] : [];
+  }) ?? [];
+  if (!images.length) return null;
+  return (
+    <div className="activity__image-attachments" aria-label="Image output">
+      {images.map(({ attachment, source }) => (
+        <TimelineImage
+          key={attachment.id ?? attachment.path}
+          name={attachment.name}
+          source={source}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -311,6 +369,7 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="activity__assistant-message">
           {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
+          <TimelineImages attachments={entry.attachments} />
           {entry.body && !streaming ? (
             <footer className="activity__assistant-meta">
               <CopyButton text={entry.body} label="Copy response" />
@@ -507,6 +566,7 @@ export const ActivityItem = memo(function ActivityItem({
             <div className="activity__tool-summary-row">{summary}</div>
           </div>
         )}
+        <TimelineImages attachments={entry.attachments} />
       </article>
     );
   }

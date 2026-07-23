@@ -145,6 +145,50 @@ describe("ActivityItem command retries", () => {
   });
 });
 
+describe("ActivityItem image output", () => {
+  it("renders tool images directly in the timeline instead of a local-file link", () => {
+    const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const markup = renderCompaction({
+      id: "image-tool-1",
+      kind: "command",
+      title: "image_gen · imagegen",
+      status: "success",
+      attachments: [{
+        id: "image-tool-1-image-1",
+        kind: "image",
+        name: "Image output 1",
+        path: "tool-output:image-tool-1:image:1",
+        mime: "image/png",
+        url: imageUrl,
+      }],
+    });
+
+    expect(markup).toContain("aria-label=\"Image output\"");
+    expect(markup).toContain(`src="${imageUrl}"`);
+    expect(markup).toContain("alt=\"Image output 1\"");
+    expect(markup).not.toContain("href=");
+  });
+
+  it("supports image parts attached directly to an assistant response", () => {
+    const markup = renderCompaction({
+      id: "response-image-1",
+      kind: "result",
+      title: "Agent response",
+      body: "Here is the result.",
+      status: "success",
+      attachments: [{
+        kind: "image",
+        name: "Result image",
+        path: "tool-output:result:image:1",
+        url: "https://example.com/result.png",
+      }],
+    });
+
+    expect(markup).toContain("Here is the result.");
+    expect(markup).toContain("src=\"https://example.com/result.png\"");
+  });
+});
+
 describe("ActivityItem browser tools", () => {
   it("renders web searches as a flat tool row instead of a generic card", () => {
     const markup = renderCompaction({

@@ -712,7 +712,104 @@ export const projectAgentRateLimitsUpdate = (
   return mergeAgentRateLimits(current, update);
 };
 
-const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | null => {
+const imageMimeFromUrl = (url: string) =>
+  /^data:(image\/[a-z0-9.+-]+)(?:;[^,]*)?,/i.exec(url)?.[1]?.toLowerCase();
+
+const toolImageAttachment = (
+  itemId: string,
+  index: number,
+  imageUrl: string,
+  mime?: string,
+): AgentAttachment | null => {
+  const url = imageUrl.trim();
+  const imageMime = imageMimeFromUrl(url) ?? (
+    mime?.toLowerCase().startsWith("image/") ? mime.toLowerCase() : undefined
+  );
+  if (!imageMime && !/^https?:\/\//i.test(url)) return null;
+  return {
+    id: `${itemId}-image-${index + 1}`,
+    name: `Image output ${index + 1}`,
+    path: `tool-output:${itemId}:image:${index + 1}`,
+    kind: "image",
+    url,
+    mime: imageMime,
+  };
+};
+
+const dynamicToolOutput = (
+  itemId: string,
+  contentItems: unknown,
+): Pick<TimelineEntry, "attachments" | "body"> => {
+  if (!Array.isArray(contentItems)) return {};
+  const text: string[] = [];
+  const attachments: AgentAttachment[] = [];
+  for (const content of contentItems) {
+    if (!content || typeof content !== "object") continue;
+    const value = content as Record<string, unknown>;
+    if (value.type === "inputText" && typeof value.text === "string") {
+      text.push(value.text);
+      continue;
+    }
+    if (value.type === "inputImage" && typeof value.imageUrl === "string") {
+      const attachment = toolImageAttachment(itemId, attachments.length, value.imageUrl);
+      if (attachment) attachments.push(attachment);
+    }
+  }
+  const body = text.join("\n\n").slice(0, 8_000);
+  return {
+    body: body || undefined,
+    attachments: attachments.length ? attachments : undefined,
+  };
+};
+
+const mcpToolOutput = (
+  itemId: string,
+  result: unknown,
+): Pick<TimelineEntry, "attachments" | "body"> => {
+  if (!result || typeof result !== "object") {
+    return {
+      body: result == null ? undefined : JSON.stringify(result, null, 2).slice(0, 8_000),
+    };
+  }
+  const content = (result as Record<string, unknown>).content;
+  if (!Array.isArray(content)) {
+    return { body: JSON.stringify(result, null, 2).slice(0, 8_000) };
+  }
+  const text: string[] = [];
+  const attachments: AgentAttachment[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const value = part as Record<string, unknown>;
+    if (value.type === "text" && typeof value.text === "string") {
+      text.push(value.text);
+      continue;
+    }
+    if (
+      value.type === "image" &&
+      typeof value.data === "string" &&
+      typeof value.mimeType === "string" &&
+      value.mimeType.toLowerCase().startsWith("image/")
+    ) {
+      const imageUrl = imageMimeFromUrl(value.data)
+        ? value.data
+        : `data:${value.mimeType.toLowerCase()};base64,${value.data}`;
+      const attachment = toolImageAttachment(
+        itemId,
+        attachments.length,
+        imageUrl,
+        value.mimeType,
+      );
+      if (attachment) attachments.push(attachment);
+    }
+  }
+  const body = text.join("\n\n").slice(0, 8_000);
+  return {
+    body: body || (attachments.length ? undefined : JSON.stringify(result, null, 2).slice(0, 8_000)),
+    attachments: attachments.length ? attachments : undefined,
+  };
+};
+
+export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | null => {
   const contextCompaction = contextCompactionTimelineEntry(item, "completed");
   if (contextCompaction) return contextCompaction;
   const collaboration = collaborationTimelineEntry(item);
@@ -803,6 +900,7 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
     const server = typeof item.server === "string" ? item.server : "MCP";
     const tool = typeof item.tool === "string" ? item.tool : "tool";
     const failed = item.status === "failed";
+    const output = mcpToolOutput(id, item.result);
     const error =
       typeof item.error === "string"
         ? item.error
@@ -816,12 +914,8 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
       kind: "command",
       createdAt,
       title: `${server} · ${tool}`,
-      body:
-        error
-          ? error
-          : item.result == null
-            ? undefined
-            : JSON.stringify(item.result, null, 2).slice(0, 8_000),
+      body: error ?? output.body,
+      attachments: error ? undefined : output.attachments,
       meta: "Plugin tool",
       status: failed ? "error" : item.status === "inProgress" ? "active" : "success",
     };
@@ -832,15 +926,7 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
     const namespace = typeof item.namespace === "string" && item.namespace.trim()
       ? item.namespace.trim()
       : null;
-    const output = Array.isArray(item.contentItems)
-      ? item.contentItems.flatMap((content) => {
-          if (!content || typeof content !== "object") return [];
-          const value = content as Record<string, unknown>;
-          if (value.type === "inputText" && typeof value.text === "string") return [value.text];
-          if (value.type === "inputImage") return ["Image output"];
-          return [];
-        }).join("\n\n")
-      : "";
+    const output = dynamicToolOutput(id, item.contentItems);
     const failed = item.status === "failed" || item.success === false;
     const duration = typeof item.durationMs === "number" ? `${Math.round(item.durationMs)} ms` : null;
     return {
@@ -848,7 +934,8 @@ const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEntry | n
       kind: "command",
       createdAt,
       title: namespace ? `${namespace} · ${tool}` : tool,
-      body: output ? output.slice(0, 8_000) : undefined,
+      body: output.body,
+      attachments: output.attachments,
       meta: ["Dynamic tool", duration].filter(Boolean).join(" · "),
       status: failed ? "error" : item.status === "inProgress" ? "active" : "success",
     };

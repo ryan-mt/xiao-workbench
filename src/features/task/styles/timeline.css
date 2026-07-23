@@ -23,7 +23,8 @@
 }
 
 .timeline-entry-anchor,
-.timeline-exploration-anchor {
+.timeline-exploration-anchor,
+.timeline-tool-group-anchor {
   display: block;
   min-width: 0;
   content-visibility: auto;
@@ -54,6 +55,7 @@
   .live-turn-status__label,
   .context-tool-group__status,
   .context-tool-group__item strong,
+  .tool-call-group > details > summary > strong,
   .activity__tool-summary strong,
   .patch-activity__verb
 ).is-active {
@@ -233,6 +235,53 @@
 .timeline .activity__assistant-message {
   width: 100%;
   min-width: 0;
+}
+
+.timeline .activity__image-attachments {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.timeline .activity__image-attachments > img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(70vh, 640px);
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.timeline .activity__image-fallback {
+  display: flex;
+  width: min(100%, 420px);
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline .activity__image-fallback > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline .activity__image-fallback > small {
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .timeline .activity__assistant-meta {
@@ -444,6 +493,82 @@
   font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Consecutive tool calls */
+
+.timeline .tool-call-group {
+  margin-top: 12px;
+}
+
+.timeline .tool-call-group > details > summary {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  color: var(--text-soft);
+  cursor: pointer;
+  list-style: none;
+}
+
+.timeline .tool-call-group > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.timeline .tool-call-group > details > summary > strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline .tool-call-group.is-error > details > summary > strong,
+.timeline .tool-call-group.is-error .tool-call-group__action {
+  color: var(--danger);
+}
+
+.timeline .tool-call-group__action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline .tool-call-group__hide {
+  display: none;
+}
+
+.timeline .tool-call-group > details[open] .tool-call-group__show {
+  display: none;
+}
+
+.timeline .tool-call-group > details[open] .tool-call-group__hide {
+  display: inline;
+}
+
+.timeline .tool-call-group__caret {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transform: rotate(-90deg);
+  transition: transform 150ms ease;
+}
+
+.timeline .tool-call-group > details[open] .tool-call-group__caret {
+  transform: rotate(0deg);
+}
+
+.timeline .tool-call-group__items {
+  min-width: 0;
+  padding: 4px 0 0 12px;
+}
+
+.timeline .tool-call-group__items .activity--command {
+  margin-top: 4px;
 }
 
 /* Shell and generic tool rows */
@@ -1129,6 +1254,40 @@
   border-radius: 4px;
 }
 
+.timeline .markdown-image-fallback {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  margin: 24px 0;
+  padding: 8px 10px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.timeline .markdown-image-fallback > svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.timeline .markdown-image-fallback > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline .markdown-image-fallback > small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .timeline .agent-progress-indicator rect {
     animation: none;
@@ -1303,6 +1462,7 @@
     .live-turn-status__label,
     .context-tool-group__status,
     .context-tool-group__item strong,
+    .tool-call-group > details > summary > strong,
     .activity__tool-summary strong,
     .patch-activity__verb
   ).is-active,

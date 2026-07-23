@@ -10,6 +10,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -134,6 +135,25 @@ const workspacePathHref = (value: string) => {
   }
 };
 
+export const localMarkdownImagePath = (value: string | undefined) => {
+  const source = value?.trim();
+  if (!source) return null;
+  if (/^[a-z]:[\\/]/i.test(source) || /^\\\\[^\\]/.test(source)) return source;
+  if (/^\/[a-z]:[\\/]/i.test(source)) return source.slice(1);
+  if (source.startsWith("/") && !source.startsWith("//")) return source;
+  if (!/^file:\/\//i.test(source)) return null;
+
+  try {
+    const url = new URL(source);
+    if (url.protocol !== "file:") return null;
+    const path = decodeURIComponent(url.pathname);
+    if (url.hostname) return `\\\\${url.hostname}${path.replace(/\//g, "\\")}`;
+    return /^\/[a-z]:\//i.test(path) ? path.slice(1) : path;
+  } catch {
+    return null;
+  }
+};
+
 export const markdownUrlTransform = (value: string, allowWorkspacePaths: boolean) =>
   allowWorkspacePaths && workspacePathHref(value) ? value : defaultUrlTransform(value);
 
@@ -255,6 +275,54 @@ function InlineCode({
   );
 }
 
+function MarkdownImage({
+  node: _node,
+  src,
+  alt,
+  onError,
+  ...props
+}: ComponentProps<"img"> & { node?: unknown }) {
+  const [failed, setFailed] = useState(false);
+  const localPath = localMarkdownImagePath(src);
+  const tauriHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  const resolvedSource = localPath
+    ? tauriHost
+      ? convertFileSrc(localPath)
+      : null
+    : src;
+  const label = alt || localPath?.split(/[\\/]/).pop() || "Image";
+
+  if (!resolvedSource || failed) {
+    return (
+      <span
+        className="markdown-image-fallback"
+        role="img"
+        aria-label={`${label}: image unavailable`}
+        title={localPath ?? src}
+      >
+        <XiaoIcon name="file" size={14} />
+        <span>{label}</span>
+        <small>{localPath ? "Open Xiao desktop to view this local image" : "Image unavailable"}</small>
+      </span>
+    );
+  }
+
+  return (
+    <img
+      {...props}
+      src={resolvedSource}
+      alt={alt}
+      data-local-image={localPath ? "true" : undefined}
+      decoding={props.decoding ?? "async"}
+      loading={props.loading ?? "lazy"}
+      onError={(event) => {
+        onError?.(event);
+        setFailed(true);
+      }}
+    />
+  );
+}
+
 const CodeCard = memo(function CodeCard({
   code,
   language = "text",
@@ -365,6 +433,7 @@ const MarkdownChunk = memo(function MarkdownChunk({
         <table {...props}>{children}</table>
       </div>
     ),
+    img: (props: ComponentProps<"img"> & { node?: unknown }) => <MarkdownImage {...props} />,
     a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
       const internalResource = Boolean(href && workspacePathHref(href));
       return (
@@ -390,7 +459,10 @@ const MarkdownChunk = memo(function MarkdownChunk({
   return (
     <ReactMarkdown
       remarkPlugins={markdownPlugins}
-      urlTransform={(value) => markdownUrlTransform(value, Boolean(onOpenResource))}
+      urlTransform={(value, key) =>
+        key === "src" && localMarkdownImagePath(value)
+          ? value
+          : markdownUrlTransform(value, Boolean(onOpenResource))}
       components={components}
     >
       {source}

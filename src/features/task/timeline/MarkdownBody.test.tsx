@@ -1,7 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MarkdownBody, markdownUrlTransform } from "./MarkdownBody";
+import {
+  localMarkdownImagePath,
+  MarkdownBody,
+  markdownUrlTransform,
+} from "./MarkdownBody";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("MarkdownBody resource links", () => {
   it("preserves Windows file links only when Xiao can route them internally", () => {
@@ -38,6 +46,44 @@ describe("MarkdownBody resource links", () => {
 
   it("continues to reject executable URL schemes", () => {
     expect(markdownUrlTransform("javascript:alert(1)", true)).toBe("");
+  });
+
+  it("converts local Markdown images to Tauri asset URLs", () => {
+    vi.stubGlobal("window", {
+      __TAURI_INTERNALS__: {
+        convertFileSrc: (path: string) =>
+          `http://asset.localhost/${path.replaceAll("\\", "/")}`,
+      },
+    });
+
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content="![Todo audit](C:/Users/dev/AppData/Local/Temp/audit.png)" />,
+    );
+
+    expect(markup).toContain(
+      'src="http://asset.localhost/C:/Users/dev/AppData/Local/Temp/audit.png"',
+    );
+    expect(markup).toContain('data-local-image="true"');
+    expect(markup).not.toContain("markdown-image-fallback");
+  });
+
+  it("shows a readable fallback for local images in browser preview", () => {
+    vi.stubGlobal("window", {});
+
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content="![Todo audit](C:/Users/dev/AppData/Local/Temp/audit.png)" />,
+    );
+
+    expect(markup).toContain("markdown-image-fallback");
+    expect(markup).toContain("Todo audit");
+    expect(markup).toContain("Open Xiao desktop to view this local image");
+    expect(markup).not.toContain("<img");
+  });
+
+  it("normalizes file URLs before handing them to the Tauri asset protocol", () => {
+    expect(localMarkdownImagePath("file:///C:/Users/dev/My%20Images/audit.png"))
+      .toBe("C:/Users/dev/My Images/audit.png");
+    expect(localMarkdownImagePath("https://example.com/audit.png")).toBeNull();
   });
 
   it("renders an incomplete streaming fence as a code card", () => {

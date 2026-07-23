@@ -1,9 +1,10 @@
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
-import { ActivityItem } from "./ActivityItem";
+import { ActivityItem, TimelineImages } from "./ActivityItem";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
+import { ToolCallGroup } from "./ToolCallGroup";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
 
 type TaskTimelineProps = {
@@ -34,7 +35,8 @@ type TaskTimelineProps = {
 
 export type TimelineRow =
   | { kind: "entry"; entry: TimelineEntry; index: number }
-  | { kind: "exploration"; entries: TimelineEntry[]; index: number };
+  | { kind: "exploration"; entries: TimelineEntry[]; index: number }
+  | { kind: "toolGroup"; entries: TimelineEntry[]; index: number };
 
 const isContextEntry = (entry: TimelineEntry) =>
   entry.kind === "explore" ||
@@ -43,6 +45,8 @@ const isContextEntry = (entry: TimelineEntry) =>
     entry.meta?.toLowerCase() === "browser tool"
   );
 
+const isCompactToolEntry = (entry: TimelineEntry) => entry.kind === "command";
+
 export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   const rows: TimelineRow[] = [];
   let index = 0;
@@ -50,6 +54,15 @@ export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
   while (index < timeline.length) {
     const entry = timeline[index];
     if (!isContextEntry(entry)) {
+      if (isCompactToolEntry(entry)) {
+        let end = index + 1;
+        while (end < timeline.length && isCompactToolEntry(timeline[end])) end += 1;
+        if (end - index > 1) {
+          rows.push({ kind: "toolGroup", entries: timeline.slice(index, end), index });
+          index = end;
+          continue;
+        }
+      }
       rows.push({ kind: "entry", entry, index });
       index += 1;
       continue;
@@ -185,6 +198,58 @@ export function TaskTimeline({
                 expandByDefault={expandToolOutput}
                 index={row.index}
                 isLive={taskWorking && row.index >= latestTurnStartIndex}
+              />
+            </div>
+          );
+        }
+
+        if (row.kind === "toolGroup") {
+          return (
+            <div
+              className="timeline-tool-group-anchor"
+              key={`tools-${row.entries[0]?.id ?? row.index}`}
+            >
+              {row.entries.map((entry) => (
+                <span
+                  aria-hidden="true"
+                  className="timeline-entry-anchor-target"
+                  id={`timeline-entry-${entry.id}`}
+                  key={entry.id}
+                />
+              ))}
+              <ToolCallGroup
+                entries={row.entries}
+                expandByDefault={expandToolOutput}
+                index={row.index}
+                isLive={taskWorking && row.index >= latestTurnStartIndex}
+              >
+                {row.entries.map((entry, entryOffset) => (
+                  <ActivityItem
+                    entry={{
+                      ...entry,
+                      attachments: entry.attachments?.filter((attachment) => attachment.kind !== "image"),
+                    }}
+                    index={row.index + entryOffset}
+                    showReasoningSummaries={showReasoningSummaries}
+                    expandToolOutput={expandToolOutput}
+                    workspacePath={workspacePath}
+                    onOpenResource={onOpenResource}
+                    taskId={taskId}
+                    canFork={canFork}
+                    onForkTask={onForkTask}
+                    onResolveApproval={onResolveApproval}
+                    onReviewChanges={onReviewChanges}
+                    canUndo={false}
+                    undoing={false}
+                    isLive={taskWorking && row.index >= latestTurnStartIndex}
+                    key={entry.id}
+                  />
+                ))}
+              </ToolCallGroup>
+              <TimelineImages
+                attachments={row.entries.flatMap((entry) =>
+                  entry.attachments?.filter((attachment) => attachment.kind === "image") ?? []
+                )}
               />
             </div>
           );

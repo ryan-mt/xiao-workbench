@@ -4003,6 +4003,38 @@ mod tests {
     }
 
     #[test]
+    fn embedded_timeline_image_round_trips() {
+        let directory = TestDirectory::new("timeline-image-round-trip");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let image_url = "data:image/png;base64,iVBORw0KGgo=";
+        let mut stored_task = task("image", 0);
+        stored_task.timeline = vec![serde_json::json!({
+            "id": "image-tool-1",
+            "kind": "command",
+            "title": "imagegen",
+            "attachments": [{
+                "kind": "image",
+                "name": "Image output 1",
+                "path": "tool-output:image-tool-1:image:1",
+                "mime": "image/png",
+                "url": image_url
+            }]
+        })];
+        stored_task.timeline_entry_count = stored_task.timeline.len();
+
+        repository
+            .save_workspace(update(document(&workspace, vec![stored_task])))
+            .unwrap();
+
+        let loaded = full_workspace(&repository, &workspace);
+        assert_eq!(
+            loaded.tasks[0].timeline[0]["attachments"][0]["url"],
+            image_url
+        );
+    }
+
+    #[test]
     fn stale_generic_workspace_save_preserves_native_task_contract_pointer() {
         let directory = TestDirectory::new("stale-task-contract");
         let workspace = directory.workspace("workspace");

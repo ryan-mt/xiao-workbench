@@ -10,24 +10,32 @@ const entry = (id: string, kind: TimelineEntry["kind"]): TimelineEntry => ({
 });
 
 describe("timelineRows", () => {
-  it("keeps shell commands as individual tool parts", () => {
+  it("groups every adjacent command tool, including failures", () => {
     const rows = timelineRows([
       entry("user", "user"),
-      entry("command-1", "command"),
-      entry("command-2", "command"),
+      { ...entry("command-1", "command"), meta: "Dynamic tool" },
+      { ...entry("command-2", "command"), command: "npm test", status: "error" },
+      { ...entry("command-3", "command"), meta: "Plugin tool" },
       entry("result", "result"),
-      entry("command-3", "command"),
+      entry("command-4", "command"),
     ]);
 
     expect(rows.map((row) => row.kind)).toEqual([
       "entry",
-      "entry",
-      "entry",
+      "toolGroup",
       "entry",
       "entry",
     ]);
-    expect(rows[1]).toMatchObject({ kind: "entry", index: 1, entry: { id: "command-1" } });
-    expect(rows[2]).toMatchObject({ kind: "entry", index: 2, entry: { id: "command-2" } });
+    expect(rows[1]).toMatchObject({
+      kind: "toolGroup",
+      index: 1,
+      entries: [
+        { id: "command-1" },
+        { id: "command-2", status: "error" },
+        { id: "command-3" },
+      ],
+    });
+    expect(rows[3]).toMatchObject({ kind: "entry", index: 5, entry: { id: "command-4" } });
   });
 
   it("groups adjacent browser searches with other context tools", () => {

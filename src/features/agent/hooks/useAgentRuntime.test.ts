@@ -38,6 +38,7 @@ import {
   runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
   shouldClearAgentPlan,
+  timelineEntryFromItem,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
   type AttentionHydrationStatus,
@@ -166,6 +167,57 @@ describe("normalizeFileChangeDiff", () => {
       additions: 1,
       deletions: 1,
       patch,
+    });
+  });
+});
+
+describe("tool image output", () => {
+  it("keeps dynamic-tool images as self-contained timeline attachments", () => {
+    const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+
+    expect(timelineEntryFromItem({
+      id: "image-tool-1",
+      type: "dynamicToolCall",
+      namespace: "image_gen",
+      tool: "imagegen",
+      status: "completed",
+      success: true,
+      contentItems: [
+        { type: "inputText", text: "Generated the preview." },
+        { type: "inputImage", imageUrl },
+      ],
+    })).toMatchObject({
+      id: "image-tool-1",
+      kind: "command",
+      body: "Generated the preview.",
+      attachments: [{
+        id: "image-tool-1-image-1",
+        kind: "image",
+        name: "Image output 1",
+        path: "tool-output:image-tool-1:image:1",
+        mime: "image/png",
+        url: imageUrl,
+      }],
+    });
+  });
+
+  it("normalizes MCP image blocks into persisted data URLs", () => {
+    expect(timelineEntryFromItem({
+      id: "mcp-image-1",
+      type: "mcpToolCall",
+      server: "screenshots",
+      tool: "capture",
+      status: "completed",
+      result: {
+        content: [
+          { type: "image", mimeType: "image/webp", data: "UklGRg==" },
+        ],
+      },
+    })).toMatchObject({
+      attachments: [{
+        mime: "image/webp",
+        url: "data:image/webp;base64,UklGRg==",
+      }],
     });
   });
 });

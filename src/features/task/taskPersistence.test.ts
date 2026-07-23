@@ -77,6 +77,29 @@ describe("task persistence", () => {
     expect(document.managedWorktreeId).toBeNull();
   });
 
+  it("keeps self-contained image output in the persisted timeline", () => {
+    const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const source = {
+      ...task(),
+      timeline: [{
+        id: "image-tool-1",
+        kind: "command" as const,
+        title: "imagegen",
+        attachments: [{
+          kind: "image" as const,
+          name: "Image output 1",
+          path: "tool-output:image-tool-1:image:1",
+          mime: "image/png",
+          url: imageUrl,
+        }],
+      }],
+      timelineComplete: true,
+      timelineEntryCount: 1,
+    };
+
+    expect(toXiaoTaskDocument(source).timeline[0]?.attachments?.[0]?.url).toBe(imageUrl);
+  });
+
   it("omits an unchanged timeline from metadata-only updates", () => {
     const document = toXiaoTaskDocument(task(), false);
 
