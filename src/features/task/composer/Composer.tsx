@@ -747,9 +747,9 @@ export function Composer({
   } else if (runtime.phase === "error") {
     composerPlaceholder = "Resolve the runtime issue to send this task";
   } else if (canSteer) {
-    composerPlaceholder = "Queue a follow-up while Xiao is working";
+    composerPlaceholder = "Add a follow-up or steer the current turn";
   } else if (currentTaskWorking) {
-    composerPlaceholder = "Xiao is preparing this task";
+    composerPlaceholder = "Add a follow-up — it will be queued";
   } else if (runtime.phase === "working") {
     composerPlaceholder = "Xiao is working in another task";
   }
@@ -775,18 +775,53 @@ export function Composer({
   return (
     <div className={`composer-wrap ${planSteps.length ? "has-plan" : ""}`}>
       {goal && (
-        <div className="goal-strip">
-          <XiaoIcon name="target" size={15} />
-          <span title={goal.objective}>{goal.objective}</span>
-          {goalStatusLabel && <small className={`goal-strip__status goal-strip__status--${goal.status}`}>{goalStatusLabel}</small>}
-          <button onClick={() => void onGoalSet(goal.objective, goal.status === "active" ? "paused" : "active")}>
-            {goalActionLabel}
-          </button>
-          <button onClick={() => setGoalEditorOpen(true)}>Edit</button>
-          <button aria-label="Clear goal" onClick={() => void onGoalClear()}>
-            <XiaoIcon name="close" size={13} />
-          </button>
-        </div>
+        <section
+          className={`goal-strip ${currentTaskWorking ? "is-working" : ""}`}
+          aria-label="Task goal"
+        >
+          <span className="goal-strip__icon"><XiaoIcon name="target" size={14} /></span>
+          <span className="goal-strip__summary">
+            <small>Goal</small>
+            <span title={goal.objective}>{goal.objective}</span>
+          </span>
+          <span className="goal-strip__actions">
+            {goalStatusLabel && (
+              <small
+                className={`goal-strip__status goal-strip__status--${goal.status}`}
+                role="status"
+              >
+                {goalStatusLabel}
+              </small>
+            )}
+            <button
+              className="goal-strip__toggle"
+              type="button"
+              aria-label={`${goalActionLabel} goal`}
+              title={`${goalActionLabel} goal`}
+              onClick={() => void onGoalSet(goal.objective, goal.status === "active" ? "paused" : "active")}
+            >
+              {goalActionLabel}
+            </button>
+            <button
+              className="goal-strip__icon-button"
+              type="button"
+              aria-label="Edit goal"
+              title="Edit goal"
+              onClick={() => setGoalEditorOpen(true)}
+            >
+              <XiaoIcon name="edit" size={13} />
+            </button>
+            <button
+              className="goal-strip__icon-button"
+              type="button"
+              aria-label="Clear goal"
+              title="Clear goal"
+              onClick={() => void onGoalClear()}
+            >
+              <XiaoIcon name="close" size={13} />
+            </button>
+          </span>
+        </section>
       )}
       {goalEditorOpen && (
         <div className="goal-editor">
