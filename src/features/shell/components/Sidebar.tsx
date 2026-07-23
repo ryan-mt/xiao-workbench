@@ -83,7 +83,7 @@ const projectMenuWidth = 218;
 const projectMenuHeight = 214;
 const taskMenuHeight = 330;
 const collapsedTaskGroupLimit = 6;
-const taskGroupOrder: TaskGroup[] = ["Active", "Recent", "Yesterday", "This week", "Older"];
+const taskGroupOrder: TaskGroup[] = ["Recent", "Yesterday", "This week", "Older"];
 const sidebarDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -98,8 +98,8 @@ const relativeTime = (timestamp: number, now: number) => {
   return sidebarDateFormatter.format(new Date(timestamp));
 };
 
-const groupForTask = (task: WorkbenchTask, activeTaskId: string, now: number): TaskGroup => {
-  return taskGroupForUpdatedAt(task.updatedAt, task.id === activeTaskId, now);
+const groupForTask = (task: WorkbenchTask, now: number): TaskGroup => {
+  return taskGroupForUpdatedAt(task.updatedAt, false, now);
 };
 
 export function Sidebar({
@@ -153,7 +153,7 @@ export function Sidebar({
   const groupedTasks = taskGroupOrder
     .map((group) => ({
       group,
-      tasks: visibleTasks.filter((task) => groupForTask(task, activeTaskId, now) === group),
+      tasks: visibleTasks.filter((task) => groupForTask(task, now) === group),
     }))
     .filter(({ tasks: groupTasks }) => groupTasks.length > 0);
   const menuProject = projects.find((project) => project.path === projectMenu?.projectPath);

@@ -72,6 +72,7 @@ const task = (id: string, updatedAt: number): WorkbenchTask => ({
 type SidebarContent = {
   projects?: XiaoProjectSummary[];
   tasks?: WorkbenchTask[];
+  activeTaskId?: string;
 };
 
 const renderSidebar = (
@@ -86,7 +87,7 @@ const renderSidebar = (
       projects={content.projects ?? []}
       activeProjectPath={workspace.path}
       tasks={content.tasks ?? []}
-      activeTaskId=""
+      activeTaskId={content.activeTaskId ?? ""}
       workspace={workspace}
       workingTaskIds={[]}
       account={null}
@@ -181,6 +182,20 @@ describe("Sidebar attention trigger", () => {
 });
 
 describe("Sidebar task group disclosure", () => {
+  it("keeps the active task in its recent time group", () => {
+    const now = Date.now();
+    const activeTask = task("Active task", now);
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [activeTask, task("Recent task", now - 1)],
+      activeTaskId: activeTask.id,
+    });
+
+    expect(markup).not.toContain(">Active</span>");
+    expect(markup).toContain(">Recent</span><small>2</small>");
+    expect(markup).toContain('class="task-list__item is-selected"');
+  });
+
   it("shows all tasks without a disclosure at the six-task limit", () => {
     const now = Date.now();
     const tasks = Array.from({ length: 6 }, (_, index) =>
