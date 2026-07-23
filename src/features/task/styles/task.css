@@ -155,120 +155,8 @@
   text-wrap: pretty;
 }
 
-.task-launch__setup {
-  display: grid;
-  grid-template-columns:
-    minmax(180px, 1fr) auto minmax(110px, 0.55fr) auto minmax(270px, 1.35fr);
-  align-items: end;
-  gap: 10px;
-  margin-bottom: 14px;
-  padding: 11px 12px;
-  border: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-}
-
-.task-launch__setup-field {
-  display: grid;
-  min-width: 0;
-  gap: 7px;
-}
-
-.task-launch__setup-label {
-  color: var(--muted);
-  font-size: var(--text-micro);
-  font-weight: 650;
-  letter-spacing: 0.055em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.task-launch__setup-arrow {
-  display: grid;
-  height: 38px;
-  place-items: center;
-  color: var(--muted);
-  font-size: 18px;
-}
-
-.task-launch__project-menu {
-  width: 100%;
-}
-
-.task-launch__project-menu .select-menu__trigger {
-  height: 38px;
-  border-color: var(--line);
-  border-radius: 8px;
-  background: var(--surface-raised);
-  font-size: var(--text-caption);
-}
-
-.task-launch__git {
-  display: flex;
-  min-width: 0;
-  height: 38px;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-raised);
-  color: var(--muted-strong);
-}
-
-.task-launch__git strong {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  font-weight: 540;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-launch__workspace-modes {
-  display: flex;
-  min-width: 0;
-  height: 38px;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface-raised);
-}
-
-.task-launch__workspace-modes > button {
-  min-width: 0;
-  flex: 1 1 auto;
-  padding: 0 10px;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--muted-strong);
-  font-size: var(--text-caption);
-  font-weight: 540;
-  white-space: nowrap;
-}
-
-.task-launch__workspace-modes > button:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.task-launch__workspace-modes > button.is-active {
-  background: color-mix(in srgb, var(--brand) 11%, var(--surface-hover));
-  color: var(--text);
-}
-
-.task-launch__workspace-modes > button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--focus) 28%, transparent);
-  outline-offset: -1px;
-}
-
-.task-launch__workspace-modes > button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
 .task-launch .composer-wrap {
+  min-width: 0;
   padding: 0;
   background: transparent;
 }
@@ -280,47 +168,83 @@
 .task-launch .composer {
   width: 100%;
 }
+
 .task-launch__context {
   display: flex;
   min-width: 0;
-  min-height: 40px;
+  min-height: 36px;
   align-items: center;
-  gap: 5px;
-  margin-top: 13px;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 10px;
   color: var(--muted);
   font-size: var(--text-caption);
 }
 
-.task-launch__context > span,
-.task-launch__context > button {
+.task-launch__context-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.task-launch__project-menu {
+  width: min(190px, 30vw);
+}
+
+.task-launch__project-menu .select-menu__trigger {
+  height: 28px;
+  grid-template-columns: 16px minmax(0, 1fr) 12px;
+  gap: 5px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+}
+
+.task-launch__project-menu .select-menu__trigger:hover:not(:disabled),
+.task-launch__project-menu .select-menu__trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.task-launch__project-menu .select-menu__trigger > svg:first-child {
+  justify-self: start;
+  transform: none;
+}
+
+.task-launch__context-item {
   display: inline-flex;
   min-width: 0;
-  max-width: 220px;
+  height: 28px;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-radius: 8px;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--muted-strong);
 }
 
-.task-launch__context strong,
-.task-launch__context button span {
+.task-launch__context-item strong {
   overflow: hidden;
-  font-size: inherit;
+  max-width: 160px;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
   font-weight: 520;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-launch__context > button:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.task-launch__context > i {
-  color: var(--muted);
-  font-style: normal;
+.task-launch__context-separator {
+  width: 2px;
+  height: 2px;
+  margin: 0 3px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.65;
 }
 
 .task-launch__context .task-launch__hint {
@@ -2419,6 +2343,73 @@
   line-height: 1.45;
 }
 
+.definition-of-done--compact {
+  position: relative;
+  width: auto;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.definition-of-done--compact .definition-of-done__toggle {
+  display: inline-flex;
+  width: auto;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-radius: 7px;
+  color: var(--muted-strong);
+}
+
+.definition-of-done--compact .definition-of-done__toggle:hover,
+.definition-of-done--compact .definition-of-done__toggle[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.definition-of-done--compact .definition-of-done__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--focus) 32%, transparent);
+  outline-offset: 1px;
+}
+
+.definition-of-done--compact .definition-of-done__icon {
+  width: 16px;
+  height: 16px;
+  background: transparent;
+}
+
+.definition-of-done--compact.is-configured .definition-of-done__icon {
+  background: transparent;
+  color: var(--success);
+}
+
+.definition-of-done__compact-label {
+  color: inherit;
+  font-size: var(--text-caption);
+  font-weight: 520;
+  white-space: nowrap;
+}
+
+.definition-of-done--compact .definition-of-done__toggle > svg {
+  width: 11px;
+}
+
+.definition-of-done--compact .definition-of-done__editor {
+  position: absolute;
+  z-index: 24;
+  bottom: calc(100% + 10px);
+  left: 0;
+  width: min(620px, calc(100vw - 80px));
+  max-height: min(520px, calc(100vh - 180px));
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-panel);
+}
+
 .goal-strip,
 .goal-editor {
   display: flex;
@@ -4295,24 +4286,17 @@
     font-size: 13px;
   }
 
-  .task-launch__setup {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 11px;
-    padding: 12px;
-  }
-
-  .task-launch__setup-arrow {
-    display: none;
-  }
-
   .task-launch__context {
-    flex-wrap: wrap;
     margin-top: 10px;
   }
 
-  .task-launch__context > span,
-  .task-launch__context > button {
-    max-width: 42vw;
+  .task-launch__context-meta {
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .task-launch__project-menu {
+    width: min(160px, 44vw);
   }
 
   .task-launch__context .task-launch__hint {

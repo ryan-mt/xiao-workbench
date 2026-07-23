@@ -1434,6 +1434,7 @@ fn apply_runtime_message(
     if !is_persisted_protocol_method(method) {
         return Ok(());
     }
+    let display_message = renderable_protocol_message(&safe_message, &message);
     let event_key = lifecycle_event_key(method, generation, thread_id, turn_id, item_id);
     let mutation = {
         let repository = app.state::<XiaoRepository>();
@@ -1451,7 +1452,7 @@ fn apply_runtime_message(
         )?
     };
     if mutation.event.is_some() {
-        emit_protocol(app, &mutation, generation, &safe_message, None, None);
+        emit_protocol(app, &mutation, generation, &display_message, None, None);
     }
     Ok(())
 }
@@ -1906,6 +1907,81 @@ fn safe_protocol_message(message: &Value, execution_root: &str) -> Value {
     })
 }
 
+const MAX_INLINE_TOOL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+fn renderable_protocol_message(safe_message: &Value, original_message: &Value) -> Value {
+    if original_message.get("method").and_then(Value::as_str) != Some("item/completed") {
+        return safe_message.clone();
+    }
+    let Some(original_item) = original_message.pointer("/params/item") else {
+        return safe_message.clone();
+    };
+    let mut renderable = safe_message.clone();
+    let Some(safe_item) = renderable.pointer_mut("/params/item") else {
+        return renderable;
+    };
+    let mut remaining = MAX_INLINE_TOOL_IMAGE_BYTES;
+
+    match original_item.get("type").and_then(Value::as_str) {
+        Some("mcpToolCall") => {
+            let Some(original_parts) = original_item
+                .pointer("/result/content")
+                .and_then(Value::as_array)
+            else {
+                return renderable;
+            };
+            let Some(safe_parts) = safe_item
+                .pointer_mut("/result/content")
+                .and_then(Value::as_array_mut)
+            else {
+                return renderable;
+            };
+            for (safe_part, original_part) in safe_parts.iter_mut().zip(original_parts) {
+                let mime = original_part.get("mimeType").and_then(Value::as_str);
+                let data = original_part.get("data").and_then(Value::as_str);
+                if original_part.get("type").and_then(Value::as_str) != Some("image")
+                    || !mime.is_some_and(|mime| mime.to_ascii_lowercase().starts_with("image/"))
+                    || !data.is_some_and(|data| data.len() <= remaining)
+                {
+                    continue;
+                }
+                let data = data.expect("checked above");
+                safe_part["data"] = Value::String(data.to_owned());
+                remaining -= data.len();
+            }
+        }
+        Some("dynamicToolCall") => {
+            let Some(original_parts) = original_item.get("contentItems").and_then(Value::as_array)
+            else {
+                return renderable;
+            };
+            let Some(safe_parts) = safe_item
+                .get_mut("contentItems")
+                .and_then(Value::as_array_mut)
+            else {
+                return renderable;
+            };
+            for (safe_part, original_part) in safe_parts.iter_mut().zip(original_parts) {
+                let image_url = original_part.get("imageUrl").and_then(Value::as_str);
+                if original_part.get("type").and_then(Value::as_str) != Some("inputImage")
+                    || !image_url.is_some_and(|url| {
+                        url.get(.."data:image/".len())
+                            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/"))
+                            && url.len() <= remaining
+                    })
+                {
+                    continue;
+                }
+                let image_url = image_url.expect("checked above");
+                safe_part["imageUrl"] = Value::String(image_url.to_owned());
+                remaining -= image_url.len();
+            }
+        }
+        _ => {}
+    }
+    renderable
+}
+
 fn is_sensitive_payload_key(name: &str) -> bool {
     let normalized = name
         .chars()
@@ -2226,6 +2302,72 @@ mod tests {
         assert_eq!(safe["params"]["preview"], "[data omitted]");
         assert!(safe["params"]["nested"].get("secretAnswer").is_none());
         assert_eq!(safe["params"]["nested"]["tokenUsage"]["inputTokens"], 12);
+    }
+
+    #[test]
+    fn renderable_protocol_keeps_tool_images_outside_the_persisted_safe_payload() {
+        let image_data = "a".repeat(16 * 1024);
+        let mcp_message = json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "preview": "data:image/png;base64,secret",
+                "item": {
+                    "type": "mcpToolCall",
+                    "id": "image",
+                    "tool": "imagegen",
+                    "result": {
+                        "content": [{
+                            "type": "image",
+                            "mimeType": "image/jpeg",
+                            "data": image_data,
+                        }]
+                    }
+                }
+            }
+        });
+        let safe_mcp = safe_protocol_message(&mcp_message, ".");
+        let renderable_mcp = renderable_protocol_message(&safe_mcp, &mcp_message);
+
+        assert_ne!(
+            safe_mcp["params"]["item"]["result"]["content"][0]["data"],
+            image_data
+        );
+        assert_eq!(
+            renderable_mcp["params"]["item"]["result"]["content"][0]["data"],
+            image_data
+        );
+        assert_eq!(renderable_mcp["params"]["preview"], "[data omitted]");
+
+        let image_url = format!("data:image/png;base64,{}", "b".repeat(16 * 1024));
+        let dynamic_message = json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread",
+                "turnId": "turn",
+                "item": {
+                    "type": "dynamicToolCall",
+                    "id": "image",
+                    "tool": "imagegen",
+                    "contentItems": [{
+                        "type": "inputImage",
+                        "imageUrl": image_url,
+                    }]
+                }
+            }
+        });
+        let safe_dynamic = safe_protocol_message(&dynamic_message, ".");
+        let renderable_dynamic = renderable_protocol_message(&safe_dynamic, &dynamic_message);
+
+        assert_eq!(
+            safe_dynamic["params"]["item"]["contentItems"][0]["imageUrl"],
+            "[data omitted]"
+        );
+        assert_eq!(
+            renderable_dynamic["params"]["item"]["contentItems"][0]["imageUrl"],
+            image_url
+        );
     }
 
     #[test]

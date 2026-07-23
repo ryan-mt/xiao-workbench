@@ -818,16 +818,6 @@ export function Composer({
           <button type="button" onClick={() => onOpenView("runtime")}>View runtime</button>
         </div>
       )}
-      {definitionOfDoneAvailable ? (
-        <DefinitionOfDonePanel
-          projectPath={workspacePath}
-          taskId={executionTaskId}
-          value={definitionOfDone}
-          disabled={disabled || submitting}
-          onReadyChange={setDefinitionOfDoneReady}
-          onChange={onDefinitionOfDoneChange}
-        />
-      ) : null}
       {showRunDeck && (
         <section
           className={`run-deck ${runDeckCollapsed ? "is-collapsed" : ""} ${
@@ -1442,6 +1432,17 @@ export function Composer({
                 </div>
               )}
             </div>
+            {definitionOfDoneAvailable ? (
+              <DefinitionOfDonePanel
+                compact
+                projectPath={workspacePath}
+                taskId={executionTaskId}
+                value={definitionOfDone}
+                disabled={disabled || submitting}
+                onReadyChange={setDefinitionOfDoneReady}
+                onChange={onDefinitionOfDoneChange}
+              />
+            ) : null}
             {mode === "plan" && <span className="composer-mode">Plan</span>}
             <ModelPicker
               models={models}

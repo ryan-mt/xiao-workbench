@@ -480,10 +480,6 @@ export function TaskWorkspace({
       { path: workspace.path, name: workspace.name },
       canChangeLaunchProject,
     );
-    const environmentControlsDisabled =
-      taskStateLoading || environmentBusy || Boolean(taskStateError);
-    const managedWorktreeUnavailable =
-      !workspace.execution.isolationAvailable && workspaceMode !== "managed-worktree";
     return (
       <section className="task-workspace task-workspace--launch">
         <div className="task-launch">
@@ -509,75 +505,37 @@ export function TaskWorkspace({
               <p>Describe the outcome. Xiao can inspect the code, make changes, and verify the result.</p>
             </div>
 
-            <div className="task-launch__setup" aria-label="New task setup">
-              <div className="task-launch__setup-field task-launch__setup-field--project">
-                <span className="task-launch__setup-label">Project</span>
+            {composer}
+
+            <footer className="task-launch__context" aria-label="Task context">
+              <div className="task-launch__context-meta">
                 <SelectMenu
+                  compact
                   className="task-launch__project-menu"
                   value={workspace.path}
                   options={projectOptions}
                   onValueChange={onLaunchProjectChange}
                   ariaLabel="Project for new task"
                   disabled={!canChangeLaunchProject}
+                  leading={<XiaoIcon name="workspace" size={13} />}
                   title={canChangeLaunchProject
                     ? "Choose a project"
                     : "Project is locked after task setup begins or while another task is running."}
                 />
-              </div>
-              <span className="task-launch__setup-arrow" aria-hidden="true">›</span>
-              <div className="task-launch__setup-field task-launch__setup-field--git">
-                <span className="task-launch__setup-label">Git</span>
-                <span className="task-launch__git" title={branch}>
-                  <XiaoIcon name="branch" size={13} />
+                <i className="task-launch__context-separator" aria-hidden="true" />
+                <span className="task-launch__context-item" title={branch}>
+                  <XiaoIcon name="branch" size={12} />
                   <strong>{branch}</strong>
                 </span>
-              </div>
-              <span className="task-launch__setup-arrow" aria-hidden="true">›</span>
-              <div className="task-launch__setup-field task-launch__setup-field--workspace">
-                <span className="task-launch__setup-label">Run in</span>
-                <div
-                  className="task-launch__workspace-modes"
-                  role="group"
-                  aria-label="Workspace mode"
+                <i className="task-launch__context-separator" aria-hidden="true" />
+                <span
+                  className="task-launch__context-item"
+                  title="Change the environment from + → Run settings"
                 >
-                  <button
-                    className={workspaceMode === "local" ? "is-active" : undefined}
-                    type="button"
-                    aria-pressed={workspaceMode === "local"}
-                    disabled={environmentControlsDisabled}
-                    title="Run in the current project checkout"
-                    onClick={() => void onWorkspaceModeChange("local")}
-                  >
-                    Local
-                  </button>
-                  <button
-                    className={workspaceMode === "managed-worktree" ? "is-active" : undefined}
-                    type="button"
-                    aria-pressed={workspaceMode === "managed-worktree"}
-                    disabled={environmentControlsDisabled || managedWorktreeUnavailable}
-                    title={managedWorktreeUnavailable
-                      ? workspace.execution.isolationUnavailableReason ?? "Managed worktrees are unavailable."
-                      : "Create an isolated worktree managed by Xiao"}
-                    onClick={() => void onWorkspaceModeChange("managed-worktree")}
-                  >
-                    Managed worktree
-                  </button>
-                </div>
+                  <XiaoIcon name="workspace" size={12} />
+                  <strong>{workspaceMode === "managed-worktree" ? "Worktree" : "Local"}</strong>
+                </span>
               </div>
-            </div>
-
-            {composer}
-
-            <footer className="task-launch__context" aria-label="Task context">
-              <span title={definitionOfDone
-                ? "This task will run acceptance checks before completion."
-                : "No acceptance checks are configured."}
-              >
-                <XiaoIcon name="check" size={13} />
-                <strong>{definitionOfDone
-                  ? `${definitionOfDone.gates.length} ${definitionOfDone.gates.length === 1 ? "check" : "checks"}`
-                  : "No checks"}</strong>
-              </span>
               <span className="task-launch__hint" aria-hidden="true">
                 <kbd>Enter</kbd> to send <i>&middot;</i> <kbd>Shift Enter</kbd> for a new line
               </span>

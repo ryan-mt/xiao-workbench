@@ -9,6 +9,7 @@ type DefinitionOfDonePanelProps = {
   taskId: string | null;
   value: AcceptanceContractDraft | null;
   disabled: boolean;
+  compact?: boolean;
   onReadyChange: (ready: boolean) => void;
   onChange: (value: AcceptanceContractDraft | null) => void;
 };
@@ -27,11 +28,17 @@ export const definitionOfDoneSummary = (value: AcceptanceContractDraft | null) =
   return `${value.gates.length} ${value.gates.length === 1 ? "check" : "checks"} — completion will be verified`;
 };
 
+export const definitionOfDoneCompactLabel = (value: AcceptanceContractDraft | null) =>
+  value?.gates.length
+    ? `${value.gates.length} ${value.gates.length === 1 ? "check" : "checks"}`
+    : "Checks";
+
 export function DefinitionOfDonePanel({
   projectPath,
   taskId,
   value,
   disabled,
+  compact = false,
   onReadyChange,
   onChange,
 }: DefinitionOfDonePanelProps) {
@@ -42,18 +49,23 @@ export function DefinitionOfDonePanel({
   useEffect(() => onReadyChange(ready), [onReadyChange, ready]);
 
   return (
-    <section className={`definition-of-done ${value ? "is-configured" : ""} ${ready ? "" : "is-incomplete"}`.trim()}>
+    <section className={`definition-of-done ${compact ? "definition-of-done--compact" : ""} ${value ? "is-configured" : ""} ${ready ? "" : "is-incomplete"}`.trim()}>
       <button
         className="definition-of-done__toggle"
         type="button"
         aria-expanded={open}
+        title={compact ? definitionOfDoneSummary(value) : undefined}
         onClick={() => setOpen((current) => !current)}
       >
-        <span className="definition-of-done__icon"><XiaoIcon name="check" size={15} /></span>
-        <span className="definition-of-done__copy">
-          <strong>Definition of Done</strong>
-          <small>{definitionOfDoneSummary(value)}</small>
-        </span>
+        <span className="definition-of-done__icon"><XiaoIcon name="check" size={compact ? 13 : 15} /></span>
+        {compact ? (
+          <span className="definition-of-done__compact-label">{definitionOfDoneCompactLabel(value)}</span>
+        ) : (
+          <span className="definition-of-done__copy">
+            <strong>Definition of Done</strong>
+            <small>{definitionOfDoneSummary(value)}</small>
+          </span>
+        )}
         <XiaoIcon className={open ? "is-open" : undefined} name="caret" size={13} />
       </button>
       <div className="definition-of-done__editor" hidden={!open}>

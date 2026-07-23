@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import {
+  definitionOfDoneCompactLabel,
   definitionOfDoneIsComplete,
   definitionOfDoneSummary,
 } from "./DefinitionOfDonePanel";
@@ -30,5 +31,7 @@ describe("DefinitionOfDonePanel", () => {
     expect(definitionOfDoneSummary(commandContract("npm"))).toBe(
       "1 check — completion will be verified",
     );
+    expect(definitionOfDoneCompactLabel(null)).toBe("Checks");
+    expect(definitionOfDoneCompactLabel(commandContract("npm"))).toBe("1 check");
   });
 });
