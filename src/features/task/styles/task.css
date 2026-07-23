@@ -3904,6 +3904,7 @@
 .composer__tools-left {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 4px;
   color: var(--muted);
@@ -4132,6 +4133,19 @@
   background: var(--surface-strong);
   color: var(--muted);
   opacity: 1;
+}
+
+@container (max-width: 680px) {
+  .composer-wrap {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .composer__toolbar {
+    gap: 6px;
+    padding-right: 7px;
+    padding-left: 7px;
+  }
 }
 
 @media (max-width: 760px) {
