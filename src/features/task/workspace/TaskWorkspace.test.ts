@@ -4,6 +4,7 @@ import type { TimelineEntry } from "../../../core/models/agent";
 import {
   activeCollaboratorsFromTimeline,
   distanceFromScrollBottom,
+  newTaskProjectOptions,
   shouldFollowLiveOutput,
 } from "./TaskWorkspace";
 
@@ -54,5 +55,32 @@ describe("live output scroll behavior", () => {
 
     expect(distanceFromScrollBottom(metrics)).toBe(200);
     expect(shouldFollowLiveOutput(metrics)).toBe(false);
+  });
+});
+
+describe("new task project options", () => {
+  it("keeps the active project selectable when the project list has not loaded it yet", () => {
+    expect(newTaskProjectOptions(
+      [{ path: "C:\\code\\other", name: "Other" }],
+      { path: "C:\\code\\xiao", name: "Xiao" },
+      true,
+    )).toEqual([
+      { value: "C:\\code\\xiao", label: "Xiao", disabled: false },
+      { value: "C:\\code\\other", label: "Other", disabled: false },
+    ]);
+  });
+
+  it("locks other projects after task setup begins", () => {
+    expect(newTaskProjectOptions(
+      [
+        { path: "C:\\code\\xiao", name: "Xiao" },
+        { path: "C:\\code\\other", name: "Other" },
+      ],
+      { path: "C:\\code\\xiao", name: "Xiao" },
+      false,
+    )).toEqual([
+      { value: "C:\\code\\xiao", label: "Xiao", disabled: false },
+      { value: "C:\\code\\other", label: "Other", disabled: true },
+    ]);
   });
 });

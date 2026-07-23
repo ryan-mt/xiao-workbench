@@ -1435,6 +1435,7 @@ export function App() {
     initialTaskState.activeTaskId ? [initialTaskState.activeTaskId] : [],
   );
   const [draftTabOpen, setDraftTabOpen] = useState(initialTaskState.activeTaskId === null);
+  const newTaskLauncherProjectRef = useRef<string | null>(null);
   const [projectPreferences, setProjectPreferences] = useState<ProjectPreferences>(
     readProjectPreferences,
   );
@@ -1775,6 +1776,11 @@ export function App() {
           : readBrowserTaskState(workspace.path);
         const nextState = ensureValidActiveTask(saveBarrier?.snapshot.state ?? loadedState);
         if (cancelled || !requestStillCurrent()) return;
+        const openingNewTaskLauncher =
+          newTaskLauncherProjectRef.current !== null &&
+          comparableWorkspacePath(newTaskLauncherProjectRef.current) ===
+            comparableWorkspacePath(workspace.path);
+        if (openingNewTaskLauncher) newTaskLauncherProjectRef.current = null;
         if (isTauriHost()) {
           persistedWorkspaceSnapshotsRef.current.set(
             workspace.path,
@@ -1787,11 +1793,11 @@ export function App() {
         );
         taskWorkspacePathRef.current = workspace.path;
         setTasks(nextState.tasks);
-        setActiveTaskId(nextState.activeTaskId);
+        setActiveTaskId(openingNewTaskLauncher ? null : nextState.activeTaskId);
         const nextDraft = createDraftTask(preferences.taskRunDefaults);
         setDraftTask(nextDraft);
         setOpenTaskIds(nextState.activeTaskId ? [nextState.activeTaskId] : []);
-        setDraftTabOpen(nextState.activeTaskId === null);
+        setDraftTabOpen(openingNewTaskLauncher || nextState.activeTaskId === null);
         setTaskWorkspacePath(workspace.path);
         setTaskHistoryLoadingId(null);
         setSendingFollowUpId(null);
@@ -1822,6 +1828,13 @@ export function App() {
         );
       } catch (reason) {
         if (cancelled || !requestStillCurrent()) return;
+        if (
+          newTaskLauncherProjectRef.current !== null &&
+          comparableWorkspacePath(newTaskLauncherProjectRef.current) ===
+            comparableWorkspacePath(workspace.path)
+        ) {
+          newTaskLauncherProjectRef.current = null;
+        }
         replaceConfirmedNativeTaskIds(confirmationScope, []);
         taskWorkspacePathRef.current = workspace.path;
         setTasks([]);
@@ -2075,6 +2088,13 @@ export function App() {
       workspace.path,
     ),
   );
+  const activeComposerAttachments =
+    restoredAttachmentsByTask[workspaceTaskKey(taskWorkspacePath, activeTask.id)] ?? [];
+  const canChangeLaunchProject =
+    !selectedTask &&
+    !agent.hasActiveRuns &&
+    activeComposerAttachments.length === 0 &&
+    !definitionOfDoneChanged;
   const attentionTaskStateReady = attentionTaskStateMatchesWorkspace(
     taskStateReady,
     taskWorkspacePath,
@@ -3008,23 +3028,13 @@ export function App() {
     setDraftTask(createDraftTask(preferences.taskRunDefaults));
   };
 
-  const createTask = (title: string): string | null => {
-    if (!taskStateReady) return null;
-    const task: WorkbenchTask = {
-      ...createDraftTask(preferences.taskRunDefaults),
-      title,
-    };
-    setTasks((current) => [task, ...current]);
-    setOpenTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]);
-    setActiveTaskId(task.id);
-    setDraftTabOpen(false);
+  const openNewTaskTab = () => {
+    if (!taskStateReady) return;
+    newTaskLauncherProjectRef.current = null;
+    setActiveTaskId(null);
+    setDraftTabOpen(true);
     setDraftTask(createDraftTask(preferences.taskRunDefaults));
     setActivePage("tasks");
-    return task.id;
-  };
-
-  const openNewTaskTab = () => {
-    if (!createTask("New task")) return;
     closeFocusPanel();
   };
 
@@ -3712,7 +3722,7 @@ export function App() {
               followUps={activeTask.followUps}
               sendingFollowUpId={sendingFollowUpId}
               failedFollowUpId={failedFollowUpId}
-              attachments={restoredAttachmentsByTask[workspaceTaskKey(taskWorkspacePath, activeTask.id)] ?? []}
+              attachments={activeComposerAttachments}
               canCompact={agent.canCompact}
               compacting={agent.compacting}
               hasThread={agent.hasThread}
@@ -3726,6 +3736,19 @@ export function App() {
               expandToolOutput={preferences.expandToolOutput}
               launchBrand={preferences.launchBrand}
               workspace={workspace}
+              launchProjects={projects}
+              canChangeLaunchProject={canChangeLaunchProject}
+              onLaunchProjectChange={(path) => {
+                if (
+                  !canChangeLaunchProject ||
+                  comparableWorkspacePath(path) === comparableWorkspacePath(workspace.path)
+                ) return;
+                newTaskLauncherProjectRef.current = path;
+                setActiveProjectPath(path);
+                setActivePage("tasks");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
               onModelChange={(model) => {
                 patchActiveTask({ model, reasoningEffort: null });
                 updateTaskRunDefaults({ model, reasoningEffort: null });

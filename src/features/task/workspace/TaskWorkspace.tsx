@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { SelectMenu, type SelectMenuOption } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import {
   contextUsedPercent,
@@ -22,7 +23,8 @@ import {
 import type { RunSnapshot } from "../../../core/models/run";
 import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
-import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
+import type { XiaoProjectSummary, XiaoWorkspaceMode } from "../../../core/models/xiao";
+import { workspacePathComparisonKey } from "../../../core/workspacePath";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
 import { TaskTimeline } from "../timeline/TaskTimeline";
@@ -53,6 +55,25 @@ export const activeCollaboratorsFromTimeline = (timeline: TimelineEntry[]) => {
 };
 
 const liveOutputFollowThreshold = 72;
+
+export const newTaskProjectOptions = (
+  projects: readonly Pick<XiaoProjectSummary, "path" | "name">[],
+  activeProject: Pick<XiaoProjectSummary, "path" | "name">,
+  canChangeProject: boolean,
+): SelectMenuOption[] => {
+  const activeKey = workspacePathComparisonKey(activeProject.path);
+  const availableProjects = projects.some(
+    (project) => workspacePathComparisonKey(project.path) === activeKey,
+  )
+    ? projects
+    : [activeProject, ...projects];
+
+  return availableProjects.map((project) => ({
+    value: project.path,
+    label: project.name || project.path,
+    disabled: !canChangeProject && workspacePathComparisonKey(project.path) !== activeKey,
+  }));
+};
 
 type TimelineSelection = {
   text: string;
@@ -116,6 +137,9 @@ type TaskWorkspaceProps = {
   expandToolOutput: boolean;
   launchBrand: "logo" | "wordmark";
   workspace: WorkspaceSnapshot;
+  launchProjects: XiaoProjectSummary[];
+  canChangeLaunchProject: boolean;
+  onLaunchProjectChange: (path: string) => void;
   onSubmit: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onSteer: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
   onQueueFollowUp: (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>;
@@ -208,6 +232,9 @@ export function TaskWorkspace({
   expandToolOutput,
   launchBrand,
   workspace,
+  launchProjects,
+  canChangeLaunchProject,
+  onLaunchProjectChange,
   onSubmit,
   onSteer,
   onQueueFollowUp,
@@ -447,7 +474,16 @@ export function TaskWorkspace({
   );
 
   if (launchMode) {
-    const branch = workspace.git?.branch ?? "No Git branch";
+    const branch = workspace.git?.branch ?? "No Git";
+    const projectOptions = newTaskProjectOptions(
+      launchProjects,
+      { path: workspace.path, name: workspace.name },
+      canChangeLaunchProject,
+    );
+    const environmentControlsDisabled =
+      taskStateLoading || environmentBusy || Boolean(taskStateError);
+    const managedWorktreeUnavailable =
+      !workspace.execution.isolationAvailable && workspaceMode !== "managed-worktree";
     return (
       <section className="task-workspace task-workspace--launch">
         <div className="task-launch">
@@ -473,19 +509,66 @@ export function TaskWorkspace({
               <p>Describe the outcome. Xiao can inspect the code, make changes, and verify the result.</p>
             </div>
 
+            <div className="task-launch__setup" aria-label="New task setup">
+              <div className="task-launch__setup-field task-launch__setup-field--project">
+                <span className="task-launch__setup-label">Project</span>
+                <SelectMenu
+                  className="task-launch__project-menu"
+                  value={workspace.path}
+                  options={projectOptions}
+                  onValueChange={onLaunchProjectChange}
+                  ariaLabel="Project for new task"
+                  disabled={!canChangeLaunchProject}
+                  title={canChangeLaunchProject
+                    ? "Choose a project"
+                    : "Project is locked after task setup begins or while another task is running."}
+                />
+              </div>
+              <span className="task-launch__setup-arrow" aria-hidden="true">›</span>
+              <div className="task-launch__setup-field task-launch__setup-field--git">
+                <span className="task-launch__setup-label">Git</span>
+                <span className="task-launch__git" title={branch}>
+                  <XiaoIcon name="branch" size={13} />
+                  <strong>{branch}</strong>
+                </span>
+              </div>
+              <span className="task-launch__setup-arrow" aria-hidden="true">›</span>
+              <div className="task-launch__setup-field task-launch__setup-field--workspace">
+                <span className="task-launch__setup-label">Run in</span>
+                <div
+                  className="task-launch__workspace-modes"
+                  role="group"
+                  aria-label="Workspace mode"
+                >
+                  <button
+                    className={workspaceMode === "local" ? "is-active" : undefined}
+                    type="button"
+                    aria-pressed={workspaceMode === "local"}
+                    disabled={environmentControlsDisabled}
+                    title="Run in the current project checkout"
+                    onClick={() => void onWorkspaceModeChange("local")}
+                  >
+                    Local
+                  </button>
+                  <button
+                    className={workspaceMode === "managed-worktree" ? "is-active" : undefined}
+                    type="button"
+                    aria-pressed={workspaceMode === "managed-worktree"}
+                    disabled={environmentControlsDisabled || managedWorktreeUnavailable}
+                    title={managedWorktreeUnavailable
+                      ? workspace.execution.isolationUnavailableReason ?? "Managed worktrees are unavailable."
+                      : "Create an isolated worktree managed by Xiao"}
+                    onClick={() => void onWorkspaceModeChange("managed-worktree")}
+                  >
+                    Managed worktree
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {composer}
 
             <footer className="task-launch__context" aria-label="Task context">
-              <span title={workspace.path}>
-                <XiaoIcon name="workspace" size={14} />
-                <strong>{workspace.name}</strong>
-              </span>
-              <i aria-hidden="true">/</i>
-              <button type="button" onClick={() => onFocusView("changes")}>
-                <XiaoIcon name="branch" size={13} />
-                <span>{branch}</span>
-              </button>
-              <i aria-hidden="true">/</i>
               <span title={definitionOfDone
                 ? "This task will run acceptance checks before completion."
                 : "No acceptance checks are configured."}
