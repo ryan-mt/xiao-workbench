@@ -8,6 +8,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
+import { APP_DISPLAY_NAME, APP_STAGE } from "../../../core/branding";
 import type { AgentAccountSummary } from "../../../core/models/agent";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
@@ -19,6 +20,7 @@ import {
   type WorkbenchTask,
 } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
+import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
 
 type SidebarProps = {
   activePage: AppPage;
@@ -399,9 +401,10 @@ export function Sidebar({
       <aside className="sidebar" aria-label="Workspace navigation">
         <div className="sidebar__panel">
           <header className="sidebar__header">
-            <div className="sidebar__workspace-name">
-              <span>Workspace</span>
-              <strong>{workspace.name}</strong>
+            <SidebarStageBackdrop variant={APP_STAGE} />
+            <div className="sidebar__brand is-on-stage" aria-label={APP_DISPLAY_NAME}>
+              <strong>XIAO</strong>
+              <span>Workbench</span>
             </div>
           </header>
 

@@ -6,6 +6,7 @@ const month = String(now.getMonth() + 1).padStart(2, "0");
 const day = String(now.getDate()).padStart(2, "0");
 const year = String(now.getFullYear());
 const version = `0.0.0-day${month}${day}${year}`;
+const officialVersion = `${year.slice(-2)}.${Number(month)}.${Number(day)}`;
 const versionPattern = /0\.0\.0-?day\d{8}/g;
 const files = [
   "README.md",
@@ -13,7 +14,6 @@ const files = [
   "package-lock.json",
   "src-tauri/Cargo.toml",
   "src-tauri/Cargo.lock",
-  "src-tauri/tauri.conf.json",
 ];
 
 const updates = await Promise.all(
@@ -34,4 +34,18 @@ for (const { path, source, updated } of updates) {
   }
 }
 
-process.stdout.write(`${version}\n`);
+const tauriConfigPath = new URL("src-tauri/tauri.conf.json", root);
+const tauriConfig = await readFile(tauriConfigPath, "utf8");
+const tauriVersionPattern = /("version"\s*:\s*")\d+\.\d+\.\d+(")/;
+if (!tauriVersionPattern.test(tauriConfig)) {
+  throw new Error("src-tauri/tauri.conf.json does not contain an Official version.");
+}
+const updatedTauriConfig = tauriConfig.replace(
+  tauriVersionPattern,
+  `$1${officialVersion}$2`,
+);
+if (updatedTauriConfig !== tauriConfig) {
+  await writeFile(tauriConfigPath, updatedTauriConfig, "utf8");
+}
+
+process.stdout.write(`${version} (Official ${officialVersion})\n`);

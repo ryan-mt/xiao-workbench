@@ -12,6 +12,11 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriCli = join(root, "node_modules", "@tauri-apps", "cli", "tauri.js");
+const channel = process.argv[2] ?? "beta";
+if (channel !== "beta" && channel !== "official") {
+  throw new Error(`Unknown Xiao release channel: ${channel}`);
+}
+const isBeta = channel === "beta";
 const executableName = process.platform === "win32"
   ? "xiao-workbench.exe"
   : "xiao-workbench";
@@ -27,30 +32,29 @@ if (!existsSync(tauriCli)) {
   throw new Error("Tauri CLI is missing. Run `npm install` first.");
 }
 
-const build = spawnSync(
-  process.execPath,
-  [
-    tauriCli,
-    "build",
-    "--config",
-    "src-tauri/tauri.beta.conf.json",
-    "--no-bundle",
-  ],
-  { cwd: root, stdio: "inherit" },
-);
+const buildArgs = [tauriCli, "build"];
+if (isBeta) {
+  buildArgs.push("--config", "src-tauri/tauri.beta.conf.json");
+}
+buildArgs.push("--no-bundle");
+
+const build = spawnSync(process.execPath, buildArgs, {
+  cwd: root,
+  stdio: "inherit",
+});
 if (build.error) throw build.error;
 if (build.status !== 0) process.exit(build.status ?? 1);
 if (!existsSync(releaseExecutable)) {
   throw new Error(`Release executable was not created at ${releaseExecutable}.`);
 }
 
-const snapshotDirectory = mkdtempSync(join(tmpdir(), "xiao-workbench-dev-"));
+const snapshotDirectory = mkdtempSync(join(tmpdir(), `xiao-workbench-${channel}-`));
 const snapshotExecutable = join(snapshotDirectory, basename(releaseExecutable));
 copyFileSync(releaseExecutable, snapshotExecutable);
 if (process.platform !== "win32") chmodSync(snapshotExecutable, 0o755);
 
 process.stdout.write(
-  "\nLaunching a fixed Xiao Workbench Beta release snapshot.\n" +
+  `\nLaunching a fixed Xiao Workbench ${isBeta ? "Beta" : "Official"} release snapshot.\n` +
   "Source edits will not refresh this window. Close the app to end this command.\n\n",
 );
 

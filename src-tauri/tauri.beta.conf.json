@@ -2,6 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Xiao Workbench Beta",
   "identifier": "com.xiao.workbench.beta",
+  "build": {
+    "beforeDevCommand": "npm run dev:beta",
+    "beforeBuildCommand": "npm run build:beta"
+  },
   "app": {
     "windows": [
       {
@@ -14,6 +18,15 @@
         "decorations": false,
         "resizable": true
       }
+    ]
+  },
+  "bundle": {
+    "icon": [
+      "icons/beta/generated/32x32.png",
+      "icons/beta/generated/128x128.png",
+      "icons/beta/generated/128x128@2x.png",
+      "icons/beta/generated/icon.icns",
+      "icons/beta/generated/icon.ico"
     ]
   }
 }
