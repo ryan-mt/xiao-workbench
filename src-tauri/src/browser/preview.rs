@@ -9,6 +9,7 @@ use tauri::http::{header, Request, Response, StatusCode};
 
 const MAX_PREVIEW_ROOTS: usize = 16;
 const HISTORY_NAVIGATION_ALLOWANCE_TTL: Duration = Duration::from_secs(2);
+const MAIN_WEBVIEW_LABEL: &str = "main";
 const BROWSER_WEBVIEW_LABELS: [&str; 2] = ["xiao-browser", "xiao-game"];
 const PREVIEW_CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'none'; ",
@@ -102,8 +103,11 @@ impl PreviewRegistry {
         current: &tauri::Url,
         target: &tauri::Url,
     ) -> bool {
+        if webview_label == MAIN_WEBVIEW_LABEL {
+            return main_app_navigation_allowed(current, target);
+        }
         if !BROWSER_WEBVIEW_LABELS.contains(&webview_label) {
-            return true;
+            return false;
         }
         if !matches!(target.scheme(), "http" | "https" | "xiao-preview") {
             self.clear_navigation_allowance(webview_label);
@@ -235,6 +239,25 @@ impl PreviewRegistry {
         self.roots
             .lock()
             .is_ok_and(|roots| roots.iter().any(|(registered, _)| registered == token))
+    }
+}
+
+fn main_app_navigation_allowed(current: &tauri::Url, target: &tauri::Url) -> bool {
+    if !is_main_app_url(target) {
+        return false;
+    }
+    current.as_str() == "about:blank"
+        || (current.scheme() == target.scheme()
+            && current.host_str() == target.host_str()
+            && current.port_or_known_default() == target.port_or_known_default())
+}
+
+fn is_main_app_url(url: &tauri::Url) -> bool {
+    match (url.scheme(), url.host_str(), url.port()) {
+        ("tauri", Some("localhost"), None) => true,
+        ("http" | "https", Some("tauri.localhost"), None) => true,
+        ("http", Some("127.0.0.1"), Some(1420)) if cfg!(debug_assertions) => true,
+        _ => false,
     }
 }
 
@@ -493,14 +516,39 @@ mod tests {
     }
 
     #[test]
-    fn browser_webviews_reject_privileged_page_navigation() {
+    fn native_webviews_reject_privileged_page_navigation() {
         let registry = PreviewRegistry::default();
         let external = tauri::Url::parse("https://example.com/").unwrap();
         let local_file = tauri::Url::parse("file:///private.txt").unwrap();
+        let main = tauri::Url::parse("https://tauri.localhost/index.html").unwrap();
+        let main_route = tauri::Url::parse("https://tauri.localhost/settings").unwrap();
 
         assert!(!registry.navigation_allowed("xiao-browser", &external, &local_file));
         assert!(!registry.navigation_allowed("xiao-game", &external, &local_file));
-        assert!(registry.navigation_allowed("main", &external, &local_file));
+        assert!(registry.navigation_allowed("main", &main, &main_route));
+        assert!(!registry.navigation_allowed("main", &main, &external));
+        assert!(!registry.navigation_allowed("main", &main, &local_file));
+        assert!(!registry.navigation_allowed("unknown", &external, &external));
+    }
+
+    #[test]
+    fn main_webview_allows_only_known_initial_app_origins() {
+        let registry = PreviewRegistry::default();
+        let blank = tauri::Url::parse("about:blank").unwrap();
+        let production = tauri::Url::parse("tauri://localhost/index.html").unwrap();
+        let windows = tauri::Url::parse("http://tauri.localhost/index.html").unwrap();
+        let development = tauri::Url::parse("http://127.0.0.1:1420/index.html").unwrap();
+        let wrong_development_port = tauri::Url::parse("http://127.0.0.1:1421/index.html").unwrap();
+        let external = tauri::Url::parse("https://example.com/").unwrap();
+
+        assert!(registry.navigation_allowed("main", &blank, &production));
+        assert!(registry.navigation_allowed("main", &blank, &windows));
+        assert_eq!(
+            registry.navigation_allowed("main", &blank, &development),
+            cfg!(debug_assertions)
+        );
+        assert!(!registry.navigation_allowed("main", &blank, &wrong_development_port));
+        assert!(!registry.navigation_allowed("main", &blank, &external));
     }
 
     fn protocol_request(token: &str, path: &str) -> Request<Vec<u8>> {

@@ -43,6 +43,9 @@ pub fn read_git_summary(root: &Path) -> Option<GitSummary> {
         .unwrap_or_default()
         .trim()
         .replace('\\', "/");
+    if repository_has_active_clean_filters(root)? {
+        return None;
+    }
     let status = run_git(
         root,
         &[
@@ -413,6 +416,12 @@ pub fn read_git_comparison(workspace_path: &str, base_branch: &str) -> Result<Gi
     let workspace_root = Path::new(workspace_path)
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    if repository_has_active_clean_filters(&workspace_root).unwrap_or(true) {
+        return Err(
+            "Git comparison is unavailable while tracked files use external clean filters."
+                .to_owned(),
+        );
+    }
     let repository_root = run_git(&workspace_root, &["rev-parse", "--show-toplevel"])
         .and_then(|path| PathBuf::from(path.trim()).canonicalize().ok())
         .ok_or("The workspace is not inside a Git repository.")?;
@@ -699,16 +708,76 @@ fn count_patch_lines(patch: &str) -> (usize, usize) {
     (additions, deletions)
 }
 
-fn run_git(root: &Path, arguments: &[&str]) -> Option<String> {
+fn read_git_command(root: &Path) -> Command {
     let mut command = Command::new("git");
-    command.arg("-C").arg(root).args(arguments);
+    command
+        .args(["-c", "core.fsmonitor=false"])
+        .arg("-C")
+        .arg(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never");
     hide_window(&mut command);
+    command
+}
+
+fn run_git_bytes(root: &Path, arguments: &[&str]) -> Option<Vec<u8>> {
+    let mut command = read_git_command(root);
+    command.args(arguments);
 
     let output = command.output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    output.status.success().then_some(output.stdout)
+}
+
+fn run_git_with_input(root: &Path, arguments: &[&str], input: &[u8]) -> Option<Vec<u8>> {
+    let mut command = read_git_command(root);
+    command
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().ok()?;
+    if child.stdin.take()?.write_all(input).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    let output = child.wait_with_output().ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+fn repository_has_active_clean_filters(root: &Path) -> Option<bool> {
+    let tracked_paths = run_git_bytes(root, &["ls-files", "-z", "--cached", "--", "."])?;
+    if tracked_paths.is_empty() {
+        return Some(false);
+    }
+    let output = run_git_with_input(
+        root,
+        &["check-attr", "-z", "--stdin", "filter"],
+        &tracked_paths,
+    )?;
+    let mut fields = output.split(|byte| *byte == 0);
+    let mut active = false;
+    for expected_path in tracked_paths
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if fields.next()? != expected_path || fields.next()? != b"filter" {
+            return None;
+        }
+        let value = fields.next()?;
+        active |= value != b"unspecified" && value != b"unset";
+    }
+    if fields.next() != Some(&[][..]) || fields.next().is_some() {
+        return None;
+    }
+    Some(active)
+}
+
+fn run_git(root: &Path, arguments: &[&str]) -> Option<String> {
+    let output = run_git_bytes(root, arguments)?;
+
+    Some(String::from_utf8_lossy(&output).into_owned())
 }
 
 pub fn run_git_action(
@@ -1534,6 +1603,12 @@ fn paths_equal_for_evidence(left: &Path, right: &Path) -> bool {
 }
 
 pub(crate) fn managed_worktree_has_changes(checkout_path: &Path) -> Result<bool, String> {
+    if repository_has_active_clean_filters(checkout_path).unwrap_or(true) {
+        return Err(
+            "Could not inspect managed worktree changes without executing clean filters."
+                .to_owned(),
+        );
+    }
     let status = run_git(
         checkout_path,
         &[
@@ -1775,6 +1850,85 @@ mod tests {
     #[test]
     fn current_workspace_has_a_git_summary() {
         assert!(read_git_summary(Path::new(env!("CARGO_MANIFEST_DIR"))).is_some());
+    }
+
+    #[test]
+    fn git_summary_does_not_launch_repository_fsmonitor_hooks() {
+        let root = temporary_directory("summary-fsmonitor");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("tracked.txt"), "tracked\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        let sentinel = root.join("fsmonitor-invoked");
+        #[cfg(windows)]
+        let hook = {
+            let hook = root.join("fsmonitor-hook.cmd");
+            fs::write(
+                &hook,
+                "@echo off\r\n>fsmonitor-invoked echo invoked\r\nexit /b 1\r\n",
+            )
+            .unwrap();
+            hook
+        };
+        #[cfg(unix)]
+        let hook = {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let hook = root.join("fsmonitor-hook");
+            fs::write(
+                &hook,
+                "#!/bin/sh\nprintf invoked > fsmonitor-invoked\nexit 1\n",
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&hook).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&hook, permissions).unwrap();
+            hook
+        };
+        run(
+            &root,
+            &["config", "core.fsmonitor", &hook.to_string_lossy()],
+        );
+
+        assert_eq!(
+            super::run_git(&root, &["config", "--get", "core.fsmonitor"])
+                .as_deref()
+                .map(str::trim),
+            Some("false")
+        );
+        assert!(read_git_summary(&root).is_some());
+        assert!(!sentinel.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_summary_rejects_active_clean_filters_without_launching_them() {
+        let root = temporary_directory("summary-clean-filter");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("tracked.txt"), "before\n").unwrap();
+        fs::write(root.join(".gitattributes"), "tracked.txt filter=xiao\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        let command = if cfg!(windows) {
+            "cmd /c echo invoked>filter-invoked"
+        } else {
+            "sh -c 'printf invoked > filter-invoked'"
+        };
+        run(&root, &["config", "filter.xiao.clean", command]);
+        fs::write(root.join("tracked.txt"), "after\n").unwrap();
+
+        let summary = read_git_summary(&root);
+        assert!(!root.join("filter-invoked").exists());
+        assert!(summary.is_none());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

@@ -712,14 +712,14 @@ fn server_request_result(method: &str, params: &Value, root_uri: &str) -> Value 
 fn language_server_command(root: &Path, language: Language) -> Result<Command, String> {
     match language {
         Language::Rust => {
-            let executable = find_executable(root, "rust-analyzer", false).ok_or(
+            let executable = find_executable(root, "rust-analyzer").ok_or(
                 "rust-analyzer was not found. Install it and restart Xiao before using Rust LSP tools.",
             )?;
             Ok(command_for_executable(&executable, &[]))
         }
         Language::TypeScript => {
-            let executable = find_executable(root, "typescript-language-server", true).ok_or(
-                "typescript-language-server was not found. Install it in the workspace or on PATH before using TypeScript LSP tools.",
+            let executable = find_executable(root, "typescript-language-server").ok_or(
+                "typescript-language-server was not found on a trusted PATH location. Install it globally and restart Xiao before using TypeScript LSP tools.",
             )?;
             Ok(command_for_executable(&executable, &["--stdio"]))
         }
@@ -749,23 +749,58 @@ fn command_for_executable(executable: &Path, arguments: &[&str]) -> Command {
     command
 }
 
-fn find_executable(root: &Path, name: &str, workspace_local: bool) -> Option<PathBuf> {
-    let mut directories = Vec::new();
-    if workspace_local {
-        directories.push(root.join("node_modules").join(".bin"));
-    }
-    directories.extend(
-        std::env::var_os("PATH")
-            .into_iter()
-            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>()),
-    );
+fn find_executable(root: &Path, name: &str) -> Option<PathBuf> {
+    let directories = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>());
+    find_executable_in(root, name, directories)
+}
+
+fn find_executable_in(
+    root: &Path,
+    name: &str,
+    directories: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
     let candidates = executable_names(name);
-    directories.into_iter().find_map(|directory| {
-        candidates
-            .iter()
-            .map(|candidate| directory.join(candidate))
-            .find(|path| path.is_file())
-    })
+    for directory in directories {
+        if !directory.is_absolute() {
+            continue;
+        }
+        for candidate in &candidates {
+            let path = directory.join(candidate);
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(resolved) = path.canonicalize() else {
+                continue;
+            };
+            if !path_is_within(&resolved, &root) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn path_is_within(path: &Path, parent: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().replace('\\', "/").to_lowercase();
+        let parent = parent
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_lowercase();
+        path == parent
+            || path
+                .strip_prefix(&parent)
+                .is_some_and(|remainder| remainder.starts_with('/'))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(parent)
+    }
 }
 
 fn executable_names(name: &str) -> Vec<OsString> {
@@ -963,6 +998,42 @@ mod tests {
             Ok(Language::Rust)
         );
         assert!(Language::for_path(Path::new("README.md")).is_err());
+    }
+
+    #[test]
+    fn executable_discovery_skips_workspace_controlled_paths() {
+        let base = std::env::temp_dir().join(format!(
+            "xiao-lsp-executable-trust-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let root = base.join("workspace");
+        let workspace_bin = root.join("node_modules").join(".bin");
+        let external_bin = base.join("global-bin");
+        fs::create_dir_all(&workspace_bin).unwrap();
+        fs::create_dir_all(&external_bin).unwrap();
+        let executable_name = executable_names("typescript-language-server")
+            .into_iter()
+            .next()
+            .unwrap();
+        let workspace_executable = workspace_bin.join(&executable_name);
+        let external_executable = external_bin.join(&executable_name);
+        fs::write(&workspace_executable, []).unwrap();
+        fs::write(&external_executable, []).unwrap();
+
+        assert_eq!(
+            find_executable_in(
+                &root,
+                "typescript-language-server",
+                [workspace_bin.clone(), external_bin]
+            ),
+            Some(external_executable)
+        );
+        assert_eq!(
+            find_executable_in(&root, "typescript-language-server", [workspace_bin]),
+            None
+        );
+
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

@@ -14,6 +14,7 @@ const APP_COMMANDS: &[&str] = &[
     "stop_agent_runtime",
     "agent_request",
     "read_agent_account",
+    "read_agent_rate_limits",
     "read_agent_usage",
     "list_agent_models",
     "enqueue_xiao_run",

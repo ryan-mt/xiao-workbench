@@ -15,7 +15,9 @@ describe("MarkdownBody resource links", () => {
         onOpenResource={() => true}
       />,
     );
-    expect(markup).toContain(`href="${path}"`);
+    expect(markup).toContain('href="#"');
+    expect(markup).not.toContain(`href="${path}"`);
+    expect(markup).not.toContain('target="_blank"');
   });
 
   it("preserves UNC file URLs for internal routing", () => {
@@ -29,7 +31,9 @@ describe("MarkdownBody resource links", () => {
         onOpenResource={() => true}
       />,
     );
-    expect(markup).toContain(`href="${path}"`);
+    expect(markup).toContain('href="#"');
+    expect(markup).not.toContain(`href="${path}"`);
+    expect(markup).not.toContain('target="_blank"');
   });
 
   it("continues to reject executable URL schemes", () => {

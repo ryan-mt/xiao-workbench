@@ -323,23 +323,26 @@ const MarkdownChunk = memo(function MarkdownChunk({
         <table {...props}>{children}</table>
       </div>
     ),
-    a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => (
-      <a
-        {...props}
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(event) => {
-          onClick?.(event);
-          if (!event.defaultPrevented && href && onOpenResource) {
-            const handled = onOpenResource(href);
-            if (handled || workspacePathHref(href)) event.preventDefault();
-          } else if (!event.defaultPrevented && href && workspacePathHref(href)) {
-            event.preventDefault();
-          }
-        }}
-      >{children}</a>
-    ),
+    a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
+      const internalResource = Boolean(href && workspacePathHref(href));
+      return (
+        <a
+          {...props}
+          href={internalResource ? "#" : href}
+          target={!internalResource && href ? "_blank" : undefined}
+          rel={!internalResource && href ? "noopener noreferrer" : undefined}
+          onClick={(event) => {
+            onClick?.(event);
+            if (!event.defaultPrevented && href && onOpenResource) {
+              const handled = onOpenResource(href);
+              if (handled || internalResource) event.preventDefault();
+            } else if (!event.defaultPrevented && internalResource) {
+              event.preventDefault();
+            }
+          }}
+        >{children}</a>
+      );
+    },
   }), [onOpenResource, streaming]);
 
   return (
