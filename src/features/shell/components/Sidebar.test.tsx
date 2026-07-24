@@ -101,6 +101,7 @@ const renderSidebar = (
       onOpenSettings={noop}
       onOpenTasks={noop}
       onAddProject={noop}
+      onNewTask={noop}
       onSelectProject={noop}
       onSelectTask={noop}
       onToggleTaskPinned={noop}
@@ -178,6 +179,14 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain(">Attention</span>");
     expect(markup).toContain(">Settings</span>");
     expect(markup).toContain(">Xiao User</strong>");
+  });
+
+  it("offers a new task action for an empty project", () => {
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project] });
+
+    expect(markup).toContain('class="sidebar app-sidebar"');
+    expect(markup).toContain(">No tasks yet</span>");
+    expect(markup).toContain(">New task</span>");
   });
 });
 

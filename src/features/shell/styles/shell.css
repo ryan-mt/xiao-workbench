@@ -353,7 +353,7 @@
   grid-template-columns: 0 minmax(0, 1fr);
 }
 
-.app-layout--sidebar-hidden .sidebar {
+.app-layout--sidebar-hidden .app-sidebar {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -1323,9 +1323,39 @@
   transform: translateY(1px);
 }
 
-.sidebar-project__tasks .sidebar__empty {
-  margin: 10px 12px 12px 20px;
-  font-size: var(--text-label);
+.sidebar__empty-project {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 7px 8px 10px 20px;
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.sidebar__empty-project button {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--muted-strong);
+  font-size: var(--text-caption);
+  font-weight: 540;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.sidebar__empty-project button:hover,
+.sidebar__empty-project button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: 0;
+}
+
+.sidebar__empty-project button:active {
+  transform: translateY(1px);
 }
 
 .sidebar__profile-avatar {
@@ -2087,13 +2117,12 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .app-layout .sidebar {
+  .app-layout .app-sidebar {
     position: absolute;
     z-index: 30;
     top: 0;
     bottom: 0;
     left: 0;
-    display: grid;
     width: min(92vw, 340px);
     max-width: 100%;
     box-shadow: 18px 0 54px rgba(22, 22, 20, 0.16);
@@ -2102,7 +2131,7 @@
       visibility 160ms ease;
   }
 
-  .app-layout--sidebar-hidden .sidebar {
+  .app-layout--sidebar-hidden .app-sidebar {
     visibility: hidden;
     opacity: 0;
     pointer-events: none;

@@ -53,7 +53,9 @@ import { ProfilePage } from "../features/profile/components/ProfilePage";
 import { useLocalProfile } from "../features/profile/hooks/useLocalProfile";
 import {
   SettingsPage,
+  SettingsSidebar,
   type ArchivedTaskItem,
+  type SettingsSection,
 } from "../features/settings/components/SettingsPage";
 import {
   useAppPreferences,
@@ -1395,6 +1397,7 @@ export function App() {
   const codexUpdate = useCodexUpdate();
   const [initialTaskState] = useState(defaultTaskState);
   const [activePage, setActivePage] = useState<AppPage>("tasks");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [initialFocusRailPreference] = useState(readFocusRailPreference);
   const [focusView, setFocusView] = useState<FocusView>(initialFocusRailPreference.view);
   const [focusResourceRequest, setFocusResourceRequest] = useState<FocusResourceRequest | null>(null);
@@ -3603,63 +3606,73 @@ export function App() {
           />
         }
         sidebar={
-          <Sidebar
-            activePage={activePage}
-            projects={projects}
-            activeProjectPath={workspace.path}
-            tasks={tasks}
-            activeTaskId={selectedTask?.id ?? ""}
-            workspace={workspace}
-            workingTaskIds={agent.workingTaskIds}
-            account={agent.account}
-            profile={profile}
-            canOpenProjects={isTauriHost()}
-            attentionCount={attentionItems.length}
-            attentionHydrationStatus={attentionHydrationStatus}
-            onOpenMenu={() => setCommandMenuOpen(true)}
-            onOpenAttention={() => {
-              setActivePage("attention");
-              closeFocusPanel();
-              closeSidebarOnNarrow();
-            }}
-            onOpenProfile={() => {
-              setActivePage("profile");
-              closeFocusPanel();
-              closeSidebarOnNarrow();
-            }}
-            onOpenSettings={() => {
-              setActivePage("settings");
-              closeFocusPanel();
-              closeSidebarOnNarrow();
-            }}
-            onOpenTasks={() => {
-              setActivePage("tasks");
-              closeSidebarOnNarrow();
-            }}
-            onAddProject={() => void addProject()}
-            onSelectProject={(path) => {
-              if (agent.hasActiveRuns) return;
-              setActiveProjectPath(path);
-              setActivePage("tasks");
-              closeFocusPanel();
-              closeSidebarOnNarrow();
-            }}
-            onSelectTask={(taskId) => {
-              setActiveTaskId(taskId);
-              setActivePage("tasks");
-              closeSidebarOnNarrow();
-            }}
-            onToggleTaskPinned={toggleTaskPinned}
-            onSetTaskArchived={setTaskArchived}
-            onRenameTask={renameTask}
-            onMarkTaskUnread={markTaskUnread}
-            onContinueInNewTask={continueInNewTask}
-            onToggleProjectPinned={toggleProjectPinned}
-            onOpenProject={openProject}
-            onRenameProject={renameProject}
-            onArchiveProjectTasks={(path) => void archiveProjectTasks(path)}
-            onRemoveProject={removeProject}
-          />
+          activePage === "settings" ? (
+            <SettingsSidebar
+              activeSection={settingsSection}
+              archivedTaskCount={archivedTasks.length}
+              onSectionChange={setSettingsSection}
+              onClose={() => setActivePage("tasks")}
+            />
+          ) : (
+            <Sidebar
+              activePage={activePage}
+              projects={projects}
+              activeProjectPath={workspace.path}
+              tasks={tasks}
+              activeTaskId={selectedTask?.id ?? ""}
+              workspace={workspace}
+              workingTaskIds={agent.workingTaskIds}
+              account={agent.account}
+              profile={profile}
+              canOpenProjects={isTauriHost()}
+              attentionCount={attentionItems.length}
+              attentionHydrationStatus={attentionHydrationStatus}
+              onOpenMenu={() => setCommandMenuOpen(true)}
+              onOpenAttention={() => {
+                setActivePage("attention");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
+              onOpenProfile={() => {
+                setActivePage("profile");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
+              onOpenSettings={() => {
+                setActivePage("settings");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
+              onOpenTasks={() => {
+                setActivePage("tasks");
+                closeSidebarOnNarrow();
+              }}
+              onAddProject={() => void addProject()}
+              onNewTask={openNewTaskTab}
+              onSelectProject={(path) => {
+                if (agent.hasActiveRuns) return;
+                setActiveProjectPath(path);
+                setActivePage("tasks");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
+              onSelectTask={(taskId) => {
+                setActiveTaskId(taskId);
+                setActivePage("tasks");
+                closeSidebarOnNarrow();
+              }}
+              onToggleTaskPinned={toggleTaskPinned}
+              onSetTaskArchived={setTaskArchived}
+              onRenameTask={renameTask}
+              onMarkTaskUnread={markTaskUnread}
+              onContinueInNewTask={continueInNewTask}
+              onToggleProjectPinned={toggleProjectPinned}
+              onOpenProject={openProject}
+              onRenameProject={renameProject}
+              onArchiveProjectTasks={(path) => void archiveProjectTasks(path)}
+              onRemoveProject={removeProject}
+            />
+          )
         }
         content={
           activePage === "attention" ? (
@@ -3711,6 +3724,9 @@ export function App() {
                 });
               }}
               onClose={() => setActivePage("tasks")}
+              activeSection={settingsSection}
+              onSectionChange={setSettingsSection}
+              showSidebar={false}
             />
           ) : activePage === "profile" ? (
             <ProfilePage

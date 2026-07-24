@@ -69,7 +69,7 @@ describe("SettingsPage", () => {
   it("uses a grouped settings sidebar and a focused content pane", () => {
     const markup = renderSettings("system");
 
-    expect(markup).toContain('class="settings-sidebar"');
+    expect(markup).toContain('class="settings-sidebar app-sidebar"');
     expect(markup).toContain('class="settings-nav"');
     expect(markup).toContain('class="settings-main"');
     expect(markup).toContain('aria-label="Settings sections"');
@@ -91,11 +91,10 @@ describe("SettingsPage", () => {
     expect(markup).not.toContain("<select");
   });
 
-  it("keeps the runtime and close controls accessible", () => {
+  it("keeps back and close controls accessible", () => {
     const markup = renderSettings("dark");
 
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain("Connected");
+    expect(markup).toContain("Back to workspace");
     expect(markup).toContain('aria-label="Close settings"');
   });
 });

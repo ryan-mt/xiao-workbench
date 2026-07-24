@@ -21,7 +21,13 @@ export type ArchivedTaskItem = {
   projectName: string;
 };
 
-type SettingsSection = "agent" | "archived" | "general" | "models" | "runtime" | "shortcuts";
+export type SettingsSection =
+  | "agent"
+  | "archived"
+  | "general"
+  | "models"
+  | "runtime"
+  | "shortcuts";
 
 type SettingsPageProps = {
   theme: Theme;
@@ -46,6 +52,9 @@ type SettingsPageProps = {
   onCheckCodexUpdate: () => void;
   onUpdateCodex: () => void;
   onClose: () => void;
+  activeSection?: SettingsSection;
+  onSectionChange?: (section: SettingsSection) => void;
+  showSidebar?: boolean;
 };
 
 const sections: Array<{
@@ -105,14 +114,6 @@ const archivedTaskDate = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
-
-const runtimeLabel = (phase: AgentRuntimeState["phase"]) => {
-  if (phase === "ready") return "Connected";
-  if (phase === "working") return "Working";
-  if (phase === "starting") return "Connecting";
-  if (phase === "error") return "Needs attention";
-  return "Offline";
-};
 
 const runtimeTitle = (phase: AgentRuntimeState["phase"]) => {
   if (phase === "ready") return "Codex is ready";
@@ -217,6 +218,61 @@ function SectionHeader({
   );
 }
 
+export function SettingsSidebar({
+  activeSection,
+  archivedTaskCount,
+  onSectionChange,
+  onClose,
+}: {
+  activeSection: SettingsSection;
+  archivedTaskCount: number;
+  onSectionChange: (section: SettingsSection) => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="settings-sidebar app-sidebar" aria-label="Settings navigation">
+      <header className="settings-sidebar__header">
+        <strong>Settings</strong>
+        <span>Local preferences</span>
+      </header>
+      <nav className="settings-nav" aria-label="Settings sections">
+        {sectionGroups.map((group) => (
+          <div className="settings-nav__group" key={group.label}>
+            <span className="settings-nav__label">{group.label}</span>
+            <div className="settings-nav__items">
+              {group.ids.map((sectionId) => {
+                const section = sections.find((item) => item.id === sectionId)!;
+                return (
+                  <button
+                    type="button"
+                    className={activeSection === section.id ? "is-active" : undefined}
+                    aria-current={activeSection === section.id ? "page" : undefined}
+                    aria-controls={`settings-panel-${section.id}`}
+                    key={section.id}
+                    onClick={() => onSectionChange(section.id)}
+                  >
+                    <XiaoIcon name={section.icon} size={14} />
+                    <span>{section.label}</span>
+                    {section.id === "archived" && archivedTaskCount > 0
+                      ? <small>{archivedTaskCount}</small>
+                      : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
+      <footer className="settings-sidebar__footer">
+        <button type="button" onClick={onClose}>
+          <XiaoIcon name="back" size={14} />
+          <span>Back to workspace</span>
+        </button>
+      </footer>
+    </aside>
+  );
+}
+
 export function SettingsPage({
   theme,
   preferences,
@@ -240,8 +296,13 @@ export function SettingsPage({
   onCheckCodexUpdate,
   onUpdateCodex,
   onClose,
+  activeSection: controlledActiveSection,
+  onSectionChange,
+  showSidebar = true,
 }: SettingsPageProps) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
+  const [localActiveSection, setLocalActiveSection] = useState<SettingsSection>("general");
+  const activeSection = controlledActiveSection ?? localActiveSection;
+  const setActiveSection = onSectionChange ?? setLocalActiveSection;
   const [modelQuery, setModelQuery] = useState("");
   const sortedArchivedTasks = [...archivedTasks].sort((a, b) => b.updatedAt - a.updatedAt);
   const visibleModels = useMemo(() => {
@@ -291,45 +352,15 @@ export function SettingsPage({
         : "Xiao checks the official Codex npm release when the native app starts.");
 
   return (
-    <section className="settings-page">
-      <aside className="settings-sidebar">
-        <header className="settings-sidebar__header">
-          <strong>Settings</strong>
-          <span>Local preferences</span>
-        </header>
-        <nav className="settings-nav" aria-label="Settings sections">
-          {sectionGroups.map((group) => (
-            <div className="settings-nav__group" key={group.label}>
-              <span className="settings-nav__label">{group.label}</span>
-              <div className="settings-nav__items">
-                {group.ids.map((sectionId) => {
-                  const section = sections.find((item) => item.id === sectionId)!;
-                  return (
-                    <button
-                      type="button"
-                      className={activeSection === section.id ? "is-active" : undefined}
-                      aria-current={activeSection === section.id ? "page" : undefined}
-                      aria-controls={`settings-panel-${section.id}`}
-                      key={section.id}
-                      onClick={() => setActiveSection(section.id)}
-                    >
-                      <XiaoIcon name={section.icon} size={14} />
-                      <span>{section.label}</span>
-                      {section.id === "archived" && archivedTasks.length > 0
-                        ? <small>{archivedTasks.length}</small>
-                        : null}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </nav>
-        <footer className={`settings-sidebar__footer is-${runtime.phase}`} role="status">
-          <span>Xiao desktop</span>
-          <span><i />{runtimeLabel(runtime.phase)}</span>
-        </footer>
-      </aside>
+    <section className={`settings-page ${showSidebar ? "" : "settings-page--content-only"}`.trim()}>
+      {showSidebar ? (
+        <SettingsSidebar
+          activeSection={activeSection}
+          archivedTaskCount={archivedTasks.length}
+          onSectionChange={setActiveSection}
+          onClose={onClose}
+        />
+      ) : null}
 
       <main className="settings-main">
         <div className="settings-content">

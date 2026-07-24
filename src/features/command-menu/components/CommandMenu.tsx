@@ -236,7 +236,6 @@ export function CommandMenu({
                     <strong>{action.label}</strong>
                     <small>{action.description}</small>
                   </span>
-                  <kbd className="command-menu__result-key">Enter</kbd>
                 </button>
               </Fragment>
             );
@@ -262,7 +261,6 @@ export function CommandMenu({
                   <strong>{task.title}</strong>
                   <small>{task.archived ? "Archived" : task.meta}</small>
                 </span>
-                <kbd className="command-menu__result-key">Enter</kbd>
               </button>
             );
           })}
@@ -290,7 +288,6 @@ export function CommandMenu({
                     {result.taskArchived ? " · Archived" : ""}
                   </small>
                 </span>
-                <kbd className="command-menu__result-key">Enter</kbd>
               </button>
             );
           })}

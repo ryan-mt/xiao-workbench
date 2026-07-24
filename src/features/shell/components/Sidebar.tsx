@@ -41,6 +41,7 @@ type SidebarProps = {
   onOpenSettings: () => void;
   onOpenTasks: () => void;
   onAddProject: () => void;
+  onNewTask: () => void;
   onSelectProject: (path: string) => void;
   onSelectTask: (taskId: string) => void;
   onToggleTaskPinned: (taskId: string) => void;
@@ -123,6 +124,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenTasks,
   onAddProject,
+  onNewTask,
   onSelectProject,
   onSelectTask,
   onToggleTaskPinned,
@@ -398,7 +400,7 @@ export function Sidebar({
 
   return (
     <>
-      <aside className="sidebar" aria-label="Workspace navigation">
+      <aside className="sidebar app-sidebar" aria-label="Workspace navigation">
         <div className="sidebar__panel">
           <header className="sidebar__header">
             <SidebarStageBackdrop variant={APP_STAGE} />
@@ -674,7 +676,13 @@ export function Sidebar({
                     </div>
 
                     {!visibleTasks.length ? (
-                      <p className="sidebar__empty">No tasks in this project.</p>
+                      <div className="sidebar__empty-project">
+                        <span>No tasks yet</span>
+                        <button type="button" onClick={onNewTask}>
+                          <XiaoIcon name="add" size={13} />
+                          <span>New task</span>
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 ) : null}
