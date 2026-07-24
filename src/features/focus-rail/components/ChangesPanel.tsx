@@ -30,6 +30,7 @@ type ChangesPanelProps = {
   onRemoveReviewContext: (attachmentId: string) => void;
   onOpenBrowser: (url: string) => void;
   onRefresh: () => void;
+  onOutcomeChange?: () => void;
 };
 
 const reviewSourceRevision = (path: string, patch: string) => {
@@ -105,6 +106,7 @@ export function ChangesPanel({
   onRemoveReviewContext,
   onOpenBrowser,
   onRefresh,
+  onOutcomeChange = () => {},
 }: ChangesPanelProps) {
   const git = workspace.git;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -351,6 +353,7 @@ export function ChangesPanel({
       setCommitMessage("");
       setShipCommitOutput(null);
       setActionResult(`${result.pullRequest.isDraft ? "Draft " : ""}PR #${result.pullRequest.number} shipped. CI status loaded.`);
+      onOutcomeChange();
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -369,6 +372,7 @@ export function ChangesPanel({
       const summary = summarizeShipChecks(checks);
       setShipChecks(checks);
       setShipSteps((steps) => updateShipStep(steps, "ci", summary.status, summary.detail));
+      onOutcomeChange();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setShipSteps((steps) => updateShipStep(steps, "ci", "error", message));

@@ -19,6 +19,7 @@ type ObservatoryPanelProps = {
   taskId: string;
   liveRuns: RunSnapshot[];
   livePendingInputs: PendingInputSnapshot[];
+  openRunId?: string | null;
   timeline: TimelineEntry[];
   onJumpToTimeline: (entryId: string) => void;
   onWorkspaceChange: () => void;
@@ -110,6 +111,7 @@ export function ObservatoryPanel({
   taskId,
   liveRuns,
   livePendingInputs,
+  openRunId = null,
   timeline,
   onJumpToTimeline,
   onWorkspaceChange,
@@ -138,6 +140,12 @@ export function ObservatoryPanel({
   const selectedRun = runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null;
   const selectedRunVersion = selectedRun?.version ?? -1;
   const selectedPendingCount = pendingInputs.filter((pending) => pending.runId === selectedRun?.id).length;
+
+  useEffect(() => {
+    if (openRunId && runs.some((run) => run.id === openRunId)) {
+      setSelectedRunId(openRunId);
+    }
+  }, [openRunId, runs]);
 
   useEffect(() => {
     let active = true;

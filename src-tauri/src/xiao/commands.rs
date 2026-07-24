@@ -1,10 +1,10 @@
 use tauri::State;
 
 use super::models::{
-    CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate, ProjectPresentationUpdate,
-    TaskCodexProfileBinding, TaskStageTransition, TaskStageTransitionRequest,
-    XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument,
-    XiaoWorkspaceUpdate,
+    AttentionSnapshot, CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate,
+    ProjectPresentationUpdate, PublicationRecord, TaskCodexProfileBinding, TaskStageTransition,
+    TaskStageTransitionRequest, XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage,
+    XiaoWorkspaceDocument, XiaoWorkspaceUpdate,
 };
 use super::repository::XiaoRepository;
 use super::service;
@@ -163,6 +163,30 @@ pub fn list_xiao_task_stage_transitions(
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<TaskStageTransition>, String> {
     service::list_task_stage_transitions(&repository, &workspace_path, &task_id)
+}
+
+#[tauri::command]
+pub fn list_xiao_attention_items(
+    repository: State<'_, XiaoRepository>,
+) -> Result<AttentionSnapshot, String> {
+    service::list_attention_items(&repository)
+}
+
+#[tauri::command]
+pub fn acknowledge_xiao_attention_item(
+    item_id: String,
+    repository: State<'_, XiaoRepository>,
+) -> Result<bool, String> {
+    service::acknowledge_attention_item(&repository, &item_id)
+}
+
+#[tauri::command]
+pub fn list_xiao_task_publications(
+    project_path: String,
+    task_id: String,
+    repository: State<'_, XiaoRepository>,
+) -> Result<Vec<PublicationRecord>, String> {
+    service::list_task_publications(&repository, &project_path, &task_id)
 }
 
 #[tauri::command]

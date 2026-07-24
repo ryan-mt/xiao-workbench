@@ -159,6 +159,64 @@ export type TaskStageTransitionRequest = {
   idempotencyKey: string;
 };
 
+export type AttentionItemKind =
+  | "decision"
+  | "failure"
+  | "verification"
+  | "review"
+  | "publication"
+  | "routine"
+  | "unread";
+
+export type AttentionSurface =
+  | "timeline"
+  | "verification"
+  | "changes"
+  | "schedule"
+  | "observatory";
+
+export type AttentionItem = {
+  id: string;
+  projectPath: string;
+  projectName: string;
+  taskId: string;
+  taskTitle: string;
+  taskStage: TaskStage;
+  taskStageVersion: number;
+  runId: string | null;
+  kind: AttentionItemKind;
+  priority: number;
+  title: string;
+  safeSummary: string;
+  sourceOccurrenceKey: string;
+  surface: AttentionSurface;
+  createdAt: number;
+  resolvedAt: number | null;
+  acknowledgedAt: number | null;
+};
+
+export type AttentionSnapshot = {
+  items: AttentionItem[];
+  status: "live" | "partial";
+  generatedAt: number;
+};
+
+export type PublicationRecord = {
+  id: string;
+  projectPath: string;
+  taskId: string;
+  sourceRunId: string;
+  kind: "branch" | "pull_request";
+  status: "active" | "superseded" | "merged" | "closed" | "unavailable";
+  branch: string;
+  remote: string | null;
+  url: string | null;
+  pullRequestNumber: number | null;
+  checkState: "unknown" | "pending" | "passing" | "failing";
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type XiaoWorkspaceDocument = {
   schemaVersion: 1;
   workspacePath: string;

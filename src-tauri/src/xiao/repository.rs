@@ -38,6 +38,7 @@ const MAX_TIMELINE_PAGE_SIZE: usize = 200;
 // Bump only after the matching migration, protocol, boundary, shell, accessibility,
 // frontend, Rust, type-check, and production-build gates pass for the slice.
 const VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION: i64 = 1;
+const VALIDATED_OUTCOME_SUPERVISION_CAPABILITY_VERSION: i64 = 1;
 
 const MIGRATION_1_SQL: &str = r#"
 CREATE TABLE legacy_imports (
@@ -772,6 +773,76 @@ CREATE TABLE task_preview_state (
 );
 "#;
 
+const MIGRATION_8_SQL: &str = r#"
+INSERT INTO rollout_capabilities(
+    capability_id, version, enabled, migrated_at, enabled_at
+) VALUES ('outcome-supervision-loop', 1, 0, 0, NULL);
+
+CREATE TABLE publication_records (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('branch', 'pull_request')),
+    status TEXT NOT NULL CHECK (
+        status IN ('active', 'superseded', 'merged', 'closed', 'unavailable')
+    ),
+    branch TEXT NOT NULL CHECK (length(trim(branch)) > 0),
+    remote TEXT,
+    url TEXT,
+    pull_request_number INTEGER,
+    check_state TEXT NOT NULL DEFAULT 'unknown' CHECK (
+        check_state IN ('unknown', 'pending', 'passing', 'failing')
+    ),
+    checks_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(checks_json)),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE CASCADE,
+    CHECK (
+        (kind = 'branch' AND pull_request_number IS NULL)
+        OR (kind = 'pull_request' AND pull_request_number IS NOT NULL AND url IS NOT NULL)
+    )
+);
+CREATE INDEX publication_records_by_task_time
+    ON publication_records(workspace_id, task_id, created_at DESC, id DESC);
+CREATE INDEX publication_records_by_pull_request
+    ON publication_records(pull_request_number, updated_at DESC)
+    WHERE pull_request_number IS NOT NULL;
+
+CREATE TABLE attention_occurrences (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    run_id TEXT,
+    kind TEXT NOT NULL CHECK (
+        kind IN (
+            'decision', 'failure', 'verification', 'review',
+            'publication', 'routine', 'unread'
+        )
+    ),
+    priority INTEGER NOT NULL CHECK (priority BETWEEN 0 AND 3),
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+    safe_summary TEXT NOT NULL CHECK (length(safe_summary) <= 320),
+    source_occurrence_key TEXT NOT NULL UNIQUE,
+    surface TEXT NOT NULL CHECK (
+        surface IN ('timeline', 'verification', 'changes', 'schedule', 'observatory')
+    ),
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    acknowledged_at INTEGER,
+    notification_delivered_at INTEGER,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE SET NULL
+);
+CREATE INDEX attention_occurrences_open_ranked
+    ON attention_occurrences(priority, created_at DESC, id)
+    WHERE resolved_at IS NULL AND acknowledged_at IS NULL;
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -1430,14 +1501,48 @@ impl XiaoRepository {
                 return existing.decode();
             }
 
-            let (workspace_id, current_stage, current_version): (i64, String, i64) = transaction
+            let (
+                workspace_id,
+                current_stage,
+                current_version,
+                acceptance_contract_version_id,
+                latest_run_contract_version_id,
+                has_active_run,
+            ): (i64, String, i64, Option<String>, Option<String>, bool) = transaction
                 .query_row(
-                    r#"SELECT tasks.workspace_id, tasks.task_stage, tasks.task_stage_version
+                    r#"SELECT tasks.workspace_id, tasks.task_stage, tasks.task_stage_version,
+                              tasks.acceptance_contract_version_id,
+                              (
+                                  SELECT run.acceptance_contract_source_version_id
+                                  FROM runs run
+                                  WHERE run.workspace_id = tasks.workspace_id
+                                    AND run.task_id = tasks.task_id
+                                  ORDER BY run.queued_at DESC, run.id DESC
+                                  LIMIT 1
+                              ),
+                              EXISTS(
+                                  SELECT 1 FROM runs run
+                                  WHERE run.workspace_id = tasks.workspace_id
+                                    AND run.task_id = tasks.task_id
+                                    AND run.status IN (
+                                        'queued', 'preparing', 'running',
+                                        'waiting_for_input', 'verifying'
+                                    )
+                              )
                        FROM tasks
                        JOIN workspaces ON workspaces.id = tasks.workspace_id
                        WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
                     params![workspace_path, request.task_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
                 )
                 .map_err(|error| format!("Could not load Task stage: {error}"))?;
             let current_stage = TaskStage::from_database(&current_stage)?;
@@ -1453,6 +1558,39 @@ impl XiaoRepository {
                     current_stage.as_database(),
                     request.to_stage.as_database()
                 ));
+            }
+            if request.to_stage == TaskStage::ReadyForReview
+                && (
+                    acceptance_contract_version_id.is_some()
+                    || latest_run_contract_version_id.is_some()
+                )
+            {
+                return Err(
+                    "A Task with an Acceptance Contract becomes ready only after its frozen verification passes."
+                        .to_owned(),
+                );
+            }
+            if request.to_stage == TaskStage::ReadyForReview && has_active_run {
+                return Err(
+                    "A Task outcome cannot be marked ready while its Run is active.".to_owned(),
+                );
+            }
+            if request.to_stage == TaskStage::Published {
+                return Err(
+                    "A Task becomes published only through a durable publication record.".to_owned(),
+                );
+            }
+            if request.to_stage == TaskStage::Completed && actor != "operator" {
+                return Err(
+                    "Task completion requires explicit Operator acceptance or current integration."
+                        .to_owned(),
+                );
+            }
+            if current_stage == TaskStage::Completed
+                && request.to_stage == TaskStage::InProgress
+                && actor != "operator"
+            {
+                return Err("Reopening a completed Task requires the Operator.".to_owned());
             }
             if let Some(source_run_id) = request.source_run_id.as_deref() {
                 let owned = transaction
@@ -2130,6 +2268,19 @@ fn open_connection(
             params![now_millis()?, VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION],
         )
         .map_err(|error| format!("Could not enable validated control-model capability: {error}"))?;
+    connection
+        .execute(
+            r#"UPDATE rollout_capabilities
+               SET enabled = 1, enabled_at = ?1
+               WHERE capability_id = 'outcome-supervision-loop' AND version = ?2"#,
+            params![
+                now_millis()?,
+                VALIDATED_OUTCOME_SUPERVISION_CAPABILITY_VERSION
+            ],
+        )
+        .map_err(|error| {
+            format!("Could not enable validated outcome-supervision capability: {error}")
+        })?;
     migrate_legacy_store(
         &mut connection,
         app_data_dir,
@@ -2218,6 +2369,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             MIGRATION_6_SQL,
         ),
         (7_i64, "control_model_and_task_workbench", MIGRATION_7_SQL),
+        (8_i64, "outcome_and_supervision_loop", MIGRATION_8_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -4480,6 +4632,20 @@ mod tests {
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
                         .map_err(|error| error.to_string())?;
+                    let outcome_supervision_tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('publication_records', 'attention_occurrences')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let outcome_supervision_capability: (i64, i64) = connection
+                        .query_row(
+                            "SELECT version, enabled FROM rollout_capabilities WHERE capability_id = 'outcome-supervision-loop'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
                     let task_control_columns: i64 = connection
                         .query_row(
                             "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('task_stage', 'task_stage_version', 'codex_profile_id', 'workbench_state_json')",
@@ -4493,6 +4659,8 @@ mod tests {
                     assert_eq!(synchronous, 2);
                     assert_eq!(control_model_tables, 7);
                     assert_eq!(control_model_capability, (1, 1));
+                    assert_eq!(outcome_supervision_tables, 2);
+                    assert_eq!(outcome_supervision_capability, (1, 1));
                     assert_eq!(task_control_columns, 4);
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);
@@ -5300,6 +5468,84 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn schema_v7_upgrade_adds_outcome_supervision_state_once() {
+        let directory = TestDirectory::new("schema-v7-outcome-supervision-upgrade");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            for (version, sql) in [
+                (3, MIGRATION_3_SQL),
+                (4, MIGRATION_4_SQL),
+                (5, MIGRATION_5_SQL),
+                (6, MIGRATION_6_SQL),
+                (7, MIGRATION_7_SQL),
+            ] {
+                connection.execute_batch(sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, 'legacy', ?1)",
+                        [version],
+                    )
+                    .unwrap();
+            }
+        }
+
+        for _ in 0..2 {
+            let repository = XiaoRepository::open(&directory.path).unwrap();
+            repository
+                .with_connection(|connection| {
+                    let versions: i64 = connection
+                        .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+                        .map_err(|error| error.to_string())?;
+                    let tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('publication_records', 'attention_occurrences')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let capability: (i64, i64) = connection
+                        .query_row(
+                            "SELECT version, enabled FROM rollout_capabilities WHERE capability_id = 'outcome-supervision-loop'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    assert_eq!(versions, XIAO_DATABASE_SCHEMA_VERSION);
+                    assert_eq!(tables, 2);
+                    assert_eq!(capability, (1, 1));
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 
     #[test]

@@ -706,6 +706,14 @@ impl XiaoRepository {
                     "gateCount": outcomes.len(),
                 }),
             )?;
+            if status == VerificationAttemptStatus::Passed {
+                crate::xiao::supervision::advance_task_after_verification(
+                    &transaction,
+                    &current,
+                    attempt_id,
+                    timestamp,
+                )?;
+            }
             let run = load_run(&transaction, &current.id)?;
             let attempt = load_attempt(&transaction, attempt_id)?;
             if fail_before_commit {

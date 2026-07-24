@@ -91,10 +91,19 @@ pub async fn publish_git_branch(
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<GitPushResult, String> {
-    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    tauri::async_runtime::spawn_blocking(move || publish_current_branch(&root))
+    let task_id = task_id.ok_or("This Git operation requires a persisted Xiao task.")?;
+    repository.ensure_task_outcome_publishable(&project_path, &task_id)?;
+    let root = persisted_task_root(&repository, &project_path, Some(&task_id))?;
+    let result = tauri::async_runtime::spawn_blocking(move || publish_current_branch(&root))
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())??;
+    repository.record_branch_publication(
+        &project_path,
+        &task_id,
+        &result.branch,
+        &result.remote,
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -103,10 +112,29 @@ pub async fn get_git_pull_request(
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Option<GitPullRequestSummary>, String> {
-    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    tauri::async_runtime::spawn_blocking(move || find_pull_request(&root))
+    let task_id = task_id.ok_or("This Git operation requires a persisted Xiao task.")?;
+    let root = persisted_task_root(&repository, &project_path, Some(&task_id))?;
+    let pull_request = tauri::async_runtime::spawn_blocking(move || find_pull_request(&root))
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())??;
+    if let Some(pull_request) = pull_request.as_ref() {
+        let _ = repository.record_pull_request_publication(
+            &project_path,
+            &task_id,
+            &pull_request.head_ref_name,
+            &pull_request.url,
+            pull_request.number as i64,
+        );
+        repository.refresh_pull_request_publication(
+            &project_path,
+            &task_id,
+            pull_request.number as i64,
+            &pull_request.state,
+            "unknown",
+            "[]",
+        )?;
+    }
+    Ok(pull_request)
 }
 
 #[tauri::command]
@@ -115,10 +143,29 @@ pub async fn create_git_draft_pull_request(
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<GitPullRequestSummary, String> {
-    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    tauri::async_runtime::spawn_blocking(move || create_draft_pull_request(&root))
-        .await
-        .map_err(|error| error.to_string())?
+    let task_id = task_id.ok_or("This Git operation requires a persisted Xiao task.")?;
+    repository.ensure_task_outcome_publishable(&project_path, &task_id)?;
+    let root = persisted_task_root(&repository, &project_path, Some(&task_id))?;
+    let pull_request =
+        tauri::async_runtime::spawn_blocking(move || create_draft_pull_request(&root))
+            .await
+            .map_err(|error| error.to_string())??;
+    repository.record_pull_request_publication(
+        &project_path,
+        &task_id,
+        &pull_request.head_ref_name,
+        &pull_request.url,
+        pull_request.number as i64,
+    )?;
+    repository.refresh_pull_request_publication(
+        &project_path,
+        &task_id,
+        pull_request.number as i64,
+        &pull_request.state,
+        "unknown",
+        "[]",
+    )?;
+    Ok(pull_request)
 }
 
 #[tauri::command]
@@ -127,10 +174,48 @@ pub async fn get_git_pull_request_checks(
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<GitCheckSummary>, String> {
-    let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    tauri::async_runtime::spawn_blocking(move || read_pull_request_checks(&root))
-        .await
-        .map_err(|error| error.to_string())?
+    let task_id = task_id.ok_or("This Git operation requires a persisted Xiao task.")?;
+    let root = persisted_task_root(&repository, &project_path, Some(&task_id))?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let pull_request = find_pull_request(&root)?;
+        let checks = read_pull_request_checks(&root)?;
+        Ok::<_, String>((pull_request, checks))
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let (pull_request, checks) = result;
+    if let Some(pull_request) = pull_request {
+        let _ = repository.record_pull_request_publication(
+            &project_path,
+            &task_id,
+            &pull_request.head_ref_name,
+            &pull_request.url,
+            pull_request.number as i64,
+        );
+        let check_state = if checks
+            .iter()
+            .any(|check| matches!(check.bucket.as_str(), "fail" | "cancel"))
+        {
+            "failing"
+        } else if checks.iter().any(|check| check.bucket == "pending") {
+            "pending"
+        } else if checks.is_empty() {
+            "unknown"
+        } else {
+            "passing"
+        };
+        let checks_json = serde_json::to_string(&checks)
+            .map_err(|error| format!("Could not encode pull-request checks: {error}"))?;
+        repository.refresh_pull_request_publication(
+            &project_path,
+            &task_id,
+            pull_request.number as i64,
+            &pull_request.state,
+            check_state,
+            &checks_json,
+        )?;
+    }
+    Ok(checks)
 }
 
 #[tauri::command]

@@ -135,6 +135,8 @@ type TaskWorkspaceProps = {
   taskTitle: string;
   taskArchived: boolean;
   taskStage: TaskStage;
+  hasAcceptanceContract: boolean;
+  hasActiveRuns: boolean;
   launchMode: boolean;
   taskStateError: string | null;
   taskStateLoading: boolean;
@@ -227,7 +229,48 @@ type TaskWorkspaceProps = {
   onFocusView: (view: FocusView) => void;
   onOpenResource: (target: string) => boolean;
   onToggleArchived: () => void;
+  onTransitionTaskStage: (stage: TaskStage) => Promise<void>;
   onTimelineScrollTopChange: (scrollTop: number) => void;
+};
+
+const terminalRunStatuses = new Set([
+  "completed",
+  "needs_attention",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+export const taskOutcomeAction = (
+  stage: TaskStage,
+  hasAcceptanceContract: boolean,
+  hasActiveRuns: boolean,
+  latestRunStatus: string | null,
+): { label: string; nextStage: TaskStage } | null => {
+  if (hasActiveRuns) return null;
+  if (
+    stage === "in_progress" &&
+    !hasAcceptanceContract &&
+    latestRunStatus &&
+    terminalRunStatuses.has(latestRunStatus)
+  ) {
+    return { label: "Mark ready for review", nextStage: "ready_for_review" };
+  }
+  if (stage === "ready_for_review" || stage === "published") {
+    return { label: "Accept outcome", nextStage: "completed" };
+  }
+  if (stage === "completed") {
+    return { label: "Reopen task", nextStage: "in_progress" };
+  }
+  return null;
+};
+
+const taskStageLabel: Record<TaskStage, string> = {
+  draft: "Draft",
+  in_progress: "In progress",
+  ready_for_review: "Ready for review",
+  published: "Published",
+  completed: "Completed",
 };
 
 export function TaskWorkspace({
@@ -235,6 +278,9 @@ export function TaskWorkspace({
   executionTaskId,
   taskTitle,
   taskArchived,
+  taskStage,
+  hasAcceptanceContract,
+  hasActiveRuns,
   launchMode,
   taskStateError,
   taskStateLoading,
@@ -316,6 +362,7 @@ export function TaskWorkspace({
   onFocusView,
   onOpenResource,
   onToggleArchived,
+  onTransitionTaskStage,
   onTimelineScrollTopChange,
 }: TaskWorkspaceProps) {
   const scrollArea = useRef<HTMLDivElement>(null);
@@ -325,6 +372,8 @@ export function TaskWorkspace({
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
+  const [outcomeBusy, setOutcomeBusy] = useState(false);
+  const [outcomeError, setOutcomeError] = useState<string | null>(null);
   const taskActionsDisabled =
     environmentBusy || taskStateLoading || Boolean(taskStateError);
   const canFork =
@@ -355,6 +404,12 @@ export function TaskWorkspace({
   const activeCollaborators = useMemo(
     () => activeCollaboratorsFromTimeline(timeline),
     [timeline],
+  );
+  const outcomeAction = taskOutcomeAction(
+    taskStage,
+    hasAcceptanceContract,
+    hasActiveRuns,
+    latestRun?.status ?? null,
   );
 
   useEffect(() => {
@@ -617,6 +672,34 @@ export function TaskWorkspace({
         onToggleArchived={onToggleArchived}
         onUndo={onUndo}
       />
+      <section className={`task-outcome task-outcome--${taskStage}`} aria-label="Task outcome">
+        <div>
+          <span>Task stage</span>
+          <strong>{taskStageLabel[taskStage]}</strong>
+          {hasAcceptanceContract && taskStage === "in_progress" ? (
+            <small>Passing the frozen Acceptance Contract advances this outcome.</small>
+          ) : null}
+        </div>
+        {outcomeAction ? (
+          <button
+            className="button button--quiet"
+            type="button"
+            disabled={outcomeBusy}
+            onClick={() => {
+              setOutcomeBusy(true);
+              setOutcomeError(null);
+              void onTransitionTaskStage(outcomeAction.nextStage)
+                .catch((reason) => {
+                  setOutcomeError(reason instanceof Error ? reason.message : String(reason));
+                })
+                .finally(() => setOutcomeBusy(false));
+            }}
+          >
+            {outcomeBusy ? "Updating…" : outcomeAction.label}
+          </button>
+        ) : null}
+        {outcomeError ? <p role="alert">{outcomeError}</p> : null}
+      </section>
       <div className="task-workspace__timeline-shell" ref={timelineShell}>
         <div
           className="task-workspace__scroll"

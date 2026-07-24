@@ -70,6 +70,7 @@ type FocusRailProps = {
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
+  onTaskOutcomeChange?: () => void;
   onLoadDirectory: (path: string) => Promise<FileNode[]>;
   routines: RoutineSummary[];
   routinesLoading: boolean;
@@ -77,6 +78,7 @@ type FocusRailProps = {
   routineCreating: boolean;
   routineBusyIds: ReadonlySet<string>;
   routineOpenRunId: string | null;
+  observatoryOpenRunId?: string | null;
   nativeRoutinesAvailable: boolean;
   dangerousRoutineAccessDefault: boolean;
   dangerousRoutineIds: ReadonlySet<string>;
@@ -139,6 +141,7 @@ export function FocusRail({
   loading,
   error,
   onRefresh,
+  onTaskOutcomeChange = () => {},
   onLoadDirectory,
   routines,
   routinesLoading,
@@ -146,6 +149,7 @@ export function FocusRail({
   routineCreating,
   routineBusyIds,
   routineOpenRunId,
+  observatoryOpenRunId = null,
   nativeRoutinesAvailable,
   dangerousRoutineAccessDefault,
   dangerousRoutineIds,
@@ -329,6 +333,7 @@ export function FocusRail({
             onRemoveReviewContext={onRemoveReviewContext}
             onOpenBrowser={onOpenBrowser}
             onRefresh={onRefresh}
+            onOutcomeChange={onTaskOutcomeChange}
           />
         )}
         {activeView === "context" && (
@@ -582,6 +587,7 @@ export function FocusRail({
             taskId={executionTaskId}
             liveRuns={runs}
             livePendingInputs={pendingInputs}
+            openRunId={observatoryOpenRunId}
             timeline={timeline}
             onJumpToTimeline={onJumpToTimeline}
             onWorkspaceChange={onRefresh}
