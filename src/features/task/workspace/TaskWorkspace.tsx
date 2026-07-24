@@ -31,7 +31,12 @@ import {
 import type { RunSnapshot } from "../../../core/models/run";
 import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
-import type { XiaoProjectSummary, XiaoWorkspaceMode } from "../../../core/models/xiao";
+import type {
+  CodexProfile,
+  TaskStage,
+  XiaoProjectSummary,
+  XiaoWorkspaceMode,
+} from "../../../core/models/xiao";
 import { workspacePathComparisonKey } from "../../../core/workspacePath";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
@@ -83,6 +88,27 @@ export const newTaskProjectOptions = (
   }));
 };
 
+export const canSelectCodexProfile = ({
+  taskArchived,
+  taskStateLoading,
+  taskStateError,
+  environmentBusy,
+  runtimeBusy,
+  profileCount,
+}: {
+  taskArchived: boolean;
+  taskStateLoading: boolean;
+  taskStateError: string | null;
+  environmentBusy: boolean;
+  runtimeBusy: boolean;
+  profileCount: number;
+}) => !taskArchived
+  && !taskStateLoading
+  && !taskStateError
+  && !environmentBusy
+  && !runtimeBusy
+  && profileCount >= 2;
+
 type TimelineSelection = {
   text: string;
   left: number;
@@ -129,9 +155,11 @@ type TaskWorkspaceProps = {
   executionTaskId: string | null;
   taskTitle: string;
   taskArchived: boolean;
+  taskStage: TaskStage;
   launchMode: boolean;
   taskStateError: string | null;
   taskStateLoading: boolean;
+  initialTimelineScrollTop: number;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
   rateLimits: AgentRateLimitSnapshot | null;
@@ -139,6 +167,8 @@ type TaskWorkspaceProps = {
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
+  codexProfiles: CodexProfile[];
+  selectedCodexProfileId: string | null;
   fastMode: boolean;
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
@@ -199,6 +229,7 @@ type TaskWorkspaceProps = {
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
+  onCodexProfileChange: (profileId: string) => void;
   onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
@@ -217,6 +248,7 @@ type TaskWorkspaceProps = {
   onFocusView: (view: FocusView) => void;
   onOpenResource: (target: string) => boolean;
   onToggleArchived: () => void;
+  onTimelineScrollTopChange: (scrollTop: number) => void;
 };
 
 export function TaskWorkspace({
@@ -227,6 +259,7 @@ export function TaskWorkspace({
   launchMode,
   taskStateError,
   taskStateLoading,
+  initialTimelineScrollTop,
   timeline,
   runtime,
   rateLimits,
@@ -234,6 +267,8 @@ export function TaskWorkspace({
   models,
   selectedModel,
   selectedReasoningEffort,
+  codexProfiles,
+  selectedCodexProfileId,
   fastMode,
   mode,
   approvalPolicy,
@@ -288,6 +323,7 @@ export function TaskWorkspace({
   onResolveMcpElicitation,
   onModelChange,
   onReasoningEffortChange,
+  onCodexProfileChange,
   onFastModeChange,
   onModeChange,
   onApprovalPolicyChange,
@@ -301,6 +337,7 @@ export function TaskWorkspace({
   onFocusView,
   onOpenResource,
   onToggleArchived,
+  onTimelineScrollTopChange,
 }: TaskWorkspaceProps) {
   const scrollArea = useRef<HTMLDivElement>(null);
   const timelineShell = useRef<HTMLDivElement>(null);
@@ -397,11 +434,19 @@ export function TaskWorkspace({
     if (!node) return;
     if (previousTaskId.current !== taskId) {
       previousTaskId.current = taskId;
-      followLiveOutput.current = true;
-      setShowJumpToLatest(false);
+      node.scrollTop = initialTimelineScrollTop;
+      followLiveOutput.current = shouldFollowLiveOutput(node);
+      setShowJumpToLatest(!followLiveOutput.current);
+      return;
+    }
+    if (initialTimelineScrollTop > 0 && timeline.length > 0) {
+      node.scrollTop = initialTimelineScrollTop;
+      followLiveOutput.current = shouldFollowLiveOutput(node);
+      setShowJumpToLatest(!followLiveOutput.current);
+      return;
     }
     if (followLiveOutput.current) node.scrollTop = node.scrollHeight;
-  }, [taskId, timeline]);
+  }, [initialTimelineScrollTop, taskId, timeline]);
 
   useLayoutEffect(() => {
     const node = scrollArea.current;
@@ -434,7 +479,30 @@ export function TaskWorkspace({
   }, []);
 
   const composer = (
-    <Composer
+    <div className="task-composer-stack">
+      <label className="task-codex-profile">
+        <span>Codex profile</span>
+        <select
+          aria-label="Codex profile for this Task"
+          disabled={!canSelectCodexProfile({
+            taskArchived,
+            taskStateLoading,
+            taskStateError,
+            environmentBusy,
+            runtimeBusy: runtime.phase === "working" || runtime.phase === "starting",
+            profileCount: codexProfiles.length,
+          })}
+          value={selectedCodexProfileId ?? codexProfiles[0]?.id ?? ""}
+          onChange={(event) => onCodexProfileChange(event.target.value)}
+        >
+          {codexProfiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.displayName} · {profile.availability}
+            </option>
+          ))}
+        </select>
+      </label>
+      <Composer
       key={taskId}
       taskId={taskId}
       executionTaskId={executionTaskId}
@@ -512,7 +580,8 @@ export function TaskWorkspace({
       }
       disabledPlaceholder={taskStateLoading ? "Loading task history…" : undefined}
       storageError={taskStateError ?? definitionOfDoneError}
-    />
+      />
+    </div>
   );
 
   const branch = workspace.git?.branch ?? "No Git";
@@ -582,6 +651,7 @@ export function TaskWorkspace({
             followLiveOutput.current = following;
             setShowJumpToLatest(!following);
             setTimelineSelection(null);
+            onTimelineScrollTopChange(event.currentTarget.scrollTop);
           }}
         >
           <TaskTimeline

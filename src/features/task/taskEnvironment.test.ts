@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ManagedWorktreeSummary } from "../../core/models/workspace";
-import { managedWorktreeCleanupMessage } from "./taskEnvironment";
+import { defaultTaskWorkspaceMode, managedWorktreeCleanupMessage } from "./taskEnvironment";
 
 const worktree = (overrides: Partial<ManagedWorktreeSummary> = {}): ManagedWorktreeSummary => ({
   id: "worktree",
@@ -20,6 +20,11 @@ const worktree = (overrides: Partial<ManagedWorktreeSummary> = {}): ManagedWorkt
 });
 
 describe("task environment cleanup", () => {
+  it("defaults Git Tasks to isolation only when the host can provide it", () => {
+    expect(defaultTaskWorkspaceMode(true)).toBe("managed-worktree");
+    expect(defaultTaskWorkspaceMode(false)).toBe("local");
+  });
+
   it("shows the exact owned path and measured disk usage", () => {
     const message = managedWorktreeCleanupMessage(worktree());
 

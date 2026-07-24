@@ -6,6 +6,7 @@ import { PlanPanel } from "./PlanPanel";
 
 const runtime: AgentRuntimeState = {
   phase: "working",
+  profileId: "profile-default",
   taskId: "task",
   threadId: "thread",
   turnId: "turn",

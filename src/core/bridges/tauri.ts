@@ -21,6 +21,14 @@ import type {
   SystemInfo,
 } from "../models/workspace";
 import type {
+  CodexProfile,
+  CodexProfileUpdate,
+  ProjectGroup,
+  ProjectGroupUpdate,
+  ProjectPresentationUpdate,
+  TaskCodexProfileBinding,
+  TaskStageTransition,
+  TaskStageTransitionRequest,
   XiaoHistorySearchResult,
   XiaoProjectSummary,
   XiaoTimelinePage,
@@ -81,6 +89,7 @@ export const nativeBridge = {
       alreadyRunning: boolean;
       environmentId: string;
       generation: number;
+      profileId: string | null;
     }>("start_agent_runtime", { projectPath, taskId });
   },
 
@@ -321,7 +330,12 @@ export const nativeBridge = {
     cols: number,
     rows: number,
   ) {
-    return invoke<{ sessionId: string; shell: string }>("start_terminal", {
+    return invoke<{
+      sessionId: string;
+      shell: string;
+      replay: string;
+      replaySequence: number;
+    }>("start_terminal", {
       sessionId,
       projectPath,
       taskId,
@@ -343,24 +357,57 @@ export const nativeBridge = {
     return invoke<void>("stop_terminal", { sessionId });
   },
 
-  navigateBrowser(url: string, label = "xiao-browser") {
-    return invoke<void>("navigate_browser", { url, label });
+  navigateBrowser(url: string, label: string, taskId?: string, projectPath?: string) {
+    return invoke<void>("navigate_browser", { url, label, taskId, projectPath });
   },
 
-  goBackBrowser(label = "xiao-browser") {
+  openExternalUrl(url: string) {
+    return invoke<void>("open_external_url", { url });
+  },
+
+  goBackBrowser(label: string) {
     return invoke<void>("go_back_browser", { label });
   },
 
-  goForwardBrowser(label = "xiao-browser") {
+  goForwardBrowser(label: string) {
     return invoke<void>("go_forward_browser", { label });
   },
 
-  reloadBrowser(label = "xiao-browser") {
+  reloadBrowser(label: string) {
     return invoke<void>("reload_browser", { label });
   },
 
-  getBrowserUrl(label = "xiao-browser") {
+  getBrowserUrl(label: string) {
     return invoke<string>("get_browser_url", { label });
+  },
+
+  getBrowserConsole(label: string) {
+    return invoke<Array<{ level: string; text: string; at: number }>>(
+      "get_browser_console",
+      { label },
+    );
+  },
+
+  automateTaskPreview(
+    label: string,
+    projectPath: string,
+    taskId: string,
+    action: "click" | "focus" | "fill",
+    selector: string,
+    value?: string,
+  ) {
+    return invoke<void>("automate_task_preview", {
+      label,
+      projectPath,
+      taskId,
+      action,
+      selector,
+      value,
+    });
+  },
+
+  captureTaskPreview(label: string, projectPath: string, taskId: string) {
+    return invoke<string>("capture_task_preview", { label, projectPath, taskId });
   },
 
   setBrowserMuted(label: string, muted: boolean) {
@@ -426,12 +473,75 @@ export const nativeBridge = {
     });
   },
 
+  searchXiaoHistoryGlobal(query: string, limit = 20) {
+    return invoke<XiaoHistorySearchResult[]>("search_xiao_history_global", { query, limit });
+  },
+
   saveXiaoWorkspace(update: XiaoWorkspaceUpdate) {
     return invoke<void>("save_xiao_workspace", { update });
   },
 
   listXiaoProjects() {
     return invoke<XiaoProjectSummary[]>("list_xiao_projects");
+  },
+
+  saveXiaoProjectGroup(update: ProjectGroupUpdate) {
+    return invoke<ProjectGroup>("save_xiao_project_group", { update });
+  },
+
+  listXiaoProjectGroups() {
+    return invoke<ProjectGroup[]>("list_xiao_project_groups");
+  },
+
+  reorderXiaoProjectGroups(groupIds: string[]) {
+    return invoke<ProjectGroup[]>("reorder_xiao_project_groups", { groupIds });
+  },
+
+  deleteXiaoProjectGroup(groupId: string) {
+    return invoke<void>("delete_xiao_project_group", { groupId });
+  },
+
+  updateXiaoProjectPresentation(update: ProjectPresentationUpdate) {
+    return invoke<XiaoProjectSummary>("update_xiao_project_presentation", { update });
+  },
+
+  saveXiaoCodexProfile(update: CodexProfileUpdate) {
+    return invoke<CodexProfile>("save_xiao_codex_profile", { update });
+  },
+
+  listXiaoCodexProfiles() {
+    return invoke<CodexProfile[]>("list_xiao_codex_profiles");
+  },
+
+  deleteXiaoCodexProfile(profileId: string) {
+    return invoke<void>("delete_xiao_codex_profile", { profileId });
+  },
+
+  bindXiaoTaskCodexProfile(
+    workspacePath: string,
+    taskId: string,
+    profileId: string,
+    expectedStageVersion: number,
+    compatibilityConfirmed = false,
+  ) {
+    return invoke<TaskCodexProfileBinding>("bind_xiao_task_codex_profile", {
+      workspacePath,
+      taskId,
+      profileId,
+      expectedStageVersion,
+      compatibilityConfirmed,
+    });
+  },
+
+  transitionXiaoTaskStage(request: TaskStageTransitionRequest) {
+    return invoke<TaskStageTransition>("transition_xiao_task_stage", { request });
+  },
+
+  listXiaoTaskStageTransitions(workspacePath: string, taskId: string) {
+    return invoke<TaskStageTransition[]>("list_xiao_task_stage_transitions", {
+      workspacePath,
+      taskId,
+    });
   },
 
   openXiaoProject(path: string) {

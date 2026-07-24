@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-xiao-task-stage-transitions"
+description = "Enables the list_xiao_task_stage_transitions command without any pre-configured scope."
+commands.allow = ["list_xiao_task_stage_transitions"]
+
+[[permission]]
+identifier = "deny-list-xiao-task-stage-transitions"
+description = "Denies the list_xiao_task_stage_transitions command without any pre-configured scope."
+commands.deny = ["list_xiao_task_stage_transitions"]

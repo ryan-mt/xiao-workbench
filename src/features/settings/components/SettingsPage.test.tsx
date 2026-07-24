@@ -5,6 +5,7 @@ import type { AgentRuntimeState } from "../../../core/models/agent";
 import type { AppPreferences } from "../hooks/useAppPreferences";
 import type { Theme } from "../hooks/useTheme";
 import { SettingsPage } from "./SettingsPage";
+import { DEFAULT_COMMAND_BINDINGS } from "../../command-menu/commandBindings";
 
 const noop = () => undefined;
 
@@ -19,6 +20,7 @@ const preferences: AppPreferences = {
   notifyErrors: true,
   notifyApprovals: true,
   hiddenModels: [],
+  shortcutBindings: { ...DEFAULT_COMMAND_BINDINGS },
   taskRunDefaults: {
     model: null,
     reasoningEffort: null,
@@ -30,6 +32,7 @@ const preferences: AppPreferences = {
 
 const runtime: AgentRuntimeState = {
   phase: "ready",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,

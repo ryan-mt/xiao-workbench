@@ -1,4 +1,5 @@
 import { visiblePromptFromSelectedContext, type AgentAttachment } from "../../core/models/agent";
+import type { XiaoWorkspaceMode } from "../../core/models/xiao";
 import { completeTimelineMetadata } from "./taskPersistence";
 import type { WorkbenchTask } from "./task.types";
 
@@ -12,6 +13,7 @@ export const forkTaskFromEntry = (
   source: WorkbenchTask,
   entryId: string,
   identity: { id: string; createdAt: number },
+  workspaceMode: XiaoWorkspaceMode = source.workspaceMode,
 ): { task: WorkbenchTask; attachments: AgentAttachment[] } | null => {
   const entryIndex = source.timeline.findIndex((entry) => entry.id === entryId);
   const selectedEntry = source.timeline[entryIndex];
@@ -36,12 +38,15 @@ export const forkTaskFromEntry = (
       unread: false,
       createdAt: identity.createdAt,
       updatedAt: identity.createdAt,
+      stage: "draft",
+      stageVersion: 0,
+      workbenchState: {},
       draftText: visiblePromptFromSelectedContext(selectedEntry.title),
       followUps: [],
       threadId: null,
       threadBinding: null,
       executionEnvironmentId: null,
-      workspaceMode: "local",
+      workspaceMode,
       managedWorktreeId: null,
       goal: source.goal ? { ...source.goal } : null,
       acceptanceContract: null,

@@ -37,7 +37,7 @@ const actions: Array<{
   { id: "changes", label: "Working changes", description: "Inspect the current diff", group: "Current task", icon: "changes", view: "changes" },
   { id: "context", label: "Session context", description: "Review context and usage", group: "Current task", icon: "result", view: "context" },
   { id: "files", label: "Workspace files", description: "Browse and open project files", group: "Workspace", icon: "files", view: "files" },
-  { id: "browser", label: "Research browser", description: "Open the embedded browser", group: "Workspace", icon: "browser", view: "browser" },
+  { id: "task.preview.open", label: "Task Preview", description: "Inspect this Task's local outcome", group: "Workspace", icon: "browser", view: "browser" },
   { id: "terminal", label: "Workspace terminal", description: "Run commands in this project", group: "Workspace", icon: "terminal", view: "terminal" },
   { id: "extensions", label: "Plugins and skills", description: "Manage installed capabilities", group: "System", icon: "capability", view: "extensions" },
   { id: "runtime", label: "Native runtime", description: "Inspect local runtime services", group: "System", icon: "runtime", view: "runtime" },
@@ -264,7 +264,7 @@ export function CommandMenu({
               </button>
             );
           })}
-          {filtered.history.length > 0 && <header>Messages</header>}
+          {filtered.history.length > 0 && <header>Tasks and messages across Projects</header>}
           {filtered.history.map((result, historyIndex) => {
             const index = filtered.actions.length + filtered.tasks.length + historyIndex;
             return (
@@ -284,7 +284,13 @@ export function CommandMenu({
                 <span className="command-menu__result-copy">
                   <strong>{result.snippet}</strong>
                   <small>
-                    {result.taskTitle} · {result.role === "user" ? "You" : "Xiao"}
+                    {result.projectName} · {result.taskTitle} · {
+                      result.role === "task"
+                        ? "Task title"
+                        : result.role === "user"
+                          ? "You"
+                          : "Xiao"
+                    }
                     {result.taskArchived ? " · Archived" : ""}
                   </small>
                 </span>
@@ -300,7 +306,7 @@ export function CommandMenu({
           {historyLoading && filtered.actions.length === 0 && filtered.tasks.length === 0 && (
             <div className="command-menu__empty">
               <strong>Searching history…</strong>
-              <p>Looking through this workspace’s saved conversations.</p>
+              <p>Looking through durable Task history across Projects.</p>
             </div>
           )}
         </div>

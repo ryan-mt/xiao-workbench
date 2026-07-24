@@ -5,6 +5,11 @@ import type {
   AgentMode,
   AgentSandboxMode,
 } from "../../../core/models/agent";
+import {
+  DEFAULT_COMMAND_BINDINGS,
+  normalizeCommandBindings,
+  type CommandBindings,
+} from "../../command-menu/commandBindings";
 
 export type TaskRunDefaults = {
   model: string | null;
@@ -25,6 +30,7 @@ export type AppPreferences = {
   notifyErrors: boolean;
   notifyApprovals: boolean;
   hiddenModels: string[];
+  shortcutBindings: CommandBindings;
   taskRunDefaults: TaskRunDefaults;
 };
 
@@ -49,6 +55,7 @@ const defaults: AppPreferences = {
   notifyErrors: true,
   notifyApprovals: true,
   hiddenModels: [],
+  shortcutBindings: { ...DEFAULT_COMMAND_BINDINGS },
   taskRunDefaults: defaultTaskRunDefaults,
 };
 
@@ -101,6 +108,7 @@ export const normalizeAppPreferences = (value: unknown): AppPreferences => {
     hiddenModels: Array.isArray(stored.hiddenModels)
       ? stored.hiddenModels.filter((model): model is string => typeof model === "string")
       : [],
+    shortcutBindings: normalizeCommandBindings(stored.shortcutBindings),
     taskRunDefaults: normalizeTaskRunDefaults(stored.taskRunDefaults),
   };
 };

@@ -2228,3 +2228,23 @@
     animation: none;
   }
 }
+.sidebar-project-group {
+  margin: 10px 10px 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.project-actions-menu__group {
+  display: grid;
+  gap: 5px;
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.project-actions-menu__group select {
+  width: 100%;
+}

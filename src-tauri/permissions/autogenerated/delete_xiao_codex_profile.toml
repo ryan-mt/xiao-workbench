@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-xiao-codex-profile"
+description = "Enables the delete_xiao_codex_profile command without any pre-configured scope."
+commands.allow = ["delete_xiao_codex_profile"]
+
+[[permission]]
+identifier = "deny-delete-xiao-codex-profile"
+description = "Denies the delete_xiao_codex_profile command without any pre-configured scope."
+commands.deny = ["delete_xiao_codex_profile"]

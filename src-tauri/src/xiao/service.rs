@@ -5,6 +5,8 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 use super::models::{
+    CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate, ProjectPresentationUpdate,
+    TaskCodexProfileBinding, TaskStageTransition, TaskStageTransitionRequest,
     XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument,
     XiaoWorkspaceUpdate,
 };
@@ -46,6 +48,90 @@ pub fn save_workspace(
 
 pub fn list_projects(repository: &XiaoRepository) -> Result<Vec<XiaoProjectSummary>, String> {
     repository.list_projects()
+}
+
+pub fn search_history_global(
+    repository: &XiaoRepository,
+    query: &str,
+    limit: Option<usize>,
+) -> Result<Vec<XiaoHistorySearchResult>, String> {
+    repository.search_history_global(query, limit)
+}
+
+pub fn save_project_group(
+    repository: &XiaoRepository,
+    update: ProjectGroupUpdate,
+) -> Result<ProjectGroup, String> {
+    repository.save_project_group(update)
+}
+
+pub fn list_project_groups(repository: &XiaoRepository) -> Result<Vec<ProjectGroup>, String> {
+    repository.list_project_groups()
+}
+
+pub fn reorder_project_groups(
+    repository: &XiaoRepository,
+    group_ids: Vec<String>,
+) -> Result<Vec<ProjectGroup>, String> {
+    repository.reorder_project_groups(group_ids)
+}
+
+pub fn delete_project_group(repository: &XiaoRepository, group_id: &str) -> Result<(), String> {
+    repository.delete_project_group(group_id)
+}
+
+pub fn update_project_presentation(
+    repository: &XiaoRepository,
+    update: ProjectPresentationUpdate,
+) -> Result<XiaoProjectSummary, String> {
+    repository.update_project_presentation(update)
+}
+
+pub fn save_codex_profile(
+    repository: &XiaoRepository,
+    update: CodexProfileUpdate,
+) -> Result<CodexProfile, String> {
+    repository.save_codex_profile(update)
+}
+
+pub fn list_codex_profiles(repository: &XiaoRepository) -> Result<Vec<CodexProfile>, String> {
+    repository.list_codex_profiles()
+}
+
+pub fn delete_codex_profile(repository: &XiaoRepository, profile_id: &str) -> Result<(), String> {
+    repository.delete_codex_profile(profile_id)
+}
+
+pub fn bind_task_codex_profile(
+    repository: &XiaoRepository,
+    workspace_path: &str,
+    task_id: &str,
+    profile_id: &str,
+    expected_stage_version: i64,
+    compatibility_confirmed: bool,
+) -> Result<TaskCodexProfileBinding, String> {
+    repository.bind_task_codex_profile(
+        workspace_path,
+        task_id,
+        profile_id,
+        expected_stage_version,
+        compatibility_confirmed,
+    )
+}
+
+pub fn transition_task_stage(
+    repository: &XiaoRepository,
+    request: TaskStageTransitionRequest,
+) -> Result<TaskStageTransition, String> {
+    repository.transition_task_stage(request)
+}
+
+pub fn list_task_stage_transitions(
+    repository: &XiaoRepository,
+    workspace_path: &str,
+    task_id: &str,
+) -> Result<Vec<TaskStageTransition>, String> {
+    repository.list_task_stage_transitions(workspace_path, task_id)
 }
 
 pub fn open_project(path: &str) -> Result<(), String> {

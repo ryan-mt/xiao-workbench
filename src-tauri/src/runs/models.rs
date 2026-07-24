@@ -198,6 +198,10 @@ pub(crate) struct RunRecord {
     pub verification_baseline_artifact_id: Option<String>,
     pub verification_baseline_diagnostic: Option<String>,
     pub latest_verification_attempt_id: Option<String>,
+    pub codex_profile_id: Option<String>,
+    pub capability_snapshot: Value,
+    pub policy_snapshot: Value,
+    pub workspace_snapshot: Value,
     pub status: RunStatus,
     pub agent_outcome: AgentOutcome,
     pub verification_outcome: VerificationOutcome,
@@ -245,6 +249,10 @@ impl RunRecord {
             verification_baseline_artifact_id: self.verification_baseline_artifact_id.clone(),
             verification_baseline_diagnostic: self.verification_baseline_diagnostic.clone(),
             latest_verification_attempt_id: self.latest_verification_attempt_id.clone(),
+            codex_profile_id: self.codex_profile_id.clone(),
+            capability_snapshot: self.capability_snapshot.clone(),
+            policy_snapshot: self.policy_snapshot.clone(),
+            workspace_snapshot: self.workspace_snapshot.clone(),
             status: self.status,
             agent_outcome: self.agent_outcome,
             verification_outcome: self.verification_outcome,
@@ -296,6 +304,14 @@ pub struct RunSnapshot {
     pub verification_baseline_diagnostic: Option<String>,
     #[serde(default)]
     pub latest_verification_attempt_id: Option<String>,
+    #[serde(default)]
+    pub codex_profile_id: Option<String>,
+    #[serde(default)]
+    pub capability_snapshot: Value,
+    #[serde(default)]
+    pub policy_snapshot: Value,
+    #[serde(default)]
+    pub workspace_snapshot: Value,
     pub status: RunStatus,
     pub agent_outcome: AgentOutcome,
     pub verification_outcome: VerificationOutcome,

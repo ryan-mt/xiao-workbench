@@ -12,7 +12,7 @@ import { APP_DISPLAY_NAME, APP_STAGE } from "../../../core/branding";
 import type { AgentAccountSummary } from "../../../core/models/agent";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
-import type { XiaoProjectSummary } from "../../../core/models/xiao";
+import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
 import { profileInitials, type LocalUserProfile } from "../../profile/hooks/useLocalProfile";
 import {
   taskGroupForUpdatedAt,
@@ -25,6 +25,8 @@ import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
 type SidebarProps = {
   activePage: AppPage;
   projects: XiaoProjectSummary[];
+  hiddenProjects?: XiaoProjectSummary[];
+  projectGroups?: ProjectGroup[];
   activeProjectPath: string;
   tasks: WorkbenchTask[];
   activeTaskId: string;
@@ -41,6 +43,12 @@ type SidebarProps = {
   onOpenSettings: () => void;
   onOpenTasks: () => void;
   onAddProject: () => void;
+  onCreateProjectGroup?: (name: string) => void;
+  onMoveProjectToGroup?: (path: string, groupId: string | null) => void;
+  onRenameProjectGroup?: (group: ProjectGroup) => void;
+  onMoveProjectGroup?: (group: ProjectGroup, direction: -1 | 1) => void;
+  onDeleteProjectGroup?: (group: ProjectGroup) => void;
+  onRestoreProject?: (project: XiaoProjectSummary) => void;
   onNewTask: () => void;
   onSelectProject: (path: string) => void;
   onSelectTask: (taskId: string) => void;
@@ -80,6 +88,10 @@ type RenamingTask = {
   title: string;
 };
 
+type ProjectNavigationItem =
+  | { kind: "group"; group: ProjectGroup | null }
+  | { kind: "project"; project: XiaoProjectSummary };
+
 export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
 
 const projectMenuWidth = 218;
@@ -108,6 +120,8 @@ const groupForTask = (task: WorkbenchTask, now: number): TaskGroup => {
 export function Sidebar({
   activePage,
   projects,
+  hiddenProjects = [],
+  projectGroups = [],
   activeProjectPath,
   tasks,
   activeTaskId,
@@ -124,6 +138,12 @@ export function Sidebar({
   onOpenSettings,
   onOpenTasks,
   onAddProject,
+  onCreateProjectGroup = () => {},
+  onMoveProjectToGroup = () => {},
+  onRenameProjectGroup = () => {},
+  onMoveProjectGroup = () => {},
+  onDeleteProjectGroup = () => {},
+  onRestoreProject = () => {},
   onNewTask,
   onSelectProject,
   onSelectTask,
@@ -161,6 +181,37 @@ export function Sidebar({
     }))
     .filter(({ tasks: groupTasks }) => groupTasks.length > 0);
   const menuProject = projects.find((project) => project.path === projectMenu?.projectPath);
+  const projectGroupPositions = new Map(projectGroups.map((group) => [group.id, group.position]));
+  const navigationProjects = [...projects].sort((left, right) => {
+    const leftGroup = left.projectGroupId ?? null;
+    const rightGroup = right.projectGroupId ?? null;
+    if (leftGroup !== rightGroup) {
+      if (leftGroup === null) return 1;
+      if (rightGroup === null) return -1;
+      return (projectGroupPositions.get(leftGroup) ?? Number.MAX_SAFE_INTEGER) -
+        (projectGroupPositions.get(rightGroup) ?? Number.MAX_SAFE_INTEGER);
+    }
+    return (left.projectGroupPosition ?? 0) - (right.projectGroupPosition ?? 0) ||
+      Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
+      right.updatedAt - left.updatedAt;
+  });
+  const navigationItems: ProjectNavigationItem[] = [...projectGroups]
+    .sort((left, right) => left.position - right.position)
+    .flatMap((group) => [
+      { kind: "group" as const, group },
+      ...navigationProjects
+        .filter((project) => project.projectGroupId === group.id)
+        .map((project) => ({ kind: "project" as const, project })),
+    ]);
+  const ungroupedProjects = navigationProjects.filter(
+    (project) => !project.projectGroupId || !projectGroupPositions.has(project.projectGroupId),
+  );
+  if (ungroupedProjects.length) {
+    navigationItems.push(
+      { kind: "group", group: null },
+      ...ungroupedProjects.map((project) => ({ kind: "project" as const, project })),
+    );
+  }
   const menuTask = tasks.find((task) => task.id === taskMenu?.taskId);
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
@@ -431,10 +482,39 @@ export function Sidebar({
           >
             <XiaoIcon name="add" size={14} />
           </button>
+          {canOpenProjects ? (
+            <button
+              aria-label="Create Project Group"
+              title="Create Project Group"
+              onClick={() => {
+                const name = window.prompt("Project Group name");
+                if (name?.trim()) onCreateProjectGroup(name);
+              }}
+            >
+              <XiaoIcon name="folder" size={14} />
+            </button>
+          ) : null}
         </div>
 
         <div className="sidebar__projects">
-          {projects.map((project) => {
+          {navigationItems.map((item) => {
+            if (item.kind === "group") {
+              const group = item.group;
+              return (
+                <h3 className="sidebar-project-group" key={group?.id ?? "ungrouped"}>
+                  <span>{group?.name ?? "Ungrouped"}</span>
+                  {group ? (
+                    <span>
+                      <button type="button" aria-label={`Rename ${group.name}`} onClick={() => onRenameProjectGroup(group)}>Rename</button>
+                      <button type="button" aria-label={`Move ${group.name} up`} disabled={group.position === 0} onClick={() => onMoveProjectGroup(group, -1)}>↑</button>
+                      <button type="button" aria-label={`Move ${group.name} down`} disabled={group.position >= projectGroups.length - 1} onClick={() => onMoveProjectGroup(group, 1)}>↓</button>
+                      <button type="button" aria-label={`Delete ${group.name}`} onClick={() => onDeleteProjectGroup(group)}>Delete</button>
+                    </span>
+                  ) : null}
+                </h3>
+              );
+            }
+            const project = item.project;
             const active = project.path === activeProjectPath;
             const expanded = active && expandedProjectPath === project.path;
             const menuOpen = projectMenu?.projectPath === project.path;
@@ -450,8 +530,8 @@ export function Sidebar({
                 : `Updated ${relativeTime(updatedAt, now)}`;
             return (
               <section
-                className={`sidebar-project ${active ? "is-active" : ""} ${menuOpen ? "has-open-menu" : ""}`}
                 key={project.path}
+                className={`sidebar-project ${active ? "is-active" : ""} ${menuOpen ? "has-open-menu" : ""}`}
                 onContextMenu={(event) => openProjectContextMenu(event, project.path)}
               >
                 <div className="sidebar-project__row">
@@ -690,6 +770,16 @@ export function Sidebar({
             );
           })}
         </div>
+        {hiddenProjects.length ? (
+          <details className="sidebar__hidden-projects">
+            <summary>Hidden projects ({hiddenProjects.length})</summary>
+            {hiddenProjects.map((project) => (
+              <button type="button" key={project.path} onClick={() => onRestoreProject(project)}>
+                Restore {project.name}
+              </button>
+            ))}
+          </details>
+        ) : null}
 
           <footer className="sidebar__footer">
             <nav className="sidebar__footer-nav" aria-label="Workspace utilities">
@@ -781,6 +871,24 @@ export function Sidebar({
                 <XiaoIcon name="edit" size={15} />
                 <span>Rename project</span>
               </button>
+              {projectGroups.length ? (
+                <label className="project-actions-menu__group">
+                  <span>Project Group</span>
+                  <select
+                    aria-label={`Project Group for ${menuProject.name}`}
+                    value={menuProject.projectGroupId ?? ""}
+                    onChange={(event) => {
+                      onMoveProjectToGroup(menuProject.path, event.target.value || null);
+                      closeProjectMenu(projectMenu.focusFirst);
+                    }}
+                  >
+                    <option value="">Ungrouped</option>
+                    {projectGroups.map((group) => (
+                      <option value={group.id} key={group.id}>{group.name}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <button
                 role="menuitem"
                 disabled={menuProject.path === activeProjectPath && workingTasks.size > 0}

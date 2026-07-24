@@ -21,6 +21,8 @@ import type {
 } from "../core/models/verification";
 import type { RoutineOpenRunTarget, RoutineSummary } from "../core/models/routine";
 import type {
+  CodexProfile,
+  ProjectGroup,
   XiaoHistorySearchResult,
   XiaoProjectSummary,
   XiaoWorkspaceDocument,
@@ -41,6 +43,7 @@ import {
 } from "../features/attention/attentionDismissals";
 import { projectAttentionItems } from "../features/attention/attentionProjection";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
+import { commandForKeyboardEvent } from "../features/command-menu/commandBindings";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
 import type { RoutineDraft } from "../features/focus-rail/components/SchedulePanel";
 import type { SavedAcceptanceContract } from "../features/focus-rail/components/VerificationPanel";
@@ -74,7 +77,10 @@ import {
   readComposerAttachmentRecoveries,
   storeComposerAttachmentRecovery,
 } from "../features/task/composer/attachmentRecovery";
-import { managedWorktreeCleanupMessage } from "../features/task/taskEnvironment";
+import {
+  defaultTaskWorkspaceMode,
+  managedWorktreeCleanupMessage,
+} from "../features/task/taskEnvironment";
 import { forkTaskFromEntry } from "../features/task/taskFork";
 import {
   completeTimelineMetadata,
@@ -628,8 +634,10 @@ const writeProjectPreferences = (preferences: ProjectPreferences) => {
 const applyProjectPreferences = (
   projects: XiaoProjectSummary[],
   preferences: ProjectPreferences,
-): XiaoProjectSummary[] =>
-  projects
+): XiaoProjectSummary[] => {
+  const presented = isTauriHost()
+    ? projects.filter((project) => !project.hidden)
+    : projects
     .filter((project) => !preferences[project.path]?.hidden)
     .map((project) => {
       const preference = preferences[project.path];
@@ -639,17 +647,21 @@ const applyProjectPreferences = (
         name: customName || project.name,
         pinned: Boolean(preference?.pinned),
       };
-    })
-    .sort(
+    });
+  return presented.sort(
       (left, right) =>
         Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
         right.updatedAt - left.updatedAt,
     );
+};
 
 const taskGroups = new Set<TaskGroup>(["Active", "Recent", "Yesterday", "This week", "Older"]);
 const taskDateFormatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
 
-const createDraftTask = (defaults: TaskRunDefaults): WorkbenchTask => {
+const createDraftTask = (
+  defaults: TaskRunDefaults,
+  workspaceMode: XiaoWorkspaceMode = "local",
+): WorkbenchTask => {
   const createdAt = Date.now();
   return {
     id: crypto.randomUUID(),
@@ -661,6 +673,10 @@ const createDraftTask = (defaults: TaskRunDefaults): WorkbenchTask => {
     unread: false,
     createdAt,
     updatedAt: createdAt,
+    stage: "draft",
+    stageVersion: 0,
+    codexProfileId: null,
+    workbenchState: {},
     draftText: "",
     followUps: [],
     model: defaults.model,
@@ -679,7 +695,7 @@ const createDraftTask = (defaults: TaskRunDefaults): WorkbenchTask => {
     timelineEntryCount: 0,
     plan: null,
     executionEnvironmentId: null,
-    workspaceMode: "local",
+    workspaceMode,
     managedWorktreeId: null,
   };
 };
@@ -731,7 +747,15 @@ type StoredWorkbenchTask = Omit<
   | "timelineLoaded"
   | "timelineStart"
   | "workspaceMode"
+  | "stage"
+  | "stageVersion"
+  | "codexProfileId"
+  | "workbenchState"
 > & {
+  stage?: WorkbenchTask["stage"];
+  stageVersion?: number;
+  codexProfileId?: string | null;
+  workbenchState?: WorkbenchTask["workbenchState"];
   acceptanceContract?: WorkbenchTask["acceptanceContract"];
   draftText?: string;
   followUps?: WorkbenchTask["followUps"];
@@ -882,6 +906,15 @@ const isWorkbenchTask = (value: unknown): value is StoredWorkbenchTask => {
     (task.unread === undefined || typeof task.unread === "boolean") &&
     typeof task.createdAt === "number" &&
     typeof task.updatedAt === "number" &&
+    (task.stage === undefined ||
+      ["draft", "in_progress", "ready_for_review", "published", "completed"].includes(String(task.stage))) &&
+    (task.stageVersion === undefined ||
+      (typeof task.stageVersion === "number" && task.stageVersion >= 0)) &&
+    (task.codexProfileId === undefined || task.codexProfileId === null ||
+      typeof task.codexProfileId === "string") &&
+    (task.workbenchState === undefined ||
+      (typeof task.workbenchState === "object" && task.workbenchState !== null &&
+        !Array.isArray(task.workbenchState))) &&
     (task.draftText === undefined || typeof task.draftText === "string") &&
     (task.followUps === undefined ||
       (Array.isArray(task.followUps) && task.followUps.every(isAgentFollowUp))) &&
@@ -959,6 +992,10 @@ export const readBrowserTaskState = (workspacePath: string): StoredTaskState => 
       .map((task) => ({
         ...task,
         draftText: visiblePromptFromSelectedContext(task.draftText ?? ""),
+        stage: task.stage ?? (task.timeline.length > 0 ? "in_progress" : "draft"),
+        stageVersion: task.stageVersion ?? 0,
+        codexProfileId: task.codexProfileId ?? null,
+        workbenchState: task.workbenchState ?? {},
         followUps: task.followUps ?? [],
         reasoningEffort: task.reasoningEffort ?? null,
         threadId: task.threadId ?? null,
@@ -999,6 +1036,10 @@ const stateFromDocument = (document: XiaoWorkspaceDocument): StoredTaskState => 
   tasks: document.tasks.map((task) => ({
     ...task,
     draftText: visiblePromptFromSelectedContext(task.draftText ?? ""),
+    stage: task.stage ?? (task.timelineEntryCount > 0 ? "in_progress" : "draft"),
+    stageVersion: task.stageVersion ?? 0,
+    codexProfileId: task.codexProfileId ?? null,
+    workbenchState: task.workbenchState ?? {},
     followUps: task.followUps ?? [],
     threadId: null,
     threadBinding: task.threadBinding ?? null,
@@ -1332,9 +1373,22 @@ const mergeProject = (
   );
 };
 
+export const clearProjectGroup = (
+  projects: XiaoProjectSummary[],
+  groupId: string,
+): XiaoProjectSummary[] => projects.map((project) => project.projectGroupId === groupId
+  ? { ...project, projectGroupId: null, projectGroupPosition: 0 }
+  : project);
+
+export const codexProfileRuntimeSignature = (
+  profileId: string,
+  runtimeSnapshot: unknown,
+) => JSON.stringify({ profileId, runtimeSnapshot });
+
 export const createContinuationTask = (
   source: WorkbenchTask,
   identity: { id: string; createdAt: number },
+  workspaceMode: XiaoWorkspaceMode = source.workspaceMode,
 ): WorkbenchTask =>
   completeTimelineMetadata({
     ...source,
@@ -1345,12 +1399,15 @@ export const createContinuationTask = (
     unread: false,
     createdAt: identity.createdAt,
     updatedAt: identity.createdAt,
+    stage: "draft",
+    stageVersion: 0,
+    workbenchState: {},
     draftText: "",
     followUps: [],
     threadId: null,
     threadBinding: null,
     executionEnvironmentId: null,
-    workspaceMode: "local",
+    workspaceMode,
     managedWorktreeId: null,
     goal: null,
     acceptanceContract: null,
@@ -1411,6 +1468,21 @@ export function App() {
   const closeFocusPanel = () => {
     invalidateFocusResourceRequest();
     setFocusPanelOpen(false);
+    setTasks((current) => current.map((task) =>
+      task.id === activeTask.id
+        ? {
+            ...task,
+            workbenchState: { ...task.workbenchState, focusPanelOpen: false },
+          }
+        : task
+    ));
+    setDraftTask((current) => current.id === activeTask.id
+      ? {
+          ...current,
+          workbenchState: { ...current.workbenchState, focusPanelOpen: false },
+        }
+      : current
+    );
   };
   const [sidebarOpen, setSidebarOpen] = useState(
     () =>
@@ -1423,6 +1495,7 @@ export function App() {
     workspacePath: string;
     taskId: string;
     entryId: string;
+    matchKind: XiaoHistorySearchResult["matchKind"];
   } | null>(null);
   const [taskSwitcherOpen, setTaskSwitcherOpen] = useState(false);
   const [taskWorkspacePath, setTaskWorkspacePath] = useState("");
@@ -1487,6 +1560,10 @@ export function App() {
   const notifiedQuestionRef = useRef<string | null>(null);
   const notifiedMcpElicitationRef = useRef<string | null>(null);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
+  const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
+  const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
+  const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
+  const codexProfileSyncRef = useRef<string>("");
   const [archivedTasks, setArchivedTasks] = useState<ArchivedTaskItem[]>([]);
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
   const [archivedTasksError, setArchivedTasksError] = useState<string | null>(null);
@@ -1501,6 +1578,7 @@ export function App() {
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
+  const restoredWorkbenchTaskRef = useRef("");
   const definitionOfDoneChanged = Object.prototype.hasOwnProperty.call(
     pendingDefinitionsOfDone,
     activeTask.id,
@@ -1529,6 +1607,9 @@ export function App() {
     refresh,
     loadDirectory,
   } = useWorkspace(activeProjectPath, executionTaskId);
+  const newTaskWorkspaceMode = defaultTaskWorkspaceMode(
+    workspace.execution.isolationAvailable,
+  );
   const routineController = useRoutines(workspace.path);
   useLayoutEffect(() => {
     if (!shouldInvalidateTaskWorkspaceState(activeProjectPath, taskWorkspacePath)) return;
@@ -1587,6 +1668,19 @@ export function App() {
     };
   }
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  useEffect(() => {
+    const key = workspaceTaskKey(taskWorkspacePath, activeTask.id);
+    if (restoredWorkbenchTaskRef.current === key) return;
+    restoredWorkbenchTaskRef.current = key;
+    const storedView = activeTask.workbenchState.focusView;
+    setFocusView(
+      typeof storedView === "string" && focusViews.has(storedView as FocusView)
+        ? storedView as FocusView
+        : "changes",
+    );
+    setFocusPanelOpen(activeTask.workbenchState.focusPanelOpen === true);
+  }, [activeTask.id, activeTask.workbenchState, taskWorkspacePath]);
 
   useEffect(() => {
     try {
@@ -1745,16 +1839,23 @@ export function App() {
 
   useEffect(() => {
     if (!isTauriHost()) return;
-    void nativeBridge
-      .listXiaoProjects()
-      .then((items) =>
-        setProjects((current) =>
-          applyProjectPreferences(
-            current.reduce((merged, project) => mergeProject(merged, project), items),
-            projectPreferencesRef.current,
-          ),
-        ),
-      )
+    void Promise.all([
+      nativeBridge.listXiaoProjects(),
+      nativeBridge.listXiaoProjectGroups(),
+      nativeBridge.listXiaoCodexProfiles(),
+    ])
+      .then(([items, groups, profiles]) => {
+        setProjects(items.filter((project) => !project.hidden));
+        setHiddenProjects(items.filter((project) => project.hidden));
+        setProjectGroups(groups);
+        setCodexProfiles(profiles);
+        const defaultProfileId = profiles[0]?.id ?? null;
+        if (defaultProfileId) {
+          setDraftTask((task) => task.codexProfileId
+            ? task
+            : { ...task, codexProfileId: defaultProfileId });
+        }
+      })
       .catch(() => undefined);
   }, []);
 
@@ -1822,7 +1923,7 @@ export function App() {
         taskWorkspacePathRef.current = workspace.path;
         setTasks(nextState.tasks);
         setActiveTaskId(openingNewTaskLauncher ? null : nextState.activeTaskId);
-        const nextDraft = createDraftTask(preferences.taskRunDefaults);
+        const nextDraft = createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode);
         setDraftTask(nextDraft);
         setOpenTaskIds(nextState.activeTaskId ? [nextState.activeTaskId] : []);
         setDraftTabOpen(openingNewTaskLauncher || nextState.activeTaskId === null);
@@ -1841,19 +1942,21 @@ export function App() {
         }
         taskStateReadyRef.current = true;
         setTaskStateReady(true);
-        setProjects((current) =>
-          applyProjectPreferences(
+        setProjects((current) => {
+          const existing = current.find((project) => project.path === workspace.path);
+          return applyProjectPreferences(
             mergeProject(current, {
+              ...existing,
               path: workspace.path,
-              name: workspace.name,
+              name: existing?.name ?? workspace.name,
               updatedAt:
                 Math.max(0, ...nextState.tasks.map((task) => task.updatedAt)) ||
-                current.find((project) => project.path === workspace.path)?.updatedAt ||
+                existing?.updatedAt ||
                 Date.now(),
             }),
             projectPreferencesRef.current,
-          ),
-        );
+          );
+        });
       } catch (reason) {
         if (cancelled || !requestStillCurrent()) return;
         if (
@@ -1867,7 +1970,7 @@ export function App() {
         taskWorkspacePathRef.current = workspace.path;
         setTasks([]);
         setActiveTaskId(null);
-        setDraftTask(createDraftTask(preferences.taskRunDefaults));
+        setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
         setOpenTaskIds([]);
         setDraftTabOpen(true);
         setTaskHistoryLoadingId(null);
@@ -2116,6 +2219,54 @@ export function App() {
       workspace.path,
     ),
   );
+  useEffect(() => {
+    if (!isTauriHost() || !codexProfiles.length || agent.runtime.phase === "starting") return;
+    const profile = codexProfiles.find((item) => item.id === agent.runtime.profileId);
+    if (!profile || agent.runtime.profileId !== activeTask.codexProfileId) return;
+    const runtimeSnapshot = {
+      availability: !system.codexVersion
+        ? "unavailable" as const
+        : agent.account?.authenticated
+          ? "available" as const
+          : agent.runtime.error
+            ? "unknown" as const
+            : "unauthenticated" as const,
+      authenticatedIdentity: agent.account,
+      models: agent.models,
+      capabilities: {
+        codexVersion: system.codexVersion,
+        reasoningLevels: agent.models.flatMap((model) => model.supportedReasoningEfforts),
+        serviceTiers: agent.models.flatMap((model) => model.serviceTiers),
+      },
+      usage: agent.usage,
+      rateLimits: agent.rateLimits,
+      diagnostic: agent.runtime.error,
+    };
+    const signature = codexProfileRuntimeSignature(profile.id, runtimeSnapshot);
+    if (signature === codexProfileSyncRef.current) return;
+    codexProfileSyncRef.current = signature;
+    void nativeBridge.saveXiaoCodexProfile({
+      ...profile,
+      ...runtimeSnapshot,
+      expectedVersion: profile.version,
+    }).then((saved) => {
+      setCodexProfiles((current) => current.map((item) => item.id === saved.id ? saved : item));
+    }).catch((reason) => {
+      codexProfileSyncRef.current = "";
+      console.error("Could not synchronize the default Codex profile.", reason);
+    });
+  }, [
+    agent.account,
+    agent.models,
+    agent.rateLimits,
+    agent.runtime.error,
+    agent.runtime.phase,
+    agent.runtime.profileId,
+    agent.usage,
+    activeTask.codexProfileId,
+    codexProfiles,
+    system.codexVersion,
+  ]);
   const activeComposerAttachments =
     restoredAttachmentsByTask[workspaceTaskKey(taskWorkspacePath, activeTask.id)] ?? [];
   const canChangeLaunchProject = canChangeDraftLaunchProject({
@@ -2418,7 +2569,7 @@ export function App() {
       setOpenTaskIds((current) => current.includes(materializedTask.id) ? current : [...current, materializedTask.id]);
       setActiveTaskId(materializedTask.id);
       setDraftTabOpen(false);
-      setDraftTask(createDraftTask(preferences.taskRunDefaults));
+      setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
     }
     try {
       await persistTaskState(workspace.path, {
@@ -2428,6 +2579,59 @@ export function App() {
       });
     } catch {
       return false;
+    }
+    const submittedTask = persistedTasks.find((task) => task.id === submissionTaskId);
+    const selectedCodexProfileId = submittedTask?.codexProfileId ?? codexProfiles[0]?.id ?? null;
+    if (
+      isTauriHost() &&
+      submittedTask?.stage === "draft" &&
+      selectedCodexProfileId
+    ) {
+      try {
+        const binding = await nativeBridge.bindXiaoTaskCodexProfile(
+          workspace.path,
+          submissionTaskId,
+          selectedCodexProfileId,
+          submittedTask.stageVersion,
+        );
+        persistedTasks = persistedTasks.map((task) => task.id === submissionTaskId
+          ? { ...task, codexProfileId: binding.codexProfileId }
+          : task);
+        setTasks(persistedTasks);
+      } catch (reason) {
+        setEnvironmentError(reason instanceof Error ? reason.message : String(reason));
+        return false;
+      }
+    }
+    if (
+      isTauriHost() &&
+      submittedTask?.workspaceMode === "managed-worktree" &&
+      !submittedTask.managedWorktreeId
+    ) {
+      try {
+        const context = await nativeBridge.prepareXiaoManagedWorktree(
+          workspace.path,
+          submissionTaskId,
+        );
+        const updatedAt = Date.now();
+        const executionPatch: Partial<WorkbenchTask> = {
+          executionEnvironmentId: context.environment.id,
+          workspaceMode: context.workspaceMode,
+          managedWorktreeId: context.managedWorktree?.id ?? null,
+          updatedAt,
+          meta: "Now",
+        };
+        persistedTasks = persistedTasks.map((task) =>
+          task.id === submissionTaskId ? { ...task, ...executionPatch } : task
+        );
+        setTasks(persistedTasks);
+        await refresh();
+      } catch (reason) {
+        setEnvironmentError(
+          reason instanceof Error ? reason.message : String(reason),
+        );
+        return false;
+      }
     }
     if (pendingDefinitionChanged) {
       try {
@@ -2458,7 +2662,14 @@ export function App() {
         return false;
       }
     }
-    return agent.submit(prompt, attachments);
+    const submitted = await agent.submit(prompt, attachments);
+    if (submitted && submittedTask?.stage === "draft") {
+      const stageVersion = submittedTask.stageVersion + 1;
+      setTasks((current) => current.map((task) => task.id === submissionTaskId
+        ? { ...task, stage: "in_progress", stageVersion }
+        : task));
+    }
+    return submitted;
   };
 
   const queueTaskFollowUp = async (prompt: string, attachments: AgentAttachment[]) => {
@@ -2885,6 +3096,7 @@ export function App() {
       { ...activeTask, timeline: agent.timeline },
       entryId,
       { id: crypto.randomUUID(), createdAt: Date.now() },
+      newTaskWorkspaceMode,
     );
     if (!fork) return;
     if (!window.confirm(
@@ -2895,7 +3107,7 @@ export function App() {
     setOpenTaskIds((current) => [...current, fork.task.id]);
     setActiveTaskId(fork.task.id);
     setDraftTabOpen(false);
-    setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
     if (fork.attachments.length) {
       const key = workspaceTaskKey(taskWorkspacePath, fork.task.id);
       setRestoredAttachmentsByTask((current) => ({
@@ -2936,6 +3148,13 @@ export function App() {
     setActivePage("tasks");
     setFocusView(view);
     setFocusPanelOpen(true);
+    patchActiveTask({
+      workbenchState: {
+        ...activeTask.workbenchState,
+        focusView: view,
+        focusPanelOpen: true,
+      },
+    });
     closeSidebarOnNarrow();
   };
 
@@ -2959,14 +3178,10 @@ export function App() {
 
   const searchHistory = useCallback(
     (query: string): Promise<XiaoHistorySearchResult[]> => {
-      if (
-        !isTauriHost() ||
-        !taskStateReadyRef.current ||
-        comparableWorkspacePath(taskWorkspacePathRef.current) !== comparableWorkspacePath(workspace.path)
-      ) return Promise.resolve([]);
-      return nativeBridge.searchXiaoHistory(workspace.path, query);
+      if (!isTauriHost()) return Promise.resolve([]);
+      return nativeBridge.searchXiaoHistoryGlobal(query);
     },
-    [workspace.path],
+    [],
   );
 
   useEffect(() => {
@@ -2975,12 +3190,18 @@ export function App() {
       comparableWorkspacePath(historySearchTarget.workspacePath) !==
       comparableWorkspacePath(taskWorkspacePath)
     ) {
-      setHistorySearchTarget(null);
       return;
     }
-    if (activeTaskId !== historySearchTarget.taskId) return;
     const targetTask = tasks.find((task) => task.id === historySearchTarget.taskId);
-    if (!targetTask) {
+    if (!targetTask) return;
+    if (activeTaskId !== historySearchTarget.taskId) {
+      setOpenTaskIds((current) => current.includes(targetTask.id)
+        ? current
+        : [...current, targetTask.id]);
+      setActiveTaskId(targetTask.id);
+      return;
+    }
+    if (historySearchTarget.matchKind === "title") {
       setHistorySearchTarget(null);
       return;
     }
@@ -3038,7 +3259,7 @@ export function App() {
     if (tabId === draftTask.id) {
       if (!openTaskIds.length) return;
       setDraftTabOpen(false);
-      setDraftTask(createDraftTask(preferences.taskRunDefaults));
+      setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
       if (activeTaskId === null) setActiveTaskId(openTaskIds.at(-1) ?? null);
       return;
     }
@@ -3056,7 +3277,7 @@ export function App() {
     }
     setActiveTaskId(null);
     setDraftTabOpen(true);
-    setDraftTask(createDraftTask(preferences.taskRunDefaults));
+    setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
   };
 
   const openNewTaskTab = () => {
@@ -3065,7 +3286,7 @@ export function App() {
     setActiveTaskId(null);
     setDraftTabOpen(true);
     if (shouldCreateDraftWhenOpeningNewTaskTab(draftTabOpen)) {
-      setDraftTask(createDraftTask(preferences.taskRunDefaults));
+      setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
     }
     setActivePage("tasks");
     closeFocusPanel();
@@ -3096,7 +3317,7 @@ export function App() {
     }
     const taskTitle = draft.title || titleFromPrompt(draft.prompt);
     const routineTask: WorkbenchTask = {
-      ...createDraftTask(preferences.taskRunDefaults),
+      ...createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode),
       title: `Routine: ${taskTitle}`,
     };
     const operationScope = captureTaskOperationScope(
@@ -3226,7 +3447,9 @@ export function App() {
       if (archived && taskId === activeTaskId) {
         const nextActiveTask = nextTasks.find((task) => !task.archived);
         setActiveTaskId(nextActiveTask?.id ?? null);
-        if (!nextActiveTask) setDraftTask(createDraftTask(preferences.taskRunDefaults));
+        if (!nextActiveTask) {
+          setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
+        }
       } else if (!archived && activeTaskId === null) {
         setActiveTaskId(taskId);
       }
@@ -3277,6 +3500,49 @@ export function App() {
   };
 
   const updateProjectPreference = (path: string, update: ProjectPreference) => {
+    if (isTauriHost()) {
+      const current = projects.find((project) => project.path === path);
+      if (!current) return;
+      const displayName = update.name === undefined
+        ? current.name
+        : update.name.trim() || null;
+      const presentation = {
+        path,
+        displayName,
+        pinned: update.pinned ?? Boolean(current.pinned),
+        hidden: update.hidden ?? Boolean(current.hidden),
+        projectGroupId: current.projectGroupId ?? null,
+        projectGroupPosition: current.projectGroupPosition ?? 0,
+      };
+      setProjects((items) => items
+        .map((project) => project.path === path
+          ? {
+              ...project,
+              name: displayName ?? project.name,
+              pinned: presentation.pinned,
+              hidden: presentation.hidden,
+            }
+          : project)
+        .filter((project) => !project.hidden));
+      if (presentation.hidden) {
+        setHiddenProjects((items) => mergeProject(items, {
+          ...current,
+          hidden: true,
+          name: displayName ?? current.name,
+        }));
+      }
+      void nativeBridge.updateXiaoProjectPresentation(presentation)
+        .then((saved) => {
+          setProjects((items) => mergeProject(
+            items.filter((project) => project.path !== saved.path),
+            saved,
+          ).filter((project) => !project.hidden));
+        })
+        .catch((reason) => {
+          console.error("Could not update Project presentation.", reason);
+        });
+      return;
+    }
     const nextPreferences = {
       ...projectPreferences,
       [path]: { ...projectPreferences[path], ...update },
@@ -3285,6 +3551,66 @@ export function App() {
     projectPreferencesRef.current = nextPreferences;
     writeProjectPreferences(nextPreferences);
     setProjects((current) => applyProjectPreferences(current, nextPreferences));
+  };
+
+  const createProjectGroup = async (name: string) => {
+    const cleanName = name.trim();
+    if (!isTauriHost() || !cleanName) return;
+    try {
+      const group = await nativeBridge.saveXiaoProjectGroup({
+        id: crypto.randomUUID(),
+        name: cleanName,
+        position: projectGroups.length,
+      });
+      setProjectGroups((current) => [...current, group].sort((a, b) => a.position - b.position));
+    } catch (reason) {
+      console.error("Could not create Project Group.", reason);
+    }
+  };
+
+  const renameProjectGroup = async (group: ProjectGroup) => {
+    const name = window.prompt("Project Group name", group.name)?.trim();
+    if (!name || name === group.name) return;
+    const saved = await nativeBridge.saveXiaoProjectGroup({ ...group, name });
+    setProjectGroups((current) => current.map((item) => item.id === saved.id ? saved : item));
+  };
+
+  const moveProjectGroup = async (group: ProjectGroup, direction: -1 | 1) => {
+    const ordered = [...projectGroups].sort((a, b) => a.position - b.position);
+    const index = ordered.findIndex((item) => item.id === group.id);
+    const other = ordered[index + direction];
+    if (!other) return;
+    [ordered[index], ordered[index + direction]] = [other, group];
+    const saved = await nativeBridge.reorderXiaoProjectGroups(ordered.map((item) => item.id));
+    setProjectGroups(saved);
+  };
+
+  const deleteProjectGroup = async (group: ProjectGroup) => {
+    if (!window.confirm(`Delete Project Group "${group.name}"? Projects become ungrouped.`)) return;
+    await nativeBridge.deleteXiaoProjectGroup(group.id);
+    setProjectGroups((current) => current.filter((item) => item.id !== group.id));
+    setProjects((current) => clearProjectGroup(current, group.id));
+    setHiddenProjects((current) => clearProjectGroup(current, group.id));
+  };
+
+  const moveProjectToGroup = async (path: string, projectGroupId: string | null) => {
+    const current = projects.find((project) => project.path === path);
+    if (!isTauriHost() || !current) return;
+    try {
+      const saved = await nativeBridge.updateXiaoProjectPresentation({
+        path,
+        displayName: current.name,
+        pinned: Boolean(current.pinned),
+        hidden: Boolean(current.hidden),
+        projectGroupId,
+        projectGroupPosition: projects.filter(
+          (project) => (project.projectGroupId ?? null) === projectGroupId,
+        ).length,
+      });
+      setProjects((items) => items.map((project) => project.path === path ? saved : project));
+    } catch (reason) {
+      console.error("Could not move Project to its group.", reason);
+    }
   };
 
   const toggleProjectPinned = (path: string) => {
@@ -3341,7 +3667,7 @@ export function App() {
         (archivedState) => {
           setTasks(archivedState.tasks);
           setActiveTaskId(archivedState.activeTaskId);
-          setDraftTask(createDraftTask(preferences.taskRunDefaults));
+          setDraftTask(createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode));
         },
       );
       setProjects((current) =>
@@ -3510,26 +3836,47 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      const command = commandForKeyboardEvent(event, preferences.shortcutBindings);
+      const target = event.target;
+      const editable = target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.matches("input, textarea, select, [role='textbox']")
+      );
+      if (
+        !command ||
+        (editable && command !== "command-menu.open") ||
+        ((commandMenuOpen || taskSwitcherOpen) &&
+          !["command-menu.open", "task-switcher.open"].includes(command)) ||
+        (command === "task.create" && agent.hasActiveRuns) ||
+        (command === "task.close" && activePage !== "tasks") ||
+        (command === "runtime.open" && (activePage !== "tasks" || executionTaskId === null))
+      ) {
+        if (event.key === "Escape") {
+          setCommandMenuOpen(false);
+          setTaskSwitcherOpen(false);
+        }
+        return;
+      }
+      if (command === "command-menu.open") {
         event.preventDefault();
         setTaskSwitcherOpen(false);
         setCommandMenuOpen((open) => !open);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "Tab") {
+      if (command === "task-switcher.open") {
         event.preventDefault();
         setCommandMenuOpen(false);
         setTaskSwitcherOpen(true);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "t") {
+      if (command === "task.create") {
         event.preventDefault();
         setTaskSwitcherOpen(false);
         openNewTaskTab();
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w" && activePage === "tasks") {
+      if (command === "task.close") {
         event.preventDefault();
         closeTaskTab(activeTaskId ?? draftTask.id);
       }
-      if ((event.metaKey || event.ctrlKey) && event.key === "`") {
+      if (command === "runtime.open") {
         event.preventDefault();
         openFocusView("runtime");
       }
@@ -3540,7 +3887,19 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activePage, activeTaskId, draftTask.id, draftTabOpen, openTaskIds, taskStateReady]);
+  }, [
+    activePage,
+    activeTaskId,
+    agent.hasActiveRuns,
+    commandMenuOpen,
+    draftTask.id,
+    draftTabOpen,
+    openTaskIds,
+    executionTaskId,
+    taskSwitcherOpen,
+    preferences.shortcutBindings,
+    taskStateReady,
+  ]);
 
   return (
     <>
@@ -3550,6 +3909,7 @@ export function App() {
           tasks={tasks}
           activeTaskId={activeTaskId}
           workingTaskIds={agent.workingTaskIds}
+          cycleBinding={preferences.shortcutBindings["task-switcher.open"]}
           onClose={() => setTaskSwitcherOpen(false)}
           onSelect={(taskId) => {
             setOpenTaskIds((current) => current.includes(taskId) ? current : [...current, taskId]);
@@ -3617,6 +3977,8 @@ export function App() {
             <Sidebar
               activePage={activePage}
               projects={projects}
+              hiddenProjects={hiddenProjects}
+              projectGroups={projectGroups}
               activeProjectPath={workspace.path}
               tasks={tasks}
               activeTaskId={selectedTask?.id ?? ""}
@@ -3648,6 +4010,26 @@ export function App() {
                 closeSidebarOnNarrow();
               }}
               onAddProject={() => void addProject()}
+              onCreateProjectGroup={(name) => void createProjectGroup(name)}
+              onMoveProjectToGroup={(path, groupId) => void moveProjectToGroup(path, groupId)}
+              onRenameProjectGroup={(group) => void renameProjectGroup(group)}
+              onMoveProjectGroup={(group, direction) => void moveProjectGroup(group, direction)}
+              onDeleteProjectGroup={(group) => void deleteProjectGroup(group)}
+              onRestoreProject={(project) => {
+                void nativeBridge.updateXiaoProjectPresentation({
+                  path: project.path,
+                  displayName: project.name,
+                  pinned: Boolean(project.pinned),
+                  hidden: false,
+                  projectGroupId: project.projectGroupId ?? null,
+                  projectGroupPosition: project.projectGroupPosition ?? 0,
+                }).then((saved) => {
+                  setHiddenProjects((current) => current.filter((item) => item.path !== saved.path));
+                  setProjects((current) => mergeProject(current, saved));
+                }).catch((reason) => {
+                  console.error("Could not restore hidden Project.", reason);
+                });
+              }}
               onNewTask={openNewTaskTab}
               onSelectProject={(path) => {
                 if (agent.hasActiveRuns) return;
@@ -3712,6 +4094,7 @@ export function App() {
               archivedTasks={archivedTasks}
               archivedTasksLoading={archivedTasksLoading}
               archivedTasksError={archivedTasksError}
+              codexProfiles={codexProfiles}
               onThemeChange={setTheme}
               onPreferencesChange={updatePreferences}
               onRestoreArchivedTask={(item) => void restoreArchivedTask(item)}
@@ -3722,6 +4105,70 @@ export function App() {
                 void codexUpdate.install().then((result) => {
                   if (result) void refresh();
                 });
+              }}
+              onCreateCodexProfile={() => {
+                const displayName = window.prompt("Profile name")?.trim();
+                if (!displayName) return;
+                const codexHome = window.prompt("CODEX_HOME (optional)")?.trim() || null;
+                const authenticationHome = window.prompt("Authentication home (optional)")?.trim() || null;
+                void nativeBridge.saveXiaoCodexProfile({
+                  id: crypto.randomUUID(),
+                  displayName,
+                  codexHome,
+                  authenticationHome,
+                  environment: {},
+                  availability: "unknown",
+                  authenticatedIdentity: null,
+                  models: agent.models,
+                  capabilities: {
+                    codexVersion: system.codexVersion,
+                    reasoningLevels: agent.models.flatMap((model) => model.supportedReasoningEfforts),
+                    serviceTiers: agent.models.flatMap((model) => model.serviceTiers),
+                  },
+                  usage: null,
+                  rateLimits: null,
+                  diagnostic: "Profile has not been started and diagnosed yet.",
+                  expectedVersion: null,
+                }).then((profile) => {
+                  setCodexProfiles((current) => [...current, profile]);
+                }).catch((reason) => console.error("Could not create Codex profile.", reason));
+              }}
+              onRenameCodexProfile={(profile) => {
+                const displayName = window.prompt("Profile name", profile.displayName)?.trim();
+                if (!displayName) return;
+                const codexHome = window.prompt("CODEX_HOME (optional)", profile.codexHome ?? "")?.trim() || null;
+                const authenticationHome = window.prompt(
+                  "Authentication home (optional)",
+                  profile.authenticationHome ?? "",
+                )?.trim() || null;
+                const environmentText = window.prompt(
+                  "Environment as JSON",
+                  JSON.stringify(profile.environment),
+                );
+                if (environmentText === null) return;
+                let environment: Record<string, string>;
+                try {
+                  environment = JSON.parse(environmentText) as Record<string, string>;
+                } catch {
+                  window.alert("Environment must be a JSON object of string values.");
+                  return;
+                }
+                void nativeBridge.saveXiaoCodexProfile({
+                  ...profile,
+                  displayName,
+                  codexHome,
+                  authenticationHome,
+                  environment,
+                  expectedVersion: profile.version,
+                }).then((saved) => {
+                  setCodexProfiles((current) => current.map((item) => item.id === saved.id ? saved : item));
+                }).catch((reason) => console.error("Could not rename Codex profile.", reason));
+              }}
+              onDeleteCodexProfile={(profile) => {
+                if (!window.confirm(`Delete Codex profile "${profile.displayName}"?`)) return;
+                void nativeBridge.deleteXiaoCodexProfile(profile.id).then(() => {
+                  setCodexProfiles((current) => current.filter((item) => item.id !== profile.id));
+                }).catch((reason) => console.error("Could not delete Codex profile.", reason));
               }}
               onClose={() => setActivePage("tasks")}
               activeSection={settingsSection}
@@ -3744,9 +4191,11 @@ export function App() {
               executionTaskId={executionTaskId}
               taskTitle={activeTask.title}
               taskArchived={activeTask.archived}
+              taskStage={activeTask.stage}
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
               taskStateLoading={taskWorkspaceStateLoading}
+              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? 0}
               timeline={agent.timeline}
               runtime={agent.runtime}
               rateLimits={agent.rateLimits}
@@ -3754,6 +4203,8 @@ export function App() {
               models={visibleModels}
               selectedModel={activeTask.model}
               selectedReasoningEffort={activeTask.reasoningEffort}
+              codexProfiles={codexProfiles}
+              selectedCodexProfileId={activeTask.codexProfileId}
               fastMode={preferences.fastMode}
               mode={activeTask.mode}
               approvalPolicy={activeTask.approvalPolicy}
@@ -3804,6 +4255,30 @@ export function App() {
               onReasoningEffortChange={(reasoningEffort) => {
                 patchActiveTask({ reasoningEffort });
                 updateTaskRunDefaults({ reasoningEffort });
+              }}
+              onCodexProfileChange={(codexProfileId) => {
+                if (activeTask.stage === "draft" || !executionTaskId) {
+                  patchActiveTask({ codexProfileId });
+                  return;
+                }
+                if (!window.confirm(
+                  "Switch this Task to the selected Codex profile? Xiao will validate compatibility and restart the Task runtime.",
+                )) return;
+                void nativeBridge.stopAgent(workspace.path, executionTaskId)
+                  .then(() => nativeBridge.bindXiaoTaskCodexProfile(
+                    workspace.path,
+                    executionTaskId,
+                    codexProfileId,
+                    activeTask.stageVersion,
+                    true,
+                  ))
+                  .then(() => {
+                    patchActiveTask({ codexProfileId });
+                    void agent.connect();
+                  })
+                  .catch((reason) => {
+                    window.alert(reason instanceof Error ? reason.message : String(reason));
+                  });
               }}
               onFastModeChange={(fastMode) => updatePreferences({ fastMode })}
               onModeChange={(mode) => {
@@ -3866,6 +4341,14 @@ export function App() {
               onToggleArchived={() => {
                 if (selectedTask) setTaskArchived(selectedTask.id, !selectedTask.archived);
               }}
+              onTimelineScrollTopChange={(timelineScrollTop) => {
+                patchActiveTask({
+                  workbenchState: {
+                    ...activeTask.workbenchState,
+                    timelineScrollTop,
+                  },
+                });
+              }}
             />
           )
         }
@@ -3922,6 +4405,9 @@ export function App() {
               onStageReviewContext={stageReviewContext}
               onRemoveReviewContext={removeReviewContext}
               obscured={commandMenuOpen}
+              onWorkbenchStateChange={(workbenchState) => {
+                patchActiveTask({ workbenchState });
+              }}
             />
           ) : null
         }
@@ -3934,15 +4420,13 @@ export function App() {
         onClose={() => setCommandMenuOpen(false)}
         onSearchHistory={searchHistory}
         onSelectHistoryResult={(result) => {
-          setOpenTaskIds((current) => current.includes(result.taskId)
-            ? current
-            : [...current, result.taskId]);
-          setActiveTaskId(result.taskId);
+          setActiveProjectPath(result.projectPath);
           setActivePage("tasks");
           setHistorySearchTarget({
-            workspacePath: workspace.path,
+            workspacePath: result.projectPath,
             taskId: result.taskId,
             entryId: result.entryId,
+            matchKind: result.matchKind,
           });
           setCommandMenuOpen(false);
           closeSidebarOnNarrow();

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-xiao-project-presentation"
+description = "Enables the update_xiao_project_presentation command without any pre-configured scope."
+commands.allow = ["update_xiao_project_presentation"]
+
+[[permission]]
+identifier = "deny-update-xiao-project-presentation"
+description = "Denies the update_xiao_project_presentation command without any pre-configured scope."
+commands.deny = ["update_xiao_project_presentation"]

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
-import type { XiaoProjectSummary } from "../../../core/models/xiao";
+import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
@@ -47,6 +47,10 @@ const task = (id: string, updatedAt: number): WorkbenchTask => ({
   unread: false,
   createdAt: updatedAt,
   updatedAt,
+  stage: "draft",
+  stageVersion: 0,
+  codexProfileId: null,
+  workbenchState: {},
   draftText: "",
   followUps: [],
   model: null,
@@ -71,6 +75,7 @@ const task = (id: string, updatedAt: number): WorkbenchTask => ({
 
 type SidebarContent = {
   projects?: XiaoProjectSummary[];
+  projectGroups?: ProjectGroup[];
   tasks?: WorkbenchTask[];
   activeTaskId?: string;
 };
@@ -85,6 +90,7 @@ const renderSidebar = (
     <Sidebar
       activePage={activePage}
       projects={content.projects ?? []}
+      projectGroups={content.projectGroups ?? []}
       activeProjectPath={workspace.path}
       tasks={content.tasks ?? []}
       activeTaskId={content.activeTaskId ?? ""}
@@ -187,6 +193,27 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain('class="sidebar app-sidebar"');
     expect(markup).toContain(">No tasks yet</span>");
     expect(markup).toContain(">New task</span>");
+  });
+
+  it("keeps empty project groups visible and manageable", () => {
+    const emptyGroup: ProjectGroup = {
+      id: "empty",
+      name: "Empty Group",
+      position: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      projectGroups: [emptyGroup],
+    });
+
+    expect(markup).toContain(">Empty Group</span>");
+    expect(markup).toContain('aria-label="Rename Empty Group"');
+    expect(markup).toContain('aria-label="Move Empty Group up"');
+    expect(markup).toContain('aria-label="Move Empty Group down"');
+    expect(markup).toContain('aria-label="Delete Empty Group"');
+    expect(markup).toContain(">Ungrouped</span>");
   });
 });
 

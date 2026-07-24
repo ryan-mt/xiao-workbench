@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::browser::preview::PreviewRegistry;
+use crate::browser::preview::{PreviewRegistry, PreviewScope};
 use crate::execution::service::resolve_execution_context;
 use crate::xiao::repository::XiaoRepository;
 
@@ -64,5 +64,10 @@ pub fn open_workspace_preview(
 ) -> Result<String, String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     let (root, relative) = resolve_workspace_preview_file(&context.execution_root, &relative_path)?;
-    previews.register(root, &relative)
+    let scope = task_id.map(|task_id| PreviewScope {
+        project_path: context.project_path,
+        task_id,
+        execution_root: context.execution_root,
+    });
+    previews.register(root, &relative, scope)
 }

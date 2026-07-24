@@ -32,6 +32,15 @@ type ChangesPanelProps = {
   onRefresh: () => void;
 };
 
+const reviewSourceRevision = (path: string, patch: string) => {
+  let hash = 2_166_136_261;
+  for (const character of `${path}\0${patch}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `patch-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+};
+
 type Worktree = { path: string; branch: string; head: string; isMain: boolean };
 type DiffLineKind = "add" | "delete" | "hunk" | "context";
 export type ParsedDiffLine = {
@@ -185,6 +194,7 @@ export function ChangesPanel({
       lineEnd,
       comment: diffComment.trim(),
       preview,
+      sourceRevision: reviewSourceRevision(selectedChange.path, selectedChange.patch ?? ""),
     });
     setDiffNotice(`${fileName(selectedChange.path)}:${lineStart}${lineEnd !== lineStart ? `-${lineEnd}` : ""} added to the prompt`);
     setDiffComment("");
@@ -474,7 +484,15 @@ export function ChangesPanel({
                         {stagedComments.map((staged) => (
                           <article className="staged-line-comment" key={staged.id}>
                             <span><XiaoIcon name="check" size={12} /></span>
-                            <div><strong>Staged for Xiao</strong><p>{staged.comment}</p></div>
+                            <div>
+                              <strong>
+                                {staged.sourceRevision !== reviewSourceRevision(
+                                  selectedChange.path,
+                                  selectedChange.patch ?? "",
+                                ) ? "Stale review context" : "Staged for Xiao"}
+                              </strong>
+                              <p>{staged.comment}</p>
+                            </div>
                             <button type="button" aria-label="Remove staged diff comment" onClick={() => staged.id && onRemoveReviewContext(staged.id)}><XiaoIcon name="close" size={12} /></button>
                           </article>
                         ))}

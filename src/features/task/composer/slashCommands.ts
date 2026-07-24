@@ -129,7 +129,7 @@ Inspect the existing style and run the relevant baseline tests first. Keep the d
   { id: "undo", trigger: "undo", title: "Undo last turn", description: "Restore the task and workspace checkpoint", group: "Task", icon: "undo" },
   { id: "changes", trigger: "changes", title: "Inspect working changes", description: "Open the scoped diff and repository actions", group: "Workspace", icon: "changes" },
   { id: "files", trigger: "files", title: "Browse workspace files", description: "Open the file tree and source preview", group: "Workspace", icon: "files" },
-  { id: "browser", trigger: "browser", title: "Open research browser", description: "Browse Google, YouTube, and research links inside Xiao", group: "Workspace", icon: "browser" },
+  { id: "browser", trigger: "preview", aliases: ["browser"], title: "Open Task Preview", description: "Inspect host-registered local servers, generated files, and Task outcomes", group: "Workspace", icon: "browser" },
   { id: "context", trigger: "context", title: "Inspect session context", description: "Review token usage and active context", group: "Workspace", icon: "result" },
   { id: "terminal", trigger: "terminal", title: "Open terminal", description: "Use the shell rooted in this workspace", group: "Workspace", icon: "terminal" },
   { id: "capabilities", trigger: "capabilities", title: "Open capabilities", description: "Inspect skills, plugins, MCP servers, and apps", group: "Workspace", icon: "capability" },

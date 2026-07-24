@@ -20,8 +20,9 @@ use agent::commands::{
 };
 use agent::runtime::EnvironmentRuntimeRegistry;
 use browser::commands::{
-    get_browser_url, go_back_browser, go_forward_browser, navigate_browser, reload_browser,
-    set_browser_muted,
+    automate_task_preview, capture_task_preview, get_browser_console, get_browser_url,
+    go_back_browser, go_forward_browser, navigate_browser, open_external_url, reload_browser,
+    set_browser_muted, PREVIEW_CONSOLE_CAPTURE_SCRIPT,
 };
 use browser::preview::PreviewRegistry;
 use execution::commands::{
@@ -59,8 +60,12 @@ use workspace::commands::{
     get_workspace_snapshot, list_workspace_files, open_workspace_preview, read_workspace_file,
 };
 use xiao::commands::{
-    list_xiao_projects, load_xiao_timeline_page, load_xiao_workspace, open_xiao_project,
-    save_xiao_workspace, search_xiao_history,
+    bind_xiao_task_codex_profile, delete_xiao_codex_profile, delete_xiao_project_group,
+    list_xiao_codex_profiles, list_xiao_project_groups, list_xiao_projects,
+    list_xiao_task_stage_transitions, load_xiao_timeline_page, load_xiao_workspace,
+    open_xiao_project, reorder_xiao_project_groups, save_xiao_codex_profile,
+    save_xiao_project_group, save_xiao_workspace, search_xiao_history, search_xiao_history_global,
+    transition_xiao_task_stage, update_xiao_project_presentation,
 };
 use xiao::repository::XiaoRepository;
 
@@ -81,6 +86,7 @@ pub fn run() {
         })
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("preview-navigation")
+                .js_init_script(PREVIEW_CONSOLE_CAPTURE_SCRIPT)
                 .on_navigation(move |webview, target| {
                     let Ok(current) = webview.url() else {
                         return true;
@@ -195,16 +201,32 @@ pub fn run() {
             resize_terminal,
             stop_terminal,
             navigate_browser,
+            open_external_url,
             go_back_browser,
             go_forward_browser,
             reload_browser,
             get_browser_url,
+            get_browser_console,
+            automate_task_preview,
+            capture_task_preview,
             set_browser_muted,
             load_xiao_workspace,
             load_xiao_timeline_page,
             search_xiao_history,
+            search_xiao_history_global,
             save_xiao_workspace,
             list_xiao_projects,
+            save_xiao_project_group,
+            list_xiao_project_groups,
+            reorder_xiao_project_groups,
+            delete_xiao_project_group,
+            update_xiao_project_presentation,
+            save_xiao_codex_profile,
+            list_xiao_codex_profiles,
+            delete_xiao_codex_profile,
+            bind_xiao_task_codex_profile,
+            transition_xiao_task_stage,
+            list_xiao_task_stage_transitions,
             open_xiao_project,
         ])
         .run(tauri::generate_context!())

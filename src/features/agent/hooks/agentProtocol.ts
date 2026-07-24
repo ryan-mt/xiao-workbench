@@ -11,6 +11,7 @@ export const reviewContextText = (attachment: AgentAttachment) => {
   const lines = start ? `:${start}${end && end !== start ? `-${end}` : ""}` : "";
   return [
     `[Review comment on ${attachment.path}${lines}]`,
+    attachment.sourceRevision ? `Source revision: ${attachment.sourceRevision}` : undefined,
     attachment.preview,
     attachment.comment ? `Comment: ${attachment.comment}` : undefined,
   ]

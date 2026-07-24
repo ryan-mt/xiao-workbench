@@ -1,3 +1,5 @@
+import { nativeBridge } from "../../../core/bridges/tauri";
+
 export const BROWSER_HOME_URL = "https://www.google.com/";
 
 const localHostPattern = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?(?:[/?#].*)?$/i;
@@ -30,6 +32,15 @@ export const shouldHandleBrowserNavigationRequest = (
   lastHandledId: number | null,
   incomingId: number,
 ) => lastHandledId === null || incomingId > lastHandledId;
+
+export const openExternalBrowser = (value: string) => {
+  const url = parseWebUrl(value);
+  if (!url) return false;
+  void nativeBridge.openExternalUrl(url).catch((reason) => {
+    console.error("Could not open the external browser.", reason);
+  });
+  return true;
+};
 
 export function toBrowserUrl(input: string): string {
   const value = input.trim();

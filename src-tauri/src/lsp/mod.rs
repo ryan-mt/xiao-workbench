@@ -83,6 +83,46 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                 "additionalProperties": false
             }
         }]
+    }, {
+        "type": "namespace",
+        "name": "xiao_preview",
+        "description": "Task-scoped inspection and bounded automation for Preview targets registered by the Xiao host.",
+        "tools": [{
+            "type": "function",
+            "name": "targets",
+            "description": "List Preview targets registered for the active Task and its frozen execution root.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }, {
+            "type": "function",
+            "name": "automate",
+            "description": "Click, focus, or fill one selector in a registered Preview target for the active Task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "maxLength": 96 },
+                    "action": { "type": "string", "enum": ["click", "focus", "fill"] },
+                    "selector": { "type": "string", "minLength": 1, "maxLength": 500 },
+                    "value": { "type": "string", "maxLength": 2000 }
+                },
+                "required": ["label", "action", "selector"],
+                "allOf": [{
+                    "if": {
+                        "properties": {
+                            "action": { "const": "fill" }
+                        },
+                        "required": ["action"]
+                    },
+                    "then": {
+                        "required": ["value"]
+                    }
+                }],
+                "additionalProperties": false
+            }
+        }]
     }])
 }
 
@@ -173,6 +213,17 @@ mod tests {
         assert!(!specs.to_string().contains("code_action"));
         assert_eq!(specs[1]["name"], "xiao_runtime");
         assert_eq!(specs[1]["tools"][0]["name"], "diagnostics");
+        assert_eq!(specs[2]["name"], "xiao_preview");
+        assert_eq!(specs[2]["tools"][0]["name"], "targets");
+        assert_eq!(specs[2]["tools"][1]["name"], "automate");
+        assert_eq!(
+            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["if"]["properties"]["action"]["const"],
+            "fill"
+        );
+        assert_eq!(
+            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["then"]["required"],
+            json!(["value"])
+        );
     }
 
     #[test]

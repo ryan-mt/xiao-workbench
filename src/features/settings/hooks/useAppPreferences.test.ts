@@ -18,6 +18,9 @@ describe("normalizeAppPreferences", () => {
       notifyErrors: false,
       notifyApprovals: false,
       hiddenModels: ["hidden-model"],
+      shortcutBindings: {
+        "task.create": "Ctrl+N",
+      },
       taskRunDefaults: {
         model: "gpt-custom",
         reasoningEffort: "high",
@@ -38,6 +41,13 @@ describe("normalizeAppPreferences", () => {
       notifyErrors: false,
       notifyApprovals: false,
       hiddenModels: ["hidden-model"],
+      shortcutBindings: {
+        "command-menu.open": "Ctrl+K",
+        "task-switcher.open": "Ctrl+Tab",
+        "task.create": "Ctrl+N",
+        "task.close": "Ctrl+W",
+        "runtime.open": "Ctrl+`",
+      },
       taskRunDefaults: {
         model: "gpt-custom",
         reasoningEffort: "high",

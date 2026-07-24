@@ -25,6 +25,7 @@ vi.mock("./TerminalPanel", () => ({
 
 const runtime: AgentRuntimeState = {
   phase: "ready",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,
@@ -87,6 +88,10 @@ const task: WorkbenchTask = {
   unread: false,
   createdAt: 1,
   updatedAt: 1,
+  stage: "draft",
+  stageVersion: 0,
+  codexProfileId: null,
+  workbenchState: {},
   draftText: "",
   followUps: [],
   model: null,
@@ -122,6 +127,7 @@ const renderFocusView = (
     onClose={() => undefined}
     onOpenBrowser={() => undefined}
     onBrowserNavigationStart={() => undefined}
+    onWorkbenchStateChange={() => undefined}
     workspace={currentWorkspace}
     system={{ platform: "Windows", shell: "PowerShell", codexVersion: null }}
     runtime={runtime}

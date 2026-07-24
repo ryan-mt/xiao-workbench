@@ -10,6 +10,7 @@ import { ProfilePage } from "./ProfilePage";
 
 const runtime: AgentRuntimeState = {
   phase: "ready",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,

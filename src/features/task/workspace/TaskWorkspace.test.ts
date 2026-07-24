@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { TimelineEntry } from "../../../core/models/agent";
 import {
   activeCollaboratorsFromTimeline,
+  canSelectCodexProfile,
   distanceFromScrollBottom,
   newTaskProjectOptions,
   shouldFollowLiveOutput,
@@ -85,6 +86,19 @@ describe("new task project options", () => {
       { value: "C:\\code\\xiao", label: "Xiao", disabled: false },
       { value: "C:\\code\\other", label: "Other", disabled: true },
     ]);
+  });
+});
+
+describe("Codex profile selection", () => {
+  it("stays disabled while task state has a storage error", () => {
+    expect(canSelectCodexProfile({
+      taskArchived: false,
+      taskStateLoading: false,
+      taskStateError: "Could not save Task state.",
+      environmentBusy: false,
+      runtimeBusy: false,
+      profileCount: 2,
+    })).toBe(false);
   });
 });
 
