@@ -11,22 +11,29 @@ name = "xiao_workbench_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
+serde_json = "1"
+sha2 = "0.11.0"
 tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 chrono = "0.4"
 chrono-tz = "0.10"
+keyring = "3"
 portable-pty = "0.9"
 percent-encoding = "2"
+rcgen = "0.14"
 regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 sha2 = "0.11.0"
 tauri = { version = "2.8", features = ["protocol-asset", "tray-icon", "unstable"] }
 tauri-plugin-dialog = "2.7.1"
-tokio = { version = "1", features = ["macros", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 ureq = "3"
 uuid = { version = "1", features = ["v7"] }
 

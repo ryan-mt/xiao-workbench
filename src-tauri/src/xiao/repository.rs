@@ -13,6 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::companion::repository::COMPANION_SCHEMA_SQL;
 use crate::execution::models::{
     ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
     NewManagedWorktreeRecord, TaskExecutionBinding,
@@ -40,6 +41,8 @@ const MAX_TIMELINE_PAGE_SIZE: usize = 200;
 // frontend, Rust, type-check, and production-build gates pass for the slice.
 const VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION: i64 = 1;
 const VALIDATED_OUTCOME_SUPERVISION_CAPABILITY_VERSION: i64 = 1;
+const VALIDATED_COMPANION_RELEASE_CERTIFICATION: Option<&str> =
+    option_env!("XIAO_TICKET03_RELEASE_CERTIFIED");
 
 const MIGRATION_1_SQL: &str = r#"
 CREATE TABLE legacy_imports (
@@ -2382,6 +2385,18 @@ fn open_connection(
         .map_err(|error| {
             format!("Could not enable validated outcome-supervision capability: {error}")
         })?;
+    if VALIDATED_COMPANION_RELEASE_CERTIFICATION.is_some() {
+        connection
+            .execute(
+                r#"UPDATE rollout_capabilities
+                   SET enabled = 1, enabled_at = ?1
+                   WHERE capability_id = 'companion-release-assurance' AND version = 1"#,
+                [now_millis()?],
+            )
+            .map_err(|error| {
+                format!("Could not enable validated Companion release capability: {error}")
+            })?;
+    }
     migrate_legacy_store(
         &mut connection,
         app_data_dir,
@@ -2472,6 +2487,11 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         (7_i64, "control_model_and_task_workbench", MIGRATION_7_SQL),
         (8_i64, "outcome_and_supervision_loop", MIGRATION_8_SQL),
         (9_i64, "stable_attention_identity", MIGRATION_9_SQL),
+        (
+            10_i64,
+            "companion_and_release_assurance",
+            COMPANION_SCHEMA_SQL,
+        ),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -4820,6 +4840,20 @@ mod tests {
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
                         .map_err(|error| error.to_string())?;
+                    let companion_tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('companion_pairings', 'companion_sessions', 'companion_projection_state', 'companion_projection_updates', 'companion_commands', 'companion_audit')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let companion_capability: (i64, i64) = connection
+                        .query_row(
+                            "SELECT version, enabled FROM rollout_capabilities WHERE capability_id = 'companion-release-assurance'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
                     let task_control_columns: i64 = connection
                         .query_row(
                             "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('task_stage', 'task_stage_version', 'codex_profile_id', 'workbench_state_json')",
@@ -4835,6 +4869,8 @@ mod tests {
                     assert_eq!(control_model_capability, (1, 1));
                     assert_eq!(outcome_supervision_tables, 2);
                     assert_eq!(outcome_supervision_capability, (1, 1));
+                    assert_eq!(companion_tables, 6);
+                    assert_eq!(companion_capability, (1, 1));
                     assert_eq!(task_control_columns, 4);
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);

@@ -39,6 +39,7 @@ type SidebarProps = {
   attentionHydrationStatus: AttentionHydrationStatus;
   onOpenMenu: () => void;
   onOpenAttention: () => void;
+  onOpenCompanion?: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
@@ -134,6 +135,7 @@ export function Sidebar({
   attentionHydrationStatus,
   onOpenMenu,
   onOpenAttention,
+  onOpenCompanion = () => {},
   onOpenProfile,
   onOpenSettings,
   onOpenTasks,
@@ -798,6 +800,15 @@ export function Sidebar({
                     {attentionCount > 99 ? "99+" : attentionCount}
                   </span>
                 ) : null}
+              </button>
+              <button
+                className={`sidebar__footer-action ${activePage === "companion" ? "is-active" : ""}`}
+                type="button"
+                aria-current={activePage === "companion" ? "page" : undefined}
+                onClick={onOpenCompanion}
+              >
+                <XiaoIcon name="connect" size={16} />
+                <span>Companion</span>
               </button>
               <button
                 className={`sidebar__footer-action ${activePage === "settings" ? "is-active" : ""}`}

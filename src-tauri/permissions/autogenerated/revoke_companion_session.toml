@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-revoke-companion-session"
+description = "Enables the revoke_companion_session command without any pre-configured scope."
+commands.allow = ["revoke_companion_session"]
+
+[[permission]]
+identifier = "deny-revoke-companion-session"
+description = "Denies the revoke_companion_session command without any pre-configured scope."
+commands.deny = ["revoke_companion_session"]
