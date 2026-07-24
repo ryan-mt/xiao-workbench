@@ -116,6 +116,7 @@ impl AgentRuntime {
         let version = codex_version().ok_or_else(|| {
             "Codex CLI was not found. Install it before connecting the agent runtime.".to_owned()
         })?;
+        let requested_profile_id = profile.map(|profile| profile.id.as_str());
 
         let mut child_slot = self.child.lock().map_err(|error| error.to_string())?;
         if let Some(child) = child_slot.as_mut() {
@@ -124,25 +125,32 @@ impl AgentRuntime {
                 .map_err(|error| error.to_string())?
                 .is_none()
             {
-                if self
+                let active_profile_id = self
                     .profile_id
                     .lock()
                     .map_err(|error| error.to_string())?
-                    .as_deref()
-                    != profile.map(|profile| profile.id.as_str())
+                    .clone();
+                if active_profile_id.as_deref() == requested_profile_id {
+                    return Ok(StartResult {
+                        version,
+                        already_running: true,
+                        environment_id: environment_id.to_owned(),
+                        generation: self.generation.load(Ordering::Acquire),
+                        profile_id: profile.map(|profile| profile.id.clone()),
+                    });
+                }
+                if app
+                    .state::<XiaoRepository>()
+                    .has_active_runs_in_environment(environment_id)?
                 {
                     return Err(
-                        "A different Codex profile is already active for this execution environment."
+                        "A different Codex profile is active for an in-progress Run in this execution environment."
                             .to_owned(),
                     );
                 }
-                return Ok(StartResult {
-                    version,
-                    already_running: true,
-                    environment_id: environment_id.to_owned(),
-                    generation: self.generation.load(Ordering::Acquire),
-                    profile_id: profile.map(|profile| profile.id.clone()),
-                });
+                drop(child_slot);
+                self.stop_locked()?;
+                child_slot = self.child.lock().map_err(|error| error.to_string())?;
             }
         }
 

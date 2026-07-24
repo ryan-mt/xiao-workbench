@@ -20,6 +20,7 @@ import type { TaskWorkbenchState } from "../../../core/models/xiao";
 import { ObservatoryPanel } from "../../observatory/ObservatoryPanel";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
+import { openExternalBrowser } from "./browserNavigation";
 import { ChangesPanel } from "./ChangesPanel";
 import { ContextPanel } from "./ContextPanel";
 import { ExtensionsPanel } from "./ExtensionsPanel";
@@ -32,7 +33,7 @@ import {
   type SavedAcceptanceContract,
 } from "./VerificationPanel";
 import "../styles/focus-rail.css";
-import { taskPreviewWebviewLabel } from "./taskPreview";
+import { isTaskPreviewTarget, taskPreviewWebviewLabel } from "./taskPreview";
 
 const TerminalPanel = lazy(() =>
   import("./TerminalPanel").then((module) => ({ default: module.TerminalPanel })),
@@ -333,7 +334,10 @@ export function FocusRail({
             reviewContext={reviewContext}
             onStageReviewContext={onStageReviewContext}
             onRemoveReviewContext={onRemoveReviewContext}
-            onOpenBrowser={onOpenBrowser}
+            onOpenBrowser={(url) => {
+              if (isTaskPreviewTarget(url)) onOpenBrowser(url);
+              else openExternalBrowser(url);
+            }}
             onRefresh={onRefresh}
             onOutcomeChange={onTaskOutcomeChange}
           />

@@ -3,6 +3,8 @@ export type TerminalSessionState = {
   activeSessionId: string;
 };
 
+export type TerminalStartCancellationRegistry = Map<string, () => void>;
+
 export const advanceTerminalOutputSequence = (
   renderedSequence: number,
   incomingSequence: number,
@@ -41,4 +43,40 @@ export const removeTerminalSession = (
     sessionIds: remaining,
     activeSessionId: activeSessionId === sessionId ? remaining.at(-1)! : activeSessionId,
   };
+};
+
+export const restartTerminalSession = (
+  sessionIds: readonly string[],
+  activeSessionId: string,
+  sessionId: string,
+  replacementSessionId: string = crypto.randomUUID(),
+): TerminalSessionState | null => {
+  if (!sessionIds.includes(sessionId)) return null;
+  return {
+    sessionIds: sessionIds.map((id) => id === sessionId ? replacementSessionId : id),
+    activeSessionId: activeSessionId === sessionId ? replacementSessionId : activeSessionId,
+  };
+};
+
+export const terminalStartCleanupSessionId = (
+  disposed: boolean,
+  sessionId: string,
+) => disposed ? sessionId : null;
+
+export const registerTerminalStartCancellation = (
+  registry: TerminalStartCancellationRegistry,
+  sessionId: string,
+  cancel: () => void,
+) => {
+  registry.set(sessionId, cancel);
+  return () => {
+    if (registry.get(sessionId) === cancel) registry.delete(sessionId);
+  };
+};
+
+export const cancelTerminalStart = (
+  registry: TerminalStartCancellationRegistry,
+  sessionId: string,
+) => {
+  registry.get(sessionId)?.();
 };

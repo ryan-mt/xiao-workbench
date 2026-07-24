@@ -1377,6 +1377,18 @@ const mergeProject = (
   );
 };
 
+export const clearProjectGroup = (
+  projects: XiaoProjectSummary[],
+  groupId: string,
+): XiaoProjectSummary[] => projects.map((project) => project.projectGroupId === groupId
+  ? { ...project, projectGroupId: null, projectGroupPosition: 0 }
+  : project);
+
+export const codexProfileRuntimeSignature = (
+  profileId: string,
+  runtimeSnapshot: unknown,
+) => JSON.stringify({ profileId, runtimeSnapshot });
+
 export const createContinuationTask = (
   source: WorkbenchTask,
   identity: { id: string; createdAt: number },
@@ -2283,7 +2295,7 @@ export function App() {
       rateLimits: agent.rateLimits,
       diagnostic: agent.runtime.error,
     };
-    const signature = JSON.stringify(runtimeSnapshot);
+    const signature = codexProfileRuntimeSignature(profile.id, runtimeSnapshot);
     if (signature === codexProfileSyncRef.current) return;
     codexProfileSyncRef.current = signature;
     void nativeBridge.saveXiaoCodexProfile({
@@ -3720,9 +3732,8 @@ export function App() {
     if (!window.confirm(`Delete Project Group "${group.name}"? Projects become ungrouped.`)) return;
     await nativeBridge.deleteXiaoProjectGroup(group.id);
     setProjectGroups((current) => current.filter((item) => item.id !== group.id));
-    setProjects((current) => current.map((project) => project.projectGroupId === group.id
-      ? { ...project, projectGroupId: null, projectGroupPosition: 0 }
-      : project));
+    setProjects((current) => clearProjectGroup(current, group.id));
+    setHiddenProjects((current) => clearProjectGroup(current, group.id));
   };
 
   const moveProjectToGroup = async (path: string, projectGroupId: string | null) => {
@@ -4041,6 +4052,7 @@ export function App() {
           tasks={tasks}
           activeTaskId={activeTaskId}
           workingTaskIds={agent.workingTaskIds}
+          cycleBinding={preferences.shortcutBindings["task-switcher.open"]}
           onClose={() => setTaskSwitcherOpen(false)}
           onSelect={(taskId) => {
             setOpenTaskIds((current) => current.includes(taskId) ? current : [...current, taskId]);

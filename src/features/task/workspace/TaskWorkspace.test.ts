@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { TimelineEntry } from "../../../core/models/agent";
 import {
   activeCollaboratorsFromTimeline,
+  canSelectCodexProfile,
   distanceFromScrollBottom,
   newTaskProjectOptions,
   shouldFollowLiveOutput,
@@ -138,6 +139,19 @@ describe("task outcome actions", () => {
 
   it("does not offer an outcome action for a draft", () => {
     expect(taskOutcomeAction("draft", false, false, null)).toBeNull();
+  });
+});
+
+describe("Codex profile selection", () => {
+  it("stays disabled while task state has a storage error", () => {
+    expect(canSelectCodexProfile({
+      taskArchived: false,
+      taskStateLoading: false,
+      taskStateError: "Could not save Task state.",
+      environmentBusy: false,
+      runtimeBusy: false,
+      profileCount: 2,
+    })).toBe(false);
   });
 });
 

@@ -1,10 +1,23 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const openExternalUrl = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../../../core/bridges/tauri", () => ({
+  nativeBridge: { openExternalUrl },
+}));
 
 import {
   BROWSER_HOME_URL,
+  openExternalBrowser,
   shouldHandleBrowserNavigationRequest,
   toBrowserUrl,
 } from "./browserNavigation";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("browser navigation request ordering", () => {
   it("accepts only the first request or a strictly newer request", () => {
@@ -50,5 +63,22 @@ describe("toBrowserUrl", () => {
     expect(toBrowserUrl("example.com:99999")).toBe(
       "https://www.google.com/search?q=example.com%3A99999",
     );
+  });
+});
+
+describe("openExternalBrowser", () => {
+  it("opens HTTP links outside the restricted Task Preview", () => {
+    expect(openExternalBrowser("https://github.com/xiao/pull/2")).toBe(true);
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://github.com/xiao/pull/2",
+    );
+  });
+
+  it("does not open privileged or malformed targets", () => {
+    openExternalUrl.mockClear();
+
+    expect(openExternalBrowser("javascript:alert(1)")).toBe(false);
+    expect(openExternalBrowser("not a URL")).toBe(false);
+    expect(openExternalUrl).not.toHaveBeenCalled();
   });
 });

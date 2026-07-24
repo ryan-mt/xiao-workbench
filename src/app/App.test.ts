@@ -25,10 +25,12 @@ import {
   beginNativeTaskConfirmation,
   canChangeDraftLaunchProject,
   captureTaskOperationScope,
+  clearProjectGroup,
   clearVisibleTaskUnread,
   completeUndoRecovery,
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
+  codexProfileRuntimeSignature,
   createContinuationTask,
   explicitlyOpenedTaskSuppressesFocusedLaunch,
   isTaskWorkspaceStateLoading,
@@ -53,6 +55,44 @@ import {
   type StoredTaskState,
   WorkspaceTaskSaveDebouncer,
 } from "./App";
+
+describe("profile and project group state", () => {
+  it("deduplicates runtime synchronization per profile", () => {
+    const snapshot = { availability: "available" };
+
+    expect(codexProfileRuntimeSignature("profile-a", snapshot)).not.toBe(
+      codexProfileRuntimeSignature("profile-b", snapshot),
+    );
+  });
+
+  it("clears a deleted group from visible and hidden project state", () => {
+    const projects = [
+      {
+        path: "C:/projects/xiao",
+        name: "Xiao",
+        updatedAt: 1,
+        projectGroupId: "group-a",
+        projectGroupPosition: 3,
+      },
+      {
+        path: "C:/projects/other",
+        name: "Other",
+        updatedAt: 2,
+        projectGroupId: "group-b",
+        projectGroupPosition: 0,
+      },
+    ];
+
+    expect(clearProjectGroup(projects, "group-a")).toEqual([
+      {
+        ...projects[0],
+        projectGroupId: null,
+        projectGroupPosition: 0,
+      },
+      projects[1],
+    ]);
+  });
+});
 
 const workspacePath = "C:/projects/contract-validation";
 const storageKey = `xiao.tasks.v2:${workspacePath}`;

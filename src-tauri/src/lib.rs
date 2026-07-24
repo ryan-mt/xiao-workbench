@@ -21,8 +21,8 @@ use agent::commands::{
 use agent::runtime::EnvironmentRuntimeRegistry;
 use browser::commands::{
     automate_task_preview, capture_task_preview, get_browser_console, get_browser_url,
-    go_back_browser, go_forward_browser, navigate_browser, reload_browser, set_browser_muted,
-    PREVIEW_CONSOLE_CAPTURE_SCRIPT,
+    go_back_browser, go_forward_browser, navigate_browser, open_external_url, reload_browser,
+    set_browser_muted, PREVIEW_CONSOLE_CAPTURE_SCRIPT,
 };
 use browser::preview::PreviewRegistry;
 use execution::commands::{
@@ -202,6 +202,7 @@ pub fn run() {
             resize_terminal,
             stop_terminal,
             navigate_browser,
+            open_external_url,
             go_back_browser,
             go_forward_browser,
             reload_browser,

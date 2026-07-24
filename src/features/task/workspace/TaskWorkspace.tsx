@@ -88,6 +88,27 @@ export const newTaskProjectOptions = (
   }));
 };
 
+export const canSelectCodexProfile = ({
+  taskArchived,
+  taskStateLoading,
+  taskStateError,
+  environmentBusy,
+  runtimeBusy,
+  profileCount,
+}: {
+  taskArchived: boolean;
+  taskStateLoading: boolean;
+  taskStateError: string | null;
+  environmentBusy: boolean;
+  runtimeBusy: boolean;
+  profileCount: number;
+}) => !taskArchived
+  && !taskStateLoading
+  && !taskStateError
+  && !environmentBusy
+  && !runtimeBusy
+  && profileCount >= 2;
+
 type TimelineSelection = {
   text: string;
   left: number;
@@ -518,14 +539,14 @@ export function TaskWorkspace({
         <span>Codex profile</span>
         <select
           aria-label="Codex profile for this Task"
-          disabled={
-            taskArchived ||
-            taskStateLoading ||
-            environmentBusy ||
-            runtime.phase === "working" ||
-            runtime.phase === "starting" ||
-            codexProfiles.length < 2
-          }
+          disabled={!canSelectCodexProfile({
+            taskArchived,
+            taskStateLoading,
+            taskStateError,
+            environmentBusy,
+            runtimeBusy: runtime.phase === "working" || runtime.phase === "starting",
+            profileCount: codexProfiles.length,
+          })}
           value={selectedCodexProfileId ?? codexProfiles[0]?.id ?? ""}
           onChange={(event) => onCodexProfileChange(event.target.value)}
         >

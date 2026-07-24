@@ -363,6 +363,10 @@ export const nativeBridge = {
     return invoke<void>("navigate_browser", { url, label, taskId, projectPath });
   },
 
+  openExternalUrl(url: string) {
+    return invoke<void>("open_external_url", { url });
+  },
+
   goBackBrowser(label: string) {
     return invoke<void>("go_back_browser", { label });
   },

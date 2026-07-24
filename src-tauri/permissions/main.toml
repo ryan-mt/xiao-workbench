@@ -61,6 +61,7 @@ permissions = [
   "allow-resize-terminal",
   "allow-stop-terminal",
   "allow-navigate-browser",
+  "allow-open-external-url",
   "allow-go-back-browser",
   "allow-go-forward-browser",
   "allow-reload-browser",
