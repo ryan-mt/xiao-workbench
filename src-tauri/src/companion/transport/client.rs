@@ -60,10 +60,19 @@ impl CredentialStore for KeyringCredentialStore {
     }
 
     fn delete(&self, reference_id: &str) -> Result<(), String> {
-        keyring::Entry::new(KEYRING_SERVICE, reference_id)
+        let result = keyring::Entry::new(KEYRING_SERVICE, reference_id)
             .map_err(|error| format!("Could not open the Companion credential store: {error}"))?
-            .delete_credential()
-            .map_err(|error| format!("Could not remove the Companion credential: {error}"))
+            .delete_credential();
+        normalize_credential_deletion(result)
+    }
+}
+
+fn normalize_credential_deletion(result: keyring::Result<()>) -> Result<(), String> {
+    match result {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!(
+            "Could not remove the Companion credential: {error}"
+        )),
     }
 }
 
@@ -265,9 +274,9 @@ fn validate_rotation(
     if candidate.session_id != current.session_id || candidate.device_id != current.device_id {
         return Err("The rotation code belongs to a different Companion session.".to_owned());
     }
-    if candidate.generation != current.generation + 1 {
+    if candidate.generation <= current.generation {
         return Err(
-            "The rotation code is not the next generation for this Companion session.".to_owned(),
+            "The rotation code is not newer than the stored Companion credential.".to_owned(),
         );
     }
     if candidate.secret.trim().is_empty() {
@@ -365,7 +374,7 @@ fn post_json<T: Serialize, R: DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_rotation;
+    use super::{normalize_credential_deletion, validate_rotation};
     use crate::companion::models::SessionCredential;
 
     fn credential(session_id: &str, device_id: &str, generation: i64) -> SessionCredential {
@@ -378,11 +387,28 @@ mod tests {
     }
 
     #[test]
-    fn rotation_requires_the_exact_session_and_next_generation() {
+    fn rotation_requires_the_exact_session_and_a_newer_generation() {
         let current = credential("session-1", "device-1", 3);
         validate_rotation(&current, &credential("session-1", "device-1", 4)).unwrap();
+        validate_rotation(&current, &credential("session-1", "device-1", 5)).unwrap();
         assert!(validate_rotation(&current, &credential("session-2", "device-1", 4)).is_err());
         assert!(validate_rotation(&current, &credential("session-1", "device-2", 4)).is_err());
-        assert!(validate_rotation(&current, &credential("session-1", "device-1", 5)).is_err());
+        assert!(validate_rotation(&current, &credential("session-1", "device-1", 3)).is_err());
+        assert!(validate_rotation(&current, &credential("session-1", "device-1", 2)).is_err());
+        let mut empty_secret = credential("session-1", "device-1", 4);
+        empty_secret.secret = "  ".to_owned();
+        assert!(validate_rotation(&current, &empty_secret).is_err());
+    }
+
+    #[test]
+    fn deleting_an_absent_keyring_credential_is_idempotent() {
+        normalize_credential_deletion(Err(keyring::Error::NoEntry)).unwrap();
+
+        let error = normalize_credential_deletion(Err(keyring::Error::Invalid(
+            "reference".to_owned(),
+            "invalid".to_owned(),
+        )))
+        .unwrap_err();
+        assert!(error.contains("Could not remove the Companion credential"));
     }
 }

@@ -213,7 +213,7 @@ export function CompanionSurface({
 
   useEffect(() => {
     if (attentionTargetId) openAttention(attentionTargetId);
-  }, [attentionTargetId]);
+  }, [attentionTargetId, state.projection.attention]);
 
   useEffect(() => {
     if (!pendingAttentionId) return;

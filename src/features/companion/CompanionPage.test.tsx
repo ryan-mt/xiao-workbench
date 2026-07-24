@@ -263,6 +263,85 @@ describe("Companion application journey", () => {
     expect(screen.getByText(`Paired with ${session.endpoint}`)).toBeTruthy();
   });
 
+  it("starts notification polling from a fresh cursor after pairing a different host", async () => {
+    const firstCursor = {
+      createdAt: 1_900_000_010,
+      attentionId: "attention-host-a",
+    };
+    const secondSession = {
+      ...session,
+      referenceId: "session-device-2",
+      sessionId: "session-device-2",
+      endpoint: "https://192.0.2.20:4318",
+    };
+    localStorage.setItem("xiao.companion.session.v1", JSON.stringify(session));
+    client.pollNotifications
+      .mockResolvedValueOnce({
+        notifications: [],
+        nextCursor: firstCursor,
+        hasMore: false,
+      })
+      .mockResolvedValue({
+        notifications: [],
+        nextCursor: null,
+        hasMore: false,
+      });
+
+    render(<CompanionPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connected device" }));
+    await waitFor(() => {
+      expect(client.pollNotifications).toHaveBeenCalledWith(session, null);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Forget this host" }));
+    await screen.findByRole("heading", { name: "Pair with a primary host" });
+
+    client.pair.mockResolvedValueOnce({
+      session: secondSession,
+      certificateFingerprint: fingerprint,
+    });
+    fireEvent.change(screen.getByLabelText("Primary host pairing bundle"), {
+      target: {
+        value: JSON.stringify({
+          endpoint: secondSession.endpoint,
+          serverName: "xiao-companion.local",
+          certificatePem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n",
+          certificateFingerprint: fingerprint,
+          pairingId: "pairing-2",
+          ownerCredential: "owner-twice",
+          expiresAt: 2_000_000_000_000,
+        }),
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Device name"), {
+      target: { value: "Operator tablet" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Pair device" }));
+
+    await screen.findByText(`Paired with ${secondSession.endpoint}`);
+    await waitFor(() => {
+      expect(client.pollNotifications).toHaveBeenCalledWith(secondSession, null);
+    });
+  });
+
+  it("reports a second action while the first still awaits the primary host", async () => {
+    localStorage.setItem("xiao.companion.session.v1", JSON.stringify(session));
+    client.command.mockImplementationOnce(() => new Promise(() => undefined));
+
+    render(<CompanionPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connected device" }));
+    await screen.findByText("Live");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(client.command).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await screen.findByText(
+      "Another Companion action is still awaiting the primary host. Wait for it to finish before trying again.",
+    );
+    expect(client.command).toHaveBeenCalledTimes(1);
+  });
+
   it("pairs, reconciles, performs only bounded actions, and recovers stale state", async () => {
     render(<CompanionPage />);
     fireEvent.click(screen.getByRole("button", { name: "Connected device" }));

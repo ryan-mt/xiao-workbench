@@ -1415,13 +1415,18 @@ impl CompanionRepository {
     }
 
     pub fn refuse_runtime_effect(
-        connection: &Connection,
+        connection: &mut Connection,
         command_id: &str,
         refusal_code: &str,
         message: &str,
         now: i64,
     ) -> Result<(), String> {
-        connection
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                format!("Could not start the Companion runtime effect refusal: {error}")
+            })?;
+        transaction
             .execute(
                 "UPDATE companion_command_outbox
                  SET status = 'cancelled', last_error = ?1
@@ -1430,7 +1435,7 @@ impl CompanionRepository {
                 params![message, command_id],
             )
             .map_err(|error| format!("Could not cancel Companion runtime effect: {error}"))?;
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE companion_commands
                  SET status = 'refused', refusal_code = ?1, message = ?2, updated_at = ?3
@@ -1439,7 +1444,7 @@ impl CompanionRepository {
             )
             .map_err(|error| format!("Could not refuse Companion runtime effect: {error}"))?;
         if changed == 1 {
-            connection
+            transaction
                 .execute(
                     "INSERT OR IGNORE INTO companion_audit(
                         id, command_id, session_id, device_id, capability, target_kind,
@@ -1454,6 +1459,9 @@ impl CompanionRepository {
                     format!("Could not audit refused Companion runtime effect: {error}")
                 })?;
         }
+        transaction.commit().map_err(|error| {
+            format!("Could not commit Companion runtime effect refusal: {error}")
+        })?;
         Ok(())
     }
 

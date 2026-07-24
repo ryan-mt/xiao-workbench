@@ -907,6 +907,86 @@ fn runtime_outbox_survives_reopen_and_command_replay_stays_duplicate_safe() {
 }
 
 #[test]
+fn runtime_refusal_rolls_back_outbox_cancellation_when_command_update_fails() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let session = paired_session(&service, &mut connection, vec![CompanionGrant::StopRun]);
+    let host = TestHost {
+        version: Cell::new(4),
+        executions: Cell::new(0),
+        uncertain: false,
+    };
+    let result = service
+        .execute_command(
+            &mut connection,
+            &session.credential,
+            command(
+                &session,
+                "atomic-refusal-command",
+                "atomic-refusal-key",
+                CommandCapability::StopRun,
+                TargetKind::Run,
+                4,
+            ),
+            NOW_MILLIS,
+            &host,
+        )
+        .unwrap();
+    assert_eq!(result.state, CommandState::PendingHostAcknowledgement);
+
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_companion_runtime_refusal
+             BEFORE UPDATE OF status ON companion_commands
+             WHEN NEW.command_id = 'atomic-refusal-command' AND NEW.status = 'refused'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected command refusal failure');
+             END;",
+        )
+        .unwrap();
+
+    let error = CompanionRepository::refuse_runtime_effect(
+        &mut connection,
+        "atomic-refusal-command",
+        "runtime_effect_failed",
+        "The runtime effect failed.",
+        NOW_MILLIS + 1,
+    )
+    .unwrap_err();
+    assert!(error.contains("injected command refusal failure"));
+
+    let (command_status, outbox_status): (String, String) = connection
+        .query_row(
+            "SELECT commands.status, outbox.status
+             FROM companion_commands AS commands
+             JOIN companion_command_outbox AS outbox
+               ON outbox.command_id = commands.command_id
+             WHERE commands.command_id = ?1",
+            ["atomic-refusal-command"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(command_status, "pending");
+    assert_eq!(outbox_status, "pending");
+    assert_eq!(
+        CompanionRepository::pending_runtime_effects(&connection, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    let refusal_audit_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*)
+             FROM companion_audit
+             WHERE command_id = ?1 AND decision = 'refused'",
+            ["atomic-refusal-command"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(refusal_audit_count, 0);
+}
+
+#[test]
 fn revocation_cancels_queued_runtime_effects_before_dispatch() {
     let mut connection = test_connection();
     let service = CompanionService;

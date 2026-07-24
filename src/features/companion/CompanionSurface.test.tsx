@@ -419,4 +419,50 @@ describe("CompanionSurface", () => {
     });
     expect(onOpenAttention).toHaveBeenCalledWith("attention-target-55");
   });
+
+  it("retries a notification target when its canonical Attention projection arrives", async () => {
+    const base = liveState();
+    const target = {
+      id: "attention-later",
+      projectId: "project-1",
+      taskId: "task-1",
+      runId: "run-1",
+      version: 4,
+      kind: "review",
+      title: "Arrived later",
+      safeSummary: "Canonical Attention summary.",
+      acknowledged: false,
+    };
+    const onOpenAttention = vi.fn();
+    const rendered = render(<CompanionSurface
+      {...props({
+        ...base,
+        projection: {
+          ...base.projection,
+          attention: [],
+        },
+      })}
+      attentionTargetId={target.id}
+      onOpenAttention={onOpenAttention}
+    />);
+
+    expect(onOpenAttention).not.toHaveBeenCalled();
+
+    rendered.rerender(<CompanionSurface
+      {...props({
+        ...base,
+        projection: {
+          ...base.projection,
+          attention: [target],
+        },
+      })}
+      attentionTargetId={target.id}
+      onOpenAttention={onOpenAttention}
+    />);
+
+    await waitFor(() => {
+      expect(document.activeElement?.id).toBe("companion-attention-attention-later");
+    });
+    expect(onOpenAttention).toHaveBeenCalledWith(target.id);
+  });
 });
