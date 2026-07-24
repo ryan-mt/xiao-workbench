@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
+import { keyboardEventMatchesBinding } from "../../command-menu/commandBindings";
 import type { WorkbenchTask } from "../../task/task.types";
 
 type TaskSwitcherProps = {
   tasks: WorkbenchTask[];
   activeTaskId: string | null;
   workingTaskIds: string[];
+  cycleBinding: string;
   onSelect: (taskId: string) => void;
   onClose: () => void;
 };
@@ -57,6 +59,7 @@ export function TaskSwitcher({
   tasks,
   activeTaskId,
   workingTaskIds,
+  cycleBinding,
   onSelect,
   onClose,
 }: TaskSwitcherProps) {
@@ -104,7 +107,7 @@ export function TaskSwitcher({
       if (
         event.key === "ArrowDown" ||
         event.key === "ArrowUp" ||
-        ((event.ctrlKey || event.metaKey) && event.key === "Tab")
+        keyboardEventMatchesBinding(event, cycleBinding, true)
       ) {
         if (!visibleTasks.length) return;
         event.preventDefault();
@@ -127,7 +130,7 @@ export function TaskSwitcher({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose, onSelect, selectedTaskId, visibleTasks]);
+  }, [cycleBinding, onClose, onSelect, selectedTaskId, visibleTasks]);
 
   return (
     <div
@@ -147,7 +150,7 @@ export function TaskSwitcher({
             placeholder="Switch tasks"
             onChange={(event) => setQuery(event.target.value)}
           />
-          <kbd>Ctrl Tab</kbd>
+          <kbd>{cycleBinding.split("+").join(" ")}</kbd>
         </header>
 
         <div className="task-switcher__list" ref={listRef} role="listbox" aria-label="Tasks">

@@ -9,6 +9,7 @@ describe("Task Preview targets", () => {
     )).toBe(true);
     expect(isTaskPreviewTarget("http://localhost:4173/")).toBe(true);
     expect(isTaskPreviewTarget("https://127.0.0.1:8443/result")).toBe(true);
+    expect(isTaskPreviewTarget("http://[::1]:3000/result")).toBe(true);
   });
 
   it("rejects general browsing and privileged schemes", () => {
@@ -22,5 +23,10 @@ describe("Task Preview targets", () => {
     expect(label).toMatch(/^xiao-task-preview-[0-9a-f]{16}-task-A-weird$/);
     expect(taskPreviewWebviewLabel("C:/other", "task/A weird id")).not.toBe(label);
     expect(taskPreviewWebviewLabel("C:/project", "task-A weird id")).not.toBe(label);
+  });
+
+  it("sanitizes astral Unicode as UTF-16 code units for the native label contract", () => {
+    expect(taskPreviewWebviewLabel("C:/project", "task-😀-end"))
+      .toMatch(/^xiao-task-preview-[0-9a-f]{16}-task----end$/);
   });
 });

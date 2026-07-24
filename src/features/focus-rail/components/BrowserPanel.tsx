@@ -94,9 +94,14 @@ export function BrowserPanel({
   const webview = useRef<Webview | null>(null);
   const activeRef = useRef(active);
   const editingAddress = useRef(false);
+  const initialHomeUrl = useRef(homeUrl);
+  const initialZoomValue = useRef(initialZoom);
+  const currentUrlRef = useRef(homeUrl);
+  const onTargetChangeRef = useRef(onTargetChange);
   const boundsFrame = useRef(0);
   const loadingTimer = useRef<number | undefined>(undefined);
   const handledNavigationRequest = useRef<number | null>(null);
+  const navigationGeneration = useRef(0);
   const [ready, setReady] = useState(false);
   const [viewportPreset, setViewportPreset] = useState(initialViewport);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -108,6 +113,7 @@ export function BrowserPanel({
   const [zoom, setZoom] = useState(initialZoom);
 
   activeRef.current = active;
+  onTargetChangeRef.current = onTargetChange;
 
   const syncBounds = useCallback(async () => {
     const instance = webview.current;
@@ -177,10 +183,17 @@ export function BrowserPanel({
         await syncBounds();
         if (activeRef.current) await instance.show();
         else await instance.hide();
-        setReady(true);
         if (taskPreviewOnly) {
-          await nativeBridge.navigateBrowser(homeUrl, webviewLabel, taskId, projectPath);
+          navigationGeneration.current += 1;
+          await nativeBridge.navigateBrowser(
+            initialHomeUrl.current,
+            webviewLabel,
+            taskId,
+            projectPath,
+          );
         }
+        await instance.setZoom(initialZoomValue.current);
+        setReady(true);
         setLoading(false);
         animationTimer = window.setTimeout(queueBoundsSync, 240);
       } catch (reason) {
@@ -204,7 +217,7 @@ export function BrowserPanel({
       if (webview.current === instance) webview.current = null;
       if (instance) void instance.close().catch(() => undefined);
     };
-  }, [homeUrl, host, projectPath, queueBoundsSync, syncBounds, taskId, taskPreviewOnly, webviewLabel]);
+  }, [host, projectPath, queueBoundsSync, syncBounds, taskId, taskPreviewOnly, webviewLabel]);
 
   useEffect(() => {
     if (!ready || !webview.current) return;
@@ -238,13 +251,19 @@ export function BrowserPanel({
 
   const refreshCurrentUrl = useCallback(async () => {
     try {
+      const observedGeneration = navigationGeneration.current;
       const url = await nativeBridge.getBrowserUrl(webviewLabel);
+      if (observedGeneration !== navigationGeneration.current) return;
+      if (!url || url === currentUrlRef.current) return;
+      if (taskPreviewOnly && !isTaskPreviewTarget(url)) return;
+      currentUrlRef.current = url;
       setCurrentUrl(url);
       if (!editingAddress.current) setAddress(url);
+      onTargetChangeRef.current?.(url);
     } catch {
       // The webview may be between navigations; keep the last known address.
     }
-  }, [webviewLabel]);
+  }, [taskPreviewOnly, webviewLabel]);
 
   useEffect(() => {
     if (!active || !ready) return;
@@ -280,6 +299,7 @@ export function BrowserPanel({
     command: () => Promise<void>,
     notifyNavigationStart = true,
   ) => {
+    navigationGeneration.current += 1;
     if (notifyNavigationStart) onNavigationStart?.();
     setError(null);
     setLoading(true);
@@ -308,6 +328,7 @@ export function BrowserPanel({
     }
     setAddress(url);
     setCurrentUrl(url);
+    currentUrlRef.current = url;
     onTargetChange?.(url);
     await runBrowserCommand(
       () => nativeBridge.navigateBrowser(url, webviewLabel, taskId, projectPath),
@@ -412,7 +433,7 @@ export function BrowserPanel({
           <XiaoIcon className={loading ? "is-spinning" : undefined} name="refresh" size={13} />
         </button>
         {taskPreviewOnly ? (
-          <>
+          <div className="browser-panel__task-controls">
             <select
               aria-label="Task Preview viewport"
               value={viewportPreset}
@@ -484,7 +505,7 @@ export function BrowserPanel({
             </button>
             <button
               type="button"
-              disabled={!projectPath || !taskId}
+              disabled={controlsDisabled || !projectPath || !taskId}
               onClick={() => {
                 const selector = window.prompt("Selector to automate")?.trim();
                 if (!selector || !projectPath || !taskId) return;
@@ -503,7 +524,7 @@ export function BrowserPanel({
             >
               Automate
             </button>
-          </>
+          </div>
         ) : null}
         <i className="browser-panel__progress" aria-hidden="true" />
       </header>
@@ -513,7 +534,7 @@ export function BrowserPanel({
         <span>{error}</span>
       </div>
       {taskPreviewOnly ? (
-        <div className="browser-panel__notice" role="status">
+        <div className="browser-panel__notice" role="status" hidden={Boolean(error)}>
           <XiaoIcon name={error ? "approval" : ready ? "secure" : "pending"} size={12} />
           <span>{error ? "Outcome unreachable" : ready ? "Task Preview connected" : "Waiting for a Task outcome"}</span>
         </div>

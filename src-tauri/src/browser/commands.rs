@@ -53,13 +53,13 @@ fn task_preview_label(project_path: &str, task_id: &str) -> String {
         hash = hash.wrapping_mul(1_099_511_628_211);
     }
     let safe = task_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
-                '-'
-            }
+        .encode_utf16()
+        .map(|unit| {
+            char::from_u32(u32::from(unit))
+                .filter(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+                .unwrap_or('-')
         })
         .take(12)
         .collect::<String>();
@@ -554,6 +554,9 @@ fn preview_automation_script(
     if !matches!(action, "click" | "focus" | "fill") {
         return Err("Task Preview automation supports click, focus, or fill.".to_owned());
     }
+    if action == "fill" && value.is_none() {
+        return Err("Task Preview fill automation requires a value.".to_owned());
+    }
     if !previews.task_preview_scope_matches(label, scope) {
         return Err("Task Preview automation does not belong to this Task.".to_owned());
     }
@@ -663,7 +666,9 @@ pub fn set_browser_muted(app: AppHandle, label: String, muted: bool) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_browser_webview_label, parse_browser_url, preview_automation_script};
+    use super::{
+        is_browser_webview_label, parse_browser_url, preview_automation_script, task_preview_label,
+    };
     use crate::browser::preview::{PreviewRegistry, PreviewScope};
     use tauri::Url;
 
@@ -700,6 +705,56 @@ mod tests {
         assert!(is_browser_webview_label("xiao-game"));
         assert!(!is_browser_webview_label("xiao-browser"));
         assert!(!is_browser_webview_label("xiao-task-preview-../main"));
+    }
+
+    #[test]
+    fn task_preview_labels_sanitize_astral_unicode_as_utf16_units() {
+        assert_eq!(
+            task_preview_label("C:/project", "task-😀-end")
+                .strip_prefix("xiao-task-preview-")
+                .unwrap()
+                .split_once('-')
+                .unwrap()
+                .1,
+            "task----end"
+        );
+    }
+
+    #[test]
+    fn task_preview_fill_automation_requires_an_explicit_value() {
+        let registry = PreviewRegistry::default();
+        let scope = PreviewScope {
+            project_path: "C:/project".to_owned(),
+            task_id: "task".to_owned(),
+            execution_root: "C:/worktree".to_owned(),
+        };
+        registry
+            .register_task_preview_target(
+                "xiao-task-preview-task",
+                scope.clone(),
+                &Url::parse("http://127.0.0.1:4101/").unwrap(),
+            )
+            .unwrap();
+
+        let error = preview_automation_script(
+            &registry,
+            &scope,
+            "xiao-task-preview-task",
+            "fill",
+            "#name",
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "Task Preview fill automation requires a value.");
+        assert!(preview_automation_script(
+            &registry,
+            &scope,
+            "xiao-task-preview-task",
+            "fill",
+            "#name",
+            Some(""),
+        )
+        .is_ok());
     }
 
     #[test]

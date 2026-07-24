@@ -42,10 +42,20 @@ const bindingForKeyboardEvent = (event: KeyboardCommandEvent) => {
   return parts.join("+");
 };
 
+export const keyboardEventMatchesBinding = (
+  event: KeyboardCommandEvent,
+  binding: string,
+  allowShiftVariant = false,
+) => {
+  const pressed = bindingForKeyboardEvent(event);
+  const expected = normalizeKey(binding);
+  if (pressed === expected) return true;
+  return allowShiftVariant && event.shiftKey && pressed.replace("shift+", "") === expected;
+};
+
 export const commandForKeyboardEvent = (
   event: KeyboardCommandEvent,
   bindings: CommandBindings,
 ): CommandId | null => {
-  const pressed = bindingForKeyboardEvent(event);
-  return commandIds.find((id) => normalizeKey(bindings[id]) === pressed) ?? null;
+  return commandIds.find((id) => keyboardEventMatchesBinding(event, bindings[id])) ?? null;
 };

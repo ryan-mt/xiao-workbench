@@ -357,6 +357,10 @@ impl PreviewRegistry {
 pub(crate) fn is_loopback_http_url(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "http" | "https")
         && url.host_str().is_some_and(|host| {
+            let host = host
+                .strip_prefix('[')
+                .and_then(|host| host.strip_suffix(']'))
+                .unwrap_or(host);
             host.eq_ignore_ascii_case("localhost")
                 || host
                     .parse::<IpAddr>()
@@ -475,7 +479,7 @@ fn internal_error() -> Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_type, NavigationAllowance, PreviewRegistry, PreviewScope,
+        content_type, is_loopback_http_url, NavigationAllowance, PreviewRegistry, PreviewScope,
         PREVIEW_CONTENT_SECURITY_POLICY,
     };
     use std::fs;
@@ -520,6 +524,19 @@ mod tests {
         );
         assert_eq!(content_type(Path::new("photo.png")), Some("image/png"));
         assert_eq!(content_type(Path::new("source.rs")), None);
+    }
+
+    #[test]
+    fn accepts_ipv4_and_ipv6_loopback_preview_urls() {
+        assert!(is_loopback_http_url(
+            &Url::parse("http://127.0.0.1:3000/").unwrap()
+        ));
+        assert!(is_loopback_http_url(
+            &Url::parse("http://[::1]:3000/").unwrap()
+        ));
+        assert!(!is_loopback_http_url(
+            &Url::parse("http://[2001:db8::1]:3000/").unwrap()
+        ));
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_COMMAND_BINDINGS,
   commandForKeyboardEvent,
+  keyboardEventMatchesBinding,
   normalizeCommandBindings,
 } from "./commandBindings";
 
@@ -32,5 +33,18 @@ describe("command bindings", () => {
       altKey: false,
       shiftKey: false,
     }, DEFAULT_COMMAND_BINDINGS)).toBe("command-menu.open");
+  });
+
+  it("matches a configured binding and its shifted cycling variant", () => {
+    const event = {
+      key: "j",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: true,
+      shiftKey: true,
+    };
+
+    expect(keyboardEventMatchesBinding(event, "Alt+J")).toBe(false);
+    expect(keyboardEventMatchesBinding(event, "Alt+J", true)).toBe(true);
   });
 });

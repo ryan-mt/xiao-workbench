@@ -9,7 +9,7 @@ export const isTaskPreviewTarget = (value: string) => {
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
     return url.hostname === "localhost" ||
-      url.hostname === "::1" ||
+      url.hostname === "[::1]" ||
       /^127(?:\.\d{1,3}){3}$/.test(url.hostname) ||
       (url.hostname.startsWith("xiao-preview.") &&
         previewTokenPattern.test(url.hostname.slice("xiao-preview.".length)));

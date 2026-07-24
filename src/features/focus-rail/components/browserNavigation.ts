@@ -31,6 +31,13 @@ export const shouldHandleBrowserNavigationRequest = (
   incomingId: number,
 ) => lastHandledId === null || incomingId > lastHandledId;
 
+export const openExternalBrowser = (value: string) => {
+  const url = parseWebUrl(value);
+  if (!url) return false;
+  window.open(url, "_blank", "noopener,noreferrer");
+  return true;
+};
+
 export function toBrowserUrl(input: string): string {
   const value = input.trim();
   if (!value) return BROWSER_HOME_URL;

@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BROWSER_HOME_URL,
+  openExternalBrowser,
   shouldHandleBrowserNavigationRequest,
   toBrowserUrl,
 } from "./browserNavigation";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("browser navigation request ordering", () => {
   it("accepts only the first request or a strictly newer request", () => {
@@ -50,5 +57,26 @@ describe("toBrowserUrl", () => {
     expect(toBrowserUrl("example.com:99999")).toBe(
       "https://www.google.com/search?q=example.com%3A99999",
     );
+  });
+});
+
+describe("openExternalBrowser", () => {
+  it("opens HTTP links outside the restricted Task Preview", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    expect(openExternalBrowser("https://github.com/xiao/pull/2")).toBe(true);
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/xiao/pull/2",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+
+  it("does not open privileged or malformed targets", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    expect(openExternalBrowser("javascript:alert(1)")).toBe(false);
+    expect(openExternalBrowser("not a URL")).toBe(false);
+    expect(open).not.toHaveBeenCalled();
   });
 });
