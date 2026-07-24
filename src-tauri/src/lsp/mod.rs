@@ -109,6 +109,17 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                     "value": { "type": "string", "maxLength": 2000 }
                 },
                 "required": ["label", "action", "selector"],
+                "allOf": [{
+                    "if": {
+                        "properties": {
+                            "action": { "const": "fill" }
+                        },
+                        "required": ["action"]
+                    },
+                    "then": {
+                        "required": ["value"]
+                    }
+                }],
                 "additionalProperties": false
             }
         }]
@@ -205,6 +216,14 @@ mod tests {
         assert_eq!(specs[2]["name"], "xiao_preview");
         assert_eq!(specs[2]["tools"][0]["name"], "targets");
         assert_eq!(specs[2]["tools"][1]["name"], "automate");
+        assert_eq!(
+            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["if"]["properties"]["action"]["const"],
+            "fill"
+        );
+        assert_eq!(
+            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["then"]["required"],
+            json!(["value"])
+        );
     }
 
     #[test]

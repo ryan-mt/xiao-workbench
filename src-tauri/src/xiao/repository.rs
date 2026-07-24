@@ -1128,13 +1128,7 @@ impl XiaoRepository {
         if id.is_empty() || display_name.is_empty() {
             return Err("Codex profile requires an id and display name.".to_owned());
         }
-        if !update.environment.as_object().is_some_and(|environment| {
-            environment
-                .iter()
-                .all(|(key, value)| !key.trim().is_empty() && value.as_str().is_some())
-        }) {
-            return Err("Codex profile environment must contain only string values.".to_owned());
-        }
+        validate_codex_profile_environment(&update.environment)?;
         if !matches!(
             update.availability.as_str(),
             "unknown" | "available" | "unavailable" | "incompatible" | "unauthenticated"
@@ -2257,6 +2251,9 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         if version == 2 {
             backfill_execution_environments(&transaction)?;
         }
+        if version == 7 {
+            backfill_queued_run_profiles(&transaction)?;
+        }
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -2267,6 +2264,41 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             .commit()
             .map_err(|error| format!("Could not commit Xiao migration {version}: {error}"))?;
     }
+    Ok(())
+}
+
+fn backfill_queued_run_profiles(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"UPDATE runs
+               SET capability_snapshot_json = COALESCE((
+                       SELECT profiles.capabilities_json
+                       FROM codex_profiles profiles
+                       WHERE profiles.id = COALESCE(
+                           runs.codex_profile_id,
+                           (
+                               SELECT tasks.codex_profile_id
+                               FROM tasks
+                               WHERE tasks.workspace_id = runs.workspace_id
+                                 AND tasks.task_id = runs.task_id
+                           ),
+                           'default'
+                       )
+                   ), '{}'),
+                   codex_profile_id = COALESCE(
+                       runs.codex_profile_id,
+                       (
+                           SELECT tasks.codex_profile_id
+                           FROM tasks
+                           WHERE tasks.workspace_id = runs.workspace_id
+                             AND tasks.task_id = runs.task_id
+                       ),
+                       'default'
+                   )
+               WHERE status = 'queued'"#,
+            [],
+        )
+        .map_err(|error| format!("Could not backfill queued Run Codex profiles: {error}"))?;
     Ok(())
 }
 
@@ -3477,6 +3509,7 @@ fn search_history_global_from_connection(
         return Ok(Vec::new());
     }
     let normalized_query = query.to_lowercase();
+    let use_sql_prefilter = normalized_query.is_ascii();
     let escaped_query = normalized_query
         .replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -3493,7 +3526,7 @@ fn search_history_global_from_connection(
                           'title' AS match_kind, t.title AS text, t.updated_at AS created_at
                    FROM tasks t
                    JOIN workspaces w ON w.id = t.workspace_id
-                   WHERE lower(t.title) LIKE ?1 ESCAPE '\'
+                   WHERE ?1 = 0 OR lower(t.title) LIKE ?2 ESCAPE '\'
                    UNION ALL
                    SELECT w.workspace_path AS project_path, w.display_name,
                           t.task_id, t.title AS task_title, t.archived AS task_archived,
@@ -3521,34 +3554,45 @@ fn search_history_global_from_connection(
                            AND json_extract(e.entry_json, '$.title') = 'Agent response'
                        )
                    )
-                   AND lower(COALESCE(
-                       NULLIF(json_extract(e.entry_json, '$.body'), ''),
-                       json_extract(e.entry_json, '$.title'),
-                       ''
-                   )) LIKE ?1 ESCAPE '\'
+                   AND (
+                       ?1 = 0 OR lower(COALESCE(
+                           NULLIF(json_extract(e.entry_json, '$.body'), ''),
+                           json_extract(e.entry_json, '$.title'),
+                           ''
+                       )) LIKE ?2 ESCAPE '\'
+                   )
                )
                WHERE entry_id IS NOT NULL AND text IS NOT NULL
                ORDER BY created_at DESC, task_id, entry_id
-               LIMIT ?2"#,
+               LIMIT ?3"#,
         )
         .map_err(|error| format!("Could not prepare global Task search: {error}"))?;
+    let sql_limit = if use_sql_prefilter {
+        limit as i64
+    } else {
+        i64::MAX
+    };
     let rows = statement
-        .query_map(params![like_query, limit as i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)? != 0,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, i64>(9)?,
-            ))
-        })
+        .query_map(
+            params![bool_to_i64(use_sql_prefilter), like_query, sql_limit],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            },
+        )
         .map_err(|error| format!("Could not query global Task search: {error}"))?;
-    rows.map(|row| {
+    let mut results = Vec::new();
+    for row in rows {
         let (
             project_path,
             display_name,
@@ -3561,7 +3605,10 @@ fn search_history_global_from_connection(
             text,
             created_at,
         ) = row.map_err(|error| format!("Could not decode global Task search: {error}"))?;
-        Ok(XiaoHistorySearchResult {
+        if !text.to_lowercase().contains(&normalized_query) {
+            continue;
+        }
+        results.push(XiaoHistorySearchResult {
             project_name: display_name
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| project_name_from_path(&project_path)),
@@ -3574,9 +3621,12 @@ fn search_history_global_from_connection(
             match_kind,
             snippet: history_search_snippet(&text, &normalized_query),
             created_at,
-        })
-    })
-    .collect()
+        });
+        if results.len() == limit {
+            break;
+        }
+    }
+    Ok(results)
 }
 
 fn project_name_from_path(path: &str) -> String {
@@ -4058,6 +4108,28 @@ fn optional_json_string<T: Serialize>(
     label: &str,
 ) -> Result<Option<String>, String> {
     value.map(|value| json_string(value, label)).transpose()
+}
+
+fn validate_codex_profile_environment(environment: &serde_json::Value) -> Result<(), String> {
+    let Some(environment) = environment.as_object() else {
+        return Err("Codex profile environment must contain only string values.".to_owned());
+    };
+    for (key, value) in environment {
+        let Some(value) = value.as_str() else {
+            return Err("Codex profile environment must contain only string values.".to_owned());
+        };
+        if key.trim().is_empty() || key.contains('=') || key.contains('\0') {
+            return Err(format!(
+                "Codex profile environment variable name `{key}` is invalid."
+            ));
+        }
+        if value.contains('\0') {
+            return Err(format!(
+                "Codex profile environment variable `{key}` contains an invalid null character."
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn json_string<T: Serialize>(value: &T, label: &str) -> Result<String, String> {
@@ -5151,7 +5223,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v6_upgrade_assigns_conservative_task_stages_without_losing_history() {
+    fn schema_v6_upgrade_preserves_queued_run_with_default_profile_snapshot() {
         let directory = TestDirectory::new("schema-v6-control-model-upgrade");
         let workspace = directory.workspace("workspace");
         let database_path = directory.path.join(DATABASE_FILE_NAME);
@@ -5245,10 +5317,11 @@ mod tests {
                     r#"INSERT INTO runs(
                         id, workspace_id, task_id, idempotency_key, parent_run_id,
                         candidate_group_id, status, agent_outcome, verification_outcome,
-                        execution_root, queued_at, started_at, finished_at, version
+                        execution_root, queued_at, started_at, finished_at, version,
+                        execution_environment_id
                     ) VALUES (
-                        'run', 1, 'started', 'run-key', NULL, NULL, 'completed',
-                        'completed', 'not_requested', ?1, 15, 16, 17, 1
+                        'run', 1, 'started', 'run-key', NULL, NULL, 'queued',
+                        'pending', 'not_requested', ?1, 15, NULL, NULL, 0, 'environment'
                     )"#,
                     [workspace.to_string_lossy().into_owned()],
                 )
@@ -5256,6 +5329,10 @@ mod tests {
         }
 
         let repository = XiaoRepository::open(&directory.path).unwrap();
+        let migrated_run = repository.get_run("run").unwrap();
+        assert_eq!(migrated_run.status, crate::runs::models::RunStatus::Queued);
+        assert_eq!(migrated_run.codex_profile_id.as_deref(), Some("default"));
+        assert_eq!(migrated_run.capability_snapshot, serde_json::json!({}));
         repository
             .with_connection(|connection| {
                 let stages = connection
@@ -5300,6 +5377,72 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn queued_run_profile_backfill_uses_the_tasks_bound_profile_capabilities() {
+        let directory = TestDirectory::new("queued-run-custom-profile-backfill");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+        repository
+            .save_codex_profile(CodexProfileUpdate {
+                id: "work".to_owned(),
+                display_name: "Work".to_owned(),
+                codex_home: None,
+                authentication_home: None,
+                environment: serde_json::json!({}),
+                availability: "available".to_owned(),
+                authenticated_identity: None,
+                models: serde_json::json!(["gpt-test"]),
+                capabilities: serde_json::json!({"steering": true}),
+                usage: None,
+                rate_limits: None,
+                diagnostic: None,
+                expected_version: None,
+            })
+            .unwrap();
+        repository
+            .bind_task_codex_profile(&workspace.to_string_lossy(), "task", "work", 0, false)
+            .unwrap();
+        let binding = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        r#"INSERT INTO runs(
+                               id, workspace_id, task_id, idempotency_key, status,
+                               agent_outcome, verification_outcome, execution_root,
+                               queued_at, version, execution_environment_id
+                           ) SELECT
+                               'legacy-custom-profile-run', workspaces.id, 'task',
+                               'legacy-custom-profile-key', 'queued', 'pending',
+                               'not_requested', ?1, 10, 0, ?2
+                           FROM workspaces WHERE workspace_path = ?1"#,
+                        params![
+                            workspace.to_string_lossy().into_owned(),
+                            binding.environment.id
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let transaction = connection
+                    .transaction()
+                    .map_err(|error| error.to_string())?;
+                backfill_queued_run_profiles(&transaction)?;
+                transaction.commit().map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        let run = repository.get_run("legacy-custom-profile-run").unwrap();
+        assert_eq!(run.codex_profile_id.as_deref(), Some("work"));
+        assert_eq!(
+            run.capability_snapshot,
+            serde_json::json!({"steering": true})
+        );
     }
 
     #[test]
@@ -5885,7 +6028,7 @@ mod tests {
         let repository = XiaoRepository::open(&directory.path).unwrap();
 
         let mut title_match = task("title-match", 1);
-        title_match.title = "Needle control model".to_owned();
+        title_match.title = "\u{00c9}CLAIR Needle control model".to_owned();
         repository
             .save_workspace(update(document(&first_workspace, vec![title_match])))
             .unwrap();
@@ -5962,6 +6105,48 @@ mod tests {
                 && result.project_path == second_workspace.to_string_lossy()
                 && result.match_kind == "message"
         }));
+        let unicode_results = repository
+            .search_history_global("\u{00e9}clair", Some(20))
+            .unwrap();
+        assert_eq!(unicode_results.len(), 1);
+        assert_eq!(unicode_results[0].task_id, "title-match");
+    }
+
+    #[test]
+    fn codex_profiles_reject_environment_entries_that_processes_cannot_accept() {
+        let directory = TestDirectory::new("codex-profile-invalid-environment");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        let update = |id: &str, environment: Value| CodexProfileUpdate {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            codex_home: None,
+            authentication_home: None,
+            environment,
+            availability: "available".to_owned(),
+            authenticated_identity: None,
+            models: serde_json::json!([]),
+            capabilities: serde_json::json!({}),
+            usage: None,
+            rate_limits: None,
+            diagnostic: None,
+            expected_version: None,
+        };
+
+        let invalid_name = repository
+            .save_codex_profile(update(
+                "invalid-name",
+                serde_json::json!({"BAD=NAME": "value"}),
+            ))
+            .unwrap_err();
+        assert!(invalid_name.contains("variable name"));
+        let invalid_value = repository
+            .save_codex_profile(update(
+                "invalid-value",
+                serde_json::json!({"VALID_NAME": "bad\0value"}),
+            ))
+            .unwrap_err();
+        assert!(invalid_value.contains("null character"));
+        assert_eq!(repository.list_codex_profiles().unwrap().len(), 1);
     }
 
     #[test]

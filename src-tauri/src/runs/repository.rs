@@ -219,6 +219,31 @@ impl XiaoRepository {
         })
     }
 
+    pub(crate) fn has_active_runtime_generation(
+        &self,
+        environment_id: &str,
+        generation: u64,
+    ) -> Result<bool, String> {
+        let generation = generation_to_i64(generation)?;
+        self.with_connection(|connection| {
+            let count: i64 = connection
+                .query_row(
+                    &format!(
+                        r#"SELECT COUNT(*) FROM runs
+                           WHERE execution_environment_id = ?1
+                             AND runtime_generation = ?2
+                             AND status IN ({RUNTIME_ACTIVE_STATUSES_SQL})"#
+                    ),
+                    params![environment_id, generation],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    format!("Could not inspect active Xiao environment Runs: {error}")
+                })?;
+            Ok(count != 0)
+        })
+    }
+
     pub(crate) fn run_task_defaults(
         &self,
         workspace_path: &str,
@@ -341,13 +366,27 @@ impl XiaoRepository {
         }
         let profile_was_unbound = bound_profile_id.is_none();
         let profile_id = bound_profile_id.unwrap_or_else(|| "default".to_owned());
-        let capabilities_json = transaction
+        let (capabilities_json, profile_availability, profile_diagnostic) = transaction
             .query_row(
-                "SELECT capabilities_json FROM codex_profiles WHERE id = ?1",
+                r#"SELECT capabilities_json, availability, diagnostic
+                   FROM codex_profiles WHERE id = ?1"#,
                 [&profile_id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .map_err(|error| format!("Could not snapshot Task Codex profile: {error}"))?;
+        if matches!(
+            profile_availability.as_str(),
+            "unavailable" | "incompatible"
+        ) {
+            return Err(profile_diagnostic
+                .unwrap_or_else(|| format!("The Task Codex profile is {profile_availability}.")));
+        }
         if profile_was_unbound {
             transaction
                 .execute(
@@ -673,44 +712,64 @@ impl XiaoRepository {
                 })?;
                 return Ok(None);
             }
-            let active_roots = {
+            let active_bindings = {
                 let mut statement = transaction
                     .prepare(&format!(
-                        "SELECT execution_root FROM runs WHERE status IN ({ACTIVE_STATUSES_SQL})"
+                        r#"SELECT execution_root, execution_environment_id, codex_profile_id
+                           FROM runs WHERE status IN ({ACTIVE_STATUSES_SQL})"#
                     ))
                     .map_err(|error| {
-                        format!("Could not prepare active Xiao execution roots: {error}")
+                        format!("Could not prepare active Xiao execution bindings: {error}")
                     })?;
                 let rows = statement
-                    .query_map([], |row| row.get::<_, String>(0))
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    })
                     .map_err(|error| {
-                        format!("Could not query active Xiao execution roots: {error}")
+                        format!("Could not query active Xiao execution bindings: {error}")
                     })?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
-                    format!("Could not decode active Xiao execution roots: {error}")
+                    format!("Could not decode active Xiao execution bindings: {error}")
                 })?
             };
             let run_id = {
                 let mut statement = transaction
                     .prepare(
-                        r#"SELECT id, execution_root FROM runs
-                           WHERE status = 'queued'
+                        r#"SELECT id, execution_root, execution_environment_id, codex_profile_id
+                           FROM runs WHERE status = 'queued'
                            ORDER BY queued_at ASC, id ASC"#,
                     )
                     .map_err(|error| format!("Could not prepare the Xiao run queue: {error}"))?;
                 let candidates = statement
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
                     })
                     .map_err(|error| format!("Could not query the Xiao run queue: {error}"))?;
                 let mut eligible = None;
                 for candidate in candidates {
-                    let (candidate_id, candidate_root) = candidate
+                    let (
+                        candidate_id,
+                        candidate_root,
+                        candidate_environment_id,
+                        candidate_profile_id,
+                    ) = candidate
                         .map_err(|error| format!("Could not decode a queued Xiao run: {error}"))?;
-                    if active_roots
-                        .iter()
-                        .all(|active_root| !execution_roots_overlap(active_root, &candidate_root))
-                    {
+                    if active_bindings.iter().all(
+                        |(active_root, active_environment_id, active_profile_id)| {
+                            !execution_roots_overlap(active_root, &candidate_root)
+                                && (active_environment_id != &candidate_environment_id
+                                    || active_profile_id == &candidate_profile_id)
+                        },
+                    ) {
                         eligible = Some(candidate_id);
                         break;
                     }
@@ -3415,6 +3474,58 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_rejects_unavailable_or_incompatible_task_profile() {
+        let directory = TestDirectory::new("run-profile-availability");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let save_default = |expected_version, availability: &str| {
+            repository
+                .save_codex_profile(crate::xiao::models::CodexProfileUpdate {
+                    id: "default".to_owned(),
+                    display_name: "Default Codex".to_owned(),
+                    codex_home: None,
+                    authentication_home: None,
+                    environment: json!({}),
+                    availability: availability.to_owned(),
+                    authenticated_identity: None,
+                    models: json!(["gpt-test"]),
+                    capabilities: json!({}),
+                    usage: None,
+                    rate_limits: None,
+                    diagnostic: Some(format!("profile is {availability}")),
+                    expected_version: Some(expected_version),
+                })
+                .unwrap();
+        };
+
+        save_default(0, "unavailable");
+        let unavailable = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "unavailable-profile",
+            ))
+            .unwrap_err();
+        assert_eq!(unavailable, "profile is unavailable");
+
+        save_default(1, "incompatible");
+        let incompatible = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "incompatible-profile",
+            ))
+            .unwrap_err();
+        assert_eq!(incompatible, "profile is incompatible");
+        assert!(repository
+            .list_runs(&workspace, None, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn enqueue_derives_verification_state_from_native_task_contract() {
         let directory = TestDirectory::new("contract-state");
         let repository = repository_with_tasks(&directory.0, &["plain", "diff"]);
@@ -3874,6 +3985,58 @@ mod tests {
         let mut third = new_run(&repository, &workspace, "task-c", "c-1");
         third.queued_at += 3;
         repository.enqueue_run(third).unwrap();
+
+        assert_eq!(
+            repository
+                .claim_next_eligible_run(2)
+                .unwrap()
+                .unwrap()
+                .run
+                .id,
+            first.id
+        );
+        assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn queue_serializes_different_profiles_in_one_execution_environment() {
+        let directory = TestDirectory::new("queue-environment-profiles");
+        let repository = repository_with_tasks(&directory.0, &["task-a", "task-b"]);
+        let workspace = workspace_path(&directory.0);
+        for profile_id in ["profile-a", "profile-b"] {
+            repository
+                .save_codex_profile(crate::xiao::models::CodexProfileUpdate {
+                    id: profile_id.to_owned(),
+                    display_name: profile_id.to_owned(),
+                    codex_home: None,
+                    authentication_home: None,
+                    environment: json!({}),
+                    availability: "available".to_owned(),
+                    authenticated_identity: None,
+                    models: json!(["gpt-test"]),
+                    capabilities: json!({}),
+                    usage: None,
+                    rate_limits: None,
+                    diagnostic: None,
+                    expected_version: None,
+                })
+                .unwrap();
+        }
+        repository
+            .bind_task_codex_profile(&workspace, "task-a", "profile-a", 0, false)
+            .unwrap();
+        repository
+            .bind_task_codex_profile(&workspace, "task-b", "profile-b", 0, false)
+            .unwrap();
+
+        let mut first_input = new_run(&repository, &workspace, "task-a", "profile-a-run");
+        first_input.execution_root = isolated_execution_root(&directory.0, "root-a");
+        first_input.queued_at = 1;
+        let first = repository.enqueue_run(first_input).unwrap().run;
+        let mut second_input = new_run(&repository, &workspace, "task-b", "profile-b-run");
+        second_input.execution_root = isolated_execution_root(&directory.0, "root-b");
+        second_input.queued_at = 2;
+        repository.enqueue_run(second_input).unwrap();
 
         assert_eq!(
             repository
