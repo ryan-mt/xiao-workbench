@@ -230,9 +230,12 @@ impl XiaoRepository {
             Some(remote),
             None,
             None,
-        )
+            None,
+        )?
+        .ok_or_else(|| "The Task outcome changed while its publication was recorded.".to_owned())
     }
 
+    #[cfg(test)]
     pub fn record_pull_request_publication(
         &self,
         project_path: &str,
@@ -249,6 +252,80 @@ impl XiaoRepository {
             None,
             Some(url),
             Some(pull_request_number),
+            None,
+        )?
+        .ok_or_else(|| "The Task outcome changed while its publication was recorded.".to_owned())
+    }
+
+    pub fn record_discovered_pull_request_publication(
+        &self,
+        project_path: &str,
+        task_id: &str,
+        branch: &str,
+        url: &str,
+        pull_request_number: i64,
+        pull_request_state: &str,
+    ) -> Result<Option<PublicationRecord>, String> {
+        let project_path = normalize_workspace_path(project_path);
+        let task_id = task_id.trim();
+        if !pull_request_state.eq_ignore_ascii_case("open") {
+            return self.with_connection(|connection| {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        format!("Could not inspect terminal pull-request publication: {error}")
+                    })?;
+                let existing = load_latest_pull_request_publication(
+                    &transaction,
+                    &project_path,
+                    task_id,
+                    pull_request_number,
+                )?
+                .map(PublicationRow::decode)
+                .transpose()?;
+                transaction.commit().map_err(|error| {
+                    format!("Could not finish terminal publication lookup: {error}")
+                })?;
+                Ok(existing)
+            });
+        }
+        let expected_source_run_id = self.with_connection(|connection| {
+            connection
+                .query_row(
+                    r#"SELECT publication.source_run_id
+                       FROM publication_records publication
+                       JOIN workspaces workspace ON workspace.id = publication.workspace_id
+                       WHERE workspace.workspace_path = ?1
+                         AND publication.task_id = ?2
+                         AND publication.kind = 'branch'
+                         AND publication.branch = ?3
+                         AND publication.source_run_id = (
+                             SELECT run.id FROM runs run
+                             WHERE run.workspace_id = publication.workspace_id
+                               AND run.task_id = publication.task_id
+                             ORDER BY run.queued_at DESC, run.id DESC LIMIT 1
+                         )
+                       ORDER BY publication.created_at DESC, publication.id DESC LIMIT 1"#,
+                    params![project_path, task_id, branch],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| {
+                    format!("Could not validate discovered pull-request publication: {error}")
+                })
+        })?;
+        let Some(expected_source_run_id) = expected_source_run_id else {
+            return Ok(None);
+        };
+        self.record_publication(
+            &project_path,
+            task_id,
+            PublicationKind::PullRequest,
+            branch,
+            None,
+            Some(url),
+            Some(pull_request_number),
+            Some(&expected_source_run_id),
         )
     }
 
@@ -261,7 +338,8 @@ impl XiaoRepository {
         remote: Option<&str>,
         url: Option<&str>,
         pull_request_number: Option<i64>,
-    ) -> Result<PublicationRecord, String> {
+        expected_source_run_id: Option<&str>,
+    ) -> Result<Option<PublicationRecord>, String> {
         let project_path = normalize_workspace_path(project_path);
         let task_id = task_id.trim();
         let branch = branch.trim();
@@ -289,13 +367,13 @@ impl XiaoRepository {
                     .map_err(|error| {
                         format!("Could not resolve the Task outcome to publish: {error}")
                     })?;
-            let stage = TaskStage::from_database(&stage)?;
-            if !matches!(stage, TaskStage::ReadyForReview | TaskStage::Published) {
-                return Err(
-                    "Only a ready-for-review or published Task outcome can be published."
-                        .to_owned(),
-                );
+            if expected_source_run_id.is_some_and(|expected| expected != source_run_id) {
+                transaction
+                    .commit()
+                    .map_err(|error| format!("Could not finish publication validation: {error}"))?;
+                return Ok(None);
             }
+            let stage = TaskStage::from_database(&stage)?;
             let idempotency_key = format!(
                 "{}:{task_id}:{source_run_id}:{}",
                 kind.as_database(),
@@ -310,7 +388,14 @@ impl XiaoRepository {
                 transaction
                     .commit()
                     .map_err(|error| format!("Could not finish publication lookup: {error}"))?;
-                return Ok(existing);
+                return Ok(Some(existing));
+            }
+
+            if !matches!(stage, TaskStage::ReadyForReview | TaskStage::Published) {
+                return Err(
+                    "Only a ready-for-review or published Task outcome can be published."
+                        .to_owned(),
+                );
             }
 
             let timestamp = now_millis()?;
@@ -372,7 +457,7 @@ impl XiaoRepository {
             transaction
                 .commit()
                 .map_err(|error| format!("Could not commit publication record: {error}"))?;
-            Ok(record)
+            Ok(Some(record))
         })
     }
 
@@ -385,14 +470,52 @@ impl XiaoRepository {
         check_state: &str,
         checks_json: &str,
     ) -> Result<Option<PublicationRecord>, String> {
+        self.refresh_pull_request_observation(
+            project_path,
+            task_id,
+            pull_request_number,
+            pull_request_state,
+            Some((check_state, checks_json)),
+        )
+    }
+
+    pub fn refresh_pull_request_state(
+        &self,
+        project_path: &str,
+        task_id: &str,
+        pull_request_number: i64,
+        pull_request_state: &str,
+    ) -> Result<Option<PublicationRecord>, String> {
+        self.refresh_pull_request_observation(
+            project_path,
+            task_id,
+            pull_request_number,
+            pull_request_state,
+            None,
+        )
+    }
+
+    fn refresh_pull_request_observation(
+        &self,
+        project_path: &str,
+        task_id: &str,
+        pull_request_number: i64,
+        pull_request_state: &str,
+        checks: Option<(&str, &str)>,
+    ) -> Result<Option<PublicationRecord>, String> {
         let project_path = normalize_workspace_path(project_path);
         let normalized_state = pull_request_state.trim().to_ascii_lowercase();
-        let normalized_checks = match check_state {
-            "unknown" | "pending" | "passing" | "failing" => check_state,
-            _ => return Err("Unsupported pull-request check state.".to_owned()),
-        };
-        serde_json::from_str::<serde_json::Value>(checks_json)
-            .map_err(|error| format!("Pull-request checks are invalid JSON: {error}"))?;
+        let checks = checks
+            .map(|(check_state, checks_json)| {
+                let normalized_checks = match check_state {
+                    "unknown" | "pending" | "passing" | "failing" => check_state,
+                    _ => return Err("Unsupported pull-request check state.".to_owned()),
+                };
+                serde_json::from_str::<serde_json::Value>(checks_json)
+                    .map_err(|error| format!("Pull-request checks are invalid JSON: {error}"))?;
+                Ok((normalized_checks.to_owned(), checks_json.to_owned()))
+            })
+            .transpose()?;
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -425,8 +548,8 @@ impl XiaoRepository {
                 })?;
             let matching_outcome = latest_run_id.as_deref() == Some(row.source_run_id.as_str());
             let next_status = match normalized_state.as_str() {
-                "merged" if matching_outcome => "merged".to_owned(),
-                "merged" => "superseded".to_owned(),
+                _ if !matching_outcome => "superseded".to_owned(),
+                "merged" => "merged".to_owned(),
                 "closed" => "closed".to_owned(),
                 "open" => "active".to_owned(),
                 _ => "unavailable".to_owned(),
@@ -438,6 +561,9 @@ impl XiaoRepository {
                     |result| result.get(0),
                 )
                 .map_err(|error| format!("Could not load publication checks: {error}"))?;
+            let (normalized_checks, checks_json) = checks
+                .clone()
+                .unwrap_or_else(|| (row.check_state.clone(), current_checks_json.clone()));
             if row.status != next_status
                 || row.check_state != normalized_checks
                 || current_checks_json != checks_json
@@ -447,7 +573,7 @@ impl XiaoRepository {
                 let idempotency_key =
                     format!("publication-refresh:{prior_id}:{next_status}:{normalized_checks}");
                 row.status = next_status;
-                row.check_state = normalized_checks.to_owned();
+                row.check_state = normalized_checks;
                 row.id = next_id;
                 row.created_at = timestamp;
                 row.updated_at = timestamp;
@@ -659,7 +785,11 @@ fn collect_attention_candidates(
                     kind: "decision",
                     priority: 0,
                     title: pending_title(&kind).to_owned(),
-                    source_occurrence_key: format!("pending:{}", row.get::<_, String>(8)?),
+                    source_occurrence_key: format!(
+                        "workspace:{}:pending:{}",
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(8)?
+                    ),
                     surface: "timeline",
                     created_at: row.get(10)?,
                 })
@@ -725,7 +855,8 @@ fn collect_attention_candidates(
                     },
                     source_occurrence_key: if is_verification {
                         format!(
-                            "verification:{}:{}",
+                            "workspace:{}:verification:{}:{}",
+                            row.get::<_, i64>(0)?,
                             run_id,
                             attempt_id.unwrap_or_else(|| format!(
                                 "run-v{}",
@@ -734,7 +865,8 @@ fn collect_attention_candidates(
                         )
                     } else {
                         format!(
-                            "run:{run_id}:v{}",
+                            "workspace:{}:run:{run_id}:v{}",
+                            row.get::<_, i64>(0)?,
                             row.get::<_, i64>(12).unwrap_or_default()
                         )
                     },
@@ -760,7 +892,19 @@ fn collect_attention_candidates(
                                 AND run.task_id = task.task_id
                               ORDER BY run.queued_at DESC, run.id DESC LIMIT 1
                           ),
-                          task.updated_at
+                          COALESCE(
+                              (
+                                  SELECT transition.created_at
+                                  FROM task_stage_transitions transition
+                                  WHERE transition.workspace_id = task.workspace_id
+                                    AND transition.task_id = task.task_id
+                                    AND transition.resulting_version = task.task_stage_version
+                                    AND transition.to_stage = task.task_stage
+                                  ORDER BY transition.created_at DESC, transition.id DESC
+                                  LIMIT 1
+                              ),
+                              task.updated_at
+                          )
                    FROM tasks task
                    JOIN workspaces workspace ON workspace.id = task.workspace_id
                    WHERE task.archived = 0
@@ -789,7 +933,8 @@ fn collect_attention_candidates(
                         "Outcome ready for review".to_owned()
                     },
                     source_occurrence_key: format!(
-                        "task-stage:{}:{stage}:{version}",
+                        "workspace:{}:task-stage:{}:{stage}:{version}",
+                        row.get::<_, i64>(0)?,
                         row.get::<_, String>(3)?
                     ),
                     surface: if stage == "published" {
@@ -861,7 +1006,8 @@ fn collect_attention_candidates(
                         "Publication is unavailable".to_owned()
                     },
                     source_occurrence_key: format!(
-                        "publication:{}:{status}:{check_state}:{}",
+                        "workspace:{}:publication:{}:{status}:{check_state}:{}",
+                        row.get::<_, i64>(0)?,
                         row.get::<_, String>(8)?,
                         row.get::<_, i64>(11)?
                     ),
@@ -909,7 +1055,8 @@ fn collect_attention_candidates(
                     priority: 1,
                     title: "Routine needs attention".to_owned(),
                     source_occurrence_key: format!(
-                        "routine:{}:{}",
+                        "workspace:{}:routine:{}:{}",
+                        row.get::<_, i64>(0)?,
                         row.get::<_, String>(7)?,
                         row.get::<_, i64>(10)?
                     ),
@@ -929,7 +1076,8 @@ fn collect_attention_candidates(
             .prepare(
                 r#"SELECT workspace.id, workspace.workspace_path, workspace.display_name,
                           task.task_id, task.title, task.task_stage, task.task_stage_version,
-                          task.updated_at
+                          task.unread_generation,
+                          COALESCE(task.unread_raised_at, task.updated_at)
                    FROM tasks task
                    JOIN workspaces workspace ON workspace.id = task.workspace_id
                    WHERE task.archived = 0 AND task.unread = 1"#,
@@ -938,7 +1086,8 @@ fn collect_attention_candidates(
         let rows = statement
             .query_map([], |row| {
                 let task_id: String = row.get(3)?;
-                let updated_at: i64 = row.get(7)?;
+                let unread_generation: i64 = row.get(7)?;
+                let unread_raised_at: i64 = row.get(8)?;
                 Ok(AttentionCandidate {
                     workspace_id: row.get(0)?,
                     task_id: task_id.clone(),
@@ -947,9 +1096,12 @@ fn collect_attention_candidates(
                     kind: "unread",
                     priority: 3,
                     title: "Unread Task outcome".to_owned(),
-                    source_occurrence_key: format!("unread:{task_id}:{updated_at}"),
+                    source_occurrence_key: format!(
+                        "workspace:{}:unread:{task_id}:{unread_generation}",
+                        row.get::<_, i64>(0)?,
+                    ),
                     surface: "timeline",
-                    created_at: updated_at,
+                    created_at: unread_raised_at,
                 })
             })
             .map_err(|error| format!("Could not query unread Attention items: {error}"))?;
@@ -1246,10 +1398,50 @@ mod tests {
         }
     }
 
-    fn repository_with_task(directory: &Path) -> (XiaoRepository, String) {
-        let repository = XiaoRepository::open(directory).unwrap();
-        let workspace = directory.join("workspace");
-        fs::create_dir_all(&workspace).unwrap();
+    fn task_document(title: &str, updated_at: i64, unread: bool) -> XiaoTaskDocument {
+        XiaoTaskDocument {
+            id: "task".to_owned(),
+            title: title.to_owned(),
+            created_at: 1,
+            updated_at,
+            stage: TaskStage::Draft,
+            stage_version: 0,
+            codex_profile_id: None,
+            workbench_state: json!({}),
+            draft_text: String::new(),
+            follow_ups: Vec::new(),
+            archived: false,
+            pinned: false,
+            unread,
+            model: Some("gpt-test".to_owned()),
+            reasoning_effort: Some("medium".to_owned()),
+            thread_id: None,
+            thread_binding: None,
+            mode: "default".to_owned(),
+            approval_policy: "on-request".to_owned(),
+            sandbox_mode: "workspace-write".to_owned(),
+            goal: None,
+            acceptance_contract: None,
+            timeline: Vec::new(),
+            timeline_loaded: true,
+            timeline_complete: true,
+            timeline_start: 0,
+            timeline_entry_count: 0,
+            plan: None,
+            execution_environment_id: None,
+            workspace_mode: XiaoWorkspaceMode::Local,
+            managed_worktree_id: None,
+        }
+    }
+
+    fn save_task_workspace(
+        repository: &XiaoRepository,
+        workspace: &Path,
+        title: &str,
+        updated_at: i64,
+        unread: bool,
+    ) -> String {
+        fs::create_dir_all(workspace).unwrap();
         let workspace = normalize_workspace_path(&workspace.to_string_lossy());
         repository
             .save_workspace(XiaoWorkspaceUpdate {
@@ -1258,41 +1450,21 @@ mod tests {
                 active_task_id: Some("task".to_owned()),
                 show_archived: false,
                 task_ids: vec!["task".to_owned()],
-                tasks: vec![XiaoTaskDocument {
-                    id: "task".to_owned(),
-                    title: "Supervised task".to_owned(),
-                    created_at: 1,
-                    updated_at: 1,
-                    stage: TaskStage::Draft,
-                    stage_version: 0,
-                    codex_profile_id: None,
-                    workbench_state: json!({}),
-                    draft_text: String::new(),
-                    follow_ups: Vec::new(),
-                    archived: false,
-                    pinned: false,
-                    unread: false,
-                    model: Some("gpt-test".to_owned()),
-                    reasoning_effort: Some("medium".to_owned()),
-                    thread_id: None,
-                    thread_binding: None,
-                    mode: "default".to_owned(),
-                    approval_policy: "on-request".to_owned(),
-                    sandbox_mode: "workspace-write".to_owned(),
-                    goal: None,
-                    acceptance_contract: None,
-                    timeline: Vec::new(),
-                    timeline_loaded: true,
-                    timeline_complete: true,
-                    timeline_start: 0,
-                    timeline_entry_count: 0,
-                    plan: None,
-                    execution_environment_id: None,
-                    workspace_mode: XiaoWorkspaceMode::Local,
-                    managed_worktree_id: None,
-                }],
+                tasks: vec![task_document(title, updated_at, unread)],
             })
             .unwrap();
+        workspace
+    }
+
+    fn repository_with_task(directory: &Path) -> (XiaoRepository, String) {
+        let repository = XiaoRepository::open(directory).unwrap();
+        let workspace = save_task_workspace(
+            &repository,
+            &directory.join("workspace"),
+            "Supervised task",
+            1,
+            false,
+        );
         (repository, workspace)
     }
 
@@ -1327,6 +1499,191 @@ mod tests {
             goal: defaults.goal,
             queued_at,
         }
+    }
+
+    fn make_task_ready(
+        repository: &XiaoRepository,
+        workspace: &str,
+        run_id: &str,
+        queued_at: i64,
+        transition_key: &str,
+    ) -> TaskStageTransitionRequest {
+        let run = repository
+            .enqueue_run(new_run(repository, workspace, run_id, queued_at))
+            .unwrap()
+            .run;
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE runs SET status = 'completed', agent_outcome = 'completed', \
+                         finished_at = queued_at WHERE id = ?1",
+                        [&run.id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let stage_version = repository
+            .load_workspace(workspace, true)
+            .unwrap()
+            .unwrap()
+            .tasks
+            .remove(0)
+            .stage_version;
+        TaskStageTransitionRequest {
+            workspace_path: workspace.to_owned(),
+            task_id: "task".to_owned(),
+            expected_version: stage_version,
+            to_stage: TaskStage::ReadyForReview,
+            actor: "operator".to_owned(),
+            reason: "Outcome is ready".to_owned(),
+            source_run_id: Some(run.id),
+            idempotency_key: transition_key.to_owned(),
+        }
+    }
+
+    #[test]
+    fn attention_occurrence_identity_is_scoped_to_its_project() {
+        let directory = TestDirectory::new("project-scoped-attention");
+        let repository = XiaoRepository::open(&directory.0).unwrap();
+        let workspace_a = save_task_workspace(
+            &repository,
+            &directory.0.join("workspace-a"),
+            "Project A task",
+            1,
+            false,
+        );
+        let workspace_b = save_task_workspace(
+            &repository,
+            &directory.0.join("workspace-b"),
+            "Project B task",
+            1,
+            false,
+        );
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace_a,
+                "run-a",
+                10,
+                "ready-a",
+            ))
+            .unwrap();
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace_b,
+                "run-b",
+                20,
+                "ready-b",
+            ))
+            .unwrap();
+
+        let review_items = repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .into_iter()
+            .filter(|item| item.kind == AttentionKind::Review)
+            .collect::<Vec<_>>();
+
+        assert_eq!(review_items.len(), 2);
+        assert_ne!(
+            review_items[0].source_occurrence_key,
+            review_items[1].source_occurrence_key
+        );
+        assert!(review_items
+            .iter()
+            .any(|item| item.project_path == workspace_a && item.task_title == "Project A task"));
+        assert!(review_items
+            .iter()
+            .any(|item| item.project_path == workspace_b && item.task_title == "Project B task"));
+    }
+
+    #[test]
+    fn acknowledged_unread_attention_survives_unrelated_task_edits() {
+        let directory = TestDirectory::new("stable-unread-attention");
+        let (repository, workspace) = repository_with_task(&directory.0);
+        save_task_workspace(
+            &repository,
+            Path::new(&workspace),
+            "Unread outcome",
+            10,
+            true,
+        );
+        let unread = repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.kind == AttentionKind::Unread)
+            .unwrap();
+        let acknowledged_key = unread.source_occurrence_key.clone();
+        assert!(repository.acknowledge_attention_item(&unread.id).unwrap());
+
+        save_task_workspace(
+            &repository,
+            Path::new(&workspace),
+            "Renamed without a new outcome",
+            20,
+            true,
+        );
+        assert!(repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.kind != AttentionKind::Unread));
+
+        save_task_workspace(
+            &repository,
+            Path::new(&workspace),
+            "Renamed without a new outcome",
+            21,
+            false,
+        );
+        save_task_workspace(
+            &repository,
+            Path::new(&workspace),
+            "Renamed without a new outcome",
+            30,
+            true,
+        );
+        let repeated = repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.kind == AttentionKind::Unread)
+            .unwrap();
+        assert_ne!(repeated.source_occurrence_key, acknowledged_key);
+        assert_eq!(repeated.created_at, 30);
+    }
+
+    #[test]
+    fn review_attention_uses_the_stage_transition_timestamp() {
+        let directory = TestDirectory::new("canonical-review-time");
+        let (repository, workspace) = repository_with_task(&directory.0);
+        let transition = repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-current",
+                10,
+                "ready-current",
+            ))
+            .unwrap();
+
+        let review = repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.kind == AttentionKind::Review)
+            .unwrap();
+
+        assert_eq!(review.created_at, transition.created_at);
     }
 
     #[test]
@@ -1450,5 +1807,266 @@ mod tests {
             .items
             .iter()
             .all(|item| item.source_occurrence_key != occurrence_key));
+    }
+
+    #[test]
+    fn pull_request_state_refresh_preserves_known_check_failure() {
+        let directory = TestDirectory::new("publication-state-preserves-checks");
+        let (repository, workspace) = repository_with_task(&directory.0);
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-current",
+                10,
+                "ready-current",
+            ))
+            .unwrap();
+        repository
+            .record_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/current",
+                "https://github.com/example/xiao/pull/42",
+                42,
+            )
+            .unwrap();
+        repository
+            .refresh_pull_request_publication(
+                &workspace,
+                "task",
+                42,
+                "OPEN",
+                "failing",
+                r#"[{"name":"ci","bucket":"fail"}]"#,
+            )
+            .unwrap();
+
+        let refreshed = repository
+            .refresh_pull_request_state(&workspace, "task", 42, "OPEN")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(refreshed.check_state, "failing");
+        assert!(repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.title == "Published checks need attention"));
+    }
+
+    #[test]
+    fn discovered_pull_request_cannot_bind_to_a_newer_unpublished_run() {
+        let directory = TestDirectory::new("publication-discovery-run-identity");
+        let (repository, workspace) = repository_with_task(&directory.0);
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-original",
+                10,
+                "ready-original",
+            ))
+            .unwrap();
+        repository
+            .record_branch_publication(&workspace, "task", "feature/upstream", "origin")
+            .unwrap();
+        assert!(repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/unrelated",
+                "https://github.com/example/xiao/pull/41",
+                41,
+                "OPEN",
+            )
+            .unwrap()
+            .is_none());
+        repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/upstream",
+                "https://github.com/example/xiao/pull/42",
+                42,
+                "OPEN",
+            )
+            .unwrap()
+            .unwrap();
+
+        repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task".to_owned(),
+                expected_version: 3,
+                to_stage: TaskStage::Completed,
+                actor: "operator".to_owned(),
+                reason: "Accept original outcome".to_owned(),
+                source_run_id: Some("run-original".to_owned()),
+                idempotency_key: "accept-original".to_owned(),
+            })
+            .unwrap();
+        assert!(repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/upstream",
+                "https://github.com/example/xiao/pull/42",
+                42,
+                "OPEN",
+            )
+            .unwrap()
+            .is_some());
+        repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task".to_owned(),
+                expected_version: 4,
+                to_stage: TaskStage::InProgress,
+                actor: "operator".to_owned(),
+                reason: "Reopen for a new outcome".to_owned(),
+                source_run_id: Some("run-original".to_owned()),
+                idempotency_key: "reopen-new-outcome".to_owned(),
+            })
+            .unwrap();
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-new",
+                20,
+                "ready-new",
+            ))
+            .unwrap();
+
+        let discovered = repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/upstream",
+                "https://github.com/example/xiao/pull/42",
+                42,
+                "OPEN",
+            )
+            .unwrap();
+        let refreshed = repository
+            .refresh_pull_request_state(&workspace, "task", 42, "OPEN")
+            .unwrap()
+            .unwrap();
+        let raced_association = repository
+            .record_publication(
+                &workspace,
+                "task",
+                PublicationKind::PullRequest,
+                "feature/upstream",
+                None,
+                Some("https://github.com/example/xiao/pull/42"),
+                Some(42),
+                Some("run-original"),
+            )
+            .unwrap();
+        let task = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap()
+            .tasks
+            .remove(0);
+
+        assert!(discovered.is_none());
+        assert!(raced_association.is_none());
+        assert_eq!(refreshed.status, PublicationStatus::Superseded);
+        assert_eq!(task.stage, TaskStage::ReadyForReview);
+    }
+
+    #[test]
+    fn terminal_pull_request_discovery_cannot_complete_a_reused_branch_outcome() {
+        let directory = TestDirectory::new("terminal-publication-discovery");
+        let (repository, workspace) = repository_with_task(&directory.0);
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-original",
+                10,
+                "ready-original",
+            ))
+            .unwrap();
+        repository
+            .record_branch_publication(&workspace, "task", "feature/upstream", "origin")
+            .unwrap();
+        repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/upstream",
+                "https://github.com/example/xiao/pull/42",
+                42,
+                "OPEN",
+            )
+            .unwrap()
+            .unwrap();
+        repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task".to_owned(),
+                expected_version: 3,
+                to_stage: TaskStage::Completed,
+                actor: "operator".to_owned(),
+                reason: "Accept original outcome".to_owned(),
+                source_run_id: Some("run-original".to_owned()),
+                idempotency_key: "accept-original-terminal".to_owned(),
+            })
+            .unwrap();
+        repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task".to_owned(),
+                expected_version: 4,
+                to_stage: TaskStage::InProgress,
+                actor: "operator".to_owned(),
+                reason: "Reopen for a new outcome".to_owned(),
+                source_run_id: Some("run-original".to_owned()),
+                idempotency_key: "reopen-terminal".to_owned(),
+            })
+            .unwrap();
+        repository
+            .transition_task_stage(make_task_ready(
+                &repository,
+                &workspace,
+                "run-new",
+                20,
+                "ready-new-terminal",
+            ))
+            .unwrap();
+        repository
+            .record_branch_publication(&workspace, "task", "feature/local", "origin")
+            .unwrap();
+
+        let discovered = repository
+            .record_discovered_pull_request_publication(
+                &workspace,
+                "task",
+                "feature/upstream",
+                "https://github.com/example/xiao/pull/42",
+                42,
+                "MERGED",
+            )
+            .unwrap()
+            .unwrap();
+        let refreshed = repository
+            .refresh_pull_request_state(&workspace, "task", 42, "MERGED")
+            .unwrap()
+            .unwrap();
+        let task = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap()
+            .tasks
+            .remove(0);
+
+        assert_eq!(discovered.source_run_id, "run-original");
+        assert_eq!(refreshed.status, PublicationStatus::Superseded);
+        assert_eq!(task.stage, TaskStage::Published);
     }
 }

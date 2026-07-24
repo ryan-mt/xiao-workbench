@@ -843,6 +843,55 @@ CREATE INDEX attention_occurrences_open_ranked
     WHERE resolved_at IS NULL AND acknowledged_at IS NULL;
 "#;
 
+const MIGRATION_9_SQL: &str = r#"
+ALTER TABLE tasks ADD COLUMN unread_generation INTEGER NOT NULL DEFAULT 0
+    CHECK (unread_generation >= 0);
+ALTER TABLE tasks ADD COLUMN unread_raised_at INTEGER;
+
+UPDATE tasks
+SET unread_generation = COALESCE(
+        (
+            SELECT CAST(substr(
+                occurrence.source_occurrence_key,
+                length('unread:' || tasks.task_id || ':') + 1
+            ) AS INTEGER)
+            FROM attention_occurrences occurrence
+            WHERE occurrence.workspace_id = tasks.workspace_id
+              AND occurrence.task_id = tasks.task_id
+              AND occurrence.kind = 'unread'
+              AND occurrence.resolved_at IS NULL
+              AND substr(
+                  occurrence.source_occurrence_key,
+                  1,
+                  length('unread:' || tasks.task_id || ':')
+              ) = 'unread:' || tasks.task_id || ':'
+            ORDER BY occurrence.created_at DESC, occurrence.id DESC
+            LIMIT 1
+        ),
+        CASE WHEN updated_at >= 0 THEN updated_at ELSE 0 END
+    ),
+    unread_raised_at = CASE
+        WHEN unread = 1 THEN COALESCE(
+            (
+                SELECT occurrence.created_at
+                FROM attention_occurrences occurrence
+                WHERE occurrence.workspace_id = tasks.workspace_id
+                  AND occurrence.task_id = tasks.task_id
+                  AND occurrence.kind = 'unread'
+                  AND occurrence.resolved_at IS NULL
+                ORDER BY occurrence.created_at DESC, occurrence.id DESC
+                LIMIT 1
+            ),
+            updated_at
+        )
+        ELSE NULL
+    END;
+
+UPDATE attention_occurrences
+SET source_occurrence_key =
+    'workspace:' || workspace_id || ':' || source_occurrence_key;
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -2370,6 +2419,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         ),
         (7_i64, "control_model_and_task_workbench", MIGRATION_7_SQL),
         (8_i64, "outcome_and_supervision_loop", MIGRATION_8_SQL),
+        (9_i64, "stable_attention_identity", MIGRATION_9_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -3092,16 +3142,27 @@ fn upsert_task(
                 follow_ups_json, archived, pinned, unread, model, reasoning_effort,
                 thread_binding_json, mode, approval_policy, sandbox_mode, goal_json, plan_json,
                 execution_environment_id, workspace_mode, managed_worktree_id,
-                workbench_state_json
+                workbench_state_json, unread_generation, unread_raised_at
              ) VALUES (
                 ?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'local', NULL, ?20
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'local', NULL, ?20, ?21, ?22
              )
              ON CONFLICT(workspace_id, task_id) DO UPDATE SET
                 title = excluded.title, created_at = excluded.created_at,
                 updated_at = excluded.updated_at, draft_text = excluded.draft_text,
                 follow_ups_json = excluded.follow_ups_json, archived = excluded.archived,
-                pinned = excluded.pinned, unread = excluded.unread, model = excluded.model,
+                pinned = excluded.pinned,
+                unread_generation = CASE
+                    WHEN tasks.unread = 0 AND excluded.unread = 1
+                    THEN tasks.unread_generation + 1
+                    ELSE tasks.unread_generation
+                END,
+                unread_raised_at = CASE
+                    WHEN tasks.unread = 0 AND excluded.unread = 1 THEN excluded.updated_at
+                    WHEN excluded.unread = 0 THEN NULL
+                    ELSE tasks.unread_raised_at
+                END,
+                unread = excluded.unread, model = excluded.model,
                 reasoning_effort = excluded.reasoning_effort,
                 thread_binding_json = CASE
                     WHEN json_extract(tasks.thread_binding_json, '$.persistence')
@@ -3134,6 +3195,8 @@ fn upsert_task(
                 plan_json,
                 execution_environment_id,
                 workbench_state_json,
+                if task.unread { 1_i64 } else { 0_i64 },
+                task.unread.then_some(task.updated_at),
             ],
         )
         .map_err(|error| format!("Could not save Xiao task `{}`: {error}", task.id))?;
@@ -5546,6 +5609,133 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn schema_v8_upgrade_preserves_acknowledged_unread_attention() {
+        let directory = TestDirectory::new("schema-v8-stable-attention-upgrade");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            for (version, sql) in [
+                (3, MIGRATION_3_SQL),
+                (4, MIGRATION_4_SQL),
+                (5, MIGRATION_5_SQL),
+                (6, MIGRATION_6_SQL),
+                (7, MIGRATION_7_SQL),
+                (8, MIGRATION_8_SQL),
+            ] {
+                connection.execute_batch(sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, 'legacy', ?1)",
+                        [version],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute_batch(
+                    r#"INSERT INTO workspaces(
+                        id, workspace_path, active_task_id, show_archived, updated_at
+                    ) VALUES (7, 'stable-attention-workspace', 'task', 0, 123);
+                    INSERT INTO tasks(
+                        workspace_id, task_id, position, title, created_at, updated_at,
+                        draft_text, follow_ups_json, archived, pinned, unread, mode,
+                        approval_policy, sandbox_mode
+                    ) VALUES (
+                        7, 'task', 0, 'Task', 1, 123, '', '[]', 0, 0, 1, 'default',
+                        'on-request', 'workspace-write'
+                    );
+                    INSERT INTO tasks(
+                        workspace_id, task_id, position, title, created_at, updated_at,
+                        draft_text, follow_ups_json, archived, pinned, unread, mode,
+                        approval_policy, sandbox_mode
+                    ) VALUES (
+                        7, 'task-repeat', 1, 'Repeated unread Task', 1, 200, '', '[]',
+                        0, 0, 1, 'default', 'on-request', 'workspace-write'
+                    );
+                    INSERT INTO attention_occurrences(
+                        id, workspace_id, task_id, run_id, kind, priority, title,
+                        safe_summary, source_occurrence_key, surface, created_at,
+                        acknowledged_at
+                    ) VALUES (
+                        'attention', 7, 'task', NULL, 'unread', 3, 'Task has unread activity',
+                        'Unread Task activity is waiting.', 'unread:task:100', 'timeline',
+                        100, 101
+                    );
+                    INSERT INTO attention_occurrences(
+                        id, workspace_id, task_id, run_id, kind, priority, title,
+                        safe_summary, source_occurrence_key, surface, created_at,
+                        resolved_at
+                    ) VALUES (
+                        'resolved-attention', 7, 'task-repeat', NULL, 'unread', 3,
+                        'Task has unread activity', 'Unread Task activity is waiting.',
+                        'unread:task-repeat:100', 'timeline', 100, 150
+                    );"#,
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .with_connection(|connection| {
+                let task_state: (i64, Option<i64>) = connection
+                    .query_row(
+                        "SELECT unread_generation, unread_raised_at FROM tasks WHERE workspace_id = 7 AND task_id = 'task'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let attention_state: (String, Option<i64>) = connection
+                    .query_row(
+                        "SELECT source_occurrence_key, acknowledged_at FROM attention_occurrences WHERE id = 'attention'",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(task_state, (100, Some(100)));
+                assert_eq!(
+                    attention_state,
+                    ("workspace:7:unread:task:100".to_owned(), Some(101))
+                );
+                Ok(())
+            })
+            .unwrap();
+        let unread_items = repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .into_iter()
+            .filter(|item| item.kind == crate::xiao::models::AttentionKind::Unread)
+            .collect::<Vec<_>>();
+        assert_eq!(unread_items.len(), 1);
+        assert_eq!(unread_items[0].task_id, "task-repeat");
+        assert_eq!(unread_items[0].created_at, 200);
     }
 
     #[test]

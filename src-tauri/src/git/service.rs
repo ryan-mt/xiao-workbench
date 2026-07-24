@@ -199,15 +199,34 @@ pub fn publish_current_branch(workspace_path: &str) -> Result<GitPushResult, Str
 pub fn find_pull_request(workspace_path: &str) -> Result<Option<GitPullRequestSummary>, String> {
     let root = canonical_workspace(workspace_path)?;
     let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    find_pull_request_by_state(&root, &remote_branch, "open")
+}
+
+pub fn find_pull_request_observation(
+    workspace_path: &str,
+) -> Result<Option<GitPullRequestSummary>, String> {
+    let root = canonical_workspace(workspace_path)?;
+    let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    find_pull_request_by_state(&root, &remote_branch, "open")?.map_or_else(
+        || find_pull_request_by_state(&root, &remote_branch, "all"),
+        |pull_request| Ok(Some(pull_request)),
+    )
+}
+
+fn find_pull_request_by_state(
+    root: &Path,
+    remote_branch: &str,
+    state: &str,
+) -> Result<Option<GitPullRequestSummary>, String> {
     let output = run_gh_checked(
-        &root,
+        root,
         &[
             "pr",
             "list",
             "--head",
-            &remote_branch,
+            remote_branch,
             "--state",
-            "open",
+            state,
             "--limit",
             "1",
             "--json",
@@ -215,7 +234,7 @@ pub fn find_pull_request(workspace_path: &str) -> Result<Option<GitPullRequestSu
         ],
         "GitHub CLI could not look up the pull request.",
     )?;
-    parse_pull_requests(&output).map(|mut pull_requests| pull_requests.pop())
+    parse_pull_requests(&output).map(|pull_requests| pull_requests.into_iter().next())
 }
 
 pub fn create_draft_pull_request(workspace_path: &str) -> Result<GitPullRequestSummary, String> {
@@ -262,12 +281,27 @@ pub fn create_draft_pull_request(workspace_path: &str) -> Result<GitPullRequestS
 pub fn read_pull_request_checks(workspace_path: &str) -> Result<Vec<GitCheckSummary>, String> {
     let root = canonical_workspace(workspace_path)?;
     let (_, _, remote_branch, _) = branch_publish_target(&root)?;
+    read_pull_request_checks_for_selector(&root, &remote_branch)
+}
+
+pub fn read_pull_request_checks_for_pull_request(
+    workspace_path: &str,
+    pull_request_number: u64,
+) -> Result<Vec<GitCheckSummary>, String> {
+    let root = canonical_workspace(workspace_path)?;
+    read_pull_request_checks_for_selector(&root, &pull_request_number.to_string())
+}
+
+fn read_pull_request_checks_for_selector(
+    root: &Path,
+    selector: &str,
+) -> Result<Vec<GitCheckSummary>, String> {
     let output = run_gh(
-        &root,
+        root,
         &[
             "pr",
             "checks",
-            &remote_branch,
+            selector,
             "--json",
             "name,state,bucket,link,workflow",
         ],
@@ -1806,15 +1840,19 @@ mod tests {
     use super::super::models::WorkspaceRestoreStep;
     use super::{
         apply_workspace_patch, create_draft_pull_request, create_workspace_checkpoint,
-        discard_workspace_checkpoint, find_pull_request, finish_workspace_checkpoint,
-        finish_workspace_checkpoint_capture, list_branches, parse_pull_request_checks,
-        parse_pull_requests, publish_current_branch, read_git_comparison, read_git_summary,
-        read_pull_request_checks, restore_workspace_checkpoints,
-        restore_workspace_checkpoints_with_rollback, rollback_workspace_restore, run_git_action,
+        discard_workspace_checkpoint, find_pull_request, find_pull_request_observation,
+        finish_workspace_checkpoint, finish_workspace_checkpoint_capture, list_branches,
+        parse_pull_request_checks, parse_pull_requests, publish_current_branch,
+        read_git_comparison, read_git_summary, read_pull_request_checks,
+        restore_workspace_checkpoints, restore_workspace_checkpoints_with_rollback,
+        rollback_workspace_restore, run_git_action,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::Mutex;
+
+    static GH_TEST_ENVIRONMENT: Mutex<()> = Mutex::new(());
 
     #[test]
     fn workspace_inside_a_parent_repository_is_scoped_to_the_workspace() {
@@ -2000,6 +2038,7 @@ mod tests {
 
     #[test]
     fn ship_flow_runs_commit_push_draft_pr_and_ci_end_to_end() {
+        let _environment = GH_TEST_ENVIRONMENT.lock().unwrap();
         let root = temporary_directory("ship-flow-e2e");
         let remote = temporary_directory("ship-flow-e2e-remote");
         fs::create_dir_all(&root).unwrap();
@@ -2093,6 +2132,64 @@ if (args[0] === "pr" && args[1] === "list") {{
         std::env::remove_var("XIAO_TEST_GH_SCRIPT");
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn finds_a_terminal_pull_request_when_no_open_pull_request_remains() {
+        let _environment = GH_TEST_ENVIRONMENT.lock().unwrap();
+        let root = temporary_directory("terminal-pr-discovery");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("note.txt"), "initial\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        run(&root, &["branch", "-M", "feature/terminal-pr"]);
+        run(
+            &root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/xiao.git",
+            ],
+        );
+
+        let shim = root.join("fake-gh.cjs");
+        fs::write(
+            &shim,
+            r#"const args = process.argv.slice(2);
+if (args[0] === "pr" && args[1] === "list" && args.includes("open")) {
+  console.log("[]");
+} else if (args[0] === "pr" && args[1] === "list" && args.includes("all")) {
+  console.log(JSON.stringify([{
+    number: 17,
+    url: "https://github.com/example/xiao/pull/17",
+    title: "Integrated outcome",
+    isDraft: false,
+    state: "MERGED",
+    baseRefName: "dev",
+    headRefName: "feature/terminal-pr"
+  }]));
+} else {
+  console.error("unexpected gh arguments: " + args.join(" "));
+  process.exitCode = 1;
+}
+"#,
+        )
+        .unwrap();
+        std::env::set_var("XIAO_TEST_GH_SCRIPT", &shim);
+
+        assert_eq!(find_pull_request(&root.to_string_lossy()).unwrap(), None);
+        let pull_request = find_pull_request_observation(&root.to_string_lossy())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(pull_request.number, 17);
+        assert_eq!(pull_request.state, "MERGED");
+        std::env::remove_var("XIAO_TEST_GH_SCRIPT");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

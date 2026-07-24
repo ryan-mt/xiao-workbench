@@ -39,6 +39,7 @@ type SchedulePanelProps = {
   dangerousAccessDefault: boolean;
   dangerousRoutineIds: ReadonlySet<string>;
   openRunId: string | null;
+  onOpenRunConsumed?: (runId: string) => void;
   onCreate: (draft: RoutineDraft) => Promise<void>;
   onUpdate: (routineId: string, draft: RoutineDraft) => Promise<void>;
   onSetEnabled: (routineId: string, enabled: boolean) => Promise<void>;
@@ -138,6 +139,7 @@ function SchedulePanelWorkspace({
   dangerousAccessDefault,
   dangerousRoutineIds,
   openRunId,
+  onOpenRunConsumed,
   onCreate,
   onUpdate,
   onSetEnabled,
@@ -172,10 +174,13 @@ function SchedulePanelWorkspace({
   useEffect(() => {
     if (!openRunId || !expandedId) return;
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(`routine-run-${openRunId}`)?.scrollIntoView({ block: "nearest" });
+      const target = document.getElementById(`routine-run-${openRunId}`);
+      if (!target) return;
+      target.scrollIntoView({ block: "nearest" });
+      onOpenRunConsumed?.(openRunId);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [expandedId, openRunId, routines]);
+  }, [expandedId, onOpenRunConsumed, openRunId, routines]);
 
   const changeForm = (update: (current: FormState) => FormState) => {
     formGeneration.current += 1;

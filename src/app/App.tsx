@@ -160,6 +160,12 @@ export type ReviewContextState = Record<string, AgentAttachment[]>;
 export const workspaceTaskKey = (workspacePath: string, taskId: string) =>
   `${comparableWorkspacePath(workspacePath)}\u0000${taskId}`;
 
+export const explicitlyOpenedTaskSuppressesFocusedLaunch = (
+  explicitlyOpenedTaskKey: string | null,
+  workspacePath: string,
+  taskId: string,
+) => explicitlyOpenedTaskKey === workspaceTaskKey(workspacePath, taskId);
+
 export const taskReviewContext = (
   current: ReviewContextState,
   workspacePath: string,
@@ -1538,6 +1544,7 @@ export function App() {
     [],
   );
   const focusedLaunchTaskRef = useRef<string | null>(null);
+  const explicitlyOpenedTaskRef = useRef<string | null>(null);
   const notifiedRuntimeErrorRef = useRef<string | null>(null);
   const notifiedApprovalRef = useRef<string | null>(null);
   const notifiedQuestionRef = useRef<string | null>(null);
@@ -1562,6 +1569,10 @@ export function App() {
   const [attentionOpenRunId, setAttentionOpenRunId] = useState<string | null>(null);
   const attentionController = useAttentionCenter();
   const handledRoutineRunRef = useRef<string | null>(null);
+  const consumeOpenRunTarget = useCallback((runId: string) => {
+    setAttentionOpenRunId((current) => current === runId ? null : current);
+    setRoutineOpenTarget((current) => current?.runId === runId ? null : current);
+  }, []);
   const [sendingFollowUpId, setSendingFollowUpId] = useState<string | null>(null);
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
@@ -1648,7 +1659,12 @@ export function App() {
     routineOpenTarget?.taskId !== activeTask.id &&
     (!selectedTask || !selectedTask.archived) &&
     activeTaskTimelineReady &&
-    activeTask.timeline.length === 0;
+    activeTask.timeline.length === 0 &&
+    !explicitlyOpenedTaskSuppressesFocusedLaunch(
+      explicitlyOpenedTaskRef.current,
+      workspace.path,
+      activeTask.id,
+    );
   if (taskStateReady && taskWorkspacePath) {
     latestTaskStateRef.current = {
       path: taskWorkspacePath,
@@ -1687,7 +1703,7 @@ export function App() {
 
   useEffect(() => {
     if (!focusedLaunch || !preferences.focusNewTasks) return;
-    const taskKey = `${workspace.path}\u0000${activeTask.id}`;
+    const taskKey = workspaceTaskKey(workspace.path, activeTask.id);
     if (focusedLaunchTaskRef.current === taskKey) return;
     focusedLaunchTaskRef.current = taskKey;
     setSidebarOpen(false);
@@ -1817,6 +1833,10 @@ export function App() {
       !tasks.some((task) => task.id === routineOpenTarget.taskId)
     ) return;
     handledRoutineRunRef.current = routineOpenTarget.runId;
+    explicitlyOpenedTaskRef.current = workspaceTaskKey(
+      routineOpenTarget.workspacePath,
+      routineOpenTarget.taskId,
+    );
     setActiveTaskId(routineOpenTarget.taskId);
     setAttentionOpenRunId(null);
     setOpenTaskIds((current) => current.includes(routineOpenTarget.taskId)
@@ -1834,11 +1854,20 @@ export function App() {
         comparableWorkspacePath(attentionOpenTarget.projectPath) ||
       !tasks.some((task) => task.id === attentionOpenTarget.taskId)
     ) return;
+    explicitlyOpenedTaskRef.current = workspaceTaskKey(
+      attentionOpenTarget.projectPath,
+      attentionOpenTarget.taskId,
+    );
     setOpenTaskIds((current) => current.includes(attentionOpenTarget.taskId)
       ? current
       : [...current, attentionOpenTarget.taskId]);
     setActiveTaskId(attentionOpenTarget.taskId);
-    setAttentionOpenRunId(attentionOpenTarget.runId);
+    setAttentionOpenRunId(
+      attentionOpenTarget.surface === "observatory" ||
+        attentionOpenTarget.surface === "schedule"
+        ? attentionOpenTarget.runId
+        : null,
+    );
     setActivePage("tasks");
     if (attentionOpenTarget.surface === "timeline") {
       closeFocusPanel();
@@ -4492,6 +4521,7 @@ export function App() {
               routineBusyIds={routineController.busyIds}
               routineOpenRunId={attentionOpenRunId ?? routineOpenTarget?.runId ?? null}
               observatoryOpenRunId={attentionOpenRunId}
+              onOpenRunConsumed={consumeOpenRunTarget}
               nativeRoutinesAvailable={isTauriHost()}
               dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}
               dangerousRoutineIds={dangerousRoutineIds}

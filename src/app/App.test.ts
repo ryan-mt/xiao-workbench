@@ -30,6 +30,7 @@ import {
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
   createContinuationTask,
+  explicitlyOpenedTaskSuppressesFocusedLaunch,
   isTaskWorkspaceStateLoading,
   markTaskUnreadAfterCompletion,
   queuedFollowUpIdForAutoSend,
@@ -267,6 +268,27 @@ describe("new-task draft lifecycle", () => {
       reviewContextCount: 0,
       definitionOfDoneChanged: false,
     })).toBe(true);
+  });
+});
+
+describe("explicit Task navigation", () => {
+  it("keeps a consumed deep link out of focused-launch mode", () => {
+    const explicitTaskKey = "c:/projects/xiao\u0000task-a";
+
+    expect(
+      explicitlyOpenedTaskSuppressesFocusedLaunch(
+        explicitTaskKey,
+        "C:/projects/xiao",
+        "task-a",
+      ),
+    ).toBe(true);
+    expect(
+      explicitlyOpenedTaskSuppressesFocusedLaunch(
+        explicitTaskKey,
+        "C:/projects/xiao",
+        "task-b",
+      ),
+    ).toBe(false);
   });
 });
 

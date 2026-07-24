@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::verification::models::AcceptanceContractVersionSummary;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 8;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 9;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

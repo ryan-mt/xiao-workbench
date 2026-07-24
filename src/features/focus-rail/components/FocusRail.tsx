@@ -79,6 +79,7 @@ type FocusRailProps = {
   routineBusyIds: ReadonlySet<string>;
   routineOpenRunId: string | null;
   observatoryOpenRunId?: string | null;
+  onOpenRunConsumed?: (runId: string) => void;
   nativeRoutinesAvailable: boolean;
   dangerousRoutineAccessDefault: boolean;
   dangerousRoutineIds: ReadonlySet<string>;
@@ -150,6 +151,7 @@ export function FocusRail({
   routineBusyIds,
   routineOpenRunId,
   observatoryOpenRunId = null,
+  onOpenRunConsumed,
   nativeRoutinesAvailable,
   dangerousRoutineAccessDefault,
   dangerousRoutineIds,
@@ -557,6 +559,7 @@ export function FocusRail({
             dangerousAccessDefault={dangerousRoutineAccessDefault}
             dangerousRoutineIds={dangerousRoutineIds}
             openRunId={routineOpenRunId}
+            onOpenRunConsumed={onOpenRunConsumed}
             onCreate={onCreateRoutine}
             onUpdate={onUpdateRoutine}
             onSetEnabled={onSetRoutineEnabled}
@@ -588,6 +591,7 @@ export function FocusRail({
             liveRuns={runs}
             livePendingInputs={pendingInputs}
             openRunId={observatoryOpenRunId}
+            onOpenRunConsumed={onOpenRunConsumed}
             timeline={timeline}
             onJumpToTimeline={onJumpToTimeline}
             onWorkspaceChange={onRefresh}
