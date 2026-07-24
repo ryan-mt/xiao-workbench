@@ -1,3 +1,5 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { TimelineEntry } from "../../../core/models/agent";
@@ -6,6 +8,7 @@ import {
   distanceFromScrollBottom,
   newTaskProjectOptions,
   shouldFollowLiveOutput,
+  TaskWorkspaceFrame,
 } from "./TaskWorkspace";
 
 const collaboratorEntry = (
@@ -82,5 +85,34 @@ describe("new task project options", () => {
       { value: "C:\\code\\xiao", label: "Xiao", disabled: false },
       { value: "C:\\code\\other", label: "Other", disabled: true },
     ]);
+  });
+});
+
+describe("task workspace frame", () => {
+  it("keeps one unconditional composer slot across launch and conversation modes", () => {
+    const renderFrame = (launchMode: boolean) => renderToStaticMarkup(createElement(
+      TaskWorkspaceFrame,
+      {
+        launchMode,
+        launchContent: createElement("div", { "data-view": "launch" }),
+        conversationContent: createElement("div", { "data-view": "conversation" }),
+        composer: createElement("textarea", { "data-composer": true }),
+        launchContext: createElement("footer", { "data-view": "context" }),
+      },
+    ));
+
+    const launchMarkup = renderFrame(true);
+    const conversationMarkup = renderFrame(false);
+
+    expect(launchMarkup).toContain('class="task-workspace task-workspace--launch"');
+    expect(launchMarkup).toContain('data-view="launch"');
+    expect(launchMarkup).not.toContain('data-view="conversation"');
+    expect(conversationMarkup).toContain('class="task-workspace"');
+    expect(conversationMarkup).toContain('data-view="conversation"');
+    expect(conversationMarkup).not.toContain('data-view="launch"');
+    expect(launchMarkup.match(/task-workspace__composer-slot/g)).toHaveLength(1);
+    expect(conversationMarkup.match(/task-workspace__composer-slot/g)).toHaveLength(1);
+    expect(launchMarkup.match(/data-composer="true"/g)).toHaveLength(1);
+    expect(conversationMarkup.match(/data-composer="true"/g)).toHaveLength(1);
   });
 });

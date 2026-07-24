@@ -4,6 +4,10 @@ export type SlashCommandId =
   | "review"
   | "test"
   | "init"
+  | "fix"
+  | "build"
+  | "explain"
+  | "refactor"
   | "plan"
   | "goal"
   | "compact"
@@ -54,6 +58,62 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     group: "Workflow",
     icon: "brief",
     prompt: "Create or update AGENTS.md for this repository. Inspect executable configuration and existing instructions first. Keep only verified, high-signal commands, architecture facts, conventions, and operational gotchas that a future coding agent would otherwise miss.",
+  },
+  {
+    id: "fix",
+    trigger: "fix",
+    title: "Investigate and fix an issue",
+    description: "Reproduce a bug, find its cause, and verify the smallest safe fix",
+    group: "Workflow",
+    icon: "mutation",
+    prompt: `Investigate and fix this issue.
+
+Observed behavior:
+Expected behavior:
+Steps to reproduce:
+
+Before editing, reproduce the issue and identify the root cause. Make the smallest safe change, add or update a regression test, run the relevant checks, and report the cause, changed files, and verification. Do not commit or push unless I ask.`,
+  },
+  {
+    id: "build",
+    trigger: "build",
+    title: "Implement a scoped change",
+    description: "Define the outcome and acceptance checks before editing",
+    group: "Workflow",
+    icon: "add",
+    prompt: `Implement this change.
+
+Outcome:
+Scope:
+Constraints:
+Acceptance checks:
+
+Inspect the current architecture and existing patterns before editing. Make the smallest coherent change, preserve unrelated behavior, add or update tests, and report what changed and how it was verified. Do not commit or push unless I ask.`,
+  },
+  {
+    id: "explain",
+    trigger: "explain",
+    title: "Explain a code path",
+    description: "Trace ownership, data flow, side effects, and failure paths",
+    group: "Workflow",
+    icon: "file",
+    prompt: `Explain this area of the codebase:
+
+Trace the user-facing entry point, state ownership, data flow, side effects, and failure paths. Cite the relevant files and functions, separate verified behavior from inference, and call out important tests or missing coverage. Do not change code.`,
+  },
+  {
+    id: "refactor",
+    trigger: "refactor",
+    title: "Refactor without behavior changes",
+    description: "Keep the diff focused and prove existing behavior is preserved",
+    group: "Workflow",
+    icon: "refresh",
+    prompt: `Refactor this area without changing behavior.
+
+Target:
+Reason:
+
+Inspect the existing style and run the relevant baseline tests first. Keep the diff focused, avoid speculative abstractions, preserve public behavior, add regression coverage where needed, then rerun the checks and summarize the trade-offs. Do not commit or push unless I ask.`,
   },
   { id: "plan", trigger: "plan", title: "Toggle plan mode", description: "Plan the approach before implementation", group: "Task", icon: "plan" },
   { id: "goal", trigger: "goal", title: "Set task goal", description: "Keep a persistent objective above the conversation", group: "Task", icon: "target" },

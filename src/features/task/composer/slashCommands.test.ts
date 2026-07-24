@@ -43,3 +43,31 @@ describe("compact slash command", () => {
     })).toBeNull();
   });
 });
+
+describe("workflow prompt templates", () => {
+  it("provides editable templates for fixing, building, explaining, and refactoring", () => {
+    const templates = Object.fromEntries(
+      SLASH_COMMANDS
+        .filter((command) => ["fix", "build", "explain", "refactor"].includes(command.id))
+        .map((command) => [command.id, command.prompt]),
+    );
+
+    expect(Object.keys(templates)).toEqual(["fix", "build", "explain", "refactor"]);
+    expect(templates.fix).toContain("Observed behavior:");
+    expect(templates.fix).toContain("add or update a regression test");
+    expect(templates.build).toContain("Acceptance checks:");
+    expect(templates.explain).toContain("separate verified behavior from inference");
+    expect(templates.explain).toContain("Do not change code.");
+    expect(templates.refactor).toContain("without changing behavior");
+    expect(["fix", "build", "refactor"].every((id) =>
+      templates[id]?.includes("Do not commit or push unless I ask.")
+    )).toBe(true);
+  });
+
+  it("finds each template by its slash trigger", () => {
+    for (const id of ["fix", "build", "explain", "refactor"] as const) {
+      expect(filterSlashCommands(SLASH_COMMANDS, id).map((command) => command.id))
+        .toEqual([id]);
+    }
+  });
+});

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { SelectMenu, type SelectMenuOption } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
@@ -91,6 +99,30 @@ export const distanceFromScrollBottom = ({
 export const shouldFollowLiveOutput = (
   metrics: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
 ) => distanceFromScrollBottom(metrics) <= liveOutputFollowThreshold;
+
+type TaskWorkspaceFrameProps = {
+  launchMode: boolean;
+  launchContent: ReactNode;
+  conversationContent: ReactNode;
+  composer: ReactNode;
+  launchContext: ReactNode;
+};
+
+export function TaskWorkspaceFrame({
+  launchMode,
+  launchContent,
+  conversationContent,
+  composer,
+  launchContext,
+}: TaskWorkspaceFrameProps) {
+  return (
+    <section className={`task-workspace${launchMode ? " task-workspace--launch" : ""}`}>
+      {launchMode ? launchContent : conversationContent}
+      <div className="task-workspace__composer-slot">{composer}</div>
+      {launchMode ? launchContext : null}
+    </section>
+  );
+}
 
 type TaskWorkspaceProps = {
   taskId: string;
@@ -483,81 +515,42 @@ export function TaskWorkspace({
     />
   );
 
-  if (launchMode) {
-    const branch = workspace.git?.branch ?? "No Git";
-    const projectOptions = newTaskProjectOptions(
-      launchProjects,
-      { path: workspace.path, name: workspace.name },
-      canChangeLaunchProject,
-    );
-    return (
-      <section className="task-workspace task-workspace--launch">
-        <div className="task-launch">
-          <div className="task-launch__inner">
-            <header className="task-launch__brand" aria-label="XIAO local agent workspace">
-              <span className="task-launch__mark">
-                {launchBrand === "logo" ? (
-                  <img className="task-launch__logo" src="/xiao-mark.png" alt="" aria-hidden="true" />
-                ) : (
-                  <span className="task-launch__wordmark" aria-hidden="true">
-                    <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
-                  </span>
-                )}
-              </span>
-              <span className="task-launch__brand-copy">
-                <strong>XIAO</strong>
-                <small>Local agent workspace</small>
-              </span>
-            </header>
+  const branch = workspace.git?.branch ?? "No Git";
+  const projectOptions = newTaskProjectOptions(
+    launchProjects,
+    { path: workspace.path, name: workspace.name },
+    canChangeLaunchProject,
+  );
 
-            <div className="task-launch__intro">
-              <h1>What should we work on?</h1>
-              <p>Describe the outcome. Xiao can inspect the code, make changes, and verify the result.</p>
-            </div>
-
-            {composer}
-
-            <footer className="task-launch__context" aria-label="Task context">
-              <div className="task-launch__context-meta">
-                <SelectMenu
-                  compact
-                  className="task-launch__project-menu"
-                  value={workspace.path}
-                  options={projectOptions}
-                  onValueChange={onLaunchProjectChange}
-                  ariaLabel="Project for new task"
-                  disabled={!canChangeLaunchProject}
-                  leading={<XiaoIcon name="workspace" size={13} />}
-                  title={canChangeLaunchProject
-                    ? "Choose a project"
-                    : "Project is locked after task setup begins or while another task is running."}
-                />
-                <i className="task-launch__context-separator" aria-hidden="true" />
-                <span className="task-launch__context-item" title={branch}>
-                  <XiaoIcon name="branch" size={12} />
-                  <strong>{branch}</strong>
-                </span>
-                <i className="task-launch__context-separator" aria-hidden="true" />
-                <span
-                  className="task-launch__context-item"
-                  title="Change the environment from + → Run settings"
-                >
-                  <XiaoIcon name="workspace" size={12} />
-                  <strong>{workspaceMode === "managed-worktree" ? "Worktree" : "Local"}</strong>
-                </span>
-              </div>
-              <span className="task-launch__hint" aria-hidden="true">
-                <kbd>Enter</kbd> to send <i>&middot;</i> <kbd>Shift Enter</kbd> for a new line
+  const launchContent = (
+    <div className="task-launch">
+      <div className="task-launch__inner">
+        <header className="task-launch__brand" aria-label="XIAO local agent workspace">
+          <span className="task-launch__mark">
+            {launchBrand === "logo" ? (
+              <img className="task-launch__logo" src="/xiao-mark.png" alt="" aria-hidden="true" />
+            ) : (
+              <span className="task-launch__wordmark" aria-hidden="true">
+                <i>X</i><i>I</i><i>A</i><i className="task-launch__orbit">O</i>
               </span>
-            </footer>
-          </div>
+            )}
+          </span>
+          <span className="task-launch__brand-copy">
+            <strong>XIAO</strong>
+            <small>Local agent workspace</small>
+          </span>
+        </header>
+
+        <div className="task-launch__intro">
+          <h1>What should we work on?</h1>
+          <p>Describe the outcome. Xiao can inspect the code, make changes, and verify the result.</p>
         </div>
-      </section>
-    );
-  }
+      </div>
+    </div>
+  );
 
-  return (
-    <section className="task-workspace">
+  const conversationContent = (
+    <>
       <TaskHeader
         taskId={taskId}
         executionTaskId={executionTaskId}
@@ -645,7 +638,52 @@ export function TaskWorkspace({
           </button>
         ) : null}
       </div>
-      {composer}
-    </section>
+    </>
+  );
+
+  const launchContext = (
+    <footer className="task-launch__context" aria-label="Task context">
+      <div className="task-launch__context-meta">
+        <SelectMenu
+          compact
+          className="task-launch__project-menu"
+          value={workspace.path}
+          options={projectOptions}
+          onValueChange={onLaunchProjectChange}
+          ariaLabel="Project for new task"
+          disabled={!canChangeLaunchProject}
+          leading={<XiaoIcon name="workspace" size={13} />}
+          title={canChangeLaunchProject
+            ? "Choose a project"
+            : "Project is locked after task setup begins or while another task is running."}
+        />
+        <i className="task-launch__context-separator" aria-hidden="true" />
+        <span className="task-launch__context-item" title={branch}>
+          <XiaoIcon name="branch" size={12} />
+          <strong>{branch}</strong>
+        </span>
+        <i className="task-launch__context-separator" aria-hidden="true" />
+        <span
+          className="task-launch__context-item"
+          title="Change the environment from + → Run settings"
+        >
+          <XiaoIcon name="workspace" size={12} />
+          <strong>{workspaceMode === "managed-worktree" ? "Worktree" : "Local"}</strong>
+        </span>
+      </div>
+      <span className="task-launch__hint" aria-hidden="true">
+        <kbd>Enter</kbd> to send <i>&middot;</i> <kbd>Shift Enter</kbd> for a new line
+      </span>
+    </footer>
+  );
+
+  return (
+    <TaskWorkspaceFrame
+      launchMode={launchMode}
+      launchContent={launchContent}
+      conversationContent={conversationContent}
+      composer={composer}
+      launchContext={launchContext}
+    />
   );
 }
