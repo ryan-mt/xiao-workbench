@@ -9,6 +9,7 @@ import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import { TaskAcceptanceAction, TaskHeader } from "./TaskHeader";
 const runtime: AgentRuntimeState = {
   phase: "ready",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,

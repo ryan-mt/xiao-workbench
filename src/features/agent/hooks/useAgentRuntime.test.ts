@@ -746,6 +746,7 @@ describe("agent runtime workspace scope", () => {
     error: string | null,
   ): AgentRuntimeState => ({
     phase,
+    profileId: null,
     taskId: null,
     threadId: null,
     turnId: null,

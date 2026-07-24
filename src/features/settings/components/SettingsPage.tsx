@@ -8,6 +8,12 @@ import type {
   AgentRuntimeState,
 } from "../../../core/models/agent";
 import type { CodexUpdateResult, CodexUpdateStatus, SystemInfo } from "../../../core/models/workspace";
+import type { CodexProfile } from "../../../core/models/xiao";
+import {
+  DEFAULT_COMMAND_BINDINGS,
+  normalizeCommandBindings,
+  type CommandId,
+} from "../../command-menu/commandBindings";
 import type { AppPreferences } from "../hooks/useAppPreferences";
 import type { Theme } from "../hooks/useTheme";
 import { themePresets } from "../themeCatalog";
@@ -44,6 +50,7 @@ type SettingsPageProps = {
   archivedTasks: ArchivedTaskItem[];
   archivedTasksLoading: boolean;
   archivedTasksError: string | null;
+  codexProfiles?: CodexProfile[];
   onThemeChange: (theme: Theme) => void;
   onPreferencesChange: (patch: Partial<AppPreferences>) => void;
   onRestoreArchivedTask: (item: ArchivedTaskItem) => void;
@@ -51,6 +58,9 @@ type SettingsPageProps = {
   onReconnect: () => void;
   onCheckCodexUpdate: () => void;
   onUpdateCodex: () => void;
+  onCreateCodexProfile?: () => void;
+  onRenameCodexProfile?: (profile: CodexProfile) => void;
+  onDeleteCodexProfile?: (profile: CodexProfile) => void;
   onClose: () => void;
   activeSection?: SettingsSection;
   onSectionChange?: (section: SettingsSection) => void;
@@ -100,9 +110,14 @@ const sectionGroups: Array<{ label: string; ids: SettingsSection[] }> = [
 ];
 
 const shortcuts = [
-  { action: "New task", keys: ["Ctrl", "N"] },
-  { action: "Search and commands", keys: ["Ctrl", "K"] },
-  { action: "Open runtime", keys: ["Ctrl", "`"] },
+  { id: "task.create", action: "New task" },
+  { id: "command-menu.open", action: "Search and commands" },
+  { id: "task-switcher.open", action: "Task switcher" },
+  { id: "task.close", action: "Close Task tab" },
+  { id: "runtime.open", action: "Open runtime" },
+] satisfies Array<{ id: CommandId; action: string }>;
+
+const composerShortcuts = [
   { action: "Send prompt", keys: ["Enter"] },
   { action: "New line in prompt", keys: ["Shift", "Enter"] },
   { action: "Browse prompt history", keys: ["↑", "↓"] },
@@ -288,6 +303,7 @@ export function SettingsPage({
   archivedTasks,
   archivedTasksLoading,
   archivedTasksError,
+  codexProfiles = [],
   onThemeChange,
   onPreferencesChange,
   onRestoreArchivedTask,
@@ -295,6 +311,9 @@ export function SettingsPage({
   onReconnect,
   onCheckCodexUpdate,
   onUpdateCodex,
+  onCreateCodexProfile = () => {},
+  onRenameCodexProfile = () => {},
+  onDeleteCodexProfile = () => {},
   onClose,
   activeSection: controlledActiveSection,
   onSectionChange,
@@ -599,6 +618,40 @@ export function SettingsPage({
                   </div>
                 </SettingsGroup>
 
+                <SettingsGroup title="Codex profiles" meta={`${codexProfiles.length} local`}>
+                  <div className="settings-list">
+                    {codexProfiles.map((profile) => (
+                      <SettingRow
+                        key={profile.id}
+                        title={profile.displayName}
+                        description={profile.diagnostic ?? `${profile.availability} · version ${profile.version}`}
+                      >
+                        <div className="codex-update-card__actions">
+                          <button type="button" className="button button--quiet" onClick={() => onRenameCodexProfile(profile)}>
+                            Configure
+                          </button>
+                          <button
+                            type="button"
+                            className="button button--quiet"
+                            disabled={codexProfiles.length === 1}
+                            onClick={() => onDeleteCodexProfile(profile)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </SettingRow>
+                    ))}
+                    <SettingRow
+                      title="Add local profile"
+                      description="Create another durable Codex identity and capability snapshot."
+                    >
+                      <button type="button" className="button button--quiet" onClick={onCreateCodexProfile}>
+                        Add profile
+                      </button>
+                    </SettingRow>
+                  </div>
+                </SettingsGroup>
+
                 <SettingsGroup
                   title="Updates"
                   meta={codexUpdate?.updateAvailable ? "Available" : undefined}
@@ -646,11 +699,39 @@ export function SettingsPage({
                 <div className="shortcut-grid">
                   {shortcuts.map((shortcut) => (
                     <div key={shortcut.action}>
+                      <strong>{shortcut.action}<small>{shortcut.id}</small></strong>
+                      <input
+                        aria-label={`Shortcut for ${shortcut.action}`}
+                        value={preferences.shortcutBindings[shortcut.id]}
+                        onChange={(event) => {
+                          onPreferencesChange({
+                            shortcutBindings: normalizeCommandBindings({
+                              ...preferences.shortcutBindings,
+                              [shortcut.id]: event.target.value,
+                            }),
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+                  {composerShortcuts.map((shortcut) => (
+                    <div key={shortcut.action}>
                       <strong>{shortcut.action}</strong>
                       <span>{shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}</span>
                     </div>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => onPreferencesChange({
+                    shortcutBindings: { ...DEFAULT_COMMAND_BINDINGS },
+                  })}
+                >
+                  Reset command shortcuts
+                </button>
+                <p className="settings-note">
+                  Conflicting command shortcuts keep their previous binding.
+                </p>
               </SettingsGroup>
             )}
 

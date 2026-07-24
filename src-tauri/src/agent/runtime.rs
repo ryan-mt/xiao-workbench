@@ -30,6 +30,7 @@ pub struct AgentRuntime {
     pending: PendingRequests,
     generation: Arc<AtomicU64>,
     thread_bindings: Mutex<HashMap<String, String>>,
+    profile_id: Mutex<Option<String>>,
     next_id: AtomicU64,
 }
 
@@ -62,6 +63,7 @@ pub struct StartResult {
     pub already_running: bool,
     pub environment_id: String,
     pub generation: u64,
+    pub profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,16 +98,18 @@ impl Default for AgentRuntime {
             pending: Arc::new(Mutex::new(HashMap::new())),
             generation: Arc::new(AtomicU64::new(0)),
             thread_bindings: Mutex::new(HashMap::new()),
+            profile_id: Mutex::new(None),
             next_id: AtomicU64::new(1),
         }
     }
 }
 
 impl AgentRuntime {
-    pub fn start_for_environment(
+    pub fn start_for_environment_profile(
         &self,
         app: AppHandle,
         environment_id: &str,
+        profile: Option<&crate::xiao::models::CodexProfile>,
     ) -> Result<StartResult, String> {
         validate_environment_id(environment_id)?;
         let _lifecycle = self.lifecycle.lock().map_err(|error| error.to_string())?;
@@ -120,11 +124,24 @@ impl AgentRuntime {
                 .map_err(|error| error.to_string())?
                 .is_none()
             {
+                if self
+                    .profile_id
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .as_deref()
+                    != profile.map(|profile| profile.id.as_str())
+                {
+                    return Err(
+                        "A different Codex profile is already active for this execution environment."
+                            .to_owned(),
+                    );
+                }
                 return Ok(StartResult {
                     version,
                     already_running: true,
                     environment_id: environment_id.to_owned(),
                     generation: self.generation.load(Ordering::Acquire),
+                    profile_id: profile.map(|profile| profile.id.clone()),
                 });
             }
         }
@@ -150,6 +167,33 @@ impl AgentRuntime {
         let mut command = codex_command().ok_or_else(|| {
             "Codex CLI was not found. Install it before connecting the agent runtime.".to_owned()
         })?;
+        if let Some(profile) = profile {
+            if let Some(codex_home) = profile.codex_home.as_deref() {
+                command.env("CODEX_HOME", codex_home);
+            }
+            if let Some(authentication_home) = profile.authentication_home.as_deref() {
+                command.env("CODEX_AUTH_HOME", authentication_home);
+            }
+            for (key, value) in profile
+                .environment
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key, value)))
+            {
+                if ![
+                    "CODEX_HOME",
+                    "CODEX_AUTH_HOME",
+                    "CODEX_SQLITE_HOME",
+                    "XIAO_RUN_ID",
+                ]
+                .iter()
+                .any(|reserved| key.eq_ignore_ascii_case(reserved))
+                {
+                    command.env(key, value);
+                }
+            }
+        }
         let runtime_state_dir = app
             .state::<XiaoRepository>()
             .app_data_dir()
@@ -164,6 +208,8 @@ impl AgentRuntime {
                 "default_mode_request_user_input",
             ])
             .env("CODEX_SQLITE_HOME", runtime_state_dir);
+        *self.profile_id.lock().map_err(|error| error.to_string())? =
+            profile.map(|profile| profile.id.clone());
         let mut command = crate::process::supervise_command(command)?;
         command
             .stdin(Stdio::piped())
@@ -309,6 +355,7 @@ impl AgentRuntime {
             already_running: false,
             environment_id: environment_id.to_owned(),
             generation,
+            profile_id: profile.map(|profile| profile.id.clone()),
         })
     }
 
@@ -575,9 +622,17 @@ impl EnvironmentRuntimeRegistry {
         ))
     }
 
-    pub fn start(&self, app: AppHandle, environment_id: &str) -> Result<StartResult, String> {
-        self.runtime(environment_id)?
-            .start_for_environment(app, environment_id)
+    pub fn start_with_profile(
+        &self,
+        app: AppHandle,
+        environment_id: &str,
+        profile: &crate::xiao::models::CodexProfile,
+    ) -> Result<StartResult, String> {
+        self.runtime(environment_id)?.start_for_environment_profile(
+            app,
+            environment_id,
+            Some(profile),
+        )
     }
 
     pub fn stop(&self, environment_id: &str) -> Result<(), String> {

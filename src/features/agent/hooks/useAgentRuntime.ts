@@ -122,6 +122,7 @@ const initialRuntime: AgentRuntimeState = {
   turnStartedAt: null,
   error: null,
   eventsSeen: 0,
+  profileId: null,
 };
 
 export type AgentRuntimeWorkspaceScope = {
@@ -2750,6 +2751,7 @@ export function useAgentRuntime(
       }
       activeEnvironmentIdRef.current = result.environmentId;
       activeGenerationRef.current = result.generation;
+      setRuntime((current) => ({ ...current, profileId: result.profileId }));
       appendRuntimeLog("system", `Codex ${result.version} connected.`);
       if (result.alreadyRunning) {
         reconnectAttempt.current = 0;

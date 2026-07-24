@@ -17,7 +17,11 @@ pub fn start_agent_runtime(
     repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
-    runtimes.start(app, &context.environment.id)
+    let task_id = task_id
+        .as_deref()
+        .ok_or("Starting Codex requires a persisted Xiao Task.")?;
+    let profile = repository.task_codex_profile(&project_path, task_id)?;
+    runtimes.start_with_profile(app, &context.environment.id, &profile)
 }
 
 #[tauri::command]

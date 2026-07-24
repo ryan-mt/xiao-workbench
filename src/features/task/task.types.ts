@@ -7,7 +7,12 @@ import type {
   AgentSandboxMode,
   TimelineEntry,
 } from "../../core/models/agent";
-import type { XiaoThreadBinding, XiaoWorkspaceMode } from "../../core/models/xiao";
+import type {
+  TaskStage,
+  TaskWorkbenchState,
+  XiaoThreadBinding,
+  XiaoWorkspaceMode,
+} from "../../core/models/xiao";
 import type { AcceptanceContractVersionSummary } from "../../core/models/verification";
 
 export type TaskGroup = "Active" | "Recent" | "Yesterday" | "This week" | "Older";
@@ -37,6 +42,10 @@ export type WorkbenchTask = {
   unread: boolean;
   createdAt: number;
   updatedAt: number;
+  stage: TaskStage;
+  stageVersion: number;
+  codexProfileId: string | null;
+  workbenchState: TaskWorkbenchState;
   draftText: string;
   followUps: AgentFollowUp[];
   model: string | null;

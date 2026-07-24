@@ -11,6 +11,28 @@ import type { AcceptanceContractVersionSummary } from "./verification";
 
 export type XiaoThreadPersistence = "ephemeral" | "persistent" | "legacy-untrusted";
 export type XiaoWorkspaceMode = "local" | "managed-worktree";
+export type TaskStage =
+  | "draft"
+  | "in_progress"
+  | "ready_for_review"
+  | "published"
+  | "completed";
+
+export type TaskWorkbenchState = {
+  focusView?: string;
+  focusPanelOpen?: boolean;
+  timelineScrollTop?: number;
+  terminalSessionIds?: string[];
+  activeTerminalSessionId?: string;
+  terminalSessionNames?: Record<string, string>;
+  previewTarget?: string;
+  previewZoom?: number;
+  previewTabs?: Array<{ id: string; target: string }>;
+  activePreviewTabId?: string;
+  previewViewport?: "responsive" | "desktop" | "tablet" | "mobile";
+  previewConsole?: Record<string, Array<{ level: string; text: string; at: number }>>;
+  activeFile?: string | null;
+};
 
 export type XiaoThreadBinding = {
   threadId: string;
@@ -25,6 +47,10 @@ export type XiaoTaskDocument = {
   title: string;
   createdAt: number;
   updatedAt: number;
+  stage?: TaskStage;
+  stageVersion?: number;
+  codexProfileId?: string | null;
+  workbenchState?: TaskWorkbenchState;
   draftText?: string;
   followUps?: AgentFollowUp[];
   archived: boolean;
@@ -56,6 +82,81 @@ export type XiaoProjectSummary = {
   name: string;
   updatedAt: number;
   pinned?: boolean;
+  hidden?: boolean;
+  projectGroupId?: string | null;
+  projectGroupPosition?: number;
+};
+
+export type ProjectGroup = {
+  id: string;
+  name: string;
+  position: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ProjectGroupUpdate = Pick<ProjectGroup, "id" | "name" | "position">;
+
+export type ProjectPresentationUpdate = {
+  path: string;
+  displayName: string | null;
+  pinned: boolean;
+  hidden: boolean;
+  projectGroupId: string | null;
+  projectGroupPosition: number;
+};
+
+export type CodexProfile = {
+  id: string;
+  displayName: string;
+  codexHome: string | null;
+  authenticationHome: string | null;
+  environment: Record<string, string>;
+  availability: "unknown" | "available" | "unavailable" | "incompatible" | "unauthenticated";
+  authenticatedIdentity: unknown;
+  models: unknown;
+  capabilities: unknown;
+  usage: unknown;
+  rateLimits: unknown;
+  diagnostic: string | null;
+  version: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type CodexProfileUpdate = Omit<CodexProfile, "version" | "createdAt" | "updatedAt"> & {
+  expectedVersion: number | null;
+};
+
+export type TaskCodexProfileBinding = {
+  taskId: string;
+  codexProfileId: string | null;
+  stageVersion: number;
+};
+
+export type TaskStageTransition = {
+  id: string;
+  taskId: string;
+  fromStage: TaskStage | null;
+  toStage: TaskStage;
+  expectedVersion: number | null;
+  resultingVersion: number;
+  actor: string;
+  reason: string;
+  sourceRunId: string | null;
+  idempotencyKey: string;
+  createdAt: number;
+};
+
+export type TaskStageTransitionRequest = {
+  workspacePath: string;
+  taskId: string;
+  expectedVersion: number;
+  toStage: TaskStage;
+  actor: string;
+  reason: string;
+  sourceRunId: string | null;
+  idempotencyKey: string;
 };
 
 export type XiaoWorkspaceDocument = {
@@ -83,11 +184,14 @@ export type XiaoTimelinePage = {
 };
 
 export type XiaoHistorySearchResult = {
+  projectPath: string;
+  projectName: string;
   taskId: string;
   taskTitle: string;
   taskArchived: boolean;
   entryId: string;
-  role: "user" | "assistant";
+  role: "task" | "user" | "assistant";
+  matchKind: "title" | "message";
   snippet: string;
   createdAt: number;
 };

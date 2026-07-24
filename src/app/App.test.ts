@@ -224,6 +224,9 @@ describe("continuation task acceptance contract", () => {
       title: "Continue: Persisted task",
       createdAt: 300,
       updatedAt: 300,
+      stage: "draft",
+      stageVersion: 0,
+      workbenchState: {},
       acceptanceContract: null,
     });
     expect(continuation.timeline).toEqual(source.timeline);
@@ -1982,5 +1985,115 @@ describe("review context workspace identity", () => {
 
     expect(taskReviewContext(state, path, "task-a")).toEqual([first]);
     expect(taskReviewContext(state, path, "task-b")).toEqual([second]);
+  });
+});
+
+describe("control-model application-shell restart journey", () => {
+  it("resumes two concurrent Task workbenches without cross-Task state leakage", () => {
+    const projectPath = "C:/projects/two-task-journey";
+    const key = `xiao.tasks.v2:${projectPath}`;
+    const task = (
+      id: string,
+      approvalPolicy: "on-request" | "never",
+      terminalId: string,
+      previewTarget: string,
+    ) => ({
+      id,
+      title: `Task ${id}`,
+      meta: "Now",
+      group: "Active",
+      archived: false,
+      pinned: false,
+      unread: false,
+      createdAt: 1,
+      updatedAt: 2,
+      stage: "in_progress",
+      stageVersion: 1,
+      codexProfileId: `profile-${id}`,
+      workbenchState: {
+        focusView: "browser",
+        timelineScrollTop: id === "a" ? 120 : 420,
+        terminalSessionIds: [terminalId],
+        activeTerminalSessionId: terminalId,
+        terminalSessionNames: { [terminalId]: `${id} shell` },
+        previewTarget,
+        previewTabs: [{ id: `${id}-preview`, target: previewTarget }],
+        activePreviewTabId: `${id}-preview`,
+      },
+      draftText: `queued follow-up ${id}`,
+      followUps: [{ id: `follow-up-${id}`, prompt: `continue ${id}`, attachments: [], createdAt: 3 }],
+      model: "gpt-5",
+      reasoningEffort: "high",
+      threadId: null,
+      threadBinding: null,
+      mode: "default",
+      approvalPolicy,
+      sandboxMode: "workspace-write",
+      goal: null,
+      acceptanceContract: null,
+      timeline: [{
+        id: `pending-${id}`,
+        kind: "approval",
+        title: `Pending input ${id}`,
+        status: "warning",
+      }],
+      timelineLoaded: true,
+      timelineComplete: true,
+      timelineStart: 0,
+      timelineEntryCount: 1,
+      plan: null,
+      executionEnvironmentId: `environment-${id}`,
+      workspaceMode: "managed-worktree",
+      managedWorktreeId: `worktree-${id}`,
+    });
+    const stored = JSON.stringify({
+      tasks: [
+        task("a", "on-request", "terminal-a", "http://127.0.0.1:4101/"),
+        task("b", "never", "terminal-b", "http://127.0.0.1:4102/"),
+      ],
+      activeTaskId: "b",
+      showArchived: false,
+    });
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (requested: string) => requested === key ? stored : null,
+        setItem: vi.fn(),
+      },
+    });
+
+    const restarted = readBrowserTaskState(projectPath);
+
+    expect(restarted.activeTaskId).toBe("b");
+    expect(restarted.tasks.map((item) => ({
+      id: item.id,
+      policy: item.approvalPolicy,
+      profile: item.codexProfileId,
+      worktree: item.managedWorktreeId,
+      terminal: item.workbenchState.activeTerminalSessionId,
+      preview: item.workbenchState.previewTarget,
+      scroll: item.workbenchState.timelineScrollTop,
+      pending: item.timeline[0]?.title,
+    }))).toEqual([
+      {
+        id: "a",
+        policy: "on-request",
+        profile: "profile-a",
+        worktree: "worktree-a",
+        terminal: "terminal-a",
+        preview: "http://127.0.0.1:4101/",
+        scroll: 120,
+        pending: "Pending input a",
+      },
+      {
+        id: "b",
+        policy: "never",
+        profile: "profile-b",
+        worktree: "worktree-b",
+        terminal: "terminal-b",
+        preview: "http://127.0.0.1:4102/",
+        scroll: 420,
+        pending: "Pending input b",
+      },
+    ]);
   });
 });

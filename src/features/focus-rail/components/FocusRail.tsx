@@ -16,6 +16,7 @@ import type { RoutineSummary } from "../../../core/models/routine";
 import type { PendingInputSnapshot, RunSnapshot } from "../../../core/models/run";
 import type { ImportHandoffResult } from "../../../core/models/observatory";
 import type { FileNode, SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { TaskWorkbenchState } from "../../../core/models/xiao";
 import { ObservatoryPanel } from "../../observatory/ObservatoryPanel";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
@@ -31,6 +32,7 @@ import {
   type SavedAcceptanceContract,
 } from "./VerificationPanel";
 import "../styles/focus-rail.css";
+import { taskPreviewWebviewLabel } from "./taskPreview";
 
 const TerminalPanel = lazy(() =>
   import("./TerminalPanel").then((module) => ({ default: module.TerminalPanel })),
@@ -89,13 +91,14 @@ type FocusRailProps = {
   onStageReviewContext: (attachment: AgentAttachment) => void;
   onRemoveReviewContext: (attachmentId: string) => void;
   obscured: boolean;
+  onWorkbenchStateChange: (state: TaskWorkbenchState) => void;
 };
 
 const utilityViews: Array<{ id: FocusView; label: string; description: string; icon: XiaoIconName }> = [
   { id: "files", label: "Open file", description: "Read and comment on source", icon: "files" },
   { id: "plan", label: "Plan", description: "Follow live task steps", icon: "plan" },
   { id: "terminal", label: "Terminal", description: "Run workspace commands", icon: "terminal" },
-  { id: "browser", label: "Browser", description: "Research without leaving Xiao", icon: "browser" },
+  { id: "browser", label: "Task Preview", description: "Inspect this Task's local outcome", icon: "browser" },
   { id: "run", label: "Xiao Break", description: "Play while Xiao works", icon: "game" },
   { id: "runtime", label: "Runtime", description: "Inspect Codex events", icon: "runtime" },
   { id: "observatory", label: "Observatory", description: "Inspect agents, history, and recovery", icon: "approach" },
@@ -157,6 +160,7 @@ export function FocusRail({
   onStageReviewContext,
   onRemoveReviewContext,
   obscured,
+  onWorkbenchStateChange,
 }: FocusRailProps) {
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [terminalOpened, setTerminalOpened] = useState(activeView === "terminal");
@@ -171,10 +175,29 @@ export function FocusRail({
   const nativeTaskAvailable = executionTaskId !== null;
   const utility = utilityViews.find((view) => view.id === activeView);
   const utilityLabel = activeView === "files" && activeFile ? basename(activeFile) : utility?.label;
+  const previewTabs = task.workbenchState.previewTabs?.length
+    ? task.workbenchState.previewTabs
+    : [{
+        id: "primary",
+        target: task.workbenchState.previewTarget ?? "http://127.0.0.1:9/",
+      }];
+  const activePreviewTabId = previewTabs.some(
+    (tab) => tab.id === task.workbenchState.activePreviewTabId,
+  )
+    ? task.workbenchState.activePreviewTabId!
+    : previewTabs[0].id;
+  const activePreviewTab = previewTabs.find((tab) => tab.id === activePreviewTabId)!;
 
-  useEffect(() => setActiveFile(null), [workspace.path]);
   useEffect(() => {
-    if (resourceRequest?.kind === "file") setActiveFile(resourceRequest.path);
+    setActiveFile(task.workbenchState.activeFile ?? null);
+  }, [task.id, task.workbenchState.activeFile, workspace.path]);
+  useEffect(() => {
+    if (resourceRequest?.kind !== "file") return;
+    setActiveFile(resourceRequest.path);
+    onWorkbenchStateChange({
+      ...task.workbenchState,
+      activeFile: resourceRequest.path,
+    });
   }, [resourceRequest]);
   useEffect(() => {
     if (activeView === "terminal" && nativeTaskAvailable) setTerminalOpened(true);
@@ -184,7 +207,10 @@ export function FocusRail({
 
   const selectUtility = (view: FocusView) => {
     if ((view === "terminal" || view === "verification" || view === "observatory") && !nativeTaskAvailable) return;
-    if (view === "files") setActiveFile(null);
+    if (view === "files") {
+      setActiveFile(null);
+      onWorkbenchStateChange({ ...task.workbenchState, activeFile: null });
+    }
     onViewChange(view);
     setToolsMenuOpen(false);
     menu.current?.removeAttribute("open");
@@ -323,7 +349,10 @@ export function FocusRail({
             taskId={executionTaskId}
             loading={loading}
             activeFile={activeFile}
-            onActiveFileChange={setActiveFile}
+            onActiveFileChange={(activeFile) => {
+              setActiveFile(activeFile);
+              onWorkbenchStateChange({ ...task.workbenchState, activeFile });
+            }}
             onLoadDirectory={onLoadDirectory}
             reviewContext={reviewContext}
             onStageReviewContext={onStageReviewContext}
@@ -341,11 +370,28 @@ export function FocusRail({
           <div className="focus-terminal-slot" hidden={activeView !== "terminal"}>
             <Suspense fallback={<div className="terminal-loading"><XiaoIcon name="pending" size={15} /> Starting terminal</div>}>
               <TerminalPanel
+                key={task.id}
                 active={activeView === "terminal"}
                 workspace={workspace}
                 taskId={executionTaskId}
                 system={system}
                 transitioning={executionTransitioning}
+                initialSessionIds={task.workbenchState.terminalSessionIds}
+                initialActiveSessionId={task.workbenchState.activeTerminalSessionId}
+                initialSessionNames={task.workbenchState.terminalSessionNames}
+                onSessionStateChange={({ sessionIds, activeSessionId }) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    terminalSessionIds: sessionIds,
+                    activeTerminalSessionId: activeSessionId,
+                  });
+                }}
+                onSessionNamesChange={(terminalSessionNames) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    terminalSessionNames,
+                  });
+                }}
               />
             </Suspense>
           </div>
@@ -353,10 +399,132 @@ export function FocusRail({
         {(browserOpened || activeView === "browser") && (
           <div className="focus-browser-slot" hidden={activeView !== "browser"}>
             <Suspense fallback={<div className="browser-loading"><XiaoIcon name="pending" size={15} /> Starting browser</div>}>
+              <nav className="task-preview-tabs" aria-label="Task Preview tabs">
+                {previewTabs.map((tab, index) => (
+                  <span key={tab.id}>
+                    <button
+                      type="button"
+                      aria-current={tab.id === activePreviewTabId ? "page" : undefined}
+                      onClick={() => onWorkbenchStateChange({
+                        ...task.workbenchState,
+                        previewTabs,
+                        activePreviewTabId: tab.id,
+                        previewTarget: tab.target,
+                      })}
+                    >
+                      Preview {index + 1}
+                    </button>
+                    {previewTabs.length > 1 ? (
+                      <button
+                        type="button"
+                        aria-label={`Close Preview ${index + 1}`}
+                        onClick={() => {
+                          const nextTabs = previewTabs.filter((item) => item.id !== tab.id);
+                          const next = tab.id === activePreviewTabId ? nextTabs[0] : activePreviewTab;
+                          onWorkbenchStateChange({
+                            ...task.workbenchState,
+                            previewTabs: nextTabs,
+                            activePreviewTabId: next.id,
+                            previewTarget: next.target,
+                          });
+                        }}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  aria-label="New Task Preview tab"
+                  onClick={() => {
+                    const tab = { id: crypto.randomUUID(), target: "http://127.0.0.1:9/" };
+                    onWorkbenchStateChange({
+                      ...task.workbenchState,
+                      previewTabs: [...previewTabs, tab],
+                      activePreviewTabId: tab.id,
+                      previewTarget: tab.target,
+                    });
+                  }}
+                >
+                  +
+                </button>
+              </nav>
               <BrowserPanel
+                key={`${task.id}:${activePreviewTabId}`}
                 active={activeView === "browser" && !toolsMenuOpen && !obscured}
+                ariaLabel="Task Preview"
+                taskPreviewOnly
+                taskId={task.id}
+                projectPath={workspace.path}
+                webviewLabel={taskPreviewWebviewLabel(workspace.path, task.id, activePreviewTabId)}
+                homeLabel="Task outcome"
+                homeUrl={activePreviewTab.target}
+                placeholder={{
+                  title: "No Task outcome yet",
+                  description: "Start a local server or open a generated HTML file from this Task.",
+                  meta: "Task-scoped preview · no general browsing",
+                }}
                 navigationRequest={resourceRequest?.kind === "browser" ? resourceRequest : null}
                 onNavigationStart={onBrowserNavigationStart}
+                onTargetChange={(previewTarget) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    previewTabs: previewTabs.map((tab) => tab.id === activePreviewTabId
+                      ? { ...tab, target: previewTarget }
+                      : tab),
+                    activePreviewTabId,
+                    previewTarget,
+                  });
+                }}
+                initialZoom={task.workbenchState.previewZoom ?? 1}
+                initialViewport={task.workbenchState.previewViewport}
+                initialConsole={task.workbenchState.previewConsole?.[activePreviewTabId]}
+                onConsoleChange={(messages) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    previewTabs,
+                    activePreviewTabId,
+                    previewConsole: {
+                      ...task.workbenchState.previewConsole,
+                      [activePreviewTabId]: messages,
+                    },
+                  });
+                }}
+                onViewportChange={(previewViewport) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    previewTabs,
+                    activePreviewTabId,
+                    previewViewport,
+                  });
+                }}
+                onZoomChange={(previewZoom) => {
+                  onWorkbenchStateChange({
+                    ...task.workbenchState,
+                    previewZoom,
+                  });
+                }}
+                onAnnotate={({ target, viewport, selector, coordinates, zoom, note, screenshotReference }) => {
+                  onStageReviewContext({
+                    id: crypto.randomUUID(),
+                    name: "Task Preview annotation",
+                    path: target,
+                    url: target,
+                    kind: "review",
+                    comment: note,
+                    preview: JSON.stringify({
+                      taskId: task.id,
+                      tabId: activePreviewTabId,
+                      target,
+                      viewport,
+                      selector,
+                      coordinates,
+                      zoom,
+                      screenshotReference,
+                    }),
+                  });
+                }}
               />
             </Suspense>
           </div>

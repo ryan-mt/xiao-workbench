@@ -16,7 +16,7 @@ use crate::verification::repository::{
     decode_optional_contract_snapshot, encode_optional_contract_snapshot,
     load_optional_acceptance_contract_version_from_connection,
 };
-use crate::xiao::models::{XiaoThreadBinding, XiaoThreadPersistence};
+use crate::xiao::models::{TaskStage, XiaoThreadBinding, XiaoThreadPersistence};
 use crate::xiao::repository::{
     normalize_workspace_path, task_execution_binding_matches, XiaoRepository,
 };
@@ -104,7 +104,8 @@ SELECT
     r.acceptance_contract_source_version_id, r.acceptance_contract_snapshot_json,
     r.acceptance_contract_snapshot_sha256, r.verification_baseline_state,
     r.verification_baseline_artifact_id, r.verification_baseline_diagnostic,
-    r.latest_verification_attempt_id
+    r.latest_verification_attempt_id, r.codex_profile_id,
+    r.capability_snapshot_json, r.policy_snapshot_json, r.workspace_snapshot_json
 FROM runs r
 JOIN workspaces w ON w.id = r.workspace_id
 "#;
@@ -318,6 +319,45 @@ impl XiaoRepository {
         if !binding_matches {
             return Err("The Xiao run execution binding changed before enqueue.".to_owned());
         }
+        let (task_stage, task_stage_version, bound_profile_id) = transaction
+            .query_row(
+                r#"SELECT task_stage, task_stage_version, codex_profile_id
+                   FROM tasks WHERE workspace_id = ?1 AND task_id = ?2"#,
+                params![run.workspace_id, run.task_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .map_err(|error| format!("Could not load Task stage before Run enqueue: {error}"))?;
+        let task_stage = TaskStage::from_database(&task_stage)?;
+        if task_stage == TaskStage::Completed {
+            return Err(
+                "A completed Task must be reopened before starting another Run.".to_owned(),
+            );
+        }
+        let profile_was_unbound = bound_profile_id.is_none();
+        let profile_id = bound_profile_id.unwrap_or_else(|| "default".to_owned());
+        let capabilities_json = transaction
+            .query_row(
+                "SELECT capabilities_json FROM codex_profiles WHERE id = ?1",
+                [&profile_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| format!("Could not snapshot Task Codex profile: {error}"))?;
+        if profile_was_unbound {
+            transaction
+                .execute(
+                    r#"UPDATE tasks SET codex_profile_id = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3
+                         AND codex_profile_id IS NULL"#,
+                    params![profile_id, run.workspace_id, run.task_id],
+                )
+                .map_err(|error| format!("Could not bind the default Task profile: {error}"))?;
+        }
         let contract = resolve_run_acceptance_contract(transaction, run)?;
         let (
             contract_source_version_id,
@@ -357,6 +397,25 @@ impl XiaoRepository {
             contract_snapshot.as_ref(),
             contract_snapshot_sha256.as_deref(),
         )?;
+        let policy_snapshot_json = json_string(
+            &json!({
+                "model": run.model,
+                "reasoningEffort": run.reasoning_effort,
+                "serviceTier": run.service_tier,
+                "mode": run.mode,
+                "approvalPolicy": run.approval_policy,
+                "sandboxMode": run.sandbox_mode,
+            }),
+            "Run policy snapshot",
+        )?;
+        let workspace_snapshot_json = json_string(
+            &json!({
+                "executionEnvironmentId": run.execution_environment_id,
+                "executionRoot": run.execution_root,
+                "managedWorktreeId": run.managed_worktree_id,
+            }),
+            "Run workspace snapshot",
+        )?;
         transaction
             .execute(
                 r#"INSERT INTO runs(
@@ -370,12 +429,15 @@ impl XiaoRepository {
                     cancel_requested, routine_occurrence_id,
                     acceptance_contract_source_version_id,
                     acceptance_contract_snapshot_json,
-                    acceptance_contract_snapshot_sha256, verification_baseline_state
+                    acceptance_contract_snapshot_sha256, verification_baseline_state,
+                    codex_profile_id, capability_snapshot_json, policy_snapshot_json,
+                    workspace_snapshot_json
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, 'queued', 'pending',
                     ?26, ?7, ?8, NULL, NULL, 0, ?9, ?10, ?11,
                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                    NULL, NULL, NULL, NULL, NULL, 0, ?21, ?22, ?23, ?24, ?25
+                    NULL, NULL, NULL, NULL, NULL, 0, ?21, ?22, ?23, ?24, ?25,
+                    ?27, ?28, ?29, ?30
                  )"#,
                 params![
                     run.id,
@@ -404,9 +466,58 @@ impl XiaoRepository {
                     contract_snapshot_sha256,
                     verification_baseline_state.as_database(),
                     verification_outcome.as_database(),
+                    profile_id,
+                    capabilities_json,
+                    policy_snapshot_json,
+                    workspace_snapshot_json,
                 ],
             )
             .map_err(|error| format!("Could not enqueue Xiao run: {error}"))?;
+        if task_stage != TaskStage::InProgress {
+            let resulting_version = task_stage_version + 1;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE tasks
+                       SET task_stage = 'in_progress', task_stage_version = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3
+                         AND task_stage = ?4 AND task_stage_version = ?5"#,
+                    params![
+                        resulting_version,
+                        run.workspace_id,
+                        run.task_id,
+                        task_stage.as_database(),
+                        task_stage_version
+                    ],
+                )
+                .map_err(|error| format!("Could not advance Task for Run enqueue: {error}"))?;
+            if changed != 1 {
+                return Err("Task stage changed before the Run could be enqueued.".to_owned());
+            }
+            let transition_key = format!("run-start:{}", run.id);
+            transaction
+                .execute(
+                    r#"INSERT INTO task_stage_transitions(
+                        id, workspace_id, task_id, from_stage, to_stage, expected_version,
+                        resulting_version, actor, reason, source_run_id, idempotency_key,
+                        created_at
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, 'in_progress', ?5, ?6, 'codex',
+                        'Run started', ?7, ?8, ?9
+                    )"#,
+                    params![
+                        Uuid::now_v7().to_string(),
+                        run.workspace_id,
+                        run.task_id,
+                        task_stage.as_database(),
+                        task_stage_version,
+                        resulting_version,
+                        run.id,
+                        transition_key,
+                        run.queued_at
+                    ],
+                )
+                .map_err(|error| format!("Could not record Task Run transition: {error}"))?;
+        }
         let event = append_event(
             transaction,
             &run.id,
@@ -2448,6 +2559,10 @@ struct StoredRunRow {
     verification_baseline_artifact_id: Option<String>,
     verification_baseline_diagnostic: Option<String>,
     latest_verification_attempt_id: Option<String>,
+    codex_profile_id: Option<String>,
+    capability_snapshot_json: String,
+    policy_snapshot_json: String,
+    workspace_snapshot_json: String,
 }
 
 impl StoredRunRow {
@@ -2515,6 +2630,16 @@ impl StoredRunRow {
             verification_baseline_artifact_id: self.verification_baseline_artifact_id,
             verification_baseline_diagnostic: self.verification_baseline_diagnostic,
             latest_verification_attempt_id: self.latest_verification_attempt_id,
+            codex_profile_id: self.codex_profile_id,
+            capability_snapshot: parse_json(
+                &self.capability_snapshot_json,
+                "Run capability snapshot",
+            )?,
+            policy_snapshot: parse_json(&self.policy_snapshot_json, "Run policy snapshot")?,
+            workspace_snapshot: parse_json(
+                &self.workspace_snapshot_json,
+                "Run workspace snapshot",
+            )?,
         })
     }
 }
@@ -2562,6 +2687,10 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<StoredRunRow> {
         verification_baseline_artifact_id: row.get(38)?,
         verification_baseline_diagnostic: row.get(39)?,
         latest_verification_attempt_id: row.get(40)?,
+        codex_profile_id: row.get(41)?,
+        capability_snapshot_json: row.get(42)?,
+        policy_snapshot_json: row.get(43)?,
+        workspace_snapshot_json: row.get(44)?,
     })
 }
 
@@ -2787,6 +2916,10 @@ mod tests {
             title: id.to_owned(),
             created_at: 1,
             updated_at: 1,
+            stage: crate::xiao::models::TaskStage::Draft,
+            stage_version: 0,
+            codex_profile_id: None,
+            workbench_state: serde_json::json!({}),
             draft_text: String::new(),
             follow_ups: Vec::new(),
             archived: false,
@@ -3101,6 +3234,40 @@ mod tests {
     }
 
     #[test]
+    fn run_lifecycle_starts_a_task_but_terminal_status_never_completes_it() {
+        let directory = TestDirectory::new("run-task-stage");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let stage = || {
+            repository
+                .with_connection(|connection| {
+                    connection
+                        .query_row(
+                            "SELECT task_stage FROM tasks WHERE task_id = 'task-a'",
+                            [],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap()
+        };
+        assert_eq!(stage(), "draft");
+
+        let run = repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "first-run"))
+            .unwrap()
+            .run;
+        assert_eq!(stage(), "in_progress");
+
+        repository.request_run_cancel(&run.id).unwrap();
+        assert_eq!(
+            repository.get_run(&run.id).unwrap().status,
+            RunStatus::Cancelled
+        );
+        assert_eq!(stage(), "in_progress");
+    }
+
+    #[test]
     fn run_contract_snapshot_round_trips_with_hash_and_safe_verification_metadata() {
         let directory = TestDirectory::new("contract-snapshot");
         let repository = repository_with_tasks(&directory.0, &["task-a"]);
@@ -3178,6 +3345,72 @@ mod tests {
         assert_eq!(
             reloaded.acceptance_contract_snapshot_sha256,
             stored.acceptance_contract_snapshot_sha256
+        );
+    }
+
+    #[test]
+    fn run_freezes_profile_capabilities_policy_and_workspace() {
+        let directory = TestDirectory::new("run-profile-snapshot");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let save_default = |expected_version, steering| {
+            repository
+                .save_codex_profile(crate::xiao::models::CodexProfileUpdate {
+                    id: "default".to_owned(),
+                    display_name: "Default Codex".to_owned(),
+                    codex_home: None,
+                    authentication_home: None,
+                    environment: json!({}),
+                    availability: "available".to_owned(),
+                    authenticated_identity: Some(json!({"email": "operator@example.com"})),
+                    models: json!(["gpt-test"]),
+                    capabilities: json!({"steering": steering}),
+                    usage: None,
+                    rate_limits: None,
+                    diagnostic: None,
+                    expected_version: Some(expected_version),
+                })
+                .unwrap()
+        };
+        save_default(0, true);
+
+        let run = new_run(&repository, &workspace, "task-a", "profile-run");
+        let run_id = run.id.clone();
+        let expected_root = run.execution_root.clone();
+        repository.enqueue_run(run).unwrap();
+        save_default(1, false);
+
+        let (profile_id, capabilities, policy, workspace_snapshot) = repository
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        r#"SELECT codex_profile_id, capability_snapshot_json,
+                                  policy_snapshot_json, workspace_snapshot_json
+                           FROM runs WHERE id = ?1"#,
+                        [&run_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        assert_eq!(profile_id.as_deref(), Some("default"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&capabilities).unwrap()["steering"],
+            true
+        );
+        let policy = serde_json::from_str::<Value>(&policy).unwrap();
+        assert_eq!(policy["approvalPolicy"], "on-request");
+        assert_eq!(policy["sandboxMode"], "workspace-write");
+        assert_eq!(
+            serde_json::from_str::<Value>(&workspace_snapshot).unwrap()["executionRoot"],
+            expected_root
         );
     }
 

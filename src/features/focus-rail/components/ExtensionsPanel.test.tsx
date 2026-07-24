@@ -98,6 +98,7 @@ const deferred = <T,>(): Deferred<T> => {
 
 const runtime = {
   phase: "ready",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,

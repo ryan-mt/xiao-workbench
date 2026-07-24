@@ -7,6 +7,13 @@ import "@xterm/xterm/css/xterm.css";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
 import type { SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspace";
+import {
+  addTerminalSession,
+  advanceTerminalOutputSequence,
+  normalizeTerminalSessions,
+  removeTerminalSession,
+  type TerminalSessionState,
+} from "./terminalSessions";
 
 type TerminalPanelProps = {
   active: boolean;
@@ -14,9 +21,14 @@ type TerminalPanelProps = {
   taskId: string | null;
   system: SystemInfo;
   transitioning: boolean;
+  initialSessionIds?: string[];
+  initialActiveSessionId?: string;
+  initialSessionNames?: Record<string, string>;
+  onSessionStateChange?: (state: TerminalSessionState) => void;
+  onSessionNamesChange?: (names: Record<string, string>) => void;
 };
 
-type TerminalOutput = { sessionId: string; data: string };
+type TerminalOutput = { sessionId: string; data: string; sequence: number };
 type TerminalExit = { sessionId: string; exitCode: number | null; error: string | null };
 type TerminalStatus = "error" | "exited" | "ready" | "starting";
 
@@ -50,13 +62,24 @@ const readTerminalTheme = (): ITheme => {
 
 const shellName = (shell: string) => shell.split(/[\\/]/).filter(Boolean).at(-1) ?? shell;
 
-export function TerminalPanel({
+type TerminalSessionProps = Omit<
+  TerminalPanelProps,
+  "initialSessionIds" | "initialActiveSessionId" | "initialSessionNames" |
+  "onSessionStateChange" | "onSessionNamesChange"
+> & {
+  sessionId: string;
+  sessionNumber: number;
+};
+
+function TerminalSession({
   active,
   workspace,
   taskId,
   system,
   transitioning,
-}: TerminalPanelProps) {
+  sessionId,
+  sessionNumber,
+}: TerminalSessionProps) {
   const [restartKey, setRestartKey] = useState(0);
   const [status, setStatus] = useState<TerminalStatus>("starting");
   const [error, setError] = useState<string | null>(null);
@@ -122,7 +145,9 @@ export function TerminalPanel({
     let disposed = false;
     let outputUnlisten: UnlistenFn | null = null;
     let exitUnlisten: UnlistenFn | null = null;
-    const sessionId = crypto.randomUUID();
+    let terminalStarted = false;
+    let renderedSequence = 0;
+    const pendingOutput: TerminalOutput[] = [];
     sessionIdRef.current = sessionId;
 
     const dataSubscription = terminal.onData((data) => {
@@ -150,7 +175,18 @@ export function TerminalPanel({
       }
       try {
         const removeOutputListener = await listen<TerminalOutput>("terminal://output", (event) => {
-          if (event.payload.sessionId === sessionId) terminal.write(event.payload.data);
+          if (event.payload.sessionId !== sessionId) return;
+          if (!terminalStarted) {
+            pendingOutput.push(event.payload);
+            return;
+          }
+          const nextSequence = advanceTerminalOutputSequence(
+            renderedSequence,
+            event.payload.sequence,
+          );
+          if (nextSequence === null) return;
+          renderedSequence = nextSequence;
+          terminal.write(event.payload.data);
         });
         if (disposed) {
           removeOutputListener();
@@ -174,7 +210,7 @@ export function TerminalPanel({
         }
         exitUnlisten = removeExitListener;
         const proposed = fitAddon.proposeDimensions();
-        await nativeBridge.startTerminal(
+        const started = await nativeBridge.startTerminal(
           sessionId,
           workspace.path,
           taskId,
@@ -182,10 +218,16 @@ export function TerminalPanel({
           proposed?.cols ?? 100,
           proposed?.rows ?? 30,
         );
-        if (disposed) {
-          void nativeBridge.stopTerminal(sessionId).catch(() => undefined);
-          return;
+        if (disposed) return;
+        terminal.write(started.replay);
+        renderedSequence = started.replaySequence;
+        for (const output of pendingOutput) {
+          const nextSequence = advanceTerminalOutputSequence(renderedSequence, output.sequence);
+          if (nextSequence === null) continue;
+          renderedSequence = nextSequence;
+          terminal.write(output.data);
         }
+        terminalStarted = true;
         setStatus("ready");
         fitTerminal();
         if (active) terminal.focus();
@@ -203,11 +245,7 @@ export function TerminalPanel({
 
     return () => {
       disposed = true;
-      const activeSessionId = sessionIdRef.current;
-      if (activeSessionId === sessionId) {
-        sessionIdRef.current = null;
-        void nativeBridge.stopTerminal(sessionId).catch(() => undefined);
-      }
+      sessionIdRef.current = null;
       outputUnlisten?.();
       exitUnlisten?.();
       resizeObserver.disconnect();
@@ -219,6 +257,7 @@ export function TerminalPanel({
     };
   }, [
     restartKey,
+    sessionId,
     system.shell,
     taskId,
     transitioning,
@@ -230,11 +269,13 @@ export function TerminalPanel({
     <section className="shell-workspace shell-workspace--pty">
       <header className="shell-workspace__header">
         <div className="shell-workspace__lights"><i /><i /><i /></div>
-        <div><strong>{workspace.name}</strong><small>{shellName(system.shell)}</small></div>
+        <div><strong>{workspace.name} · Terminal {sessionNumber}</strong><small>{shellName(system.shell)}</small></div>
         <div className="shell-workspace__actions">
           <span className={`shell-workspace__status is-${status}`}><i />{status}</span>
           <button type="button" disabled={transitioning} onClick={() => terminalRef.current?.clear()}>Clear</button>
-          <button type="button" disabled={transitioning} title="Restart terminal" onClick={() => setRestartKey((key) => key + 1)}>
+          <button type="button" disabled={transitioning} title="Restart terminal" onClick={() => {
+            void nativeBridge.stopTerminal(sessionId).finally(() => setRestartKey((key) => key + 1));
+          }}>
             <XiaoIcon name="refresh" size={12} />
           </button>
         </div>
@@ -249,5 +290,112 @@ export function TerminalPanel({
         <span>{error ?? "Ctrl+C to interrupt · scrollback 10k"}</span>
       </footer>
     </section>
+  );
+}
+
+export function TerminalPanel({
+  active,
+  workspace,
+  taskId,
+  system,
+  transitioning,
+  initialSessionIds = [],
+  initialActiveSessionId,
+  initialSessionNames = {},
+  onSessionStateChange = () => {},
+  onSessionNamesChange = () => {},
+}: TerminalPanelProps) {
+  const [sessions, setSessions] = useState(() =>
+    normalizeTerminalSessions(initialSessionIds, initialActiveSessionId)
+  );
+  const [sessionNames, setSessionNames] = useState<Record<string, string>>(initialSessionNames);
+  const publishedInitialSession = useRef(initialSessionIds.length > 0);
+
+  useEffect(() => {
+    if (publishedInitialSession.current) return;
+    publishedInitialSession.current = true;
+    onSessionStateChange(sessions);
+  }, [onSessionStateChange, sessions]);
+
+  const updateSessions = (next: TerminalSessionState) => {
+    setSessions(next);
+    onSessionStateChange(next);
+  };
+
+  return (
+    <div className="task-terminal-sessions">
+      <nav className="task-terminal-sessions__tabs" aria-label="Task terminal sessions">
+        {sessions.sessionIds.map((sessionId, index) => (
+          <span
+            className={sessionId === sessions.activeSessionId ? "is-active" : undefined}
+            key={sessionId}
+          >
+            <button
+              type="button"
+              aria-current={sessionId === sessions.activeSessionId ? "page" : undefined}
+              onClick={() => updateSessions({
+                ...sessions,
+                activeSessionId: sessionId,
+              })}
+            >
+              {sessionNames[sessionId] ?? `Terminal ${index + 1}`}
+            </button>
+            <button
+              type="button"
+              aria-label={`Rename Terminal ${index + 1}`}
+              onClick={() => {
+                const name = window.prompt(
+                  "Terminal name",
+                  sessionNames[sessionId] ?? `Terminal ${index + 1}`,
+                )?.trim();
+                if (!name) return;
+                const next = { ...sessionNames, [sessionId]: name.slice(0, 80) };
+                setSessionNames(next);
+                onSessionNamesChange(next);
+              }}
+            >
+              <XiaoIcon name="edit" size={10} />
+            </button>
+            {sessions.sessionIds.length > 1 ? (
+              <button
+                type="button"
+                aria-label={`Close Terminal ${index + 1}`}
+                onClick={() => {
+                  void nativeBridge.stopTerminal(sessionId).catch(() => undefined);
+                  updateSessions(removeTerminalSession(
+                    sessions.sessionIds,
+                    sessions.activeSessionId,
+                    sessionId,
+                  ));
+                }}
+              >
+                <XiaoIcon name="close" size={10} />
+              </button>
+            ) : null}
+          </span>
+        ))}
+        <button
+          type="button"
+          aria-label="New terminal session"
+          title="New terminal session"
+          onClick={() => updateSessions(addTerminalSession(sessions.sessionIds))}
+        >
+          <XiaoIcon name="add" size={12} />
+        </button>
+      </nav>
+      {sessions.sessionIds.map((sessionId, index) => (
+        <div key={sessionId} hidden={sessionId !== sessions.activeSessionId}>
+          <TerminalSession
+            sessionId={sessionId}
+            active={active && sessionId === sessions.activeSessionId}
+            workspace={workspace}
+            taskId={taskId}
+            system={system}
+            transitioning={transitioning}
+            sessionNumber={index + 1}
+          />
+        </div>
+      ))}
+    </div>
   );
 }

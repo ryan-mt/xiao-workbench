@@ -4580,3 +4580,23 @@
     animation: none;
   }
 }
+.task-composer-stack {
+  display: grid;
+}
+
+.task-codex-profile {
+  display: flex;
+  width: min(100%, var(--task-content-width, 860px));
+  max-width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  margin: 0 auto;
+  padding: 0 18px 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.task-codex-profile select {
+  max-width: 220px;
+}

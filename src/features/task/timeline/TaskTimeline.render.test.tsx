@@ -6,6 +6,7 @@ import { TaskTimeline } from "./TaskTimeline";
 
 const idleRuntime: AgentRuntimeState = {
   phase: "offline",
+  profileId: null,
   taskId: null,
   threadId: null,
   turnId: null,

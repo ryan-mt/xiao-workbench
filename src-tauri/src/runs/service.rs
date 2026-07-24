@@ -9,6 +9,8 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use crate::agent::models::AgentSession;
 use crate::agent::runtime::EnvironmentRuntimeRegistry;
 use crate::agent::service::prepare_xiao_session;
+use crate::browser::commands::execute_codex_preview_tool;
+use crate::browser::preview::{PreviewRegistry, PreviewScope};
 use crate::execution::service::resolve_execution_context;
 use crate::git::models::WorkspaceCheckpointCapture;
 use crate::git::service::{
@@ -846,9 +848,17 @@ async fn prepare_before_turn(
         repository.run_task_defaults(&claimed.workspace_path, &claimed.task_id)?
     };
     capture_baseline_if_required(app, claimed, cancellation).await?;
+    let profile = {
+        let repository = app.state::<XiaoRepository>();
+        let profile_id = claimed
+            .codex_profile_id
+            .as_deref()
+            .ok_or("The claimed Run has no Codex profile snapshot.")?;
+        repository.codex_profile(profile_id)?
+    };
     let start = {
         let registry = app.state::<EnvironmentRuntimeRegistry>();
-        registry.start(app.clone(), &claimed.execution_environment_id)?
+        registry.start_with_profile(app.clone(), &claimed.execution_environment_id, &profile)?
     };
     let runtime = {
         let registry = app.state::<EnvironmentRuntimeRegistry>();
@@ -1630,6 +1640,17 @@ fn dispatch_dynamic_tool_call(
                 "xiao_runtime" => {
                     execute_runtime_tool(&worker_app, &worker_route, &tool, arguments)
                 }
+                "xiao_preview" => tauri::async_runtime::block_on(execute_codex_preview_tool(
+                    &worker_app,
+                    &worker_app.state::<PreviewRegistry>(),
+                    PreviewScope {
+                        project_path: worker_route.workspace_path.clone(),
+                        task_id: worker_route.task_id.clone(),
+                        execution_root: worker_route.execution_root.clone(),
+                    },
+                    &tool,
+                    arguments,
+                )),
                 _ => Err("Codex requested an unknown Xiao dynamic tool namespace.".to_owned()),
             };
             let response = dynamic_tool_response(result);
@@ -2629,6 +2650,10 @@ mod tests {
             verification_baseline_artifact_id: None,
             verification_baseline_diagnostic: None,
             latest_verification_attempt_id: None,
+            codex_profile_id: Some("default".to_owned()),
+            capability_snapshot: json!({}),
+            policy_snapshot: json!({}),
+            workspace_snapshot: json!({}),
             status: RunStatus::Preparing,
             agent_outcome: super::super::models::AgentOutcome::Pending,
             verification_outcome: super::super::models::VerificationOutcome::NotRequested,

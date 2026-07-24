@@ -23,6 +23,8 @@ use crate::verification::models::AcceptanceContractVersionSummary;
 use crate::verification::repository::load_optional_acceptance_contract_version_from_connection;
 
 use super::models::{
+    CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate, ProjectPresentationUpdate,
+    TaskCodexProfileBinding, TaskStage, TaskStageTransition, TaskStageTransitionRequest,
     XiaoHistorySearchResult, XiaoLegacyStore, XiaoProjectSummary, XiaoTaskDocument,
     XiaoThreadBinding, XiaoThreadPersistence, XiaoTimelinePage, XiaoWorkspaceDocument,
     XiaoWorkspaceMode, XiaoWorkspaceUpdate, XIAO_DATABASE_SCHEMA_VERSION, XIAO_SCHEMA_VERSION,
@@ -33,6 +35,9 @@ const LEGACY_STORE_FILE_NAME: &str = "xiao-state-v1.json";
 const INITIAL_TIMELINE_PAGE_SIZE: usize = 200;
 const DEFAULT_TIMELINE_PAGE_SIZE: usize = 200;
 const MAX_TIMELINE_PAGE_SIZE: usize = 200;
+// Bump only after the matching migration, protocol, boundary, shell, accessibility,
+// frontend, Rust, type-check, and production-build gates pass for the slice.
+const VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION: i64 = 1;
 
 const MIGRATION_1_SQL: &str = r#"
 CREATE TABLE legacy_imports (
@@ -581,6 +586,192 @@ CREATE UNIQUE INDEX handoff_imports_by_workspace_bundle
     ON handoff_imports(workspace_id, bundle_sha256);
 "#;
 
+const MIGRATION_7_SQL: &str = r#"
+CREATE TABLE rollout_capabilities (
+    capability_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    migrated_at INTEGER NOT NULL,
+    enabled_at INTEGER
+);
+INSERT INTO rollout_capabilities(
+    capability_id, version, enabled, migrated_at, enabled_at
+) VALUES ('control-model-task-workbench', 1, 0, 0, 0);
+
+CREATE TABLE codex_profiles (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
+    codex_home TEXT,
+    authentication_home TEXT,
+    environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(environment_json)),
+    availability TEXT NOT NULL CHECK (
+        availability IN ('unknown', 'available', 'unavailable', 'incompatible', 'unauthenticated')
+    ),
+    authenticated_identity_json TEXT CHECK (
+        authenticated_identity_json IS NULL OR json_valid(authenticated_identity_json)
+    ),
+    models_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(models_json)),
+    capabilities_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(capabilities_json)),
+    usage_json TEXT CHECK (usage_json IS NULL OR json_valid(usage_json)),
+    rate_limits_json TEXT CHECK (rate_limits_json IS NULL OR json_valid(rate_limits_json)),
+    diagnostic TEXT,
+    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at)
+);
+CREATE INDEX codex_profiles_by_name ON codex_profiles(display_name, id);
+INSERT INTO codex_profiles(
+    id, display_name, codex_home, authentication_home, environment_json,
+    availability, authenticated_identity_json, models_json, capabilities_json,
+    usage_json, rate_limits_json, diagnostic, version, created_at, updated_at
+) VALUES (
+    'default', 'Default Codex', NULL, NULL, '{}', 'unknown', NULL, '[]', '{}',
+    NULL, NULL, 'Profile will be diagnosed when Codex starts.', 0, 0, 0
+);
+
+CREATE TABLE project_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at)
+);
+CREATE INDEX project_groups_by_position ON project_groups(position, name, id);
+
+ALTER TABLE workspaces ADD COLUMN display_name TEXT;
+ALTER TABLE workspaces ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0
+    CHECK (pinned IN (0, 1));
+ALTER TABLE workspaces ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0
+    CHECK (hidden IN (0, 1));
+ALTER TABLE workspaces ADD COLUMN project_group_id TEXT
+    REFERENCES project_groups(id) ON DELETE SET NULL;
+ALTER TABLE workspaces ADD COLUMN project_group_position INTEGER NOT NULL DEFAULT 0
+    CHECK (project_group_position >= 0);
+CREATE INDEX workspaces_by_group_position
+    ON workspaces(project_group_id, project_group_position, updated_at DESC);
+
+ALTER TABLE tasks ADD COLUMN task_stage TEXT NOT NULL DEFAULT 'draft'
+    CHECK (task_stage IN (
+        'draft', 'in_progress', 'ready_for_review', 'published', 'completed'
+    ));
+ALTER TABLE tasks ADD COLUMN task_stage_version INTEGER NOT NULL DEFAULT 0
+    CHECK (task_stage_version >= 0);
+ALTER TABLE tasks ADD COLUMN codex_profile_id TEXT
+    REFERENCES codex_profiles(id) ON DELETE RESTRICT;
+ALTER TABLE tasks ADD COLUMN workbench_state_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(workbench_state_json));
+CREATE INDEX tasks_by_stage_updated
+    ON tasks(task_stage, updated_at DESC);
+
+UPDATE tasks
+SET task_stage = CASE
+    WHEN EXISTS (
+        SELECT 1 FROM runs
+        WHERE runs.workspace_id = tasks.workspace_id
+          AND runs.task_id = tasks.task_id
+    ) THEN 'in_progress'
+    ELSE 'draft'
+END;
+
+CREATE TABLE task_stage_transitions (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    from_stage TEXT CHECK (
+        from_stage IS NULL OR from_stage IN (
+            'draft', 'in_progress', 'ready_for_review', 'published', 'completed'
+        )
+    ),
+    to_stage TEXT NOT NULL CHECK (
+        to_stage IN ('draft', 'in_progress', 'ready_for_review', 'published', 'completed')
+    ),
+    expected_version INTEGER,
+    resulting_version INTEGER NOT NULL CHECK (resulting_version >= 0),
+    actor TEXT NOT NULL CHECK (length(trim(actor)) > 0),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+    source_run_id TEXT,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE SET NULL,
+    UNIQUE (workspace_id, task_id, resulting_version)
+);
+CREATE INDEX task_stage_transitions_by_task_version
+    ON task_stage_transitions(workspace_id, task_id, resulting_version);
+INSERT INTO task_stage_transitions(
+    id, workspace_id, task_id, from_stage, to_stage, expected_version,
+    resulting_version, actor, reason, source_run_id, idempotency_key, created_at
+)
+SELECT
+    'migration-v7:' || workspace_id || ':' || task_id,
+    workspace_id,
+    task_id,
+    NULL,
+    task_stage,
+    NULL,
+    0,
+    'migration',
+    CASE task_stage
+        WHEN 'in_progress' THEN 'Existing Task has Run history'
+        ELSE 'Existing Task has no Run history'
+    END,
+    (
+        SELECT id FROM runs
+        WHERE runs.workspace_id = tasks.workspace_id
+          AND runs.task_id = tasks.task_id
+        ORDER BY queued_at, id
+        LIMIT 1
+    ),
+    'migration-v7:' || workspace_id || ':' || task_id,
+    created_at
+FROM tasks;
+
+ALTER TABLE runs ADD COLUMN codex_profile_id TEXT
+    REFERENCES codex_profiles(id) ON DELETE RESTRICT;
+ALTER TABLE runs ADD COLUMN capability_snapshot_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(capability_snapshot_json));
+ALTER TABLE runs ADD COLUMN policy_snapshot_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(policy_snapshot_json));
+ALTER TABLE runs ADD COLUMN workspace_snapshot_json TEXT NOT NULL DEFAULT '{}'
+    CHECK (json_valid(workspace_snapshot_json));
+
+CREATE TABLE command_bindings (
+    command_id TEXT PRIMARY KEY,
+    shortcut TEXT,
+    context TEXT NOT NULL DEFAULT 'global',
+    updated_at INTEGER NOT NULL,
+    CHECK (shortcut IS NULL OR length(trim(shortcut)) > 0)
+);
+CREATE UNIQUE INDEX command_bindings_by_context_shortcut
+    ON command_bindings(context, shortcut) WHERE shortcut IS NOT NULL;
+
+CREATE TABLE task_terminal_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    shell TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('idle', 'running', 'exited')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at >= created_at),
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE,
+    UNIQUE (workspace_id, task_id, position)
+);
+
+CREATE TABLE task_preview_state (
+    workspace_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    state_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(state_json)),
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, task_id)
+        REFERENCES tasks(workspace_id, task_id) ON DELETE CASCADE
+);
+"#;
+
 pub struct XiaoRepository {
     app_data_dir: PathBuf,
     state: Mutex<RepositoryState>,
@@ -589,6 +780,61 @@ pub struct XiaoRepository {
 struct RepositoryState {
     connection: Option<Connection>,
     initialization_error: Option<String>,
+}
+
+struct TaskStageTransitionRow {
+    workspace_id: i64,
+    id: String,
+    task_id: String,
+    from_stage: Option<String>,
+    to_stage: String,
+    expected_version: Option<i64>,
+    resulting_version: i64,
+    actor: String,
+    reason: String,
+    source_run_id: Option<String>,
+    idempotency_key: String,
+    created_at: i64,
+}
+
+struct CodexProfileRow {
+    id: String,
+    display_name: String,
+    codex_home: Option<String>,
+    authentication_home: Option<String>,
+    environment_json: String,
+    availability: String,
+    authenticated_identity_json: Option<String>,
+    models_json: String,
+    capabilities_json: String,
+    usage_json: Option<String>,
+    rate_limits_json: Option<String>,
+    diagnostic: Option<String>,
+    version: i64,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl TaskStageTransitionRow {
+    fn decode(self) -> Result<TaskStageTransition, String> {
+        Ok(TaskStageTransition {
+            id: self.id,
+            task_id: self.task_id,
+            from_stage: self
+                .from_stage
+                .as_deref()
+                .map(TaskStage::from_database)
+                .transpose()?,
+            to_stage: TaskStage::from_database(&self.to_stage)?,
+            expected_version: self.expected_version,
+            resulting_version: self.resulting_version,
+            actor: self.actor,
+            reason: self.reason,
+            source_run_id: self.source_run_id,
+            idempotency_key: self.idempotency_key,
+            created_at: self.created_at,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -724,6 +970,601 @@ impl XiaoRepository {
         self.with_connection(list_projects_from_connection)
     }
 
+    pub fn search_history_global(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<XiaoHistorySearchResult>, String> {
+        self.with_connection(|connection| {
+            search_history_global_from_connection(
+                connection,
+                query,
+                limit.unwrap_or(20).clamp(1, 50),
+            )
+        })
+    }
+
+    pub fn save_project_group(&self, update: ProjectGroupUpdate) -> Result<ProjectGroup, String> {
+        let id = update.id.trim();
+        let name = update.name.trim();
+        if id.is_empty() || name.is_empty() || update.position < 0 {
+            return Err(
+                "Project Group requires an id, name, and non-negative position.".to_owned(),
+            );
+        }
+        self.with_connection(|connection| {
+            let timestamp = now_millis()?;
+            connection
+                .execute(
+                    r#"INSERT INTO project_groups(id, name, position, created_at, updated_at)
+                       VALUES (?1, ?2, ?3, ?4, ?4)
+                       ON CONFLICT(id) DO UPDATE SET
+                           name = excluded.name,
+                           position = excluded.position,
+                           updated_at = excluded.updated_at"#,
+                    params![id, name, update.position, timestamp],
+                )
+                .map_err(|error| format!("Could not save Project Group: {error}"))?;
+            load_project_group(connection, id)?
+                .ok_or("Saved Project Group is unavailable.".to_owned())
+        })
+    }
+
+    pub fn list_project_groups(&self) -> Result<Vec<ProjectGroup>, String> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, name, position, created_at, updated_at FROM project_groups ORDER BY position, name, id",
+                )
+                .map_err(|error| format!("Could not prepare Project Group list: {error}"))?;
+            let groups = statement
+                .query_map([], |row| {
+                    Ok(ProjectGroup {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        position: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                })
+                .map_err(|error| format!("Could not query Project Groups: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not decode Project Groups: {error}"))?;
+            Ok(groups)
+        })
+    }
+
+    pub fn reorder_project_groups(
+        &self,
+        group_ids: Vec<String>,
+    ) -> Result<Vec<ProjectGroup>, String> {
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Project Group reorder: {error}"))?;
+            let existing = transaction
+                .query_row("SELECT COUNT(*) FROM project_groups", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| format!("Could not count Project Groups: {error}"))?;
+            let unique = group_ids.iter().collect::<std::collections::HashSet<_>>();
+            if group_ids.len() as i64 != existing || unique.len() != group_ids.len() {
+                return Err(
+                    "Project Group reorder must include every group exactly once.".to_owned(),
+                );
+            }
+            let timestamp = now_millis()?;
+            for (position, group_id) in group_ids.iter().enumerate() {
+                let changed = transaction
+                    .execute(
+                        "UPDATE project_groups SET position = ?1, updated_at = ?2 WHERE id = ?3",
+                        params![position as i64, timestamp, group_id],
+                    )
+                    .map_err(|error| format!("Could not reorder Project Group: {error}"))?;
+                if changed != 1 {
+                    return Err("Project Group reorder referenced an unknown group.".to_owned());
+                }
+            }
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Project Group reorder: {error}"))?;
+            Ok(())
+        })?;
+        self.list_project_groups()
+    }
+
+    pub fn delete_project_group(&self, group_id: &str) -> Result<(), String> {
+        self.with_connection(|connection| {
+            connection
+                .execute("DELETE FROM project_groups WHERE id = ?1", [group_id])
+                .map_err(|error| format!("Could not delete Project Group: {error}"))?;
+            Ok(())
+        })
+    }
+
+    pub fn update_project_presentation(
+        &self,
+        update: ProjectPresentationUpdate,
+    ) -> Result<XiaoProjectSummary, String> {
+        if update.project_group_position < 0 {
+            return Err("Project position cannot be negative.".to_owned());
+        }
+        let path = normalize_workspace_path(&update.path);
+        let display_name = update
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        self.with_connection(|connection| {
+            let changed = connection
+                .execute(
+                    r#"UPDATE workspaces SET
+                           display_name = ?1, pinned = ?2, hidden = ?3,
+                           project_group_id = ?4, project_group_position = ?5
+                       WHERE workspace_path = ?6"#,
+                    params![
+                        display_name,
+                        bool_to_i64(update.pinned),
+                        bool_to_i64(update.hidden),
+                        update.project_group_id,
+                        update.project_group_position,
+                        path
+                    ],
+                )
+                .map_err(|error| format!("Could not update Project presentation: {error}"))?;
+            if changed != 1 {
+                return Err("The Project is not registered in Xiao.".to_owned());
+            }
+            list_projects_from_connection(connection)?
+                .into_iter()
+                .find(|project| project.path == path)
+                .ok_or("Updated Project is unavailable.".to_owned())
+        })
+    }
+
+    pub fn save_codex_profile(&self, update: CodexProfileUpdate) -> Result<CodexProfile, String> {
+        let id = update.id.trim();
+        let display_name = update.display_name.trim();
+        if id.is_empty() || display_name.is_empty() {
+            return Err("Codex profile requires an id and display name.".to_owned());
+        }
+        if !update.environment.as_object().is_some_and(|environment| {
+            environment
+                .iter()
+                .all(|(key, value)| !key.trim().is_empty() && value.as_str().is_some())
+        }) {
+            return Err("Codex profile environment must contain only string values.".to_owned());
+        }
+        if !matches!(
+            update.availability.as_str(),
+            "unknown" | "available" | "unavailable" | "incompatible" | "unauthenticated"
+        ) {
+            return Err("Codex profile availability is invalid.".to_owned());
+        }
+        let environment_json = json_string(&update.environment, "Codex profile environment")?;
+        let identity_json = optional_json_string(
+            update.authenticated_identity.as_ref(),
+            "Codex profile identity",
+        )?;
+        let models_json = json_string(&update.models, "Codex profile models")?;
+        let capabilities_json = json_string(&update.capabilities, "Codex profile capabilities")?;
+        let usage_json = optional_json_string(update.usage.as_ref(), "Codex profile usage")?;
+        let rate_limits_json =
+            optional_json_string(update.rate_limits.as_ref(), "Codex profile rate limits")?;
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Codex profile save: {error}"))?;
+            let current_version = transaction
+                .query_row(
+                    "SELECT version FROM codex_profiles WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|error| format!("Could not inspect Codex profile: {error}"))?;
+            match (current_version, update.expected_version) {
+                (None, None) => {
+                    let timestamp = now_millis()?;
+                    transaction
+                        .execute(
+                            r#"INSERT INTO codex_profiles(
+                                id, display_name, codex_home, authentication_home,
+                                environment_json, availability, authenticated_identity_json,
+                                models_json, capabilities_json, usage_json, rate_limits_json,
+                                diagnostic, version, created_at, updated_at
+                            ) VALUES (
+                                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                                0, ?13, ?13
+                            )"#,
+                            params![
+                                id,
+                                display_name,
+                                update.codex_home,
+                                update.authentication_home,
+                                environment_json,
+                                update.availability,
+                                identity_json,
+                                models_json,
+                                capabilities_json,
+                                usage_json,
+                                rate_limits_json,
+                                update.diagnostic,
+                                timestamp
+                            ],
+                        )
+                        .map_err(|error| format!("Could not create Codex profile: {error}"))?;
+                }
+                (Some(current), Some(expected)) if current == expected => {
+                    let timestamp = now_millis()?;
+                    let changed = transaction
+                        .execute(
+                            r#"UPDATE codex_profiles SET
+                                   display_name = ?1, codex_home = ?2,
+                                   authentication_home = ?3, environment_json = ?4,
+                                   availability = ?5, authenticated_identity_json = ?6,
+                                   models_json = ?7, capabilities_json = ?8, usage_json = ?9,
+                                   rate_limits_json = ?10, diagnostic = ?11,
+                                   version = version + 1, updated_at = ?12
+                               WHERE id = ?13 AND version = ?14"#,
+                            params![
+                                display_name,
+                                update.codex_home,
+                                update.authentication_home,
+                                environment_json,
+                                update.availability,
+                                identity_json,
+                                models_json,
+                                capabilities_json,
+                                usage_json,
+                                rate_limits_json,
+                                update.diagnostic,
+                                timestamp,
+                                id,
+                                expected
+                            ],
+                        )
+                        .map_err(|error| format!("Could not update Codex profile: {error}"))?;
+                    if changed != 1 {
+                        return Err("Codex profile changed before save committed.".to_owned());
+                    }
+                }
+                (Some(current), _) => {
+                    return Err(format!(
+                        "Codex profile changed from the expected version to {current}."
+                    ));
+                }
+                (None, Some(_)) => return Err("Codex profile no longer exists.".to_owned()),
+            }
+            let profile = load_codex_profile(&transaction, id)?
+                .ok_or("Saved Codex profile is unavailable.".to_owned())?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Codex profile: {error}"))?;
+            Ok(profile)
+        })
+    }
+
+    pub fn list_codex_profiles(&self) -> Result<Vec<CodexProfile>, String> {
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    r#"SELECT id, display_name, codex_home, authentication_home,
+                              environment_json, availability, authenticated_identity_json,
+                              models_json, capabilities_json, usage_json, rate_limits_json,
+                              diagnostic, version, created_at, updated_at
+                       FROM codex_profiles
+                       ORDER BY id != 'default', display_name, id"#,
+                )
+                .map_err(|error| format!("Could not prepare Codex profile list: {error}"))?;
+            let rows = statement
+                .query_map([], decode_codex_profile_row)
+                .map_err(|error| format!("Could not query Codex profiles: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not decode Codex profiles: {error}"))?;
+            rows.into_iter().map(decode_codex_profile).collect()
+        })
+    }
+
+    pub fn delete_codex_profile(&self, profile_id: &str) -> Result<(), String> {
+        if profile_id == "default" {
+            return Err("The default Codex profile cannot be deleted.".to_owned());
+        }
+        self.with_connection(|connection| {
+            connection
+                .execute("DELETE FROM codex_profiles WHERE id = ?1", [profile_id])
+                .map_err(|error| format!("Could not delete Codex profile: {error}"))?;
+            Ok(())
+        })
+    }
+
+    pub fn bind_task_codex_profile(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+        profile_id: &str,
+        expected_stage_version: i64,
+        compatibility_confirmed: bool,
+    ) -> Result<TaskCodexProfileBinding, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Task profile binding: {error}"))?;
+            let (workspace_id, current_profile_id, stage_version): (
+                i64,
+                Option<String>,
+                i64,
+            ) = transaction
+                .query_row(
+                    r#"SELECT tasks.workspace_id, tasks.codex_profile_id,
+                              tasks.task_stage_version
+                       FROM tasks
+                       JOIN workspaces ON workspaces.id = tasks.workspace_id
+                       WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
+                    params![workspace_path, task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| format!("Could not load Task profile binding: {error}"))?;
+            if stage_version != expected_stage_version {
+                return Err(format!(
+                    "Task changed from expected stage version {expected_stage_version} to {stage_version}."
+                ));
+            }
+            let next_profile = load_codex_profile(&transaction, profile_id)?
+                .ok_or("Selected Codex profile does not exist.".to_owned())?;
+            if matches!(next_profile.availability.as_str(), "unavailable" | "incompatible") {
+                return Err(next_profile.diagnostic.unwrap_or_else(|| {
+                    "Selected Codex profile is not compatible with this Task.".to_owned()
+                }));
+            }
+            let has_runs = transaction
+                .query_row(
+                    "SELECT 1 FROM runs WHERE workspace_id = ?1 AND task_id = ?2 LIMIT 1",
+                    params![workspace_id, task_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| format!("Could not inspect Task Run profile history: {error}"))?
+                .is_some();
+            if has_runs && current_profile_id.as_deref() != Some(profile_id) {
+                if !compatibility_confirmed {
+                    return Err(
+                        "Changing a Task profile after its first Run requires explicit confirmation."
+                            .to_owned(),
+                    );
+                }
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT DISTINCT model FROM runs WHERE workspace_id = ?1 AND task_id = ?2 AND model IS NOT NULL",
+                    )
+                    .map_err(|error| format!("Could not inspect Task Run models: {error}"))?;
+                let required_models = statement
+                    .query_map(params![workspace_id, task_id], |row| row.get::<_, String>(0))
+                    .map_err(|error| format!("Could not query Task Run models: {error}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("Could not decode Task Run models: {error}"))?;
+                let supports_model = |required: &str| {
+                    next_profile.models.as_array().is_some_and(|models| {
+                        models.iter().any(|model| {
+                            model.as_str() == Some(required)
+                                || model.get("model").and_then(serde_json::Value::as_str)
+                                    == Some(required)
+                        })
+                    })
+                };
+                if required_models.iter().any(|model| !supports_model(model)) {
+                    return Err(
+                        "Selected Codex profile does not support every model used by this Task."
+                            .to_owned(),
+                    );
+                }
+            }
+            transaction
+                .execute(
+                    r#"UPDATE tasks SET codex_profile_id = ?1
+                       WHERE workspace_id = ?2 AND task_id = ?3
+                         AND task_stage_version = ?4"#,
+                    params![profile_id, workspace_id, task_id, expected_stage_version],
+                )
+                .map_err(|error| format!("Could not bind Task Codex profile: {error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Task Codex profile: {error}"))?;
+            Ok(TaskCodexProfileBinding {
+                task_id: task_id.to_owned(),
+                codex_profile_id: Some(profile_id.to_owned()),
+                stage_version,
+            })
+        })
+    }
+
+    pub fn transition_task_stage(
+        &self,
+        request: TaskStageTransitionRequest,
+    ) -> Result<TaskStageTransition, String> {
+        let actor = request.actor.trim();
+        let reason = request.reason.trim();
+        let idempotency_key = request.idempotency_key.trim();
+        if actor.is_empty() || reason.is_empty() || idempotency_key.is_empty() {
+            return Err(
+                "Task stage transitions require an actor, reason, and idempotency key.".to_owned(),
+            );
+        }
+        if request.expected_version < 0 {
+            return Err("Task stage expected version cannot be negative.".to_owned());
+        }
+        let workspace_path = normalize_workspace_path(&request.workspace_path);
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Task stage transition: {error}"))?;
+            let requested_workspace_id = transaction
+                .query_row(
+                    r#"SELECT tasks.workspace_id
+                       FROM tasks
+                       JOIN workspaces ON workspaces.id = tasks.workspace_id
+                       WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
+                    params![workspace_path, request.task_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| format!("Could not load Task stage owner: {error}"))?;
+            if let Some(existing) =
+                load_task_stage_transition_by_key(&transaction, idempotency_key)?
+            {
+                let matches_request = existing.workspace_id == requested_workspace_id
+                    && existing.task_id == request.task_id
+                    && existing.expected_version == Some(request.expected_version)
+                    && existing.to_stage == request.to_stage.as_database()
+                    && existing.actor == actor
+                    && existing.reason == reason
+                    && existing.source_run_id == request.source_run_id;
+                if !matches_request {
+                    return Err(
+                        "Task stage idempotency key belongs to a different transition.".to_owned(),
+                    );
+                }
+                transaction
+                    .commit()
+                    .map_err(|error| format!("Could not finish Task transition lookup: {error}"))?;
+                return existing.decode();
+            }
+
+            let (workspace_id, current_stage, current_version): (i64, String, i64) = transaction
+                .query_row(
+                    r#"SELECT tasks.workspace_id, tasks.task_stage, tasks.task_stage_version
+                       FROM tasks
+                       JOIN workspaces ON workspaces.id = tasks.workspace_id
+                       WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
+                    params![workspace_path, request.task_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|error| format!("Could not load Task stage: {error}"))?;
+            let current_stage = TaskStage::from_database(&current_stage)?;
+            if current_version != request.expected_version {
+                return Err(format!(
+                    "Task stage changed from expected version {} to {current_version}.",
+                    request.expected_version
+                ));
+            }
+            if !current_stage.can_transition_to(request.to_stage) {
+                return Err(format!(
+                    "Task stage cannot transition from `{}` to `{}`.",
+                    current_stage.as_database(),
+                    request.to_stage.as_database()
+                ));
+            }
+            if let Some(source_run_id) = request.source_run_id.as_deref() {
+                let owned = transaction
+                    .query_row(
+                        r#"SELECT 1 FROM runs
+                           WHERE id = ?1 AND workspace_id = ?2 AND task_id = ?3"#,
+                        params![source_run_id, workspace_id, request.task_id],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(|error| format!("Could not validate Task transition Run: {error}"))?
+                    .is_some();
+                if !owned {
+                    return Err("Task stage source Run does not belong to this Task.".to_owned());
+                }
+            }
+
+            let resulting_version = current_version + 1;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE tasks
+                       SET task_stage = ?1, task_stage_version = ?2
+                       WHERE workspace_id = ?3 AND task_id = ?4 AND task_stage_version = ?5"#,
+                    params![
+                        request.to_stage.as_database(),
+                        resulting_version,
+                        workspace_id,
+                        request.task_id,
+                        request.expected_version
+                    ],
+                )
+                .map_err(|error| format!("Could not update Task stage: {error}"))?;
+            if changed != 1 {
+                return Err("Task stage changed before the transition committed.".to_owned());
+            }
+            let transition = TaskStageTransition {
+                id: new_uuid_v7(),
+                task_id: request.task_id,
+                from_stage: Some(current_stage),
+                to_stage: request.to_stage,
+                expected_version: Some(request.expected_version),
+                resulting_version,
+                actor: actor.to_owned(),
+                reason: reason.to_owned(),
+                source_run_id: request.source_run_id,
+                idempotency_key: idempotency_key.to_owned(),
+                created_at: now_millis()?,
+            };
+            transaction
+                .execute(
+                    r#"INSERT INTO task_stage_transitions(
+                        id, workspace_id, task_id, from_stage, to_stage, expected_version,
+                        resulting_version, actor, reason, source_run_id, idempotency_key,
+                        created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+                    params![
+                        transition.id,
+                        workspace_id,
+                        transition.task_id,
+                        current_stage.as_database(),
+                        transition.to_stage.as_database(),
+                        transition.expected_version,
+                        transition.resulting_version,
+                        transition.actor,
+                        transition.reason,
+                        transition.source_run_id,
+                        transition.idempotency_key,
+                        transition.created_at
+                    ],
+                )
+                .map_err(|error| format!("Could not record Task stage transition: {error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Task stage transition: {error}"))?;
+            Ok(transition)
+        })
+    }
+
+    pub fn list_task_stage_transitions(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+    ) -> Result<Vec<TaskStageTransition>, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        self.with_connection(|connection| {
+            let mut statement = connection
+                .prepare(
+                    r#"SELECT transition.id, transition.task_id, transition.from_stage,
+                              transition.to_stage, transition.expected_version,
+                              transition.resulting_version, transition.actor, transition.reason,
+                              transition.source_run_id, transition.idempotency_key,
+                              transition.created_at, transition.workspace_id
+                       FROM task_stage_transitions transition
+                       JOIN workspaces ON workspaces.id = transition.workspace_id
+                       WHERE workspaces.workspace_path = ?1 AND transition.task_id = ?2
+                       ORDER BY transition.resulting_version"#,
+                )
+                .map_err(|error| format!("Could not prepare Task stage history: {error}"))?;
+            let rows = statement
+                .query_map(
+                    params![workspace_path, task_id],
+                    decode_task_stage_transition_row,
+                )
+                .map_err(|error| format!("Could not query Task stage history: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not decode Task stage history: {error}"))?;
+            rows.into_iter()
+                .map(TaskStageTransitionRow::decode)
+                .collect()
+        })
+    }
+
     pub(crate) fn app_data_dir(&self) -> PathBuf {
         self.app_data_dir.clone()
     }
@@ -739,6 +1580,48 @@ impl XiaoRepository {
                 &normalize_workspace_path(workspace_path),
                 task_id,
             )
+        })
+    }
+
+    pub(crate) fn task_codex_profile(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+    ) -> Result<CodexProfile, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        self.with_connection(|connection| {
+            let profile_id = connection
+                .query_row(
+                    r#"SELECT tasks.codex_profile_id
+                       FROM tasks
+                       JOIN workspaces ON workspaces.id = tasks.workspace_id
+                       WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
+                    params![workspace_path, task_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|error| format!("Could not load Task Codex profile binding: {error}"))?
+                .ok_or("Select a Codex profile before starting this Task.")?;
+            let profile = load_codex_profile(connection, &profile_id)?
+                .ok_or("The selected Codex profile no longer exists.")?;
+            if matches!(
+                profile.availability.as_str(),
+                "unavailable" | "incompatible"
+            ) {
+                return Err(profile.diagnostic.unwrap_or_else(|| {
+                    format!(
+                        "Codex profile `{}` is {}.",
+                        profile.display_name, profile.availability
+                    )
+                }));
+            }
+            Ok(profile)
+        })
+    }
+
+    pub(crate) fn codex_profile(&self, profile_id: &str) -> Result<CodexProfile, String> {
+        self.with_connection(|connection| {
+            load_codex_profile(connection, profile_id)?
+                .ok_or("The Run's Codex profile no longer exists.".to_owned())
         })
     }
 
@@ -1118,6 +2001,108 @@ fn cleanup_removed_artifact_runs(app_data_dir: &Path, run_ids: &[String]) {
     }
 }
 
+fn decode_task_stage_transition_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<TaskStageTransitionRow> {
+    Ok(TaskStageTransitionRow {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        from_stage: row.get(2)?,
+        to_stage: row.get(3)?,
+        expected_version: row.get(4)?,
+        resulting_version: row.get(5)?,
+        actor: row.get(6)?,
+        reason: row.get(7)?,
+        source_run_id: row.get(8)?,
+        idempotency_key: row.get(9)?,
+        created_at: row.get(10)?,
+        workspace_id: row.get(11)?,
+    })
+}
+
+fn decode_codex_profile_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexProfileRow> {
+    Ok(CodexProfileRow {
+        id: row.get(0)?,
+        display_name: row.get(1)?,
+        codex_home: row.get(2)?,
+        authentication_home: row.get(3)?,
+        environment_json: row.get(4)?,
+        availability: row.get(5)?,
+        authenticated_identity_json: row.get(6)?,
+        models_json: row.get(7)?,
+        capabilities_json: row.get(8)?,
+        usage_json: row.get(9)?,
+        rate_limits_json: row.get(10)?,
+        diagnostic: row.get(11)?,
+        version: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn decode_codex_profile(row: CodexProfileRow) -> Result<CodexProfile, String> {
+    Ok(CodexProfile {
+        id: row.id,
+        display_name: row.display_name,
+        codex_home: row.codex_home,
+        authentication_home: row.authentication_home,
+        environment: parse_json(&row.environment_json, "Codex profile environment")?,
+        availability: row.availability,
+        authenticated_identity: parse_optional_json(
+            row.authenticated_identity_json.as_deref(),
+            "Codex profile identity",
+        )?,
+        models: parse_json(&row.models_json, "Codex profile models")?,
+        capabilities: parse_json(&row.capabilities_json, "Codex profile capabilities")?,
+        usage: parse_optional_json(row.usage_json.as_deref(), "Codex profile usage")?,
+        rate_limits: parse_optional_json(
+            row.rate_limits_json.as_deref(),
+            "Codex profile rate limits",
+        )?,
+        diagnostic: row.diagnostic,
+        version: row.version,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+fn load_codex_profile(
+    connection: &Connection,
+    profile_id: &str,
+) -> Result<Option<CodexProfile>, String> {
+    connection
+        .query_row(
+            r#"SELECT id, display_name, codex_home, authentication_home,
+                      environment_json, availability, authenticated_identity_json,
+                      models_json, capabilities_json, usage_json, rate_limits_json,
+                      diagnostic, version, created_at, updated_at
+               FROM codex_profiles WHERE id = ?1"#,
+            [profile_id],
+            decode_codex_profile_row,
+        )
+        .optional()
+        .map_err(|error| format!("Could not load Codex profile: {error}"))?
+        .map(decode_codex_profile)
+        .transpose()
+}
+
+fn load_task_stage_transition_by_key(
+    connection: &Connection,
+    idempotency_key: &str,
+) -> Result<Option<TaskStageTransitionRow>, String> {
+    connection
+        .query_row(
+            r#"SELECT id, task_id, from_stage, to_stage, expected_version,
+                      resulting_version, actor, reason, source_run_id,
+                      idempotency_key, created_at, workspace_id
+               FROM task_stage_transitions WHERE idempotency_key = ?1"#,
+            [idempotency_key],
+            decode_task_stage_transition_row,
+        )
+        .optional()
+        .map_err(|error| format!("Could not load Task stage transition: {error}"))
+}
+
 fn open_connection(
     app_data_dir: &Path,
     options: RepositoryOpenOptions,
@@ -1137,6 +2122,14 @@ fn open_connection(
     })?;
     configure_connection(&mut connection)?;
     apply_migrations(&mut connection)?;
+    connection
+        .execute(
+            r#"UPDATE rollout_capabilities
+               SET enabled = 1, enabled_at = ?1
+               WHERE capability_id = 'control-model-task-workbench' AND version = ?2"#,
+            params![now_millis()?, VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION],
+        )
+        .map_err(|error| format!("Could not enable validated control-model capability: {error}"))?;
     migrate_legacy_store(
         &mut connection,
         app_data_dir,
@@ -1224,6 +2217,7 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             "observatory_time_travel_and_handoffs",
             MIGRATION_6_SQL,
         ),
+        (7_i64, "control_model_and_task_workbench", MIGRATION_7_SQL),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -1929,16 +2923,27 @@ fn upsert_task(
     let thread_binding_json = optional_json_string(task.thread_binding.as_ref(), "thread binding")?;
     let goal_json = optional_json_string(task.goal.as_ref(), "task goal")?;
     let plan_json = optional_json_string(task.plan.as_ref(), "task plan")?;
+    let workbench_state_json = json_string(&task.workbench_state, "Task Workbench state")?;
+    let existed = connection
+        .query_row(
+            "SELECT 1 FROM tasks WHERE workspace_id = ?1 AND task_id = ?2",
+            params![workspace_id, task.id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect Xiao task `{}`: {error}", task.id))?
+        .is_some();
     connection
         .execute(
             r#"INSERT INTO tasks(
                 workspace_id, task_id, position, title, created_at, updated_at, draft_text,
                 follow_ups_json, archived, pinned, unread, model, reasoning_effort,
                 thread_binding_json, mode, approval_policy, sandbox_mode, goal_json, plan_json,
-                execution_environment_id, workspace_mode, managed_worktree_id
+                execution_environment_id, workspace_mode, managed_worktree_id,
+                workbench_state_json
              ) VALUES (
                 ?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'local', NULL
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'local', NULL, ?20
              )
              ON CONFLICT(workspace_id, task_id) DO UPDATE SET
                 title = excluded.title, created_at = excluded.created_at,
@@ -1954,7 +2959,8 @@ fn upsert_task(
                 END,
                 mode = excluded.mode,
                 approval_policy = excluded.approval_policy, sandbox_mode = excluded.sandbox_mode,
-                goal_json = excluded.goal_json, plan_json = excluded.plan_json"#,
+                goal_json = excluded.goal_json, plan_json = excluded.plan_json,
+                workbench_state_json = excluded.workbench_state_json"#,
             params![
                 workspace_id,
                 task.id,
@@ -1975,9 +2981,38 @@ fn upsert_task(
                 goal_json,
                 plan_json,
                 execution_environment_id,
+                workbench_state_json,
             ],
         )
         .map_err(|error| format!("Could not save Xiao task `{}`: {error}", task.id))?;
+    if !existed {
+        let transition_id = new_uuid_v7();
+        let transition_key = format!("task-created:{workspace_id}:{}", task.id);
+        connection
+            .execute(
+                r#"INSERT INTO task_stage_transitions(
+                    id, workspace_id, task_id, from_stage, to_stage, expected_version,
+                    resulting_version, actor, reason, source_run_id, idempotency_key,
+                    created_at
+                ) VALUES (
+                    ?1, ?2, ?3, NULL, 'draft', NULL, 0, 'operator',
+                    'Task created', NULL, ?4, ?5
+                )"#,
+                params![
+                    transition_id,
+                    workspace_id,
+                    task.id,
+                    transition_key,
+                    task.created_at
+                ],
+            )
+            .map_err(|error| {
+                format!(
+                    "Could not record initial Task stage for `{}`: {error}",
+                    task.id
+                )
+            })?;
+    }
     Ok(())
 }
 
@@ -2108,7 +3143,8 @@ fn load_task_metadata(
                 t.reasoning_effort, t.thread_binding_json, t.mode, t.approval_policy,
                 t.sandbox_mode, t.goal_json, t.plan_json, t.timeline_entry_count,
                 t.execution_environment_id, t.workspace_mode, t.managed_worktree_id,
-                t.acceptance_contract_version_id
+                t.acceptance_contract_version_id, t.task_stage, t.task_stage_version,
+                t.codex_profile_id, t.workbench_state_json
              FROM tasks t WHERE t.workspace_id = ?1 ORDER BY t.position ASC"#,
         )
         .map_err(|error| format!("Could not prepare Xiao task load: {error}"))?;
@@ -2137,6 +3173,10 @@ fn load_task_metadata(
                 workspace_mode: row.get(19)?,
                 managed_worktree_id: row.get(20)?,
                 acceptance_contract_version_id: row.get(21)?,
+                task_stage: row.get(22)?,
+                task_stage_version: row.get(23)?,
+                codex_profile_id: row.get(24)?,
+                workbench_state_json: row.get(25)?,
             })
         })
         .map_err(|error| format!("Could not query Xiao tasks: {error}"))?;
@@ -2182,6 +3222,10 @@ struct StoredTaskRow {
     workspace_mode: String,
     managed_worktree_id: Option<String>,
     acceptance_contract_version_id: Option<String>,
+    task_stage: String,
+    task_stage_version: i64,
+    codex_profile_id: Option<String>,
+    workbench_state_json: String,
 }
 
 impl StoredTaskRow {
@@ -2195,6 +3239,10 @@ impl StoredTaskRow {
             title: self.title,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            stage: TaskStage::from_database(&self.task_stage)?,
+            stage_version: self.task_stage_version,
+            codex_profile_id: self.codex_profile_id,
+            workbench_state: parse_json(&self.workbench_state_json, "Task Workbench state")?,
             draft_text: self.draft_text,
             follow_ups: parse_json(&self.follow_ups_json, "task follow-ups")?,
             archived: self.archived,
@@ -2326,6 +3374,7 @@ fn search_history_from_connection(
         return Ok(Vec::new());
     }
     let normalized_query = query.to_lowercase();
+    let project_name = project_name_from_path(workspace_path);
     let workspace_id = connection
         .query_row(
             "SELECT id FROM workspaces WHERE workspace_path = ?1",
@@ -2400,11 +3449,14 @@ fn search_history_from_connection(
             .and_then(serde_json::Value::as_i64)
             .unwrap_or(task_updated_at);
         results.push(XiaoHistorySearchResult {
+            project_path: workspace_path.to_owned(),
+            project_name: project_name.clone(),
             task_id,
             task_title,
             task_archived,
             entry_id: entry_id.to_owned(),
             role: role.to_owned(),
+            match_kind: "message".to_owned(),
             snippet: history_search_snippet(text, &normalized_query),
             created_at,
         });
@@ -2413,6 +3465,127 @@ fn search_history_from_connection(
         }
     }
     Ok(results)
+}
+
+fn search_history_global_from_connection(
+    connection: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<XiaoHistorySearchResult>, String> {
+    let query = query.trim();
+    if query.chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    let normalized_query = query.to_lowercase();
+    let escaped_query = normalized_query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let like_query = format!("%{escaped_query}%");
+    let mut statement = connection
+        .prepare(
+            r#"SELECT project_path, display_name, task_id, task_title, task_archived,
+                      entry_id, role, match_kind, text, created_at
+               FROM (
+                   SELECT w.workspace_path AS project_path, w.display_name,
+                          t.task_id, t.title AS task_title, t.archived AS task_archived,
+                          'task-title:' || t.task_id AS entry_id, 'task' AS role,
+                          'title' AS match_kind, t.title AS text, t.updated_at AS created_at
+                   FROM tasks t
+                   JOIN workspaces w ON w.id = t.workspace_id
+                   WHERE lower(t.title) LIKE ?1 ESCAPE '\'
+                   UNION ALL
+                   SELECT w.workspace_path AS project_path, w.display_name,
+                          t.task_id, t.title AS task_title, t.archived AS task_archived,
+                          json_extract(e.entry_json, '$.id') AS entry_id,
+                          CASE json_extract(e.entry_json, '$.kind')
+                              WHEN 'user' THEN 'user' ELSE 'assistant'
+                          END AS role,
+                          'message' AS match_kind,
+                          COALESCE(
+                              NULLIF(json_extract(e.entry_json, '$.body'), ''),
+                              json_extract(e.entry_json, '$.title')
+                          ) AS text,
+                          COALESCE(
+                              json_extract(e.entry_json, '$.createdAt'),
+                              t.updated_at
+                          ) AS created_at
+                   FROM task_timeline_entries e
+                   JOIN tasks t
+                     ON t.workspace_id = e.workspace_id AND t.task_id = e.task_id
+                   JOIN workspaces w ON w.id = e.workspace_id
+                   WHERE (
+                       json_extract(e.entry_json, '$.kind') = 'user'
+                       OR (
+                           json_extract(e.entry_json, '$.kind') = 'result'
+                           AND json_extract(e.entry_json, '$.title') = 'Agent response'
+                       )
+                   )
+                   AND lower(COALESCE(
+                       NULLIF(json_extract(e.entry_json, '$.body'), ''),
+                       json_extract(e.entry_json, '$.title'),
+                       ''
+                   )) LIKE ?1 ESCAPE '\'
+               )
+               WHERE entry_id IS NOT NULL AND text IS NOT NULL
+               ORDER BY created_at DESC, task_id, entry_id
+               LIMIT ?2"#,
+        )
+        .map_err(|error| format!("Could not prepare global Task search: {error}"))?;
+    let rows = statement
+        .query_map(params![like_query, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, i64>(9)?,
+            ))
+        })
+        .map_err(|error| format!("Could not query global Task search: {error}"))?;
+    rows.map(|row| {
+        let (
+            project_path,
+            display_name,
+            task_id,
+            task_title,
+            task_archived,
+            entry_id,
+            role,
+            match_kind,
+            text,
+            created_at,
+        ) = row.map_err(|error| format!("Could not decode global Task search: {error}"))?;
+        Ok(XiaoHistorySearchResult {
+            project_name: display_name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| project_name_from_path(&project_path)),
+            project_path,
+            task_id,
+            task_title,
+            task_archived,
+            entry_id,
+            role,
+            match_kind,
+            snippet: history_search_snippet(&text, &normalized_query),
+            created_at,
+        })
+    })
+    .collect()
+}
+
+fn project_name_from_path(path: &str) -> String {
+    PathBuf::from(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_owned()
 }
 
 fn history_search_snippet(text: &str, normalized_query: &str) -> String {
@@ -2603,31 +3776,72 @@ fn list_projects_from_connection(
 ) -> Result<Vec<XiaoProjectSummary>, String> {
     let mut statement = connection
         .prepare(
-            r#"SELECT workspace_path, updated_at FROM workspaces
-             ORDER BY updated_at DESC, workspace_path ASC"#,
+            r#"SELECT workspace_path, updated_at, display_name, pinned, hidden,
+                      project_group_id, project_group_position
+               FROM workspaces
+               ORDER BY pinned DESC, project_group_id IS NULL, project_group_position,
+                        updated_at DESC, workspace_path ASC"#,
         )
         .map_err(|error| format!("Could not prepare Xiao project list: {error}"))?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)? != 0,
+                row.get::<_, i64>(4)? != 0,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
         })
         .map_err(|error| format!("Could not query Xiao projects: {error}"))?;
     rows.map(|row| {
-        let (path, updated_at) =
-            row.map_err(|error| format!("Could not decode Xiao project: {error}"))?;
-        let name = PathBuf::from(&path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or(&path)
-            .to_owned();
+        let (
+            path,
+            updated_at,
+            display_name,
+            pinned,
+            hidden,
+            project_group_id,
+            project_group_position,
+        ) = row.map_err(|error| format!("Could not decode Xiao project: {error}"))?;
+        let name = display_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| project_name_from_path(&path));
         Ok(XiaoProjectSummary {
             path,
             name,
             updated_at,
+            pinned,
+            hidden,
+            project_group_id,
+            project_group_position,
         })
     })
     .collect()
+}
+
+fn load_project_group(
+    connection: &Connection,
+    group_id: &str,
+) -> Result<Option<ProjectGroup>, String> {
+    connection
+        .query_row(
+            "SELECT id, name, position, created_at, updated_at FROM project_groups WHERE id = ?1",
+            [group_id],
+            |row| {
+                Ok(ProjectGroup {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    position: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not load Project Group: {error}"))
 }
 
 fn ensure_local_environment(
@@ -2985,6 +4199,10 @@ mod tests {
             title: format!("Task {id}"),
             created_at: 10,
             updated_at: 20,
+            stage: TaskStage::Draft,
+            stage_version: 0,
+            codex_profile_id: None,
+            workbench_state: serde_json::json!({}),
             draft_text: String::new(),
             follow_ups: Vec::new(),
             archived: false,
@@ -3248,10 +4466,34 @@ mod tests {
                             |row| row.get(0),
                         )
                         .map_err(|error| error.to_string())?;
+                    let control_model_tables: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('rollout_capabilities', 'codex_profiles', 'project_groups', 'task_stage_transitions', 'command_bindings', 'task_terminal_sessions', 'task_preview_state')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let control_model_capability: (i64, i64) = connection
+                        .query_row(
+                            "SELECT version, enabled FROM rollout_capabilities WHERE capability_id = 'control-model-task-workbench'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let task_control_columns: i64 = connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('task_stage', 'task_stage_version', 'codex_profile_id', 'workbench_state_json')",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
                     assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
                     assert_eq!(foreign_keys, 1);
                     assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
                     assert_eq!(synchronous, 2);
+                    assert_eq!(control_model_tables, 7);
+                    assert_eq!(control_model_capability, (1, 1));
+                    assert_eq!(task_control_columns, 4);
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);
                     assert_eq!(run_generation_columns, 5);
@@ -3909,6 +5151,158 @@ mod tests {
     }
 
     #[test]
+    fn schema_v6_upgrade_assigns_conservative_task_stages_without_losing_history() {
+        let directory = TestDirectory::new("schema-v6-control-model-upgrade");
+        let workspace = directory.workspace("workspace");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            connection.execute_batch(MIGRATION_1_SQL).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, 'v1', 1)",
+                    [],
+                )
+                .unwrap();
+            let transaction = connection.transaction().unwrap();
+            transaction.execute_batch(MIGRATION_2_SQL).unwrap();
+            backfill_execution_environments(&transaction).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, 'v2', 2)",
+                    [],
+                )
+                .unwrap();
+            transaction.commit().unwrap();
+            for (version, sql) in [
+                (3, MIGRATION_3_SQL),
+                (4, MIGRATION_4_SQL),
+                (5, MIGRATION_5_SQL),
+                (6, MIGRATION_6_SQL),
+            ] {
+                connection.execute_batch(sql).unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?1, 'legacy', ?1)",
+                        [version],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute(
+                    r#"INSERT INTO workspaces(
+                        id, workspace_path, active_task_id, show_archived, updated_at, public_id
+                    ) VALUES (1, ?1, 'started', 0, 20, 'workspace-public-id')"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    r#"INSERT INTO execution_environments(
+                        id, workspace_id, kind, label, workspace_root, availability,
+                        created_at, updated_at
+                    ) VALUES ('environment', 1, 'windows', 'Local', ?1, 'available', 1, 1)"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+            for (position, task_id) in ["never-started", "started"].into_iter().enumerate() {
+                connection
+                    .execute(
+                        r#"INSERT INTO tasks(
+                            workspace_id, task_id, position, title, created_at, updated_at,
+                            draft_text, follow_ups_json, archived, pinned, unread, model,
+                            reasoning_effort, thread_binding_json, mode, approval_policy,
+                            sandbox_mode, goal_json, plan_json, timeline_sha256,
+                            timeline_entry_count, execution_environment_id, workspace_mode,
+                            managed_worktree_id, acceptance_contract_version_id
+                        ) VALUES (
+                            1, ?1, ?2, ?1, 10, 20, '', '[]', 0, 0, 0,
+                            NULL, NULL, NULL, 'default', 'on-request', 'workspace-write',
+                            NULL, NULL, NULL, 1, 'environment', 'local', NULL, NULL
+                        )"#,
+                        params![task_id, position as i64],
+                    )
+                    .unwrap();
+                connection
+                    .execute(
+                        r#"INSERT INTO task_timeline_entries(
+                            workspace_id, task_id, position, entry_json
+                        ) VALUES (1, ?1, 0, ?2)"#,
+                        params![task_id, timeline_entry(position).to_string()],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute(
+                    r#"INSERT INTO runs(
+                        id, workspace_id, task_id, idempotency_key, parent_run_id,
+                        candidate_group_id, status, agent_outcome, verification_outcome,
+                        execution_root, queued_at, started_at, finished_at, version
+                    ) VALUES (
+                        'run', 1, 'started', 'run-key', NULL, NULL, 'completed',
+                        'completed', 'not_requested', ?1, 15, 16, 17, 1
+                    )"#,
+                    [workspace.to_string_lossy().into_owned()],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .with_connection(|connection| {
+                let stages = connection
+                    .prepare(
+                        "SELECT task_id, task_stage, task_stage_version FROM tasks ORDER BY task_id",
+                    )
+                    .and_then(|mut statement| {
+                        statement
+                            .query_map([], |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, i64>(2)?,
+                                ))
+                            })?
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(
+                    stages,
+                    vec![
+                        ("never-started".to_owned(), "draft".to_owned(), 0),
+                        ("started".to_owned(), "in_progress".to_owned(), 0),
+                    ]
+                );
+                let transition_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM task_stage_transitions", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                let timeline_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM task_timeline_entries", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                let run_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(transition_count, 2);
+                assert_eq!(timeline_count, 2);
+                assert_eq!(run_count, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn newer_database_schema_is_rejected_without_mutation() {
         let directory = TestDirectory::new("newer-schema");
         {
@@ -3967,6 +5361,12 @@ mod tests {
             "explanation": "Test",
             "steps": [{ "step": "Round trip", "status": "inProgress" }]
         }));
+        stored_task.workbench_state = serde_json::json!({
+            "focusView": "terminal",
+            "focusPanelOpen": true,
+            "timelineScrollTop": 420
+        });
+        let expected_workbench_state = stored_task.workbench_state.clone();
         repository
             .save_workspace(update(document(&workspace, vec![stored_task])))
             .unwrap();
@@ -3997,12 +5397,87 @@ mod tests {
         assert!(loaded_task.goal.is_some());
         assert_eq!(loaded_task.acceptance_contract, None);
         assert!(loaded_task.plan.is_some());
+        assert_eq!(loaded_task.workbench_state, expected_workbench_state);
         assert_eq!(loaded_task.timeline.len(), 3);
         assert!(loaded_task.timeline_complete);
         assert_eq!(loaded_task.timeline_entry_count, 3);
         assert!(loaded_task.execution_environment_id.is_some());
         assert_eq!(loaded_task.workspace_mode, XiaoWorkspaceMode::Local);
         assert_eq!(loaded_task.managed_worktree_id, None);
+    }
+
+    #[test]
+    fn task_stage_transition_is_optimistic_idempotent_and_independent() {
+        let directory = TestDirectory::new("task-stage-transition");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 1)])))
+            .unwrap();
+
+        let started = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                task_id: "task".to_owned(),
+                expected_version: 0,
+                to_stage: TaskStage::InProgress,
+                actor: "operator".to_owned(),
+                reason: "Start the first Run".to_owned(),
+                source_run_id: None,
+                idempotency_key: "stage-start".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(started.from_stage, Some(TaskStage::Draft));
+        assert_eq!(started.to_stage, TaskStage::InProgress);
+        assert_eq!(started.resulting_version, 1);
+
+        let duplicate = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                task_id: "task".to_owned(),
+                expected_version: 0,
+                to_stage: TaskStage::InProgress,
+                actor: "operator".to_owned(),
+                reason: "Start the first Run".to_owned(),
+                source_run_id: None,
+                idempotency_key: "stage-start".to_owned(),
+            })
+            .unwrap();
+        assert_eq!(duplicate.id, started.id);
+        let conflicting_duplicate = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                task_id: "task".to_owned(),
+                expected_version: 0,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Review".to_owned(),
+                source_run_id: None,
+                idempotency_key: "stage-start".to_owned(),
+            })
+            .unwrap_err();
+        assert!(conflicting_duplicate.contains("different transition"));
+
+        let stale = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+                task_id: "task".to_owned(),
+                expected_version: 0,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Review".to_owned(),
+                source_run_id: None,
+                idempotency_key: "stage-review-stale".to_owned(),
+            })
+            .unwrap_err();
+        assert!(stale.contains("changed"));
+
+        let transitions = repository
+            .list_task_stage_transitions(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        assert_eq!(transitions.len(), 2);
+        assert_eq!(transitions[0].resulting_version, 0);
+        assert_eq!(transitions[1], started);
     }
 
     #[test]
@@ -4400,6 +5875,134 @@ mod tests {
             .search_history(&workspace.to_string_lossy(), "r", None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn project_groups_and_global_task_search_are_host_owned() {
+        let directory = TestDirectory::new("project-groups-global-search");
+        let first_workspace = directory.workspace("first");
+        let second_workspace = directory.workspace("second");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+
+        let mut title_match = task("title-match", 1);
+        title_match.title = "Needle control model".to_owned();
+        repository
+            .save_workspace(update(document(&first_workspace, vec![title_match])))
+            .unwrap();
+        let mut timeline_match = task("timeline-match", 1);
+        timeline_match.timeline[0]["body"] = serde_json::json!("Durable needle content");
+        repository
+            .save_workspace(update(document(&second_workspace, vec![timeline_match])))
+            .unwrap();
+
+        let group = repository
+            .save_project_group(ProjectGroupUpdate {
+                id: "clients".to_owned(),
+                name: "Clients".to_owned(),
+                position: 2,
+            })
+            .unwrap();
+        repository
+            .update_project_presentation(ProjectPresentationUpdate {
+                path: first_workspace.to_string_lossy().into_owned(),
+                display_name: Some("Alpha".to_owned()),
+                pinned: true,
+                hidden: false,
+                project_group_id: Some(group.id.clone()),
+                project_group_position: 1,
+            })
+            .unwrap();
+
+        let groups = repository.list_project_groups().unwrap();
+        assert_eq!(groups, vec![group.clone()]);
+        let other_group = repository
+            .save_project_group(ProjectGroupUpdate {
+                id: "internal".to_owned(),
+                name: "Internal".to_owned(),
+                position: 3,
+            })
+            .unwrap();
+        let reordered = repository
+            .reorder_project_groups(vec![other_group.id.clone(), group.id.clone()])
+            .unwrap();
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["internal", "clients"]
+        );
+        assert!(repository
+            .reorder_project_groups(vec![group.id.clone()])
+            .is_err());
+        let projects = repository.list_projects().unwrap();
+        let alpha = projects
+            .iter()
+            .find(|project| project.path == first_workspace.to_string_lossy())
+            .unwrap();
+        assert_eq!(alpha.name, "Alpha");
+        assert!(alpha.pinned);
+        assert_eq!(alpha.project_group_id.as_deref(), Some("clients"));
+
+        let results = repository
+            .search_history_global("needle", Some(20))
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|result| {
+            result.task_id == "title-match"
+                && result.project_path == first_workspace.to_string_lossy()
+                && result.match_kind == "title"
+        }));
+        assert!(repository
+            .search_history_global("%_", Some(20))
+            .unwrap()
+            .is_empty());
+        assert!(results.iter().any(|result| {
+            result.task_id == "timeline-match"
+                && result.project_path == second_workspace.to_string_lossy()
+                && result.match_kind == "message"
+        }));
+    }
+
+    #[test]
+    fn codex_profiles_are_durable_and_task_binding_is_version_checked() {
+        let directory = TestDirectory::new("codex-profiles");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+
+        let profile = repository
+            .save_codex_profile(CodexProfileUpdate {
+                id: "work".to_owned(),
+                display_name: "Work account".to_owned(),
+                codex_home: Some("C:\\codex-work".to_owned()),
+                authentication_home: Some("C:\\auth-work".to_owned()),
+                environment: serde_json::json!({"CODEX_CHANNEL": "work"}),
+                availability: "available".to_owned(),
+                authenticated_identity: Some(serde_json::json!({"email": "operator@example.com"})),
+                models: serde_json::json!(["gpt-5.6"]),
+                capabilities: serde_json::json!({"steering": true}),
+                usage: Some(serde_json::json!({"tokens": 42})),
+                rate_limits: Some(serde_json::json!({"weeklyRemaining": 80})),
+                diagnostic: None,
+                expected_version: None,
+            })
+            .unwrap();
+        assert_eq!(profile.version, 0);
+        assert_eq!(
+            repository.list_codex_profiles().unwrap().last().unwrap(),
+            &profile
+        );
+
+        let bound = repository
+            .bind_task_codex_profile(&workspace.to_string_lossy(), "task", "work", 0, false)
+            .unwrap();
+        assert_eq!(bound.codex_profile_id.as_deref(), Some("work"));
+        assert!(repository
+            .bind_task_codex_profile(&workspace.to_string_lossy(), "task", "default", 1, false,)
+            .is_err());
     }
 
     #[test]

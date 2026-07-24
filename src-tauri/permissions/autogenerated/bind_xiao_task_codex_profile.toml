@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-bind-xiao-task-codex-profile"
+description = "Enables the bind_xiao_task_codex_profile command without any pre-configured scope."
+commands.allow = ["bind_xiao_task_codex_profile"]
+
+[[permission]]
+identifier = "deny-bind-xiao-task-codex-profile"
+description = "Denies the bind_xiao_task_codex_profile command without any pre-configured scope."
+commands.deny = ["bind_xiao_task_codex_profile"]

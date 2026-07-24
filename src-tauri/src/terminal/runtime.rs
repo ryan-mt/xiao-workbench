@@ -17,6 +17,7 @@ use windows_sys::Win32::System::Threading::TerminateProcess;
 
 const MIN_COLS: u16 = 20;
 const MIN_ROWS: u16 = 4;
+const MAX_REPLAY_BYTES: usize = 256 * 1024;
 
 #[cfg(windows)]
 type TerminalKiller = OwnedHandle;
@@ -26,9 +27,17 @@ type TerminalKiller = Box<dyn ChildKiller + Send + Sync>;
 struct TerminalSession {
     project_path: String,
     task_id: Option<String>,
+    shell: String,
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<TerminalKiller>,
+    output: Mutex<TerminalReplay>,
+}
+
+#[derive(Default)]
+struct TerminalReplay {
+    data: String,
+    sequence: u64,
 }
 
 #[derive(Default)]
@@ -41,6 +50,8 @@ pub struct TerminalManager {
 pub struct TerminalStartResult {
     pub session_id: String,
     pub shell: String,
+    pub replay: String,
+    pub replay_sequence: u64,
 }
 
 pub(super) struct TerminalStartRequest {
@@ -58,6 +69,7 @@ pub(super) struct TerminalStartRequest {
 struct TerminalOutput {
     session_id: String,
     data: String,
+    sequence: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -147,13 +159,23 @@ impl TerminalManager {
         if shell.is_empty() || shell == "Unknown shell" {
             return Err("No system shell is available.".to_owned());
         }
-        if self
+        if let Some(existing) = self
             .sessions
             .lock()
             .map_err(|error| error.to_string())?
-            .contains_key(&session_id)
+            .get(&session_id)
+            .cloned()
         {
-            return Err("This terminal session already exists.".to_owned());
+            if existing.project_path != project_path || existing.task_id != task_id {
+                return Err("This terminal session belongs to a different Task.".to_owned());
+            }
+            let replay = existing.output.lock().map_err(|error| error.to_string())?;
+            return Ok(TerminalStartResult {
+                session_id,
+                shell: existing.shell.clone(),
+                replay: replay.data.clone(),
+                replay_sequence: replay.sequence,
+            });
         }
 
         let pair = native_pty_system()
@@ -181,17 +203,20 @@ impl TerminalManager {
         let session = Arc::new(TerminalSession {
             project_path,
             task_id,
+            shell: shell.to_owned(),
             master: Mutex::new(pair.master),
             writer: Mutex::new(writer),
             killer: Mutex::new(killer),
+            output: Mutex::new(TerminalReplay::default()),
         });
         self.sessions
             .lock()
             .map_err(|error| error.to_string())?
-            .insert(session_id.clone(), session);
+            .insert(session_id.clone(), Arc::clone(&session));
 
         let output_app = app.clone();
         let output_session_id = session_id.clone();
+        let output_session = Arc::clone(&session);
         thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
             let mut decoder = Utf8StreamDecoder::default();
@@ -203,11 +228,13 @@ impl TerminalManager {
                         if data.is_empty() {
                             continue;
                         }
+                        let sequence = record_terminal_output(&output_session.output, &data);
                         let _ = output_app.emit(
                             "terminal://output",
                             TerminalOutput {
                                 session_id: output_session_id.clone(),
                                 data,
+                                sequence,
                             },
                         );
                     }
@@ -216,11 +243,13 @@ impl TerminalManager {
             }
             let data = decoder.finish();
             if !data.is_empty() {
+                let sequence = record_terminal_output(&output_session.output, &data);
                 let _ = output_app.emit(
                     "terminal://output",
                     TerminalOutput {
                         session_id: output_session_id,
                         data,
+                        sequence,
                     },
                 );
             }
@@ -250,6 +279,8 @@ impl TerminalManager {
         Ok(TerminalStartResult {
             session_id,
             shell: shell.to_owned(),
+            replay: String::new(),
+            replay_sequence: 0,
         })
     }
 
@@ -316,6 +347,22 @@ impl TerminalManager {
             .cloned()
             .ok_or_else(|| "The terminal session is no longer running.".to_owned())
     }
+}
+
+fn record_terminal_output(output: &Mutex<TerminalReplay>, data: &str) -> u64 {
+    let Ok(mut replay) = output.lock() else {
+        return 0;
+    };
+    replay.sequence = replay.sequence.saturating_add(1);
+    replay.data.push_str(data);
+    if replay.data.len() > MAX_REPLAY_BYTES {
+        let mut keep_from = replay.data.len() - MAX_REPLAY_BYTES;
+        while !replay.data.is_char_boundary(keep_from) {
+            keep_from += 1;
+        }
+        replay.data.drain(..keep_from);
+    }
+    replay.sequence
 }
 
 impl Drop for TerminalManager {
@@ -395,6 +442,22 @@ mod tests {
     fn terminal_session_ids_are_restricted() {
         assert!(validate_session_id("terminal-123").is_ok());
         assert!(validate_session_id("../terminal").is_err());
+    }
+
+    #[test]
+    fn terminal_replay_is_bounded_and_keeps_monotonic_sequences() {
+        let output = Mutex::new(TerminalReplay::default());
+        assert_eq!(record_terminal_output(&output, "first"), 1);
+        assert_eq!(
+            record_terminal_output(&output, &"界".repeat(MAX_REPLAY_BYTES)),
+            2
+        );
+
+        let replay = output.lock().unwrap();
+        assert_eq!(replay.sequence, 2);
+        assert!(replay.data.len() <= MAX_REPLAY_BYTES);
+        assert!(std::str::from_utf8(replay.data.as_bytes()).is_ok());
+        assert!(replay.data.ends_with('界'));
     }
 
     #[cfg(windows)]

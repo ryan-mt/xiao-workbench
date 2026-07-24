@@ -285,6 +285,7 @@ describe("ActivityItem context compaction", () => {
 describe("live turn presentation", () => {
   const workingRuntime: AgentRuntimeState = {
     phase: "working",
+    profileId: "profile-default",
     taskId: "task-1",
     threadId: "thread-1",
     turnId: "turn-1",

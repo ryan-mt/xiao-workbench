@@ -161,6 +161,7 @@ export type AgentRuntimeState = {
   turnStartedAt: number | null;
   error: string | null;
   eventsSeen: number;
+  profileId: string | null;
 };
 
 export type AgentAttachment = {
@@ -174,6 +175,8 @@ export type AgentAttachment = {
   lineEnd?: number;
   comment?: string;
   preview?: string;
+  /** Fingerprint of the exact patch the review comment was created against. */
+  sourceRevision?: string;
 };
 
 export type AgentFollowUp = {

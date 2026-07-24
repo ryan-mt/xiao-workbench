@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-xiao-project-groups"
+description = "Enables the list_xiao_project_groups command without any pre-configured scope."
+commands.allow = ["list_xiao_project_groups"]
+
+[[permission]]
+identifier = "deny-list-xiao-project-groups"
+description = "Denies the list_xiao_project_groups command without any pre-configured scope."
+commands.deny = ["list_xiao_project_groups"]

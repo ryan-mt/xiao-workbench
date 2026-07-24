@@ -34,6 +34,10 @@ export type RunSnapshot = {
   verificationBaselineArtifactId: string | null;
   verificationBaselineDiagnostic: string | null;
   latestVerificationAttemptId: string | null;
+  codexProfileId?: string | null;
+  capabilitySnapshot?: unknown;
+  policySnapshot?: unknown;
+  workspaceSnapshot?: unknown;
   status: RunStatus;
   agentOutcome: RunAgentOutcome;
   verificationOutcome: RunVerificationOutcome;

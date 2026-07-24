@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,7 +11,7 @@ use tauri::http::{header, Request, Response, StatusCode};
 const MAX_PREVIEW_ROOTS: usize = 16;
 const HISTORY_NAVIGATION_ALLOWANCE_TTL: Duration = Duration::from_secs(2);
 const MAIN_WEBVIEW_LABEL: &str = "main";
-const BROWSER_WEBVIEW_LABELS: [&str; 2] = ["xiao-browser", "xiao-game"];
+const TASK_PREVIEW_LABEL_PREFIX: &str = "xiao-task-preview-";
 const PREVIEW_CONTENT_SECURITY_POLICY: &str = concat!(
     "default-src 'none'; ",
     "script-src 'self'; ",
@@ -38,18 +39,32 @@ enum NavigationAllowance {
 
 #[derive(Clone, Default)]
 pub struct PreviewRegistry {
-    roots: Arc<Mutex<VecDeque<(String, PathBuf)>>>,
+    roots: Arc<Mutex<VecDeque<(String, PathBuf, Option<PreviewScope>)>>>,
     navigation_allowances: Arc<Mutex<HashMap<String, NavigationAllowance>>>,
+    webview_tasks: Arc<Mutex<HashMap<String, PreviewScope>>>,
+    registered_origins: Arc<Mutex<HashMap<String, Vec<String>>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreviewScope {
+    pub project_path: String,
+    pub task_id: String,
+    pub execution_root: String,
 }
 
 impl PreviewRegistry {
-    pub fn register(&self, root: PathBuf, relative_path: &Path) -> Result<String, String> {
+    pub fn register(
+        &self,
+        root: PathBuf,
+        relative_path: &Path,
+        scope: Option<PreviewScope>,
+    ) -> Result<String, String> {
         let token = uuid::Uuid::now_v7().to_string();
         let mut roots = self
             .roots
             .lock()
             .map_err(|_| "Workspace preview registry is unavailable.".to_owned())?;
-        roots.push_back((token.clone(), root));
+        roots.push_back((token.clone(), root, scope));
         while roots.len() > MAX_PREVIEW_ROOTS {
             roots.pop_front();
         }
@@ -69,6 +84,66 @@ impl PreviewRegistry {
 
         #[cfg(not(any(target_os = "windows", target_os = "android")))]
         Ok(format!("xiao-preview://{token}/{encoded_path}"))
+    }
+
+    pub(crate) fn register_task_preview_target(
+        &self,
+        webview_label: &str,
+        scope: PreviewScope,
+        target: &tauri::Url,
+    ) -> Result<(), String> {
+        let registered = preview_token(target)
+            .is_some_and(|token| self.token_belongs_to_scope(token, &scope))
+            || is_loopback_http_url(target);
+        if !registered {
+            return Err("Task Preview target is not registered for this Task.".to_owned());
+        }
+        if let Ok(mut bindings) = self.webview_tasks.lock() {
+            bindings.insert(webview_label.to_owned(), scope);
+        }
+        if let Some(origin) = url_origin(target) {
+            let mut origins = self
+                .registered_origins
+                .lock()
+                .map_err(|_| "Task Preview registry is unavailable.".to_owned())?;
+            let registered = origins.entry(webview_label.to_owned()).or_default();
+            if !registered.contains(&origin) {
+                registered.push(origin);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn task_preview_scope_matches(
+        &self,
+        webview_label: &str,
+        scope: &PreviewScope,
+    ) -> bool {
+        self.webview_tasks
+            .lock()
+            .ok()
+            .is_some_and(|bindings| bindings.get(webview_label) == Some(scope))
+    }
+
+    pub(crate) fn task_preview_targets(&self, scope: &PreviewScope) -> Vec<(String, Vec<String>)> {
+        let Ok(bindings) = self.webview_tasks.lock() else {
+            return Vec::new();
+        };
+        let Ok(origins) = self.registered_origins.lock() else {
+            return Vec::new();
+        };
+        let mut targets = bindings
+            .iter()
+            .filter(|(_, binding)| *binding == scope)
+            .map(|(label, _)| {
+                (
+                    label.clone(),
+                    origins.get(label).cloned().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by(|left, right| left.0.cmp(&right.0));
+        targets
     }
 
     pub(crate) fn allow_navigation(&self, webview_label: &str, target: &tauri::Url) {
@@ -106,13 +181,24 @@ impl PreviewRegistry {
         if webview_label == MAIN_WEBVIEW_LABEL {
             return main_app_navigation_allowed(current, target);
         }
-        if !BROWSER_WEBVIEW_LABELS.contains(&webview_label) {
+        if webview_label != "xiao-game"
+            && !webview_label
+                .strip_prefix(TASK_PREVIEW_LABEL_PREFIX)
+                .is_some_and(|task| {
+                    !task.is_empty()
+                        && task.len() <= 72
+                        && task
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                })
+        {
             return false;
         }
         if !matches!(target.scheme(), "http" | "https" | "xiao-preview") {
             self.clear_navigation_allowance(webview_label);
             return false;
         }
+        let task_preview = webview_label.starts_with(TASK_PREVIEW_LABEL_PREFIX);
         let allowance = self
             .navigation_allowances
             .lock()
@@ -126,6 +212,24 @@ impl PreviewRegistry {
             allowance,
             Some(NavigationAllowance::HistoryTraversal(expires_at)) if Instant::now() <= expires_at
         );
+        if task_preview {
+            let scope = self
+                .webview_tasks
+                .lock()
+                .ok()
+                .and_then(|bindings| bindings.get(webview_label).cloned());
+            let registered_target = scope.as_ref().is_some_and(|scope| {
+                preview_token(target).is_some_and(|token| self.token_belongs_to_scope(token, scope))
+            }) || url_origin(target).is_some_and(|origin| {
+                self.registered_origins.lock().ok().is_some_and(|origins| {
+                    origins
+                        .get(webview_label)
+                        .is_some_and(|registered| registered.contains(&origin))
+                })
+            });
+            return registered_target
+                && (explicitly_allowed || history_allowed || same_origin(current, target));
+        }
         if preview_token(current).is_none() {
             return true;
         }
@@ -232,14 +336,49 @@ impl PreviewRegistry {
             .lock()
             .ok()?
             .iter()
-            .find_map(|(registered, root)| (registered == token).then(|| root.clone()))
+            .find_map(|(registered, root, _)| (registered == token).then(|| root.clone()))
     }
 
     fn contains_token(&self, token: &str) -> bool {
         self.roots
             .lock()
-            .is_ok_and(|roots| roots.iter().any(|(registered, _)| registered == token))
+            .is_ok_and(|roots| roots.iter().any(|(registered, _, _)| registered == token))
     }
+
+    fn token_belongs_to_scope(&self, token: &str, scope: &PreviewScope) -> bool {
+        self.roots.lock().is_ok_and(|roots| {
+            roots
+                .iter()
+                .any(|(registered, _, owner)| registered == token && owner.as_ref() == Some(scope))
+        })
+    }
+}
+
+pub(crate) fn is_loopback_http_url(url: &tauri::Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+}
+
+fn same_origin(left: &tauri::Url, right: &tauri::Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn url_origin(url: &tauri::Url) -> Option<String> {
+    url.host_str().map(|host| {
+        format!(
+            "{}://{}:{}",
+            url.scheme(),
+            host,
+            url.port_or_known_default().unwrap_or_default()
+        )
+    })
 }
 
 fn main_app_navigation_allowed(current: &tauri::Url, target: &tauri::Url) -> bool {
@@ -336,12 +475,22 @@ fn internal_error() -> Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        content_type, NavigationAllowance, PreviewRegistry, PREVIEW_CONTENT_SECURITY_POLICY,
+        content_type, NavigationAllowance, PreviewRegistry, PreviewScope,
+        PREVIEW_CONTENT_SECURITY_POLICY,
     };
     use std::fs;
     use std::path::Path;
     use std::time::{Duration, Instant};
     use tauri::http::{header, Request, StatusCode};
+    use tauri::Url;
+
+    fn scope(task_id: &str) -> PreviewScope {
+        PreviewScope {
+            project_path: "C:\\project".to_owned(),
+            task_id: task_id.to_owned(),
+            execution_root: "C:\\project\\.xiao-worktree".to_owned(),
+        }
+    }
 
     #[test]
     fn preview_webviews_have_no_native_command_capability() {
@@ -386,7 +535,11 @@ mod tests {
         fs::write(directory.join("secret.txt"), b"secret").unwrap();
         let registry = PreviewRegistry::default();
         let url = registry
-            .register(root.canonicalize().unwrap(), Path::new("index.html"))
+            .register(
+                root.canonicalize().unwrap(),
+                Path::new("index.html"),
+                Some(scope("task")),
+            )
             .unwrap();
         let parsed = tauri::Url::parse(&url).unwrap();
         let token = super::preview_token(&parsed).unwrap();
@@ -443,10 +596,18 @@ mod tests {
         }
         let registry = PreviewRegistry::default();
         let first_url = registry
-            .register(first.canonicalize().unwrap(), Path::new("index.html"))
+            .register(
+                first.canonicalize().unwrap(),
+                Path::new("index.html"),
+                Some(scope("task-a")),
+            )
             .unwrap();
         let second_url = registry
-            .register(second.canonicalize().unwrap(), Path::new("index.html"))
+            .register(
+                second.canonicalize().unwrap(),
+                Path::new("index.html"),
+                Some(scope("task-b")),
+            )
             .unwrap();
         let first_parsed = tauri::Url::parse(&first_url).unwrap();
         let second_parsed = tauri::Url::parse(&second_url).unwrap();
@@ -473,7 +634,19 @@ mod tests {
             StatusCode::NOT_FOUND
         );
 
-        assert!(registry.navigation_allowed("xiao-browser", &first_parsed, &second_parsed,));
+        registry
+            .register_task_preview_target("xiao-task-preview-task", scope("task-a"), &first_parsed)
+            .unwrap();
+        assert!(!registry.navigation_allowed(
+            "xiao-task-preview-task",
+            &first_parsed,
+            &second_parsed,
+        ));
+        assert!(registry.navigation_allowed(
+            "xiao-task-preview-task",
+            &first_parsed,
+            &first_parsed,
+        ));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -481,38 +654,99 @@ mod tests {
     fn explicit_navigation_allowance_is_exact_and_one_shot() {
         let registry = PreviewRegistry::default();
         let preview = preview_url();
-        let external = tauri::Url::parse("https://example.com/").unwrap();
-        let other_external = tauri::Url::parse("https://example.net/").unwrap();
+        let external = tauri::Url::parse("http://127.0.0.1:3000/").unwrap();
+        let other_external = tauri::Url::parse("http://127.0.0.1:4000/").unwrap();
 
-        registry.allow_navigation("xiao-browser", &external);
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &other_external));
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+        registry
+            .register_task_preview_target("xiao-task-preview-task", scope("task"), &external)
+            .unwrap();
+        registry.allow_navigation("xiao-task-preview-task", &external);
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &other_external));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
 
-        registry.allow_navigation("xiao-browser", &external);
-        assert!(registry.navigation_allowed("xiao-browser", &preview, &external));
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+        registry.allow_navigation("xiao-task-preview-task", &external);
+        assert!(registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
     }
 
     #[test]
     fn history_allowance_is_one_shot_and_never_allows_privileged_schemes() {
         let registry = PreviewRegistry::default();
         let preview = preview_url();
-        let external = tauri::Url::parse("https://example.com/").unwrap();
+        let external = tauri::Url::parse("http://localhost:3000/").unwrap();
         let local_file = tauri::Url::parse("file:///private.txt").unwrap();
 
-        registry.allow_history_navigation("xiao-browser");
-        assert!(registry.navigation_allowed("xiao-browser", &preview, &external));
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+        registry
+            .register_task_preview_target("xiao-task-preview-task", scope("task"), &external)
+            .unwrap();
+        registry.allow_history_navigation("xiao-task-preview-task");
+        assert!(registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
 
-        registry.allow_history_navigation("xiao-browser");
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &local_file));
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+        registry.allow_history_navigation("xiao-task-preview-task");
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &local_file));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
 
         registry.navigation_allowances.lock().unwrap().insert(
-            "xiao-browser".to_owned(),
+            "xiao-task-preview-task".to_owned(),
             NavigationAllowance::HistoryTraversal(Instant::now() - Duration::from_secs(1)),
         );
-        assert!(!registry.navigation_allowed("xiao-browser", &preview, &external));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &preview, &external));
+    }
+
+    #[test]
+    fn task_preview_rejects_external_redirects_and_fake_loopback_hosts() {
+        let registry = PreviewRegistry::default();
+        let local = tauri::Url::parse("http://127.0.0.1:3000/").unwrap();
+        let external = tauri::Url::parse("https://example.com/").unwrap();
+        let fake_loopback = tauri::Url::parse("http://127.example.com/").unwrap();
+
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &local, &external));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &local, &fake_loopback));
+    }
+
+    #[test]
+    fn codex_preview_targets_are_scoped_to_the_exact_project_task_and_execution_root() {
+        let registry = PreviewRegistry::default();
+        let task_a = PreviewScope {
+            project_path: "C:/project-a".to_owned(),
+            task_id: "shared".to_owned(),
+            execution_root: "C:/worktree-a".to_owned(),
+        };
+        let task_b = PreviewScope {
+            project_path: "C:/project-b".to_owned(),
+            task_id: "shared".to_owned(),
+            execution_root: "C:/worktree-b".to_owned(),
+        };
+        registry
+            .register_task_preview_target(
+                "xiao-task-preview-a",
+                task_a.clone(),
+                &Url::parse("http://127.0.0.1:4101/").unwrap(),
+            )
+            .unwrap();
+        registry
+            .register_task_preview_target(
+                "xiao-task-preview-b",
+                task_b.clone(),
+                &Url::parse("http://127.0.0.1:4102/").unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry.task_preview_targets(&task_a),
+            vec![(
+                "xiao-task-preview-a".to_owned(),
+                vec!["http://127.0.0.1:4101".to_owned()]
+            )]
+        );
+        assert!(registry
+            .task_preview_targets(&PreviewScope {
+                project_path: "C:/project-a".to_owned(),
+                task_id: "shared".to_owned(),
+                execution_root: "C:/other-root".to_owned(),
+            })
+            .is_empty());
     }
 
     #[test]
@@ -523,7 +757,7 @@ mod tests {
         let main = tauri::Url::parse("https://tauri.localhost/index.html").unwrap();
         let main_route = tauri::Url::parse("https://tauri.localhost/settings").unwrap();
 
-        assert!(!registry.navigation_allowed("xiao-browser", &external, &local_file));
+        assert!(!registry.navigation_allowed("xiao-task-preview-task", &external, &local_file));
         assert!(!registry.navigation_allowed("xiao-game", &external, &local_file));
         assert!(registry.navigation_allowed("main", &main, &main_route));
         assert!(!registry.navigation_allowed("main", &main, &external));
