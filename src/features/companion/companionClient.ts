@@ -216,7 +216,7 @@ export const parseCompanionPairingBundle = (
   return {
     endpoint: normalizedEndpoint,
     serverName: serverName.toLowerCase(),
-    certificatePem: certificatePem.trim(),
+    certificatePem,
     certificateFingerprint: certificateFingerprint.toLowerCase(),
     pairingId: pairingId.trim(),
     ownerCredential: ownerCredential.trim(),

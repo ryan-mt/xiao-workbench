@@ -80,6 +80,10 @@ export function CompanionPage() {
   const commandInFlight = useRef(false);
   const notificationCursor = useRef<CompanionNotificationCursor | null>(null);
 
+  useEffect(() => {
+    notificationCursor.current = null;
+  }, [session?.referenceId]);
+
   const publish = useCallback((next: CompanionState) => {
     stateRef.current = next;
     setState(next);
@@ -148,7 +152,13 @@ export function CompanionPage() {
   }, [mode, session, state.connection]);
 
   const execute = async (command: CompanionCommand) => {
-    if (!session || commandInFlight.current) return;
+    if (!session) return;
+    if (commandInFlight.current) {
+      setError(
+        "Another Companion action is still awaiting the primary host. Wait for it to finish before trying again.",
+      );
+      return;
+    }
     commandInFlight.current = true;
     let acknowledged = false;
     try {

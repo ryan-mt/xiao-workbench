@@ -2,7 +2,7 @@
   "status": "passed",
   "verifiedAt": "2026-07-24",
   "baselineCommit": "fda6486233e0b2f07ecfea166e1a94533cb923c4",
-  "sourceFingerprint": "sha256:0832c028cbec66ebb7d378e67cbc096f9823381c8220568b7b2cd696eee87463",
+  "sourceFingerprint": "sha256:0c58756d522763802c7311afa6c4067080453850d75ac471a78a5522ea242acc",
   "evidence": "src/features/release-assurance/ticket03-verification.md",
   "rowIds": [
     "codex-runtime",

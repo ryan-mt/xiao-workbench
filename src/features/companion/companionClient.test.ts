@@ -27,7 +27,7 @@ const snapshot = (cursor: number): CompanionSnapshot => ({
   },
 });
 
-const certificatePem = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----";
+const certificatePem = "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n";
 const certificateFingerprint = `sha256:${"ab".repeat(32)}`;
 const pairingCode = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   endpoint: "https://xiao.local:4318/",
