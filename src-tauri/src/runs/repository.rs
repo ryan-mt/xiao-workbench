@@ -219,22 +219,19 @@ impl XiaoRepository {
         })
     }
 
-    pub(crate) fn has_active_runtime_generation(
+    pub(crate) fn has_active_runs_in_environment(
         &self,
         environment_id: &str,
-        generation: u64,
     ) -> Result<bool, String> {
-        let generation = generation_to_i64(generation)?;
         self.with_connection(|connection| {
             let count: i64 = connection
                 .query_row(
                     &format!(
                         r#"SELECT COUNT(*) FROM runs
                            WHERE execution_environment_id = ?1
-                             AND runtime_generation = ?2
                              AND status IN ({RUNTIME_ACTIVE_STATUSES_SQL})"#
                     ),
-                    params![environment_id, generation],
+                    [environment_id],
                     |row| row.get(0),
                 )
                 .map_err(|error| {
@@ -4048,6 +4045,28 @@ mod tests {
             first.id
         );
         assert!(repository.claim_next_eligible_run(2).unwrap().is_none());
+    }
+
+    #[test]
+    fn preparing_run_blocks_an_environment_profile_restart_before_runtime_attachment() {
+        let directory = TestDirectory::new("queue-environment-profile-restart-guard");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "profile-restart-guard",
+            ))
+            .unwrap();
+
+        let preparing = repository.claim_next_eligible_run(1).unwrap().unwrap().run;
+        assert_eq!(preparing.status, RunStatus::Preparing);
+        assert_eq!(preparing.runtime_generation, None);
+        assert!(repository
+            .has_active_runs_in_environment(&preparing.execution_environment_id)
+            .unwrap());
     }
 
     #[test]

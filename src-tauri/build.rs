@@ -58,6 +58,7 @@ const APP_COMMANDS: &[&str] = &[
     "resize_terminal",
     "stop_terminal",
     "navigate_browser",
+    "open_external_url",
     "go_back_browser",
     "go_forward_browser",
     "reload_browser",

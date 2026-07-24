@@ -130,7 +130,7 @@ impl AgentRuntime {
                     .lock()
                     .map_err(|error| error.to_string())?
                     .clone();
-                if runtime_profile_matches(active_profile_id.as_deref(), requested_profile_id) {
+                if active_profile_id.as_deref() == requested_profile_id {
                     return Ok(StartResult {
                         version,
                         already_running: true,
@@ -139,11 +139,9 @@ impl AgentRuntime {
                         profile_id: profile.map(|profile| profile.id.clone()),
                     });
                 }
-                let active_generation = self.generation.load(Ordering::Acquire);
-                if active_generation != 0
-                    && app
-                        .state::<XiaoRepository>()
-                        .has_active_runtime_generation(environment_id, active_generation)?
+                if app
+                    .state::<XiaoRepository>()
+                    .has_active_runs_in_environment(environment_id)?
                 {
                     return Err(
                         "A different Codex profile is active for an in-progress Run in this execution environment."
@@ -717,13 +715,6 @@ fn validate_environment_id(environment_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn runtime_profile_matches(
-    active_profile_id: Option<&str>,
-    requested_profile_id: Option<&str>,
-) -> bool {
-    active_profile_id == requested_profile_id
-}
-
 fn response_timeout(method: &str, params: &Value) -> Option<Duration> {
     if method != "command/exec" {
         return Some(DEFAULT_RESPONSE_TIMEOUT);
@@ -970,13 +961,6 @@ mod tests {
             .require_thread_task("unknown", "C:/project", "task-a", "C:/project")
             .unwrap_err()
             .contains("not owned"));
-    }
-
-    #[test]
-    fn runtime_is_reused_only_for_the_same_profile() {
-        assert!(runtime_profile_matches(Some("work"), Some("work")));
-        assert!(!runtime_profile_matches(Some("work"), Some("personal")));
-        assert!(!runtime_profile_matches(Some("work"), None));
     }
 
     #[test]

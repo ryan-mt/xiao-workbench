@@ -55,6 +55,21 @@ export const resolveTaskSwitcherSelection = (
   return tasks[0]?.id ?? null;
 };
 
+type TaskSwitcherKeyboardEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
+>;
+
+export const taskSwitcherCycleDirection = (
+  event: TaskSwitcherKeyboardEvent,
+  cycleBinding: string,
+): -1 | 1 | null => {
+  if (event.key === "ArrowUp") return -1;
+  if (event.key === "ArrowDown") return 1;
+  if (keyboardEventMatchesBinding(event, cycleBinding)) return 1;
+  return keyboardEventMatchesBinding(event, cycleBinding, true) ? -1 : null;
+};
+
 export function TaskSwitcher({
   tasks,
   activeTaskId,
@@ -104,20 +119,16 @@ export function TaskSwitcher({
         onClose();
         return;
       }
-      if (
-        event.key === "ArrowDown" ||
-        event.key === "ArrowUp" ||
-        keyboardEventMatchesBinding(event, cycleBinding, true)
-      ) {
+      const cycleDirection = taskSwitcherCycleDirection(event, cycleBinding);
+      if (cycleDirection !== null) {
         if (!visibleTasks.length) return;
         event.preventDefault();
-        const direction = event.key === "ArrowUp" || event.shiftKey ? -1 : 1;
         const currentIndex = Math.max(
           0,
           visibleTasks.findIndex((task) => task.id === selectedTaskId),
         );
         const nextIndex =
-          (currentIndex + direction + visibleTasks.length) % visibleTasks.length;
+          (currentIndex + cycleDirection + visibleTasks.length) % visibleTasks.length;
         setHighlightedTaskId(visibleTasks[nextIndex].id);
         return;
       }

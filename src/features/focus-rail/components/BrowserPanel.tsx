@@ -102,6 +102,7 @@ export function BrowserPanel({
   const loadingTimer = useRef<number | undefined>(undefined);
   const handledNavigationRequest = useRef<number | null>(null);
   const navigationGeneration = useRef(0);
+  const navigationInFlight = useRef<number | null>(null);
   const [ready, setReady] = useState(false);
   const [viewportPreset, setViewportPreset] = useState(initialViewport);
   const [consoleOpen, setConsoleOpen] = useState(false);
@@ -147,6 +148,7 @@ export function BrowserPanel({
     let instance: Webview | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let animationTimer = 0;
+    let initialNavigationGeneration: number | null = null;
 
     const start = async () => {
       try {
@@ -184,19 +186,28 @@ export function BrowserPanel({
         if (activeRef.current) await instance.show();
         else await instance.hide();
         if (taskPreviewOnly) {
-          navigationGeneration.current += 1;
+          const generation = navigationGeneration.current + 1;
+          navigationGeneration.current = generation;
+          navigationInFlight.current = generation;
+          initialNavigationGeneration = generation;
           await nativeBridge.navigateBrowser(
             initialHomeUrl.current,
             webviewLabel,
             taskId,
             projectPath,
           );
+          if (navigationInFlight.current === generation) {
+            navigationInFlight.current = null;
+          }
         }
         await instance.setZoom(initialZoomValue.current);
         setReady(true);
         setLoading(false);
         animationTimer = window.setTimeout(queueBoundsSync, 240);
       } catch (reason) {
+        if (navigationInFlight.current === initialNavigationGeneration) {
+          navigationInFlight.current = null;
+        }
         if (!disposed) {
           setError(messageFrom(reason));
           setLoading(false);
@@ -251,9 +262,13 @@ export function BrowserPanel({
 
   const refreshCurrentUrl = useCallback(async () => {
     try {
+      if (navigationInFlight.current !== null) return;
       const observedGeneration = navigationGeneration.current;
       const url = await nativeBridge.getBrowserUrl(webviewLabel);
-      if (observedGeneration !== navigationGeneration.current) return;
+      if (
+        navigationInFlight.current !== null ||
+        observedGeneration !== navigationGeneration.current
+      ) return;
       if (!url || url === currentUrlRef.current) return;
       if (taskPreviewOnly && !isTaskPreviewTarget(url)) return;
       currentUrlRef.current = url;
@@ -287,9 +302,11 @@ export function BrowserPanel({
 
   useEffect(() => () => window.clearTimeout(loadingTimer.current), []);
 
-  const finishLoadingSoon = () => {
+  const finishLoadingSoon = (generation: number) => {
     window.clearTimeout(loadingTimer.current);
     loadingTimer.current = window.setTimeout(() => {
+      if (navigationInFlight.current !== generation) return;
+      navigationInFlight.current = null;
       setLoading(false);
       void refreshCurrentUrl();
     }, 700);
@@ -299,14 +316,20 @@ export function BrowserPanel({
     command: () => Promise<void>,
     notifyNavigationStart = true,
   ) => {
-    navigationGeneration.current += 1;
+    const generation = navigationGeneration.current + 1;
+    navigationGeneration.current = generation;
+    navigationInFlight.current = generation;
     if (notifyNavigationStart) onNavigationStart?.();
     setError(null);
     setLoading(true);
     try {
       await command();
-      finishLoadingSoon();
+      if (navigationInFlight.current === generation) {
+        finishLoadingSoon(generation);
+      }
     } catch (reason) {
+      if (navigationInFlight.current !== generation) return;
+      navigationInFlight.current = null;
       const messages = [...consoleMessages, {
         level: "host",
         text: `Error: ${messageFrom(reason)}`,

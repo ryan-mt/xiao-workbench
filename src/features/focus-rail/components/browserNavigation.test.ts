@@ -2,6 +2,12 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const openExternalUrl = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../../../core/bridges/tauri", () => ({
+  nativeBridge: { openExternalUrl },
+}));
+
 import {
   BROWSER_HOME_URL,
   openExternalBrowser,
@@ -62,21 +68,17 @@ describe("toBrowserUrl", () => {
 
 describe("openExternalBrowser", () => {
   it("opens HTTP links outside the restricted Task Preview", () => {
-    const open = vi.spyOn(window, "open").mockImplementation(() => null);
-
     expect(openExternalBrowser("https://github.com/xiao/pull/2")).toBe(true);
-    expect(open).toHaveBeenCalledWith(
+    expect(openExternalUrl).toHaveBeenCalledWith(
       "https://github.com/xiao/pull/2",
-      "_blank",
-      "noopener,noreferrer",
     );
   });
 
   it("does not open privileged or malformed targets", () => {
-    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    openExternalUrl.mockClear();
 
     expect(openExternalBrowser("javascript:alert(1)")).toBe(false);
     expect(openExternalBrowser("not a URL")).toBe(false);
-    expect(open).not.toHaveBeenCalled();
+    expect(openExternalUrl).not.toHaveBeenCalled();
   });
 });

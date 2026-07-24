@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     observedUrl: "http://127.0.0.1:4101/redirected",
     browserUrlReads: 0,
     readBrowserUrl: async () => "http://127.0.0.1:4101/redirected",
+    performNavigation: async (_url: string): Promise<void> => undefined,
     zooms: [] as number[],
   };
   const webviews = new Map<string, FakeWebview>();
@@ -62,6 +63,7 @@ vi.mock("../../../core/bridges/tauri", () => ({
     },
     navigateBrowser: async (url: string) => {
       mocks.host.navigations.push(url);
+      await mocks.host.performNavigation(url);
     },
     setBrowserMuted: async () => undefined,
   },
@@ -100,6 +102,7 @@ describe("BrowserPanel Task Preview lifecycle", () => {
     host.observedUrl = "http://127.0.0.1:4101/redirected";
     host.browserUrlReads = 0;
     host.readBrowserUrl = async () => host.observedUrl;
+    host.performNavigation = async () => undefined;
     host.zooms = [];
     webviews.clear();
     let frame = 0;
@@ -203,5 +206,55 @@ describe("BrowserPanel Task Preview lifecycle", () => {
         .toBe("http://127.0.0.1:4102/");
     });
     expect(targetChanges).toEqual(["http://127.0.0.1:4102/"]);
+  });
+
+  it("does not poll the old URL while a newer navigation command is in flight", async () => {
+    let finishNavigation: (() => void) | undefined;
+    const navigationPending = new Promise<void>((resolve) => {
+      finishNavigation = resolve;
+    });
+    host.performNavigation = (url) => url.endsWith(":4102/")
+      ? navigationPending
+      : Promise.resolve();
+    host.readBrowserUrl = async () => "http://127.0.0.1:9/";
+    const targetChanges: string[] = [];
+    const view = render(
+      <BrowserPanel
+        active
+        taskPreviewOnly
+        taskId="task"
+        projectPath="C:/project"
+        webviewLabel="xiao-task-preview-label"
+        homeUrl="http://127.0.0.1:9/"
+        onTargetChange={(url) => targetChanges.push(url)}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(host.navigations).toContain("http://127.0.0.1:9/");
+    });
+    view.rerender(
+      <BrowserPanel
+        active
+        taskPreviewOnly
+        taskId="task"
+        projectPath="C:/project"
+        webviewLabel="xiao-task-preview-label"
+        homeUrl="http://127.0.0.1:4102/"
+        navigationRequest={{ id: 1, url: "http://127.0.0.1:4102/" }}
+        onTargetChange={(url) => targetChanges.push(url)}
+      />,
+    );
+    await waitFor(() => {
+      expect(host.navigations).toContain("http://127.0.0.1:4102/");
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    expect(targetChanges).toEqual(["http://127.0.0.1:4102/"]);
+
+    await act(async () => {
+      finishNavigation?.();
+      await navigationPending;
+    });
   });
 });

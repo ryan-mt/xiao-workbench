@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
@@ -10,10 +10,13 @@ import type { SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspa
 import {
   addTerminalSession,
   advanceTerminalOutputSequence,
-  cleanupLateTerminalStart,
+  cancelTerminalStart,
   normalizeTerminalSessions,
+  registerTerminalStartCancellation,
   removeTerminalSession,
   restartTerminalSession,
+  terminalStartCleanupSessionId,
+  type TerminalStartCancellationRegistry,
   type TerminalSessionState,
 } from "./terminalSessions";
 
@@ -72,6 +75,7 @@ type TerminalSessionProps = Omit<
   sessionId: string;
   sessionNumber: number;
   onRestart: () => Promise<void>;
+  registerStartCancellation: (sessionId: string, cancel: () => void) => () => void;
 };
 
 function TerminalSession({
@@ -83,6 +87,7 @@ function TerminalSession({
   sessionId,
   sessionNumber,
   onRestart,
+  registerStartCancellation,
 }: TerminalSessionProps) {
   const [status, setStatus] = useState<TerminalStatus>("starting");
   const [error, setError] = useState<string | null>(null);
@@ -150,9 +155,13 @@ function TerminalSession({
     let outputUnlisten: UnlistenFn | null = null;
     let exitUnlisten: UnlistenFn | null = null;
     let terminalStarted = false;
+    let startCancelled = false;
     let renderedSequence = 0;
     const pendingOutput: TerminalOutput[] = [];
     sessionIdRef.current = sessionId;
+    const unregisterStartCancellation = registerStartCancellation(sessionId, () => {
+      startCancelled = true;
+    });
 
     const dataSubscription = terminal.onData((data) => {
       const activeSessionId = sessionIdRef.current;
@@ -173,6 +182,7 @@ function TerminalSession({
 
     const start = async () => {
       if (!isTauriHost()) {
+        unregisterStartCancellation();
         setStatus("error");
         setError("Interactive terminal is available in the Xiao desktop app.");
         return;
@@ -222,11 +232,15 @@ function TerminalSession({
           proposed?.cols ?? 100,
           proposed?.rows ?? 30,
         );
-        if (await cleanupLateTerminalStart(
-          disposed,
+        const cleanupSessionId = terminalStartCleanupSessionId(
+          disposed || startCancelled,
           sessionId,
-          nativeBridge.stopTerminal,
-        )) return;
+        );
+        unregisterStartCancellation();
+        if (cleanupSessionId) {
+          await nativeBridge.stopTerminal(cleanupSessionId).catch(() => undefined);
+          return;
+        }
         terminal.write(started.replay);
         renderedSequence = started.replaySequence;
         for (const output of pendingOutput) {
@@ -240,6 +254,7 @@ function TerminalSession({
         fitTerminal();
         if (active) terminal.focus();
       } catch (reason) {
+        unregisterStartCancellation();
         if (disposed) return;
         sessionIdRef.current = null;
         void nativeBridge.stopTerminal(sessionId).catch(() => undefined);
@@ -253,6 +268,7 @@ function TerminalSession({
 
     return () => {
       disposed = true;
+      unregisterStartCancellation();
       sessionIdRef.current = null;
       outputUnlisten?.();
       exitUnlisten?.();
@@ -265,6 +281,7 @@ function TerminalSession({
     };
   }, [
     sessionId,
+    registerStartCancellation,
     system.shell,
     taskId,
     transitioning,
@@ -317,7 +334,20 @@ export function TerminalPanel({
     normalizeTerminalSessions(initialSessionIds, initialActiveSessionId)
   );
   const [sessionNames, setSessionNames] = useState<Record<string, string>>(initialSessionNames);
+  const sessionsRef = useRef(sessions);
+  const sessionNamesRef = useRef(sessionNames);
+  const startCancellations = useRef<TerminalStartCancellationRegistry>(new Map());
   const publishedInitialSession = useRef(initialSessionIds.length > 0);
+
+  const registerStartCancellation = useCallback(
+    (sessionId: string, cancel: () => void) =>
+      registerTerminalStartCancellation(startCancellations.current, sessionId, cancel),
+    [],
+  );
+
+  const cancelStart = useCallback((sessionId: string) => {
+    cancelTerminalStart(startCancellations.current, sessionId);
+  }, []);
 
   useEffect(() => {
     if (publishedInitialSession.current) return;
@@ -326,8 +356,15 @@ export function TerminalPanel({
   }, [onSessionStateChange, sessions]);
 
   const updateSessions = (next: TerminalSessionState) => {
+    sessionsRef.current = next;
     setSessions(next);
     onSessionStateChange(next);
+  };
+
+  const updateSessionNames = (next: Record<string, string>) => {
+    sessionNamesRef.current = next;
+    setSessionNames(next);
+    onSessionNamesChange(next);
   };
 
   return (
@@ -358,8 +395,7 @@ export function TerminalPanel({
                 )?.trim();
                 if (!name) return;
                 const next = { ...sessionNames, [sessionId]: name.slice(0, 80) };
-                setSessionNames(next);
-                onSessionNamesChange(next);
+                updateSessionNames(next);
               }}
             >
               <XiaoIcon name="edit" size={10} />
@@ -369,6 +405,7 @@ export function TerminalPanel({
                 type="button"
                 aria-label={`Close Terminal ${index + 1}`}
                 onClick={() => {
+                  cancelStart(sessionId);
                   void nativeBridge.stopTerminal(sessionId).catch(() => undefined);
                   updateSessions(removeTerminalSession(
                     sessions.sessionIds,
@@ -401,23 +438,27 @@ export function TerminalPanel({
             system={system}
             transitioning={transitioning}
             sessionNumber={index + 1}
+            registerStartCancellation={registerStartCancellation}
             onRestart={async () => {
+              cancelStart(sessionId);
               try {
                 await nativeBridge.stopTerminal(sessionId);
               } finally {
                 const replacementSessionId = crypto.randomUUID();
-                updateSessions(restartTerminalSession(
-                  sessions.sessionIds,
-                  sessions.activeSessionId,
+                const nextSessions = restartTerminalSession(
+                  sessionsRef.current.sessionIds,
+                  sessionsRef.current.activeSessionId,
                   sessionId,
                   replacementSessionId,
-                ));
-                if (sessionNames[sessionId]) {
-                  const nextNames = { ...sessionNames };
+                );
+                if (!nextSessions) return;
+                updateSessions(nextSessions);
+                const currentNames = sessionNamesRef.current;
+                if (currentNames[sessionId]) {
+                  const nextNames = { ...currentNames };
                   nextNames[replacementSessionId] = nextNames[sessionId];
                   delete nextNames[sessionId];
-                  setSessionNames(nextNames);
-                  onSessionNamesChange(nextNames);
+                  updateSessionNames(nextNames);
                 }
               }
             }}

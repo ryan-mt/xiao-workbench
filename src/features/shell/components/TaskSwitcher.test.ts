@@ -4,6 +4,7 @@ import type { WorkbenchTask } from "../../task/task.types";
 import {
   orderTaskSwitcherTasks,
   resolveTaskSwitcherSelection,
+  taskSwitcherCycleDirection,
 } from "./TaskSwitcher";
 
 const task = (id: string, patch: Partial<WorkbenchTask> = {}): WorkbenchTask => ({
@@ -71,5 +72,22 @@ describe("task switcher ordering", () => {
     expect(resolveTaskSwitcherSelection(reordered, "highlighted", "open")).toBe(
       "highlighted",
     );
+  });
+
+  it("uses the configured shortcut for forward and shifted reverse cycling", () => {
+    const event = {
+      key: "j",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: true,
+      shiftKey: false,
+    };
+
+    expect(taskSwitcherCycleDirection(event, "Alt+J")).toBe(1);
+    expect(taskSwitcherCycleDirection({ ...event, shiftKey: true }, "Alt+J")).toBe(-1);
+    expect(taskSwitcherCycleDirection(
+      { ...event, shiftKey: true },
+      "Alt+Shift+J",
+    )).toBe(1);
   });
 });

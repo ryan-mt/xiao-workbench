@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   addTerminalSession,
   advanceTerminalOutputSequence,
-  cleanupLateTerminalStart,
+  cancelTerminalStart,
   normalizeTerminalSessions,
+  registerTerminalStartCancellation,
   removeTerminalSession,
   restartTerminalSession,
+  terminalStartCleanupSessionId,
 } from "./terminalSessions";
 
 describe("Task terminal sessions", () => {
@@ -39,16 +41,35 @@ describe("Task terminal sessions", () => {
     });
   });
 
-  it("stops a PTY whose async start completes after its terminal was closed", async () => {
-    const stopped: string[] = [];
-
-    expect(await cleanupLateTerminalStart(
-      true,
+  it("does not recreate a terminal closed while restart is stopping its old PTY", () => {
+    expect(restartTerminalSession(
+      ["sibling"],
+      "sibling",
       "closed-session",
-      async (sessionId) => {
-        stopped.push(sessionId);
+      "replacement",
+    )).toBeNull();
+  });
+
+  it("identifies a PTY whose start completed after synchronous disposal", () => {
+    expect(terminalStartCleanupSessionId(true, "closed-session")).toBe("closed-session");
+    expect(terminalStartCleanupSessionId(false, "live-session")).toBeNull();
+  });
+
+  it("cancels an in-flight PTY start before React unmount cleanup runs", () => {
+    const registry = new Map<string, () => void>();
+    let cancelled = false;
+    const unregister = registerTerminalStartCancellation(
+      registry,
+      "starting-session",
+      () => {
+        cancelled = true;
       },
-    )).toBe(true);
-    expect(stopped).toEqual(["closed-session"]);
+    );
+
+    cancelTerminalStart(registry, "starting-session");
+    expect(cancelled).toBe(true);
+
+    unregister();
+    expect(registry.has("starting-session")).toBe(false);
   });
 });

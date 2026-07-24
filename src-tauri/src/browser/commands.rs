@@ -1,3 +1,7 @@
+use std::process::Command;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Manager, State, Url, Webview};
 
 use super::preview::{is_loopback_http_url, is_preview_url, PreviewRegistry, PreviewScope};
@@ -38,6 +42,46 @@ fn is_browser_webview_label(label: &str) -> bool {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             })
+}
+
+fn external_web_url(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value).map_err(|_| "External browser URL is invalid.".to_owned())?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("External browser URL must use HTTP or HTTPS.".to_owned());
+    }
+    Ok(url)
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    let url = external_web_url(&url)?.to_string();
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut command = Command::new("explorer");
+        command.arg(&url).creation_flags(CREATE_NO_WINDOW);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(&url);
+        command
+    };
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(&url);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open URL in the system browser: {error}"))
 }
 
 fn task_preview_label(project_path: &str, task_id: &str) -> String {
@@ -667,7 +711,8 @@ pub fn set_browser_muted(app: AppHandle, label: String, muted: bool) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_browser_webview_label, parse_browser_url, preview_automation_script, task_preview_label,
+        external_web_url, is_browser_webview_label, parse_browser_url, preview_automation_script,
+        task_preview_label,
     };
     use crate::browser::preview::{PreviewRegistry, PreviewScope};
     use tauri::Url;
@@ -683,6 +728,18 @@ mod tests {
     fn rejects_privileged_schemes() {
         assert!(parse_browser_url("file:///tmp/private", "xiao-game").is_err());
         assert!(parse_browser_url("javascript:alert(1)", "xiao-game").is_err());
+    }
+
+    #[test]
+    fn external_browser_accepts_only_http_urls() {
+        assert_eq!(
+            external_web_url("https://github.com/xiao/pull/2")
+                .unwrap()
+                .scheme(),
+            "https"
+        );
+        assert!(external_web_url("javascript:alert(1)").is_err());
+        assert!(external_web_url("xiao-preview://token/index.html").is_err());
     }
 
     #[test]

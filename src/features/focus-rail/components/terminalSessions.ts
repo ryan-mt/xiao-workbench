@@ -3,6 +3,8 @@ export type TerminalSessionState = {
   activeSessionId: string;
 };
 
+export type TerminalStartCancellationRegistry = Map<string, () => void>;
+
 export const advanceTerminalOutputSequence = (
   renderedSequence: number,
   incomingSequence: number,
@@ -48,17 +50,33 @@ export const restartTerminalSession = (
   activeSessionId: string,
   sessionId: string,
   replacementSessionId: string = crypto.randomUUID(),
-): TerminalSessionState => ({
-  sessionIds: sessionIds.map((id) => id === sessionId ? replacementSessionId : id),
-  activeSessionId: activeSessionId === sessionId ? replacementSessionId : activeSessionId,
-});
+): TerminalSessionState | null => {
+  if (!sessionIds.includes(sessionId)) return null;
+  return {
+    sessionIds: sessionIds.map((id) => id === sessionId ? replacementSessionId : id),
+    activeSessionId: activeSessionId === sessionId ? replacementSessionId : activeSessionId,
+  };
+};
 
-export const cleanupLateTerminalStart = async (
+export const terminalStartCleanupSessionId = (
   disposed: boolean,
   sessionId: string,
-  stopTerminal: (sessionId: string) => Promise<void>,
+) => disposed ? sessionId : null;
+
+export const registerTerminalStartCancellation = (
+  registry: TerminalStartCancellationRegistry,
+  sessionId: string,
+  cancel: () => void,
 ) => {
-  if (!disposed) return false;
-  await stopTerminal(sessionId).catch(() => undefined);
-  return true;
+  registry.set(sessionId, cancel);
+  return () => {
+    if (registry.get(sessionId) === cancel) registry.delete(sessionId);
+  };
+};
+
+export const cancelTerminalStart = (
+  registry: TerminalStartCancellationRegistry,
+  sessionId: string,
+) => {
+  registry.get(sessionId)?.();
 };
