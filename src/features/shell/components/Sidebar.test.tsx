@@ -217,6 +217,15 @@ describe("Sidebar attention trigger", () => {
   });
 });
 
+describe("Sidebar Companion trigger", () => {
+  it("exposes Companion as a keyboard-accessible utility page", () => {
+    const markup = renderSidebar(0, "companion");
+
+    expect(markup).toContain(">Companion</span>");
+    expect(markup).toContain('aria-current="page"');
+  });
+});
+
 describe("Sidebar task group disclosure", () => {
   it("keeps the active task in its recent time group", () => {
     const now = Date.now();

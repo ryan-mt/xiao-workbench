@@ -38,6 +38,7 @@ import {
   type AttentionHydrationStatus,
 } from "../features/agent/hooks/useAgentRuntime";
 import { AttentionCenter } from "../features/attention/AttentionCenter";
+import { CompanionPage } from "../features/companion/CompanionPage";
 import { projectAttentionItems } from "../features/attention/attentionProjection";
 import { useAttentionCenter } from "../features/attention/useAttentionCenter";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
@@ -4331,6 +4332,11 @@ export function App() {
                 closeFocusPanel();
                 closeSidebarOnNarrow();
               }}
+              onOpenCompanion={() => {
+                setActivePage("companion");
+                closeFocusPanel();
+                closeSidebarOnNarrow();
+              }}
               onOpenProfile={() => {
                 setActivePage("profile");
                 closeFocusPanel();
@@ -4412,6 +4418,8 @@ export function App() {
                 focusAppContentNextFrame();
               }}
             />
+          ) : activePage === "companion" ? (
+            <CompanionPage />
           ) : activePage === "settings" ? (
             <SettingsPage
               theme={theme}

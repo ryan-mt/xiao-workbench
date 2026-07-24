@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-poll-remote-companion"
+description = "Enables the poll_remote_companion command without any pre-configured scope."
+commands.allow = ["poll_remote_companion"]
+
+[[permission]]
+identifier = "deny-poll-remote-companion"
+description = "Denies the poll_remote_companion command without any pre-configured scope."
+commands.deny = ["poll_remote_companion"]
