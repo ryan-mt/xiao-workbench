@@ -42,3 +42,23 @@ export const removeTerminalSession = (
     activeSessionId: activeSessionId === sessionId ? remaining.at(-1)! : activeSessionId,
   };
 };
+
+export const restartTerminalSession = (
+  sessionIds: readonly string[],
+  activeSessionId: string,
+  sessionId: string,
+  replacementSessionId: string = crypto.randomUUID(),
+): TerminalSessionState => ({
+  sessionIds: sessionIds.map((id) => id === sessionId ? replacementSessionId : id),
+  activeSessionId: activeSessionId === sessionId ? replacementSessionId : activeSessionId,
+});
+
+export const cleanupLateTerminalStart = async (
+  disposed: boolean,
+  sessionId: string,
+  stopTerminal: (sessionId: string) => Promise<void>,
+) => {
+  if (!disposed) return false;
+  await stopTerminal(sessionId).catch(() => undefined);
+  return true;
+};

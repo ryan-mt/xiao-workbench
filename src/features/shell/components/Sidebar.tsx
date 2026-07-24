@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useEffect,
   useRef,
   useState,
@@ -88,6 +87,10 @@ type RenamingTask = {
   id: string;
   title: string;
 };
+
+type ProjectNavigationItem =
+  | { kind: "group"; group: ProjectGroup | null }
+  | { kind: "project"; project: XiaoProjectSummary };
 
 export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
 
@@ -178,7 +181,6 @@ export function Sidebar({
     }))
     .filter(({ tasks: groupTasks }) => groupTasks.length > 0);
   const menuProject = projects.find((project) => project.path === projectMenu?.projectPath);
-  const projectGroupNames = new Map(projectGroups.map((group) => [group.id, group.name]));
   const projectGroupPositions = new Map(projectGroups.map((group) => [group.id, group.position]));
   const navigationProjects = [...projects].sort((left, right) => {
     const leftGroup = left.projectGroupId ?? null;
@@ -193,6 +195,23 @@ export function Sidebar({
       Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
       right.updatedAt - left.updatedAt;
   });
+  const navigationItems: ProjectNavigationItem[] = [...projectGroups]
+    .sort((left, right) => left.position - right.position)
+    .flatMap((group) => [
+      { kind: "group" as const, group },
+      ...navigationProjects
+        .filter((project) => project.projectGroupId === group.id)
+        .map((project) => ({ kind: "project" as const, project })),
+    ]);
+  const ungroupedProjects = navigationProjects.filter(
+    (project) => !project.projectGroupId || !projectGroupPositions.has(project.projectGroupId),
+  );
+  if (ungroupedProjects.length) {
+    navigationItems.push(
+      { kind: "group", group: null },
+      ...ungroupedProjects.map((project) => ({ kind: "project" as const, project })),
+    );
+  }
   const menuTask = tasks.find((task) => task.id === taskMenu?.taskId);
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
@@ -478,7 +497,24 @@ export function Sidebar({
         </div>
 
         <div className="sidebar__projects">
-          {navigationProjects.map((project, projectIndex) => {
+          {navigationItems.map((item) => {
+            if (item.kind === "group") {
+              const group = item.group;
+              return (
+                <h3 className="sidebar-project-group" key={group?.id ?? "ungrouped"}>
+                  <span>{group?.name ?? "Ungrouped"}</span>
+                  {group ? (
+                    <span>
+                      <button type="button" aria-label={`Rename ${group.name}`} onClick={() => onRenameProjectGroup(group)}>Rename</button>
+                      <button type="button" aria-label={`Move ${group.name} up`} disabled={group.position === 0} onClick={() => onMoveProjectGroup(group, -1)}>↑</button>
+                      <button type="button" aria-label={`Move ${group.name} down`} disabled={group.position >= projectGroups.length - 1} onClick={() => onMoveProjectGroup(group, 1)}>↓</button>
+                      <button type="button" aria-label={`Delete ${group.name}`} onClick={() => onDeleteProjectGroup(group)}>Delete</button>
+                    </span>
+                  ) : null}
+                </h3>
+              );
+            }
+            const project = item.project;
             const active = project.path === activeProjectPath;
             const expanded = active && expandedProjectPath === project.path;
             const menuOpen = projectMenu?.projectPath === project.path;
@@ -492,27 +528,9 @@ export function Sidebar({
               : !active && projectSwitchLocked
                 ? "Locked: task running"
                 : `Updated ${relativeTime(updatedAt, now)}`;
-            const groupId = project.projectGroupId ?? null;
-            const previousGroupId = navigationProjects[projectIndex - 1]?.projectGroupId ?? null;
             return (
-              <Fragment key={project.path}>
-                {(projectIndex === 0 || groupId !== previousGroupId) ? (
-                  <h3 className="sidebar-project-group">
-                    <span>{groupId ? projectGroupNames.get(groupId) ?? "Project Group" : "Ungrouped"}</span>
-                    {groupId ? (() => {
-                      const group = projectGroups.find((item) => item.id === groupId);
-                      return group ? (
-                        <span>
-                          <button type="button" aria-label={`Rename ${group.name}`} onClick={() => onRenameProjectGroup(group)}>Rename</button>
-                          <button type="button" aria-label={`Move ${group.name} up`} disabled={group.position === 0} onClick={() => onMoveProjectGroup(group, -1)}>↑</button>
-                          <button type="button" aria-label={`Move ${group.name} down`} disabled={group.position >= projectGroups.length - 1} onClick={() => onMoveProjectGroup(group, 1)}>↓</button>
-                          <button type="button" aria-label={`Delete ${group.name}`} onClick={() => onDeleteProjectGroup(group)}>Delete</button>
-                        </span>
-                      ) : null;
-                    })() : null}
-                  </h3>
-                ) : null}
-                <section
+              <section
+                key={project.path}
                 className={`sidebar-project ${active ? "is-active" : ""} ${menuOpen ? "has-open-menu" : ""}`}
                 onContextMenu={(event) => openProjectContextMenu(event, project.path)}
               >
@@ -748,8 +766,7 @@ export function Sidebar({
                     ) : null}
                   </div>
                 ) : null}
-                </section>
-              </Fragment>
+              </section>
             );
           })}
         </div>

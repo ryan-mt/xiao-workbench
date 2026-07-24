@@ -10,8 +10,10 @@ import type { SystemInfo, WorkspaceSnapshot } from "../../../core/models/workspa
 import {
   addTerminalSession,
   advanceTerminalOutputSequence,
+  cleanupLateTerminalStart,
   normalizeTerminalSessions,
   removeTerminalSession,
+  restartTerminalSession,
   type TerminalSessionState,
 } from "./terminalSessions";
 
@@ -69,6 +71,7 @@ type TerminalSessionProps = Omit<
 > & {
   sessionId: string;
   sessionNumber: number;
+  onRestart: () => Promise<void>;
 };
 
 function TerminalSession({
@@ -79,10 +82,11 @@ function TerminalSession({
   transitioning,
   sessionId,
   sessionNumber,
+  onRestart,
 }: TerminalSessionProps) {
-  const [restartKey, setRestartKey] = useState(0);
   const [status, setStatus] = useState<TerminalStatus>("starting");
   const [error, setError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -218,7 +222,11 @@ function TerminalSession({
           proposed?.cols ?? 100,
           proposed?.rows ?? 30,
         );
-        if (disposed) return;
+        if (await cleanupLateTerminalStart(
+          disposed,
+          sessionId,
+          nativeBridge.stopTerminal,
+        )) return;
         terminal.write(started.replay);
         renderedSequence = started.replaySequence;
         for (const output of pendingOutput) {
@@ -256,7 +264,6 @@ function TerminalSession({
       fitAddonRef.current = null;
     };
   }, [
-    restartKey,
     sessionId,
     system.shell,
     taskId,
@@ -273,8 +280,9 @@ function TerminalSession({
         <div className="shell-workspace__actions">
           <span className={`shell-workspace__status is-${status}`}><i />{status}</span>
           <button type="button" disabled={transitioning} onClick={() => terminalRef.current?.clear()}>Clear</button>
-          <button type="button" disabled={transitioning} title="Restart terminal" onClick={() => {
-            void nativeBridge.stopTerminal(sessionId).finally(() => setRestartKey((key) => key + 1));
+          <button type="button" disabled={transitioning || restarting} title="Restart terminal" onClick={() => {
+            setRestarting(true);
+            void onRestart().catch(() => setRestarting(false));
           }}>
             <XiaoIcon name="refresh" size={12} />
           </button>
@@ -393,6 +401,26 @@ export function TerminalPanel({
             system={system}
             transitioning={transitioning}
             sessionNumber={index + 1}
+            onRestart={async () => {
+              try {
+                await nativeBridge.stopTerminal(sessionId);
+              } finally {
+                const replacementSessionId = crypto.randomUUID();
+                updateSessions(restartTerminalSession(
+                  sessions.sessionIds,
+                  sessions.activeSessionId,
+                  sessionId,
+                  replacementSessionId,
+                ));
+                if (sessionNames[sessionId]) {
+                  const nextNames = { ...sessionNames };
+                  nextNames[replacementSessionId] = nextNames[sessionId];
+                  delete nextNames[sessionId];
+                  setSessionNames(nextNames);
+                  onSessionNamesChange(nextNames);
+                }
+              }
+            }}
           />
         </div>
       ))}
