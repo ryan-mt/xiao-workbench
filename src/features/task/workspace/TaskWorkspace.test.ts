@@ -9,6 +9,7 @@ import {
   distanceFromScrollBottom,
   newTaskProjectOptions,
   shouldFollowLiveOutput,
+  taskOutcomeAction,
   TaskWorkspaceFrame,
 } from "./TaskWorkspace";
 
@@ -86,6 +87,58 @@ describe("new task project options", () => {
       { value: "C:\\code\\xiao", label: "Xiao", disabled: false },
       { value: "C:\\code\\other", label: "Other", disabled: true },
     ]);
+  });
+});
+
+describe("task outcome actions", () => {
+  it.each([
+    "completed",
+    "needs_attention",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ])("allows manual review after a terminal %s run without an Acceptance Contract", (status) => {
+    expect(taskOutcomeAction("in_progress", false, false, status)).toEqual({
+      label: "Mark ready for review",
+      nextStage: "ready_for_review",
+    });
+  });
+
+  it.each([
+    ["an active run", false, true, "completed"],
+    ["a frozen Acceptance Contract", true, false, "completed"],
+    ["no completed run", false, false, null],
+    ["a running latest run", false, false, "running"],
+  ] as const)("does not offer manual review with %s", (_reason, contract, active, status) => {
+    expect(taskOutcomeAction("in_progress", contract, active, status)).toBeNull();
+  });
+
+  it.each(["ready_for_review", "published"] as const)(
+    "allows accepting a %s outcome",
+    (stage) => {
+      expect(taskOutcomeAction(stage, false, false, null)).toEqual({
+        label: "Accept outcome",
+        nextStage: "completed",
+      });
+    },
+  );
+
+  it("allows explicitly reopening a completed task", () => {
+    expect(taskOutcomeAction("completed", false, false, null)).toEqual({
+      label: "Reopen task",
+      nextStage: "in_progress",
+    });
+  });
+
+  it.each(["ready_for_review", "published", "completed"] as const)(
+    "suppresses the %s action while a run is active",
+    (stage) => {
+      expect(taskOutcomeAction(stage, false, true, "running")).toBeNull();
+    },
+  );
+
+  it("does not offer an outcome action for a draft", () => {
+    expect(taskOutcomeAction("draft", false, false, null)).toBeNull();
   });
 });
 

@@ -84,6 +84,9 @@ const APP_COMMANDS: &[&str] = &[
     "bind_xiao_task_codex_profile",
     "transition_xiao_task_stage",
     "list_xiao_task_stage_transitions",
+    "list_xiao_attention_items",
+    "acknowledge_xiao_attention_item",
+    "list_xiao_task_publications",
     "open_xiao_project",
 ];
 

@@ -21,6 +21,7 @@ import type {
 } from "../core/models/verification";
 import type { RoutineOpenRunTarget, RoutineSummary } from "../core/models/routine";
 import type {
+  AttentionItem,
   CodexProfile,
   ProjectGroup,
   XiaoHistorySearchResult,
@@ -37,11 +38,8 @@ import {
   type AttentionHydrationStatus,
 } from "../features/agent/hooks/useAgentRuntime";
 import { AttentionCenter } from "../features/attention/AttentionCenter";
-import {
-  readAttentionDismissals,
-  writeAttentionDismissals,
-} from "../features/attention/attentionDismissals";
 import { projectAttentionItems } from "../features/attention/attentionProjection";
+import { useAttentionCenter } from "../features/attention/useAttentionCenter";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { commandForKeyboardEvent } from "../features/command-menu/commandBindings";
 import { FocusRail } from "../features/focus-rail/components/FocusRail";
@@ -162,6 +160,12 @@ export type ReviewContextState = Record<string, AgentAttachment[]>;
 export const workspaceTaskKey = (workspacePath: string, taskId: string) =>
   `${comparableWorkspacePath(workspacePath)}\u0000${taskId}`;
 
+export const explicitlyOpenedTaskSuppressesFocusedLaunch = (
+  explicitlyOpenedTaskKey: string | null,
+  workspacePath: string,
+  taskId: string,
+) => explicitlyOpenedTaskKey === workspaceTaskKey(workspacePath, taskId);
+
 export const taskReviewContext = (
   current: ReviewContextState,
   workspacePath: string,
@@ -234,6 +238,43 @@ export const applyTaskAcceptanceContractSave = (
   next[taskIndex] = { ...next[taskIndex], acceptanceContract: saved.contract };
   return next;
 };
+
+export const outcomeHasAcceptanceContract = (
+  taskContract: AcceptanceContractVersionSummary | null,
+  latestRunContractVersionId: string | null | undefined,
+) => Boolean(taskContract || latestRunContractVersionId);
+
+export const pendingInputIdFromAttentionOccurrence = (
+  sourceOccurrenceKey: string,
+) => {
+  const match = /^workspace:\d+:pending:([^:]+)$/.exec(sourceOccurrenceKey);
+  return match?.[1] ?? null;
+};
+
+export type PendingAttentionOpenTarget = {
+  projectPath: string;
+  taskId: string;
+  runId: string;
+  pendingInputId: string;
+};
+
+export const pendingAttentionTargetMatchesScope = (
+  target: PendingAttentionOpenTarget,
+  projectPath: string,
+  taskId: string,
+) =>
+  comparableWorkspacePath(target.projectPath) === comparableWorkspacePath(projectPath)
+  && target.taskId === taskId;
+
+export const pendingRequestMatchesAttentionTarget = (
+  request: Pick<PendingAttentionOpenTarget, "taskId" | "runId" | "pendingInputId"> | null,
+  target: PendingAttentionOpenTarget,
+) => Boolean(
+  request
+  && request.taskId === target.taskId
+  && request.runId === target.runId
+  && request.pendingInputId === target.pendingInputId,
+);
 
 export type ConfirmedNativeTaskState = {
   workspacePath: string;
@@ -1506,9 +1547,6 @@ export function App() {
   taskStateReadyRef.current = taskStateReady;
   const [taskLoadError, setTaskLoadError] = useState<string | null>(null);
   const [taskLoadRetryRevision, setTaskLoadRetryRevision] = useState(0);
-  const [attentionDismissalsByWorkspace, setAttentionDismissalsByWorkspace] = useState<
-    Record<string, string[]>
-  >({});
   const taskLoadErrorRef = useRef(taskLoadError);
   taskLoadErrorRef.current = taskLoadError;
   const [confirmedNativeTasks, setConfirmedNativeTasks] = useState<ConfirmedNativeTaskState>({
@@ -1555,10 +1593,13 @@ export function App() {
     [],
   );
   const focusedLaunchTaskRef = useRef<string | null>(null);
+  const explicitlyOpenedTaskRef = useRef<string | null>(null);
   const notifiedRuntimeErrorRef = useRef<string | null>(null);
   const notifiedApprovalRef = useRef<string | null>(null);
   const notifiedQuestionRef = useRef<string | null>(null);
   const notifiedMcpElicitationRef = useRef<string | null>(null);
+  const notifiedAttentionIdsRef = useRef(new Set<string>());
+  const attentionNotificationsPrimedRef = useRef(false);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
@@ -1573,7 +1614,25 @@ export function App() {
   >(readComposerAttachmentRecoveries);
   const composerRevisionByTaskRef = useRef<Record<string, number>>({});
   const [routineOpenTarget, setRoutineOpenTarget] = useState<RoutineOpenRunTarget | null>(null);
+  const [attentionOpenTarget, setAttentionOpenTarget] = useState<AttentionItem | null>(null);
+  const [attentionOpenRunId, setAttentionOpenRunId] = useState<string | null>(null);
+  const [attentionOpenPublicationTarget, setAttentionOpenPublicationTarget] = useState<{
+    runId: string;
+    sourceOccurrenceKey: string;
+  } | null>(null);
+  const [attentionOpenPendingTarget, setAttentionOpenPendingTarget] =
+    useState<PendingAttentionOpenTarget | null>(null);
+  const [attentionSelectedPendingTarget, setAttentionSelectedPendingTarget] =
+    useState<PendingAttentionOpenTarget | null>(null);
+  const attentionController = useAttentionCenter();
   const handledRoutineRunRef = useRef<string | null>(null);
+  const consumeOpenRunTarget = useCallback((runId: string) => {
+    setAttentionOpenRunId((current) => current === runId ? null : current);
+    setAttentionOpenPublicationTarget((current) => current?.runId === runId ? null : current);
+    setAttentionOpenPendingTarget((current) => current?.runId === runId ? null : current);
+    setAttentionSelectedPendingTarget((current) => current?.runId === runId ? null : current);
+    setRoutineOpenTarget((current) => current?.runId === runId ? null : current);
+  }, []);
   const [sendingFollowUpId, setSendingFollowUpId] = useState<string | null>(null);
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
@@ -1660,7 +1719,12 @@ export function App() {
     routineOpenTarget?.taskId !== activeTask.id &&
     (!selectedTask || !selectedTask.archived) &&
     activeTaskTimelineReady &&
-    activeTask.timeline.length === 0;
+    activeTask.timeline.length === 0 &&
+    !explicitlyOpenedTaskSuppressesFocusedLaunch(
+      explicitlyOpenedTaskRef.current,
+      workspace.path,
+      activeTask.id,
+    );
   if (taskStateReady && taskWorkspacePath) {
     latestTaskStateRef.current = {
       path: taskWorkspacePath,
@@ -1699,7 +1763,7 @@ export function App() {
 
   useEffect(() => {
     if (!focusedLaunch || !preferences.focusNewTasks) return;
-    const taskKey = `${workspace.path}\u0000${activeTask.id}`;
+    const taskKey = workspaceTaskKey(workspace.path, activeTask.id);
     if (focusedLaunchTaskRef.current === taskKey) return;
     focusedLaunchTaskRef.current = taskKey;
     setSidebarOpen(false);
@@ -1829,13 +1893,78 @@ export function App() {
       !tasks.some((task) => task.id === routineOpenTarget.taskId)
     ) return;
     handledRoutineRunRef.current = routineOpenTarget.runId;
+    explicitlyOpenedTaskRef.current = workspaceTaskKey(
+      routineOpenTarget.workspacePath,
+      routineOpenTarget.taskId,
+    );
     setActiveTaskId(routineOpenTarget.taskId);
+    setAttentionOpenRunId(null);
+    setAttentionOpenPublicationTarget(null);
+    setAttentionOpenPendingTarget(null);
+    setAttentionSelectedPendingTarget(null);
     setOpenTaskIds((current) => current.includes(routineOpenTarget.taskId)
       ? current
       : [...current, routineOpenTarget.taskId]);
     setActivePage("tasks");
     openFocusView("schedule");
   }, [routineOpenTarget, taskStateReady, taskWorkspacePath, tasks]);
+
+  useEffect(() => {
+    if (
+      !attentionOpenTarget ||
+      !taskStateReady ||
+      comparableWorkspacePath(taskWorkspacePath) !==
+        comparableWorkspacePath(attentionOpenTarget.projectPath) ||
+      !tasks.some((task) => task.id === attentionOpenTarget.taskId)
+    ) return;
+    explicitlyOpenedTaskRef.current = workspaceTaskKey(
+      attentionOpenTarget.projectPath,
+      attentionOpenTarget.taskId,
+    );
+    setOpenTaskIds((current) => current.includes(attentionOpenTarget.taskId)
+      ? current
+      : [...current, attentionOpenTarget.taskId]);
+    setActiveTaskId(attentionOpenTarget.taskId);
+    setAttentionOpenRunId(
+      attentionOpenTarget.surface === "observatory" ||
+        attentionOpenTarget.surface === "schedule"
+        ? attentionOpenTarget.runId
+        : null,
+    );
+    setAttentionOpenPublicationTarget(
+      attentionOpenTarget.surface === "changes"
+      && attentionOpenTarget.kind === "publication"
+      && attentionOpenTarget.runId
+        ? {
+            runId: attentionOpenTarget.runId,
+            sourceOccurrenceKey: attentionOpenTarget.sourceOccurrenceKey,
+          }
+        : null,
+    );
+    const pendingInputId = pendingInputIdFromAttentionOccurrence(
+      attentionOpenTarget.sourceOccurrenceKey,
+    );
+    const pendingTarget =
+      attentionOpenTarget.surface === "timeline"
+      && attentionOpenTarget.runId
+      && pendingInputId
+        ? {
+            projectPath: attentionOpenTarget.projectPath,
+            taskId: attentionOpenTarget.taskId,
+            runId: attentionOpenTarget.runId,
+            pendingInputId,
+          }
+        : null;
+    setAttentionOpenPendingTarget(pendingTarget);
+    setAttentionSelectedPendingTarget(pendingTarget);
+    setActivePage("tasks");
+    if (attentionOpenTarget.surface === "timeline") {
+      closeFocusPanel();
+    } else {
+      openFocusView(attentionOpenTarget.surface);
+    }
+    setAttentionOpenTarget(null);
+  }, [attentionOpenTarget, taskStateReady, taskWorkspacePath, tasks]);
 
   useEffect(() => {
     if (!isTauriHost()) return;
@@ -2177,6 +2306,7 @@ export function App() {
       const finished = tasks.find((task) => task.id === taskId);
       const visible = taskIsVisible(activePage, activeTaskId, taskId);
       if (
+        !isTauriHost() &&
         outcome === "completed" &&
         finished &&
         !routineController.routines.some((routine) => routine.taskId === taskId) &&
@@ -2219,6 +2349,22 @@ export function App() {
       workspace.path,
     ),
   );
+  const attentionQuestionRequest = attentionSelectedPendingTarget
+    ? agent.questionRequests.find((request) =>
+        pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
+      ) ?? null
+    : null;
+  const attentionMcpElicitationRequest = attentionSelectedPendingTarget
+    ? agent.mcpElicitationRequests.find((request) =>
+        pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
+      ) ?? null
+    : null;
+  const visibleQuestionRequest = attentionSelectedPendingTarget
+    ? attentionQuestionRequest
+    : agent.questionRequest;
+  const visibleMcpElicitationRequest = attentionSelectedPendingTarget
+    ? attentionMcpElicitationRequest
+    : agent.mcpElicitationRequest;
   useEffect(() => {
     if (!isTauriHost() || !codexProfiles.length || agent.runtime.phase === "starting") return;
     const profile = codexProfiles.find((item) => item.id === agent.runtime.profileId);
@@ -2277,61 +2423,82 @@ export function App() {
     reviewContextCount: pendingReviewContext.length,
     definitionOfDoneChanged,
   });
-  const attentionTaskStateReady = attentionTaskStateMatchesWorkspace(
-    taskStateReady,
-    taskWorkspacePath,
+  const attentionItems = useMemo<AttentionItem[]>(() => {
+    if (isTauriHost()) return attentionController.items;
+    return projectAttentionItems(tasks, agent.runs, agent.pendingInputs).map((item) => ({
+      id: item.id,
+      projectPath: workspace.path,
+      projectName: workspace.name,
+      taskId: item.taskId,
+      taskTitle: tasks.find((task) => task.id === item.taskId)?.title ?? item.detail,
+      taskStage: tasks.find((task) => task.id === item.taskId)?.stage ?? "in_progress",
+      taskStageVersion: tasks.find((task) => task.id === item.taskId)?.stageVersion ?? 0,
+      runId: item.runId,
+      kind: item.kind,
+      priority: item.kind === "decision" ? 0 : item.kind === "unread" ? 3 : 1,
+      title: item.title,
+      safeSummary: item.detail,
+      sourceOccurrenceKey: item.id,
+      surface: item.kind === "verification" ? "verification" : "timeline",
+      createdAt: item.timestamp,
+      resolvedAt: null,
+      acknowledgedAt: null,
+    }));
+  }, [
+    agent.pendingInputs,
+    agent.runs,
+    attentionController.items,
+    tasks,
+    workspace.name,
     workspace.path,
-  );
-  const attentionWorkspaceKey = comparableWorkspacePath(workspace.path);
-  const dismissedAttentionIds = useMemo(
-    () => new Set(
-      attentionDismissalsByWorkspace[attentionWorkspaceKey] ??
-        readAttentionDismissals(workspace.path),
-    ),
-    [attentionDismissalsByWorkspace, attentionWorkspaceKey, workspace.path],
-  );
-  const attentionItems = useMemo(
-    () => attentionTaskStateReady
-      ? projectAttentionItems(tasks, agent.runs, agent.pendingInputs).filter(
-        (item) => !dismissedAttentionIds.has(item.id),
-      )
-      : [],
-    [agent.pendingInputs, agent.runs, attentionTaskStateReady, dismissedAttentionIds, tasks],
-  );
-  const dismissAttentionItem = (itemId: string) => {
-    setAttentionDismissalsByWorkspace((current) => {
-      const dismissed = current[attentionWorkspaceKey] ??
-        readAttentionDismissals(workspace.path);
-      if (dismissed.includes(itemId)) return current;
-      const next = [...dismissed, itemId];
-      writeAttentionDismissals(workspace.path, next);
-      return { ...current, [attentionWorkspaceKey]: next };
-    });
-  };
-  const attentionHydrationStatus = attentionHydrationStatusForTaskState(
-    taskStateReady,
-    taskWorkspacePath,
-    workspace.path,
-    loading,
-    taskLoadError,
-    workspaceError,
-    agent.attentionHydrationStatus,
-  );
+  ]);
+  const attentionHydrationStatus = isTauriHost() ? attentionController.status : "live";
+  const sidebarAttentionHydrationStatus = attentionHydrationStatus === "live"
+    ? "ready"
+    : attentionHydrationStatus === "loading"
+      ? "loading"
+      : "partial";
   const retryAttention = () => {
-    const targets = attentionRetryTargets(
-      taskWorkspacePath,
-      workspace.path,
-      taskLoadError,
-      workspaceError,
-    );
-    if (targets.agent) agent.retryAttentionHydration();
-    if (targets.workspace) void refresh();
-    if (targets.taskState) {
-      taskLoadErrorRef.current = null;
-      setTaskLoadError(null);
-      setTaskLoadRetryRevision((current) => current + 1);
-    }
+    void attentionController.refresh();
+    agent.retryAttentionHydration();
+    setTaskLoadRetryRevision((current) => current + 1);
+    if (workspaceError) void refresh();
   };
+
+  useEffect(() => {
+    if (!["live", "partial"].includes(attentionHydrationStatus)) return;
+    if (!attentionNotificationsPrimedRef.current) {
+      attentionNotificationsPrimedRef.current = true;
+      notifiedAttentionIdsRef.current = new Set(attentionItems.map((item) => item.id));
+      return;
+    }
+    for (const item of attentionItems) {
+      if (notifiedAttentionIdsRef.current.has(item.id)) continue;
+      notifiedAttentionIdsRef.current.add(item.id);
+      const enabled = item.kind === "decision"
+        ? preferences.notifyApprovals
+        : item.kind === "review" || item.kind === "unread"
+          ? preferences.notifyCompletions
+          : preferences.notifyErrors;
+      if (!enabled || !("Notification" in window) || Notification.permission !== "granted") {
+        continue;
+      }
+      const notification = new Notification(item.title, {
+        body: `${item.projectName} · ${item.safeSummary}`,
+      });
+      notification.onclick = () => {
+        setAttentionOpenTarget(item);
+        setActiveProjectPath(item.projectPath);
+        setActivePage("tasks");
+      };
+    }
+  }, [
+    attentionHydrationStatus,
+    attentionItems,
+    preferences.notifyApprovals,
+    preferences.notifyCompletions,
+    preferences.notifyErrors,
+  ]);
   const titleBarTabs = [
     ...openTaskIds.flatMap((taskId) => {
       const task = tasks.find((item) => item.id === taskId && !item.archived);
@@ -2358,6 +2525,7 @@ export function App() {
     activeTask.reasoningEffort || statusModel?.defaultReasoningEffort || "";
 
   useEffect(() => {
+    if (isTauriHost()) return;
     const runtimeError = agent.runtime.error;
     if (!runtimeError) {
       notifiedRuntimeErrorRef.current = null;
@@ -2375,6 +2543,7 @@ export function App() {
   }, [agent.runtime.error, preferences.notifyErrors]);
 
   useEffect(() => {
+    if (isTauriHost()) return;
     const approval = [...activeTask.timeline]
       .reverse()
       .find((entry) => entry.kind === "approval" && entry.status === "warning");
@@ -2391,12 +2560,13 @@ export function App() {
   }, [activeTask.timeline, preferences.notifyApprovals]);
 
   useEffect(() => {
+    if (isTauriHost()) return;
     const question = agent.questionRequest;
     if (!question) {
       notifiedQuestionRef.current = null;
       return;
     }
-    const requestId = String(question.requestId);
+    const requestId = question.pendingInputId;
     if (
       preferences.notifyApprovals &&
       notifiedQuestionRef.current !== requestId &&
@@ -2409,12 +2579,13 @@ export function App() {
   }, [agent.questionRequest, preferences.notifyApprovals]);
 
   useEffect(() => {
+    if (isTauriHost()) return;
     const request = agent.mcpElicitationRequest;
     if (!request) {
       notifiedMcpElicitationRef.current = null;
       return;
     }
-    const requestId = String(request.requestId);
+    const requestId = request.pendingInputId;
     if (
       preferences.notifyApprovals &&
       notifiedMcpElicitationRef.current !== requestId &&
@@ -2671,6 +2842,71 @@ export function App() {
     }
     return submitted;
   };
+
+  const transitionTaskOutcome = async (
+    toStage: WorkbenchTask["stage"],
+  ) => {
+    if (!executionTaskId || !isTauriHost()) {
+      throw new Error("This Task must be persisted before its outcome can change.");
+    }
+    if (
+      toStage === "completed" &&
+      !window.confirm("Accept this current Task outcome as completed?")
+    ) return;
+    if (
+      activeTask.stage === "completed" &&
+      toStage === "in_progress" &&
+      !window.confirm("Reopen this completed Task for a new outcome?")
+    ) return;
+    const reason = toStage === "ready_for_review"
+      ? "Operator marked the current outcome ready for review"
+      : toStage === "completed"
+        ? "Operator accepted the current outcome"
+        : "Operator explicitly reopened the Task";
+    const transition = await nativeBridge.transitionXiaoTaskStage({
+      workspacePath: workspace.path,
+      taskId: executionTaskId,
+      expectedVersion: activeTask.stageVersion,
+      toStage,
+      actor: "operator",
+      reason,
+      sourceRunId: agent.latestRun?.id ?? null,
+      idempotencyKey: `operator:${executionTaskId}:${crypto.randomUUID()}`,
+    });
+    setTasks((current) => current.map((task) => task.id === executionTaskId
+      ? {
+        ...task,
+        stage: transition.toStage,
+        stageVersion: transition.resultingVersion,
+        updatedAt: transition.createdAt,
+      }
+      : task));
+    await attentionController.refresh();
+  };
+
+  const refreshActiveTaskOutcome = useCallback(async () => {
+    if (!isTauriHost() || !executionTaskId) return;
+    const document = await nativeBridge.loadXiaoWorkspace(workspace.path, false);
+    const persisted = document?.tasks.find((task) => task.id === executionTaskId);
+    if (!persisted?.stage || persisted.stageVersion === undefined) return;
+    setTasks((current) => current.map((task) => task.id === executionTaskId
+      ? { ...task, stage: persisted.stage!, stageVersion: persisted.stageVersion! }
+      : task));
+    await attentionController.refresh();
+  }, [attentionController.refresh, executionTaskId, workspace.path]);
+
+  useEffect(() => {
+    if (
+      agent.latestRun?.verificationOutcome !== "passed" ||
+      activeTask.stage !== "in_progress"
+    ) return;
+    void refreshActiveTaskOutcome();
+  }, [
+    activeTask.stage,
+    agent.latestRun?.id,
+    agent.latestRun?.verificationOutcome,
+    refreshActiveTaskOutcome,
+  ]);
 
   const queueTaskFollowUp = async (prompt: string, attachments: AgentAttachment[]) => {
     const cleanPrompt = prompt.trim();
@@ -3175,6 +3411,106 @@ export function App() {
       }
     });
   };
+
+  useEffect(() => {
+    if (!attentionOpenPendingTarget) return;
+    if (
+      !pendingAttentionTargetMatchesScope(
+        attentionOpenPendingTarget,
+        taskWorkspacePath,
+        activeTask.id,
+      )
+    ) {
+      setAttentionOpenPendingTarget(null);
+      setAttentionSelectedPendingTarget(null);
+      return;
+    }
+    const targetEntry = agent.timeline.find((entry) =>
+      entry.runId === attentionOpenPendingTarget.runId
+      && entry.pendingInputId === attentionOpenPendingTarget.pendingInputId,
+    );
+    if (targetEntry) {
+      jumpToTimelineEntry(targetEntry.id);
+      setAttentionOpenPendingTarget(null);
+      setAttentionSelectedPendingTarget(null);
+      return;
+    }
+    const dialogSelector = attentionQuestionRequest
+      ? '[aria-labelledby="question-dock-title"]'
+      : attentionMcpElicitationRequest
+        ? '[aria-labelledby="mcp-elicitation-title"]'
+        : null;
+    if (!dialogSelector) {
+      const targetPendingInputIsActive = agent.pendingInputs.some((pending) =>
+        pending.id === attentionOpenPendingTarget.pendingInputId
+        && pending.runId === attentionOpenPendingTarget.runId
+        && pending.resolvedAt == null
+        && pending.invalidatedAt == null
+      );
+      if (agent.attentionHydrationStatus === "ready" && !targetPendingInputIsActive) {
+        setAttentionOpenPendingTarget(null);
+        setAttentionSelectedPendingTarget(null);
+      }
+      return;
+    }
+    const dialog = document.querySelector<HTMLElement>(dialogSelector);
+    if (!dialog) return;
+    dialog.scrollIntoView({ behavior: "smooth", block: "center" });
+    (
+      dialog.querySelector<HTMLElement>(
+        '[role="radio"], input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+      )
+      ?? dialog.querySelector<HTMLElement>("button:not([disabled])")
+    )?.focus();
+    dialog.classList.remove("timeline-search-hit");
+    void dialog.offsetWidth;
+    dialog.classList.add("timeline-search-hit");
+    window.setTimeout(() => dialog.classList.remove("timeline-search-hit"), 1_800);
+    setAttentionOpenPendingTarget(null);
+  }, [
+    activeTask.id,
+    agent.attentionHydrationStatus,
+    agent.pendingInputs,
+    agent.timeline,
+    attentionMcpElicitationRequest,
+    attentionOpenPendingTarget,
+    attentionQuestionRequest,
+    taskWorkspacePath,
+  ]);
+
+  useEffect(() => {
+    if (
+      attentionSelectedPendingTarget
+      && !pendingAttentionTargetMatchesScope(
+        attentionSelectedPendingTarget,
+        taskWorkspacePath,
+        activeTask.id,
+      )
+    ) {
+      setAttentionSelectedPendingTarget(null);
+    }
+  }, [
+    activeTask.id,
+    attentionSelectedPendingTarget,
+    taskWorkspacePath,
+  ]);
+
+  useEffect(() => {
+    if (
+      !attentionSelectedPendingTarget
+      || attentionOpenPendingTarget
+      || attentionQuestionRequest
+      || attentionMcpElicitationRequest
+    ) {
+      return;
+    }
+    setAttentionSelectedPendingTarget(null);
+  }, [
+    attentionMcpElicitationRequest,
+    attentionOpenPendingTarget,
+    attentionQuestionRequest,
+    attentionSelectedPendingTarget,
+  ]);
 
   const searchHistory = useCallback(
     (query: string): Promise<XiaoHistorySearchResult[]> => {
@@ -3988,7 +4324,7 @@ export function App() {
               profile={profile}
               canOpenProjects={isTauriHost()}
               attentionCount={attentionItems.length}
-              attentionHydrationStatus={attentionHydrationStatus}
+              attentionHydrationStatus={sidebarAttentionHydrationStatus}
               onOpenMenu={() => setCommandMenuOpen(true)}
               onOpenAttention={() => {
                 setActivePage("attention");
@@ -4062,17 +4398,15 @@ export function App() {
               items={attentionItems}
               hydrationStatus={attentionHydrationStatus}
               onRetry={retryAttention}
-              onOpenTask={(taskId) => {
-                setOpenTaskIds((current) =>
-                  current.includes(taskId) ? current : [...current, taskId]
-                );
-                setActiveTaskId(taskId);
-                markTaskUnread(taskId, false);
+              onOpenItem={(item) => {
+                setAttentionOpenTarget(item);
+                setActiveProjectPath(item.projectPath);
                 setActivePage("tasks");
                 closeSidebarOnNarrow();
-                focusAppContentNextFrame();
               }}
-              onDismiss={dismissAttentionItem}
+              onAcknowledge={(itemId) => {
+                void attentionController.acknowledge(itemId);
+              }}
               onClose={() => {
                 setActivePage("tasks");
                 focusAppContentNextFrame();
@@ -4192,6 +4526,11 @@ export function App() {
               taskTitle={activeTask.title}
               taskArchived={activeTask.archived}
               taskStage={activeTask.stage}
+              hasAcceptanceContract={outcomeHasAcceptanceContract(
+                activeTask.acceptanceContract,
+                agent.latestRun?.acceptanceContractSourceVersionId,
+              )}
+              hasActiveRuns={agent.isTaskWorking(activeTask.id)}
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
               taskStateLoading={taskWorkspaceStateLoading}
@@ -4215,8 +4554,8 @@ export function App() {
               goal={activeTask.goal}
               plan={activeTask.plan}
               reviewContext={pendingReviewContext}
-              questionRequest={agent.questionRequest}
-              mcpElicitationRequest={agent.mcpElicitationRequest}
+              questionRequest={visibleQuestionRequest}
+              mcpElicitationRequest={visibleMcpElicitationRequest}
               draftText={activeTask.draftText}
               followUps={activeTask.followUps}
               sendingFollowUpId={sendingFollowUpId}
@@ -4341,6 +4680,7 @@ export function App() {
               onToggleArchived={() => {
                 if (selectedTask) setTaskArchived(selectedTask.id, !selectedTask.archived);
               }}
+              onTransitionTaskStage={transitionTaskOutcome}
               onTimelineScrollTopChange={(timelineScrollTop) => {
                 patchActiveTask({
                   workbenchState: {
@@ -4380,13 +4720,17 @@ export function App() {
               loading={loading || activeEnvironmentBusy}
               error={workspaceError}
               onRefresh={refresh}
+              onTaskOutcomeChange={() => void refreshActiveTaskOutcome()}
               onLoadDirectory={loadDirectory}
               routines={routineController.routines}
               routinesLoading={routineController.loading}
               routinesError={routineController.error}
               routineCreating={routineController.creating}
               routineBusyIds={routineController.busyIds}
-              routineOpenRunId={routineOpenTarget?.runId ?? null}
+              routineOpenRunId={attentionOpenRunId ?? routineOpenTarget?.runId ?? null}
+              observatoryOpenRunId={attentionOpenRunId}
+              changesOpenPublicationTarget={attentionOpenPublicationTarget}
+              onOpenRunConsumed={consumeOpenRunTarget}
               nativeRoutinesAvailable={isTauriHost()}
               dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}
               dangerousRoutineIds={dangerousRoutineIds}

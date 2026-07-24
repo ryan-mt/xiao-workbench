@@ -5,10 +5,10 @@ use std::process::Command;
 use std::os::windows::process::CommandExt;
 
 use super::models::{
-    CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate, ProjectPresentationUpdate,
-    TaskCodexProfileBinding, TaskStageTransition, TaskStageTransitionRequest,
-    XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage, XiaoWorkspaceDocument,
-    XiaoWorkspaceUpdate,
+    AttentionSnapshot, CodexProfile, CodexProfileUpdate, ProjectGroup, ProjectGroupUpdate,
+    ProjectPresentationUpdate, PublicationRecord, TaskCodexProfileBinding, TaskStageTransition,
+    TaskStageTransitionRequest, XiaoHistorySearchResult, XiaoProjectSummary, XiaoTimelinePage,
+    XiaoWorkspaceDocument, XiaoWorkspaceUpdate,
 };
 use super::repository::XiaoRepository;
 
@@ -132,6 +132,25 @@ pub fn list_task_stage_transitions(
     task_id: &str,
 ) -> Result<Vec<TaskStageTransition>, String> {
     repository.list_task_stage_transitions(workspace_path, task_id)
+}
+
+pub fn list_attention_items(repository: &XiaoRepository) -> Result<AttentionSnapshot, String> {
+    repository.list_attention_items()
+}
+
+pub fn acknowledge_attention_item(
+    repository: &XiaoRepository,
+    item_id: &str,
+) -> Result<bool, String> {
+    repository.acknowledge_attention_item(item_id)
+}
+
+pub fn list_task_publications(
+    repository: &XiaoRepository,
+    project_path: &str,
+    task_id: &str,
+) -> Result<Vec<PublicationRecord>, String> {
+    repository.list_task_publications(project_path, task_id)
 }
 
 pub fn open_project(path: &str) -> Result<(), String> {

@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::verification::models::AcceptanceContractVersionSummary;
 
 pub const XIAO_SCHEMA_VERSION: u32 = 1;
-pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 7;
+pub const XIAO_DATABASE_SCHEMA_VERSION: i64 = 9;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,6 +81,158 @@ pub struct TaskStageTransition {
     pub source_run_id: Option<String>,
     pub idempotency_key: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    Decision,
+    Failure,
+    Verification,
+    Review,
+    Publication,
+    Routine,
+    Unread,
+}
+
+impl AttentionKind {
+    pub(crate) fn from_database(value: &str) -> Result<Self, String> {
+        match value {
+            "decision" => Ok(Self::Decision),
+            "failure" => Ok(Self::Failure),
+            "verification" => Ok(Self::Verification),
+            "review" => Ok(Self::Review),
+            "publication" => Ok(Self::Publication),
+            "routine" => Ok(Self::Routine),
+            "unread" => Ok(Self::Unread),
+            _ => Err(format!("Unsupported Attention kind `{value}`.")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionSurface {
+    Timeline,
+    Verification,
+    Changes,
+    Schedule,
+    Observatory,
+}
+
+impl AttentionSurface {
+    pub(crate) fn from_database(value: &str) -> Result<Self, String> {
+        match value {
+            "timeline" => Ok(Self::Timeline),
+            "verification" => Ok(Self::Verification),
+            "changes" => Ok(Self::Changes),
+            "schedule" => Ok(Self::Schedule),
+            "observatory" => Ok(Self::Observatory),
+            _ => Err(format!("Unsupported Attention surface `{value}`.")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionItem {
+    pub id: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub task_id: String,
+    pub task_title: String,
+    pub task_stage: TaskStage,
+    pub task_stage_version: i64,
+    pub run_id: Option<String>,
+    pub kind: AttentionKind,
+    pub priority: i64,
+    pub title: String,
+    pub safe_summary: String,
+    pub source_occurrence_key: String,
+    pub surface: AttentionSurface,
+    pub created_at: i64,
+    pub resolved_at: Option<i64>,
+    pub acknowledged_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionHydrationStatus {
+    Live,
+    Partial,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionSnapshot {
+    pub items: Vec<AttentionItem>,
+    pub status: AttentionHydrationStatus,
+    pub generated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationKind {
+    Branch,
+    PullRequest,
+}
+
+impl PublicationKind {
+    pub(crate) fn as_database(self) -> &'static str {
+        match self {
+            Self::Branch => "branch",
+            Self::PullRequest => "pull_request",
+        }
+    }
+
+    pub(crate) fn from_database(value: &str) -> Result<Self, String> {
+        match value {
+            "branch" => Ok(Self::Branch),
+            "pull_request" => Ok(Self::PullRequest),
+            _ => Err(format!("Unsupported publication kind `{value}`.")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicationStatus {
+    Active,
+    Superseded,
+    Merged,
+    Closed,
+    Unavailable,
+}
+
+impl PublicationStatus {
+    pub(crate) fn from_database(value: &str) -> Result<Self, String> {
+        match value {
+            "active" => Ok(Self::Active),
+            "superseded" => Ok(Self::Superseded),
+            "merged" => Ok(Self::Merged),
+            "closed" => Ok(Self::Closed),
+            "unavailable" => Ok(Self::Unavailable),
+            _ => Err(format!("Unsupported publication status `{value}`.")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationRecord {
+    pub id: String,
+    pub project_path: String,
+    pub task_id: String,
+    pub source_run_id: String,
+    pub kind: PublicationKind,
+    pub status: PublicationStatus,
+    pub branch: String,
+    pub remote: Option<String>,
+    pub url: Option<String>,
+    pub pull_request_number: Option<i64>,
+    pub check_state: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]

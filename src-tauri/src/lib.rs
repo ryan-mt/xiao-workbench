@@ -60,8 +60,9 @@ use workspace::commands::{
     get_workspace_snapshot, list_workspace_files, open_workspace_preview, read_workspace_file,
 };
 use xiao::commands::{
-    bind_xiao_task_codex_profile, delete_xiao_codex_profile, delete_xiao_project_group,
-    list_xiao_codex_profiles, list_xiao_project_groups, list_xiao_projects,
+    acknowledge_xiao_attention_item, bind_xiao_task_codex_profile, delete_xiao_codex_profile,
+    delete_xiao_project_group, list_xiao_attention_items, list_xiao_codex_profiles,
+    list_xiao_project_groups, list_xiao_projects, list_xiao_task_publications,
     list_xiao_task_stage_transitions, load_xiao_timeline_page, load_xiao_workspace,
     open_xiao_project, reorder_xiao_project_groups, save_xiao_codex_profile,
     save_xiao_project_group, save_xiao_workspace, search_xiao_history, search_xiao_history_global,
@@ -227,6 +228,9 @@ pub fn run() {
             bind_xiao_task_codex_profile,
             transition_xiao_task_stage,
             list_xiao_task_stage_transitions,
+            list_xiao_attention_items,
+            acknowledge_xiao_attention_item,
+            list_xiao_task_publications,
             open_xiao_project,
         ])
         .run(tauri::generate_context!())

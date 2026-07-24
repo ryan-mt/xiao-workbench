@@ -102,11 +102,12 @@ impl XiaoRepository {
                         reasoning_effort, thread_binding_json, mode, approval_policy,
                         sandbox_mode, goal_json, plan_json, timeline_sha256,
                         timeline_entry_count, execution_environment_id, workspace_mode,
-                        managed_worktree_id, acceptance_contract_version_id
+                        managed_worktree_id, acceptance_contract_version_id,
+                        unread_generation, unread_raised_at
                      ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?5, ?6, '[]', 0, 0, 1, ?7, ?8,
                         NULL, ?9, 'on-request', ?10, ?11, NULL, ?12, ?13, ?14,
-                        'local', NULL, NULL
+                        'local', NULL, NULL, 1, ?5
                      )"#,
                     params![
                         workspace_id,

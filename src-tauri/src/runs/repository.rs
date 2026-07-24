@@ -2939,8 +2939,8 @@ mod tests {
         VerificationAttemptTrigger, VerificationBaselineState, VerificationGateOutcome,
     };
     use crate::xiao::models::{
-        XiaoTaskDocument, XiaoWorkspaceDocument, XiaoWorkspaceMode, XiaoWorkspaceUpdate,
-        XIAO_SCHEMA_VERSION,
+        TaskStageTransitionRequest, XiaoTaskDocument, XiaoWorkspaceDocument, XiaoWorkspaceMode,
+        XiaoWorkspaceUpdate, XIAO_SCHEMA_VERSION,
     };
 
     static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -5091,6 +5091,14 @@ mod tests {
             VerificationOutcome::Passed
         );
         assert_eq!(passed.mutation.run.agent_outcome, AgentOutcome::Completed);
+        let document = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            document.tasks[0].stage,
+            crate::xiao::models::TaskStage::ReadyForReview
+        );
         let history = repository
             .list_verification_evidence(&verifying.id, None)
             .unwrap();
@@ -5102,6 +5110,252 @@ mod tests {
             .gates
             .iter()
             .all(|gate| gate.evidence.len() == 1 && gate.evidence[0].artifact.is_some()));
+    }
+
+    #[test]
+    fn passing_an_older_verification_rerun_does_not_advance_the_current_outcome() {
+        let directory = TestDirectory::new("stale-verification-outcome");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let gate = AcceptanceGate::Cleanliness {
+            allow_staged: true,
+            allow_unstaged: true,
+            allow_untracked: true,
+        };
+        let old_run = failed_verification_run_at_root(
+            &repository,
+            &workspace,
+            "task-a",
+            "old-outcome",
+            &workspace,
+        );
+        repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "current-outcome",
+            ))
+            .unwrap();
+
+        let rerun = repository
+            .begin_verification_attempt(
+                &old_run.id,
+                "stale-rerun",
+                VerificationAttemptTrigger::Rerun,
+            )
+            .unwrap();
+        persist_gate_outcome(
+            &repository,
+            &old_run.id,
+            &rerun.attempt.id,
+            0,
+            &gate,
+            VerificationGateOutcome::Passed,
+        );
+        repository
+            .settle_verification_attempt(&rerun.attempt.id)
+            .unwrap();
+
+        let document = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            document.tasks[0].stage,
+            crate::xiao::models::TaskStage::InProgress
+        );
+    }
+
+    #[test]
+    fn clearing_the_task_contract_cannot_bypass_the_current_runs_frozen_contract() {
+        let directory = TestDirectory::new("frozen-contract-manual-ready");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let failed = failed_verification_run_at_root(
+            &repository,
+            &workspace,
+            "task-a",
+            "frozen-contract-outcome",
+            &workspace,
+        );
+        let document = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap();
+        let contract_version_id = document.tasks[0]
+            .acceptance_contract
+            .as_ref()
+            .unwrap()
+            .version_id
+            .clone();
+        repository
+            .save_task_acceptance_contract(&workspace, "task-a", Some(&contract_version_id), None)
+            .unwrap();
+
+        let error = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace,
+                task_id: "task-a".to_owned(),
+                expected_version: document.tasks[0].stage_version,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Bypass frozen verification".to_owned(),
+                source_run_id: Some(failed.id),
+                idempotency_key: "frozen-contract-bypass".to_owned(),
+            })
+            .unwrap_err();
+        assert!(error.contains("frozen verification passes"));
+    }
+
+    #[test]
+    fn publication_observations_are_append_only_and_acknowledgement_is_occurrence_scoped() {
+        let directory = TestDirectory::new("publication-observations");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let run = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "publication-outcome",
+            ))
+            .unwrap()
+            .run;
+        let active_ready_error = repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task-a".to_owned(),
+                expected_version: 1,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Too early".to_owned(),
+                source_run_id: Some(run.id.clone()),
+                idempotency_key: "active-publication-ready".to_owned(),
+            })
+            .unwrap_err();
+        assert!(active_ready_error.contains("while its Run is active"));
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE runs SET status = 'completed', agent_outcome = 'completed', \
+                         finished_at = queued_at WHERE id = ?1",
+                        [&run.id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let task = repository
+            .load_workspace(&workspace, true)
+            .unwrap()
+            .unwrap()
+            .tasks
+            .remove(0);
+        repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: workspace.clone(),
+                task_id: "task-a".to_owned(),
+                expected_version: task.stage_version,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Manual review without a contract".to_owned(),
+                source_run_id: Some(run.id.clone()),
+                idempotency_key: "publication-ready".to_owned(),
+            })
+            .unwrap();
+        repository
+            .record_branch_publication(&workspace, "task-a", "topic", "origin")
+            .unwrap();
+        repository
+            .record_pull_request_publication(
+                &workspace,
+                "task-a",
+                "topic",
+                "https://example.test/pull/7",
+                7,
+            )
+            .unwrap();
+
+        repository
+            .refresh_pull_request_publication(
+                &workspace,
+                "task-a",
+                7,
+                "open",
+                "failing",
+                r#"[{"name":"ci","bucket":"fail"}]"#,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_task_publications(&workspace, "task-a")
+                .unwrap()
+                .len(),
+            3
+        );
+        let attention = repository.list_attention_items().unwrap();
+        let publication = attention
+            .items
+            .into_iter()
+            .find(|item| item.title == "Published checks need attention")
+            .unwrap();
+        let occurrence_key = publication.source_occurrence_key.clone();
+        assert_eq!(publication.run_id.as_deref(), Some(run.id.as_str()));
+        assert!(repository
+            .acknowledge_attention_item(&publication.id)
+            .unwrap());
+
+        repository
+            .refresh_pull_request_publication(
+                &workspace,
+                "task-a",
+                7,
+                "open",
+                "failing",
+                r#"[{"name":"ci","bucket":"fail"}]"#,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_task_publications(&workspace, "task-a")
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(repository
+            .list_attention_items()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.source_occurrence_key != occurrence_key));
+
+        repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "newer-publication-outcome",
+            ))
+            .unwrap();
+        repository
+            .refresh_pull_request_publication(&workspace, "task-a", 7, "merged", "passing", "[]")
+            .unwrap();
+        let attention = repository.list_attention_items().unwrap();
+        assert!(attention.items.iter().any(|item| {
+            item.kind == crate::xiao::models::AttentionKind::Publication
+                && item.title == "Publication belongs to an older outcome"
+        }));
+        assert_eq!(
+            repository
+                .load_workspace(&workspace, true)
+                .unwrap()
+                .unwrap()
+                .tasks[0]
+                .stage,
+            TaskStage::InProgress
+        );
     }
 
     #[test]

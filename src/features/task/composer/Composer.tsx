@@ -126,11 +126,11 @@ type ComposerProps = {
   onSubmissionStart: () => number;
   onSubmissionSucceeded: (revision: number) => Promise<boolean>;
   onResolveQuestion: (
-    requestId: number | string,
+    pendingInputId: string,
     answers: Record<string, string[]>,
   ) => Promise<boolean>;
   onResolveMcpElicitation: (
-    requestId: number | string,
+    pendingInputId: string,
     response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
   disabled?: boolean;
@@ -1039,7 +1039,7 @@ export function Composer({
       />
       {activeQuestionRequest ? (
         <QuestionDock
-          key={String(activeQuestionRequest.requestId)}
+          key={activeQuestionRequest.pendingInputId}
           request={activeQuestionRequest}
           onResolve={onResolveQuestion}
         />

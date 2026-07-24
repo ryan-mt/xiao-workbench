@@ -5,6 +5,7 @@ import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { nativeBridge } from "../../../core/bridges/tauri";
 import type { AgentAttachment } from "../../../core/models/agent";
+import type { PublicationRecord } from "../../../core/models/xiao";
 import type {
   GitBranch,
   GitCheckSummary,
@@ -20,6 +21,11 @@ import {
   type ShipStepStatus,
 } from "./shipFlow";
 
+export type PublicationOpenTarget = {
+  runId: string;
+  sourceOccurrenceKey: string;
+};
+
 type ChangesPanelProps = {
   workspace: WorkspaceSnapshot;
   taskId: string | null;
@@ -30,6 +36,9 @@ type ChangesPanelProps = {
   onRemoveReviewContext: (attachmentId: string) => void;
   onOpenBrowser: (url: string) => void;
   onRefresh: () => void;
+  onOutcomeChange?: () => void;
+  openPublicationTarget?: PublicationOpenTarget | null;
+  onOpenRunConsumed?: (runId: string) => void;
 };
 
 const reviewSourceRevision = (path: string, patch: string) => {
@@ -95,6 +104,23 @@ const checkTone = (check: GitCheckSummary) => {
   return "pending";
 };
 
+export const publicationForAttentionTarget = (
+  records: PublicationRecord[],
+  target: PublicationOpenTarget,
+) => {
+  const publicationMarker = ":publication:";
+  const markerIndex = target.sourceOccurrenceKey.indexOf(publicationMarker);
+  if (markerIndex >= 0) {
+    const publicationId = target.sourceOccurrenceKey
+      .slice(markerIndex + publicationMarker.length)
+      .split(":", 1)[0];
+    return records.find((record) =>
+      record.id === publicationId && record.sourceRunId === target.runId,
+    ) ?? null;
+  }
+  return records.find((record) => record.sourceRunId === target.runId) ?? null;
+};
+
 export function ChangesPanel({
   workspace,
   taskId,
@@ -105,6 +131,9 @@ export function ChangesPanel({
   onRemoveReviewContext,
   onOpenBrowser,
   onRefresh,
+  onOutcomeChange = () => {},
+  openPublicationTarget = null,
+  onOpenRunConsumed = () => {},
 }: ChangesPanelProps) {
   const git = workspace.git;
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -130,6 +159,9 @@ export function ChangesPanel({
   const [diffSelection, setDiffSelection] = useState<{ start: number; end: number } | null>(null);
   const [diffComment, setDiffComment] = useState("");
   const [diffNotice, setDiffNotice] = useState<string | null>(null);
+  const [targetPublication, setTargetPublication] = useState<PublicationRecord | null>(null);
+  const [targetPublicationError, setTargetPublicationError] = useState<string | null>(null);
+  const [consumedPublicationTarget, setConsumedPublicationTarget] = useState<string | null>(null);
   const visibleGit = baseBranch ? comparison : git;
   const comparisonMode = Boolean(baseBranch);
   const preferredChange = visibleGit?.changes.find((change) => !change.patch.startsWith("Binary file")) ?? visibleGit?.changes[0] ?? null;
@@ -146,6 +178,45 @@ export function ChangesPanel({
     const value = query.trim().toLowerCase();
     return visibleGit?.changes.filter((change) => !value || change.path.toLowerCase().includes(value)) ?? [];
   }, [visibleGit?.changes, query]);
+
+  useEffect(() => {
+    setTargetPublication(null);
+    setTargetPublicationError(null);
+    setConsumedPublicationTarget(null);
+  }, [taskId, workspace.path]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!openPublicationTarget) return;
+    setConsumedPublicationTarget(null);
+    setTargetPublication(null);
+    setTargetPublicationError(null);
+    if (!taskId || !workspaceActionable) return;
+    void nativeBridge.listXiaoTaskPublications(workspace.path, taskId).then((records) => {
+      if (cancelled) return;
+      const publication = publicationForAttentionTarget(records, openPublicationTarget);
+      setTargetPublication(publication);
+      if (!publication) setTargetPublicationError("The linked publication is no longer available.");
+    }).catch((reason) => {
+      if (!cancelled) {
+        setTargetPublicationError(reason instanceof Error ? reason.message : String(reason));
+      }
+    });
+    return () => { cancelled = true; };
+  }, [openPublicationTarget, taskId, workspace.path, workspaceActionable]);
+
+  useEffect(() => {
+    if (
+      !openPublicationTarget
+      || !targetPublication
+      || consumedPublicationTarget === openPublicationTarget.sourceOccurrenceKey
+    ) {
+      return;
+    }
+    document.getElementById("attention-publication")?.scrollIntoView?.({ block: "nearest" });
+    setConsumedPublicationTarget(openPublicationTarget.sourceOccurrenceKey);
+    onOpenRunConsumed(openPublicationTarget.runId);
+  }, [consumedPublicationTarget, onOpenRunConsumed, openPublicationTarget, targetPublication]);
 
   useEffect(() => {
     setSelectedPath((current) =>
@@ -351,6 +422,7 @@ export function ChangesPanel({
       setCommitMessage("");
       setShipCommitOutput(null);
       setActionResult(`${result.pullRequest.isDraft ? "Draft " : ""}PR #${result.pullRequest.number} shipped. CI status loaded.`);
+      onOutcomeChange();
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -369,6 +441,7 @@ export function ChangesPanel({
       const summary = summarizeShipChecks(checks);
       setShipChecks(checks);
       setShipSteps((steps) => updateShipStep(steps, "ci", summary.status, summary.detail));
+      onOutcomeChange();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setShipSteps((steps) => updateShipStep(steps, "ci", "error", message));
@@ -416,6 +489,36 @@ export function ChangesPanel({
         </div>
         <button className="icon-button" type="button" aria-label="Refresh changes" disabled={blocked} onClick={() => { if (!blocked) onRefresh(); }}><XiaoIcon name="refresh" size={14} /></button>
       </header>
+
+      {targetPublication ? (
+        <section
+          id="attention-publication"
+          className="ship-flow__pull-request"
+          role="region"
+          aria-label="Attention publication"
+        >
+          <div>
+            <XiaoIcon name="branch" size={15} />
+            <strong>
+              {targetPublication.pullRequestNumber
+                ? `PR #${targetPublication.pullRequestNumber}`
+                : targetPublication.branch}
+            </strong>
+            <span>
+              {targetPublication.status.replaceAll("_", " ").replace(/^\w/, (letter) =>
+                letter.toUpperCase())}
+            </span>
+            <small>Run {targetPublication.sourceRunId} · {targetPublication.checkState}</small>
+          </div>
+          {targetPublication.url ? (
+            <button type="button" onClick={() => onOpenBrowser(targetPublication.url!)}>
+              Open publication
+            </button>
+          ) : null}
+        </section>
+      ) : targetPublicationError ? (
+        <p role="alert">{targetPublicationError}</p>
+      ) : null}
 
       {comparisonLoading ? (
         <div className="changes-review__state"><XiaoIcon className="spin" name="pending" size={18} /><strong>Comparing branches</strong><p>Reading changes against {baseBranch} without checking it out.</p></div>

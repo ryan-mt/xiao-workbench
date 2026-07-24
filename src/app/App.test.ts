@@ -32,8 +32,13 @@ import {
   confirmNativeTaskIds,
   codexProfileRuntimeSignature,
   createContinuationTask,
+  explicitlyOpenedTaskSuppressesFocusedLaunch,
   isTaskWorkspaceStateLoading,
   markTaskUnreadAfterCompletion,
+  outcomeHasAcceptanceContract,
+  pendingInputIdFromAttentionOccurrence,
+  pendingAttentionTargetMatchesScope,
+  pendingRequestMatchesAttentionTarget,
   queuedFollowUpIdForAutoSend,
   removeTaskOperationRevision,
   removeTaskReviewContext,
@@ -54,6 +59,60 @@ import {
   type StoredTaskState,
   WorkspaceTaskSaveDebouncer,
 } from "./App";
+
+describe("outcome readiness", () => {
+  it("keeps the frozen Run contract actionable after the Task contract is cleared", () => {
+    expect(outcomeHasAcceptanceContract(null, "contract-version-1")).toBe(true);
+    expect(outcomeHasAcceptanceContract(null, null)).toBe(false);
+  });
+});
+
+describe("pending-input Attention routing", () => {
+  it("accepts only the canonical pending occurrence identity", () => {
+    expect(pendingInputIdFromAttentionOccurrence(
+      "workspace:7:pending:pending-input-2",
+    )).toBe("pending-input-2");
+    expect(pendingInputIdFromAttentionOccurrence(
+      "verification:run-1:pending:pending-input-2",
+    )).toBeNull();
+    expect(pendingInputIdFromAttentionOccurrence(
+      "workspace:not-an-id:pending:pending-input-2",
+    )).toBeNull();
+  });
+
+  it("matches an interactive request by Task, Run, and pending occurrence", () => {
+    const target = {
+      projectPath: "C:/projects/xiao",
+      taskId: "task-1",
+      runId: "run-2",
+      pendingInputId: "pending-2",
+    };
+    expect(pendingRequestMatchesAttentionTarget({
+      taskId: "task-1",
+      runId: "run-2",
+      pendingInputId: "pending-2",
+    }, target)).toBe(true);
+    expect(pendingRequestMatchesAttentionTarget({
+      taskId: "task-1",
+      runId: "run-1",
+      pendingInputId: "pending-2",
+    }, target)).toBe(false);
+  });
+
+  it("keeps a selected pending occurrence only in its originating workspace and Task", () => {
+    const target = {
+      projectPath: "C:/projects/xiao",
+      taskId: "task-1",
+      runId: "run-2",
+      pendingInputId: "pending-2",
+    };
+
+    expect(pendingAttentionTargetMatchesScope(target, "c:\\projects\\xiao", "task-1"))
+      .toBe(true);
+    expect(pendingAttentionTargetMatchesScope(target, "C:/projects/xiao", "task-2"))
+      .toBe(false);
+  });
+});
 
 describe("profile and project group state", () => {
   it("deduplicates runtime synchronization per profile", () => {
@@ -307,6 +366,27 @@ describe("new-task draft lifecycle", () => {
       reviewContextCount: 0,
       definitionOfDoneChanged: false,
     })).toBe(true);
+  });
+});
+
+describe("explicit Task navigation", () => {
+  it("keeps a consumed deep link out of focused-launch mode", () => {
+    const explicitTaskKey = "c:/projects/xiao\u0000task-a";
+
+    expect(
+      explicitlyOpenedTaskSuppressesFocusedLaunch(
+        explicitTaskKey,
+        "C:/projects/xiao",
+        "task-a",
+      ),
+    ).toBe(true);
+    expect(
+      explicitlyOpenedTaskSuppressesFocusedLaunch(
+        explicitTaskKey,
+        "C:/projects/xiao",
+        "task-b",
+      ),
+    ).toBe(false);
   });
 });
 

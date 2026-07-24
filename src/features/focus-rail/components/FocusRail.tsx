@@ -21,7 +21,7 @@ import { ObservatoryPanel } from "../../observatory/ObservatoryPanel";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
 import { openExternalBrowser } from "./browserNavigation";
-import { ChangesPanel } from "./ChangesPanel";
+import { ChangesPanel, type PublicationOpenTarget } from "./ChangesPanel";
 import { ContextPanel } from "./ContextPanel";
 import { ExtensionsPanel } from "./ExtensionsPanel";
 import { OpenFilePanel } from "./OpenFilePanel";
@@ -71,6 +71,7 @@ type FocusRailProps = {
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
+  onTaskOutcomeChange?: () => void;
   onLoadDirectory: (path: string) => Promise<FileNode[]>;
   routines: RoutineSummary[];
   routinesLoading: boolean;
@@ -78,6 +79,9 @@ type FocusRailProps = {
   routineCreating: boolean;
   routineBusyIds: ReadonlySet<string>;
   routineOpenRunId: string | null;
+  observatoryOpenRunId?: string | null;
+  changesOpenPublicationTarget?: PublicationOpenTarget | null;
+  onOpenRunConsumed?: (runId: string) => void;
   nativeRoutinesAvailable: boolean;
   dangerousRoutineAccessDefault: boolean;
   dangerousRoutineIds: ReadonlySet<string>;
@@ -140,6 +144,7 @@ export function FocusRail({
   loading,
   error,
   onRefresh,
+  onTaskOutcomeChange = () => {},
   onLoadDirectory,
   routines,
   routinesLoading,
@@ -147,6 +152,9 @@ export function FocusRail({
   routineCreating,
   routineBusyIds,
   routineOpenRunId,
+  observatoryOpenRunId = null,
+  changesOpenPublicationTarget = null,
+  onOpenRunConsumed,
   nativeRoutinesAvailable,
   dangerousRoutineAccessDefault,
   dangerousRoutineIds,
@@ -333,6 +341,9 @@ export function FocusRail({
               else openExternalBrowser(url);
             }}
             onRefresh={onRefresh}
+            onOutcomeChange={onTaskOutcomeChange}
+            openPublicationTarget={changesOpenPublicationTarget}
+            onOpenRunConsumed={onOpenRunConsumed}
           />
         )}
         {activeView === "context" && (
@@ -556,6 +567,7 @@ export function FocusRail({
             dangerousAccessDefault={dangerousRoutineAccessDefault}
             dangerousRoutineIds={dangerousRoutineIds}
             openRunId={routineOpenRunId}
+            onOpenRunConsumed={onOpenRunConsumed}
             onCreate={onCreateRoutine}
             onUpdate={onUpdateRoutine}
             onSetEnabled={onSetRoutineEnabled}
@@ -586,6 +598,8 @@ export function FocusRail({
             taskId={executionTaskId}
             liveRuns={runs}
             livePendingInputs={pendingInputs}
+            openRunId={observatoryOpenRunId}
+            onOpenRunConsumed={onOpenRunConsumed}
             timeline={timeline}
             onJumpToTimeline={onJumpToTimeline}
             onWorkspaceChange={onRefresh}

@@ -87,5 +87,8 @@ permissions = [
   "allow-bind-xiao-task-codex-profile",
   "allow-transition-xiao-task-stage",
   "allow-list-xiao-task-stage-transitions",
+  "allow-list-xiao-attention-items",
+  "allow-acknowledge-xiao-attention-item",
+  "allow-list-xiao-task-publications",
   "allow-open-xiao-project",
 ]

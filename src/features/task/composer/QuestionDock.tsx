@@ -10,7 +10,7 @@ type DraftAnswer = {
 
 type QuestionDockProps = {
   request: AgentQuestionRequest;
-  onResolve: (requestId: number | string, answers: Record<string, string[]>) => Promise<boolean>;
+  onResolve: (pendingInputId: string, answers: Record<string, string[]>) => Promise<boolean>;
 };
 
 const emptyAnswer = (): DraftAnswer => ({ option: null, note: "" });
@@ -71,7 +71,7 @@ export function QuestionDock({ request, onResolve }: QuestionDockProps) {
 
     setSubmitting(true);
     setError(null);
-    if (!(await onResolve(request.requestId, payload))) {
+    if (!(await onResolve(request.pendingInputId, payload))) {
       setSubmitting(false);
       setError("Xiao could not send this answer. Try again.");
     }
@@ -81,7 +81,7 @@ export function QuestionDock({ request, onResolve }: QuestionDockProps) {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
-    if (!(await onResolve(request.requestId, {}))) {
+    if (!(await onResolve(request.pendingInputId, {}))) {
       setSubmitting(false);
       setError("Xiao could not dismiss this question. Try again.");
     }

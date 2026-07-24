@@ -21,11 +21,13 @@ import type {
   SystemInfo,
 } from "../models/workspace";
 import type {
+  AttentionSnapshot,
   CodexProfile,
   CodexProfileUpdate,
   ProjectGroup,
   ProjectGroupUpdate,
   ProjectPresentationUpdate,
+  PublicationRecord,
   TaskCodexProfileBinding,
   TaskStageTransition,
   TaskStageTransitionRequest,
@@ -540,6 +542,21 @@ export const nativeBridge = {
   listXiaoTaskStageTransitions(workspacePath: string, taskId: string) {
     return invoke<TaskStageTransition[]>("list_xiao_task_stage_transitions", {
       workspacePath,
+      taskId,
+    });
+  },
+
+  listXiaoAttentionItems() {
+    return invoke<AttentionSnapshot>("list_xiao_attention_items");
+  },
+
+  acknowledgeXiaoAttentionItem(itemId: string) {
+    return invoke<boolean>("acknowledge_xiao_attention_item", { itemId });
+  },
+
+  listXiaoTaskPublications(projectPath: string, taskId: string) {
+    return invoke<PublicationRecord[]>("list_xiao_task_publications", {
+      projectPath,
       taskId,
     });
   },
