@@ -1726,6 +1726,122 @@ mod tests {
     }
 
     #[test]
+    fn manual_ready_requires_the_latest_terminal_run() {
+        let no_run_directory = TestDirectory::new("manual-ready-no-run");
+        let (no_run_repository, no_run_workspace) = repository_with_task(&no_run_directory.0);
+        no_run_repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: no_run_workspace.clone(),
+                task_id: "task".to_owned(),
+                expected_version: 0,
+                to_stage: TaskStage::InProgress,
+                actor: "operator".to_owned(),
+                reason: "Start work".to_owned(),
+                source_run_id: None,
+                idempotency_key: "manual-ready-start".to_owned(),
+            })
+            .unwrap();
+        let no_run_error = no_run_repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: no_run_workspace,
+                task_id: "task".to_owned(),
+                expected_version: 1,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Outcome is ready".to_owned(),
+                source_run_id: None,
+                idempotency_key: "manual-ready-no-run".to_owned(),
+            })
+            .unwrap_err();
+        assert!(no_run_error.contains("latest terminal Run"));
+
+        let active_directory = TestDirectory::new("manual-ready-active-run");
+        let (active_repository, active_workspace) = repository_with_task(&active_directory.0);
+        let active_run = active_repository
+            .enqueue_run(new_run(
+                &active_repository,
+                &active_workspace,
+                "run-active",
+                10,
+            ))
+            .unwrap()
+            .run;
+        let active_error = active_repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: active_workspace,
+                task_id: "task".to_owned(),
+                expected_version: 1,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Outcome is ready".to_owned(),
+                source_run_id: Some(active_run.id),
+                idempotency_key: "manual-ready-active".to_owned(),
+            })
+            .unwrap_err();
+        assert!(active_error.contains("while its Run is active"));
+
+        let actor_directory = TestDirectory::new("manual-ready-non-operator");
+        let (actor_repository, actor_workspace) = repository_with_task(&actor_directory.0);
+        let mut non_operator_request = make_task_ready(
+            &actor_repository,
+            &actor_workspace,
+            "run-terminal",
+            10,
+            "manual-ready-non-operator",
+        );
+        non_operator_request.actor = "agent".to_owned();
+        let actor_error = actor_repository
+            .transition_task_stage(non_operator_request)
+            .unwrap_err();
+        assert!(actor_error.contains("requires the Operator"));
+
+        let stale_directory = TestDirectory::new("manual-ready-stale-run");
+        let (stale_repository, stale_workspace) = repository_with_task(&stale_directory.0);
+        let older_run = stale_repository
+            .enqueue_run(new_run(
+                &stale_repository,
+                &stale_workspace,
+                "run-older",
+                10,
+            ))
+            .unwrap()
+            .run;
+        stale_repository
+            .enqueue_run(new_run(
+                &stale_repository,
+                &stale_workspace,
+                "run-current",
+                20,
+            ))
+            .unwrap();
+        stale_repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE runs SET status = 'completed', agent_outcome = 'completed', \
+                         finished_at = queued_at WHERE task_id = 'task'",
+                        [],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        let stale_error = stale_repository
+            .transition_task_stage(TaskStageTransitionRequest {
+                workspace_path: stale_workspace,
+                task_id: "task".to_owned(),
+                expected_version: 1,
+                to_stage: TaskStage::ReadyForReview,
+                actor: "operator".to_owned(),
+                reason: "Outcome is ready".to_owned(),
+                source_run_id: Some(older_run.id),
+                idempotency_key: "manual-ready-stale".to_owned(),
+            })
+            .unwrap_err();
+        assert!(stale_error.contains("latest Run"));
+    }
+
+    #[test]
     fn unchanged_publication_refresh_preserves_acknowledged_attention() {
         let directory = TestDirectory::new("stable-publication");
         let (repository, workspace) = repository_with_task(&directory.0);

@@ -14,7 +14,7 @@ export type McpElicitationDraft = Record<string, McpElicitationDraftValue>;
 type McpElicitationDockProps = {
   request: AgentMcpElicitationRequest;
   onResolve: (
-    requestId: number | string,
+    pendingInputId: string,
     response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
 };
@@ -163,7 +163,7 @@ export function McpElicitationDock({ request, onResolve }: McpElicitationDockPro
     }
     setSubmitting(true);
     setError(null);
-    const sent = await onResolve(request.requestId, {
+    const sent = await onResolve(request.pendingInputId, {
       action: "accept",
       content: mcpElicitationContent(request.fields, draft),
       _meta: null,
@@ -178,7 +178,7 @@ export function McpElicitationDock({ request, onResolve }: McpElicitationDockPro
     if (submitting) return;
     setSubmitting(true);
     setError(null);
-    const sent = await onResolve(request.requestId, {
+    const sent = await onResolve(request.pendingInputId, {
       action: "decline",
       content: null,
       _meta: null,

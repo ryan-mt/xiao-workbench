@@ -21,7 +21,7 @@ import { ObservatoryPanel } from "../../observatory/ObservatoryPanel";
 import type { WorkbenchTask } from "../../task/task.types";
 import type { FocusResourceRequest, FocusView } from "../focus-rail.types";
 import { openExternalBrowser } from "./browserNavigation";
-import { ChangesPanel } from "./ChangesPanel";
+import { ChangesPanel, type PublicationOpenTarget } from "./ChangesPanel";
 import { ContextPanel } from "./ContextPanel";
 import { ExtensionsPanel } from "./ExtensionsPanel";
 import { OpenFilePanel } from "./OpenFilePanel";
@@ -80,6 +80,7 @@ type FocusRailProps = {
   routineBusyIds: ReadonlySet<string>;
   routineOpenRunId: string | null;
   observatoryOpenRunId?: string | null;
+  changesOpenPublicationTarget?: PublicationOpenTarget | null;
   onOpenRunConsumed?: (runId: string) => void;
   nativeRoutinesAvailable: boolean;
   dangerousRoutineAccessDefault: boolean;
@@ -152,6 +153,7 @@ export function FocusRail({
   routineBusyIds,
   routineOpenRunId,
   observatoryOpenRunId = null,
+  changesOpenPublicationTarget = null,
   onOpenRunConsumed,
   nativeRoutinesAvailable,
   dangerousRoutineAccessDefault,
@@ -340,6 +342,8 @@ export function FocusRail({
             }}
             onRefresh={onRefresh}
             onOutcomeChange={onTaskOutcomeChange}
+            openPublicationTarget={changesOpenPublicationTarget}
+            onOpenRunConsumed={onOpenRunConsumed}
           />
         )}
         {activeView === "context" && (

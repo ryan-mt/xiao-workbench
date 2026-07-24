@@ -17,6 +17,7 @@ use crate::execution::models::{
     ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
     NewManagedWorktreeRecord, TaskExecutionBinding,
 };
+use crate::runs::models::RunStatus;
 use crate::runs::repository::task_binding_has_run_owners;
 use crate::verification::artifacts::ArtifactStore;
 use crate::verification::models::AcceptanceContractVersionSummary;
@@ -1550,8 +1551,19 @@ impl XiaoRepository {
                 current_version,
                 acceptance_contract_version_id,
                 latest_run_contract_version_id,
+                latest_run_id,
+                latest_run_status,
                 has_active_run,
-            ): (i64, String, i64, Option<String>, Option<String>, bool) = transaction
+            ): (
+                i64,
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                bool,
+            ) = transaction
                 .query_row(
                     r#"SELECT tasks.workspace_id, tasks.task_stage, tasks.task_stage_version,
                               tasks.acceptance_contract_version_id,
@@ -1563,7 +1575,23 @@ impl XiaoRepository {
                                   ORDER BY run.queued_at DESC, run.id DESC
                                   LIMIT 1
                               ),
-                              EXISTS(
+                               (
+                                   SELECT run.id
+                                   FROM runs run
+                                   WHERE run.workspace_id = tasks.workspace_id
+                                     AND run.task_id = tasks.task_id
+                                   ORDER BY run.queued_at DESC, run.id DESC
+                                   LIMIT 1
+                               ),
+                               (
+                                   SELECT run.status
+                                   FROM runs run
+                                   WHERE run.workspace_id = tasks.workspace_id
+                                     AND run.task_id = tasks.task_id
+                                   ORDER BY run.queued_at DESC, run.id DESC
+                                   LIMIT 1
+                               ),
+                               EXISTS(
                                   SELECT 1 FROM runs run
                                   WHERE run.workspace_id = tasks.workspace_id
                                     AND run.task_id = tasks.task_id
@@ -1584,6 +1612,8 @@ impl XiaoRepository {
                             row.get(3)?,
                             row.get(4)?,
                             row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
                         ))
                     },
                 )
@@ -1613,10 +1643,38 @@ impl XiaoRepository {
                         .to_owned(),
                 );
             }
+            if request.to_stage == TaskStage::ReadyForReview && actor != "operator" {
+                return Err(
+                    "Manually marking a Task outcome ready for review requires the Operator."
+                        .to_owned(),
+                );
+            }
             if request.to_stage == TaskStage::ReadyForReview && has_active_run {
                 return Err(
                     "A Task outcome cannot be marked ready while its Run is active.".to_owned(),
                 );
+            }
+            if request.to_stage == TaskStage::ReadyForReview {
+                let (Some(latest_run_id), Some(latest_run_status)) =
+                    (latest_run_id.as_deref(), latest_run_status.as_deref())
+                else {
+                    return Err(
+                        "A Task outcome requires its latest terminal Run before it can be marked ready."
+                            .to_owned(),
+                    );
+                };
+                if !RunStatus::from_database(latest_run_status)?.is_terminal() {
+                    return Err(
+                        "A Task outcome requires its latest terminal Run before it can be marked ready."
+                            .to_owned(),
+                    );
+                }
+                if request.source_run_id.as_deref() != Some(latest_run_id) {
+                    return Err(
+                        "The Task stage source Run must be the latest Run for this outcome."
+                            .to_owned(),
+                    );
+                }
             }
             if request.to_stage == TaskStage::Published {
                 return Err(

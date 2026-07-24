@@ -24,6 +24,7 @@ export function useAttentionCenter(enabled = true) {
   );
   const [error, setError] = useState<string | null>(null);
   const itemsRef = useRef(items);
+  const refreshGenerationRef = useRef(0);
   itemsRef.current = items;
 
   const refresh = useCallback(async () => {
@@ -31,12 +32,15 @@ export function useAttentionCenter(enabled = true) {
       setStatus("live");
       return;
     }
+    const generation = ++refreshGenerationRef.current;
     try {
       const snapshot = await nativeBridge.listXiaoAttentionItems();
+      if (generation !== refreshGenerationRef.current) return;
       setItems(snapshot.items);
       setStatus(snapshot.status);
       setError(null);
     } catch (reason) {
+      if (generation !== refreshGenerationRef.current) return;
       setStatus(failedAttentionStatus(itemsRef.current.length > 0));
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -51,6 +55,7 @@ export function useAttentionCenter(enabled = true) {
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      refreshGenerationRef.current += 1;
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -62,6 +67,7 @@ export function useAttentionCenter(enabled = true) {
       return;
     }
     await nativeBridge.acknowledgeXiaoAttentionItem(itemId);
+    refreshGenerationRef.current += 1;
     setItems((current) => current.filter((item) => item.id !== itemId));
   }, []);
 

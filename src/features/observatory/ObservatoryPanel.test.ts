@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RunEventRecord, RunSnapshot } from "../../core/models/run";
 
 const bridge = vi.hoisted(() => ({
-  listXiaoRuns: vi.fn(async () => []),
+  listXiaoRuns: vi.fn(async (): Promise<RunSnapshot[]> => []),
   listXiaoPendingInputs: vi.fn(async () => []),
   listXiaoTurnCheckpoints: vi.fn(async () => []),
   loadXiaoRunEvents: vi.fn(async () => ({ events: [], nextSequence: null })),
@@ -23,6 +23,14 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { loadRunEvents, ObservatoryPanel } from "./ObservatoryPanel";
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+};
 
 afterEach(() => {
   cleanup();
@@ -120,6 +128,56 @@ describe("Attention Run deep-link consumption", () => {
     await waitFor(() => {
       expect(onOpenRunConsumed).toHaveBeenCalledOnce();
       expect(onOpenRunConsumed).toHaveBeenCalledWith(observableRun.id);
+    });
+  });
+
+  it("keeps the exact live Run selected when stale list hydration finishes later", async () => {
+    const listedRuns = deferred<RunSnapshot[]>();
+    const newerRun: RunSnapshot = {
+      ...observableRun,
+      id: "run-newer",
+      idempotencyKey: "run-newer",
+      status: "completed",
+      agentOutcome: "completed",
+      queuedAt: 20,
+      startedAt: 21,
+      finishedAt: 22,
+    };
+    bridge.listXiaoRuns.mockReturnValueOnce(listedRuns.promise);
+    const onOpenRunConsumed = vi.fn();
+    const properties = {
+      projectPath: "C:/projects/xiao",
+      taskId: "task-a",
+      liveRuns: [newerRun, observableRun],
+      livePendingInputs: [],
+      timeline: [],
+      onJumpToTimeline: () => undefined,
+      onWorkspaceChange: () => undefined,
+      onOpenRunConsumed,
+    };
+
+    const rendered = render(createElement(ObservatoryPanel, {
+      ...properties,
+      openRunId: observableRun.id,
+    }));
+    await waitFor(() => {
+      expect(onOpenRunConsumed).toHaveBeenCalledWith(observableRun.id);
+      expect(screen.getByRole("button", { name: "Observable run" }).textContent)
+        .toContain(observableRun.id);
+    });
+
+    rendered.rerender(createElement(ObservatoryPanel, {
+      ...properties,
+      openRunId: null,
+    }));
+    listedRuns.resolve([newerRun]);
+    await act(async () => {
+      await listedRuns.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Observable run" }).textContent)
+        .toContain(observableRun.id);
     });
   });
 });

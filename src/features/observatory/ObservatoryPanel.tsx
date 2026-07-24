@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 import { SelectMenu } from "../../components/SelectMenu";
@@ -132,6 +132,8 @@ export function ObservatoryPanel({
   const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
   const [selectedAttachments, setSelectedAttachments] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const liveRunsRef = useRef(liveRuns);
+  liveRunsRef.current = liveRuns;
 
   const runs = useMemo(() => mergeRuns(listedRuns, liveRuns), [listedRuns, liveRuns]);
   const pendingInputs = useMemo(() => {
@@ -161,7 +163,10 @@ export function ObservatoryPanel({
       if (!active) return;
       setListedRuns(nextRuns);
       setListedPending(nextPending);
-      setSelectedRunId((current) => current && nextRuns.some((run) => run.id === current)
+      setSelectedRunId((current) => current && (
+        nextRuns.some((run) => run.id === current)
+        || liveRunsRef.current.some((run) => run.id === current)
+      )
         ? current
         : nextRuns[0]?.id ?? null);
     }).catch((reason) => {

@@ -222,11 +222,11 @@ type TaskWorkspaceProps = {
   onSubmissionStart: () => number;
   onSubmissionSucceeded: (revision: number) => Promise<boolean>;
   onResolveQuestion: (
-    requestId: number | string,
+    pendingInputId: string,
     answers: Record<string, string[]>,
   ) => Promise<boolean>;
   onResolveMcpElicitation: (
-    requestId: number | string,
+    pendingInputId: string,
     response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;

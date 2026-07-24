@@ -239,6 +239,43 @@ export const applyTaskAcceptanceContractSave = (
   return next;
 };
 
+export const outcomeHasAcceptanceContract = (
+  taskContract: AcceptanceContractVersionSummary | null,
+  latestRunContractVersionId: string | null | undefined,
+) => Boolean(taskContract || latestRunContractVersionId);
+
+export const pendingInputIdFromAttentionOccurrence = (
+  sourceOccurrenceKey: string,
+) => {
+  const match = /^workspace:\d+:pending:([^:]+)$/.exec(sourceOccurrenceKey);
+  return match?.[1] ?? null;
+};
+
+export type PendingAttentionOpenTarget = {
+  projectPath: string;
+  taskId: string;
+  runId: string;
+  pendingInputId: string;
+};
+
+export const pendingAttentionTargetMatchesScope = (
+  target: PendingAttentionOpenTarget,
+  projectPath: string,
+  taskId: string,
+) =>
+  comparableWorkspacePath(target.projectPath) === comparableWorkspacePath(projectPath)
+  && target.taskId === taskId;
+
+export const pendingRequestMatchesAttentionTarget = (
+  request: Pick<PendingAttentionOpenTarget, "taskId" | "runId" | "pendingInputId"> | null,
+  target: PendingAttentionOpenTarget,
+) => Boolean(
+  request
+  && request.taskId === target.taskId
+  && request.runId === target.runId
+  && request.pendingInputId === target.pendingInputId,
+);
+
 export type ConfirmedNativeTaskState = {
   workspacePath: string;
   generation: number;
@@ -1579,10 +1616,21 @@ export function App() {
   const [routineOpenTarget, setRoutineOpenTarget] = useState<RoutineOpenRunTarget | null>(null);
   const [attentionOpenTarget, setAttentionOpenTarget] = useState<AttentionItem | null>(null);
   const [attentionOpenRunId, setAttentionOpenRunId] = useState<string | null>(null);
+  const [attentionOpenPublicationTarget, setAttentionOpenPublicationTarget] = useState<{
+    runId: string;
+    sourceOccurrenceKey: string;
+  } | null>(null);
+  const [attentionOpenPendingTarget, setAttentionOpenPendingTarget] =
+    useState<PendingAttentionOpenTarget | null>(null);
+  const [attentionSelectedPendingTarget, setAttentionSelectedPendingTarget] =
+    useState<PendingAttentionOpenTarget | null>(null);
   const attentionController = useAttentionCenter();
   const handledRoutineRunRef = useRef<string | null>(null);
   const consumeOpenRunTarget = useCallback((runId: string) => {
     setAttentionOpenRunId((current) => current === runId ? null : current);
+    setAttentionOpenPublicationTarget((current) => current?.runId === runId ? null : current);
+    setAttentionOpenPendingTarget((current) => current?.runId === runId ? null : current);
+    setAttentionSelectedPendingTarget((current) => current?.runId === runId ? null : current);
     setRoutineOpenTarget((current) => current?.runId === runId ? null : current);
   }, []);
   const [sendingFollowUpId, setSendingFollowUpId] = useState<string | null>(null);
@@ -1851,6 +1899,9 @@ export function App() {
     );
     setActiveTaskId(routineOpenTarget.taskId);
     setAttentionOpenRunId(null);
+    setAttentionOpenPublicationTarget(null);
+    setAttentionOpenPendingTarget(null);
+    setAttentionSelectedPendingTarget(null);
     setOpenTaskIds((current) => current.includes(routineOpenTarget.taskId)
       ? current
       : [...current, routineOpenTarget.taskId]);
@@ -1880,6 +1931,32 @@ export function App() {
         ? attentionOpenTarget.runId
         : null,
     );
+    setAttentionOpenPublicationTarget(
+      attentionOpenTarget.surface === "changes"
+      && attentionOpenTarget.kind === "publication"
+      && attentionOpenTarget.runId
+        ? {
+            runId: attentionOpenTarget.runId,
+            sourceOccurrenceKey: attentionOpenTarget.sourceOccurrenceKey,
+          }
+        : null,
+    );
+    const pendingInputId = pendingInputIdFromAttentionOccurrence(
+      attentionOpenTarget.sourceOccurrenceKey,
+    );
+    const pendingTarget =
+      attentionOpenTarget.surface === "timeline"
+      && attentionOpenTarget.runId
+      && pendingInputId
+        ? {
+            projectPath: attentionOpenTarget.projectPath,
+            taskId: attentionOpenTarget.taskId,
+            runId: attentionOpenTarget.runId,
+            pendingInputId,
+          }
+        : null;
+    setAttentionOpenPendingTarget(pendingTarget);
+    setAttentionSelectedPendingTarget(pendingTarget);
     setActivePage("tasks");
     if (attentionOpenTarget.surface === "timeline") {
       closeFocusPanel();
@@ -2272,6 +2349,22 @@ export function App() {
       workspace.path,
     ),
   );
+  const attentionQuestionRequest = attentionSelectedPendingTarget
+    ? agent.questionRequests.find((request) =>
+        pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
+      ) ?? null
+    : null;
+  const attentionMcpElicitationRequest = attentionSelectedPendingTarget
+    ? agent.mcpElicitationRequests.find((request) =>
+        pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
+      ) ?? null
+    : null;
+  const visibleQuestionRequest = attentionSelectedPendingTarget
+    ? attentionQuestionRequest
+    : agent.questionRequest;
+  const visibleMcpElicitationRequest = attentionSelectedPendingTarget
+    ? attentionMcpElicitationRequest
+    : agent.mcpElicitationRequest;
   useEffect(() => {
     if (!isTauriHost() || !codexProfiles.length || agent.runtime.phase === "starting") return;
     const profile = codexProfiles.find((item) => item.id === agent.runtime.profileId);
@@ -2473,7 +2566,7 @@ export function App() {
       notifiedQuestionRef.current = null;
       return;
     }
-    const requestId = String(question.requestId);
+    const requestId = question.pendingInputId;
     if (
       preferences.notifyApprovals &&
       notifiedQuestionRef.current !== requestId &&
@@ -2492,7 +2585,7 @@ export function App() {
       notifiedMcpElicitationRef.current = null;
       return;
     }
-    const requestId = String(request.requestId);
+    const requestId = request.pendingInputId;
     if (
       preferences.notifyApprovals &&
       notifiedMcpElicitationRef.current !== requestId &&
@@ -3318,6 +3411,106 @@ export function App() {
       }
     });
   };
+
+  useEffect(() => {
+    if (!attentionOpenPendingTarget) return;
+    if (
+      !pendingAttentionTargetMatchesScope(
+        attentionOpenPendingTarget,
+        taskWorkspacePath,
+        activeTask.id,
+      )
+    ) {
+      setAttentionOpenPendingTarget(null);
+      setAttentionSelectedPendingTarget(null);
+      return;
+    }
+    const targetEntry = agent.timeline.find((entry) =>
+      entry.runId === attentionOpenPendingTarget.runId
+      && entry.pendingInputId === attentionOpenPendingTarget.pendingInputId,
+    );
+    if (targetEntry) {
+      jumpToTimelineEntry(targetEntry.id);
+      setAttentionOpenPendingTarget(null);
+      setAttentionSelectedPendingTarget(null);
+      return;
+    }
+    const dialogSelector = attentionQuestionRequest
+      ? '[aria-labelledby="question-dock-title"]'
+      : attentionMcpElicitationRequest
+        ? '[aria-labelledby="mcp-elicitation-title"]'
+        : null;
+    if (!dialogSelector) {
+      const targetPendingInputIsActive = agent.pendingInputs.some((pending) =>
+        pending.id === attentionOpenPendingTarget.pendingInputId
+        && pending.runId === attentionOpenPendingTarget.runId
+        && pending.resolvedAt == null
+        && pending.invalidatedAt == null
+      );
+      if (agent.attentionHydrationStatus === "ready" && !targetPendingInputIsActive) {
+        setAttentionOpenPendingTarget(null);
+        setAttentionSelectedPendingTarget(null);
+      }
+      return;
+    }
+    const dialog = document.querySelector<HTMLElement>(dialogSelector);
+    if (!dialog) return;
+    dialog.scrollIntoView({ behavior: "smooth", block: "center" });
+    (
+      dialog.querySelector<HTMLElement>(
+        '[role="radio"], input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+      )
+      ?? dialog.querySelector<HTMLElement>("button:not([disabled])")
+    )?.focus();
+    dialog.classList.remove("timeline-search-hit");
+    void dialog.offsetWidth;
+    dialog.classList.add("timeline-search-hit");
+    window.setTimeout(() => dialog.classList.remove("timeline-search-hit"), 1_800);
+    setAttentionOpenPendingTarget(null);
+  }, [
+    activeTask.id,
+    agent.attentionHydrationStatus,
+    agent.pendingInputs,
+    agent.timeline,
+    attentionMcpElicitationRequest,
+    attentionOpenPendingTarget,
+    attentionQuestionRequest,
+    taskWorkspacePath,
+  ]);
+
+  useEffect(() => {
+    if (
+      attentionSelectedPendingTarget
+      && !pendingAttentionTargetMatchesScope(
+        attentionSelectedPendingTarget,
+        taskWorkspacePath,
+        activeTask.id,
+      )
+    ) {
+      setAttentionSelectedPendingTarget(null);
+    }
+  }, [
+    activeTask.id,
+    attentionSelectedPendingTarget,
+    taskWorkspacePath,
+  ]);
+
+  useEffect(() => {
+    if (
+      !attentionSelectedPendingTarget
+      || attentionOpenPendingTarget
+      || attentionQuestionRequest
+      || attentionMcpElicitationRequest
+    ) {
+      return;
+    }
+    setAttentionSelectedPendingTarget(null);
+  }, [
+    attentionMcpElicitationRequest,
+    attentionOpenPendingTarget,
+    attentionQuestionRequest,
+    attentionSelectedPendingTarget,
+  ]);
 
   const searchHistory = useCallback(
     (query: string): Promise<XiaoHistorySearchResult[]> => {
@@ -4333,7 +4526,10 @@ export function App() {
               taskTitle={activeTask.title}
               taskArchived={activeTask.archived}
               taskStage={activeTask.stage}
-              hasAcceptanceContract={Boolean(activeTask.acceptanceContract)}
+              hasAcceptanceContract={outcomeHasAcceptanceContract(
+                activeTask.acceptanceContract,
+                agent.latestRun?.acceptanceContractSourceVersionId,
+              )}
               hasActiveRuns={agent.isTaskWorking(activeTask.id)}
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
@@ -4358,8 +4554,8 @@ export function App() {
               goal={activeTask.goal}
               plan={activeTask.plan}
               reviewContext={pendingReviewContext}
-              questionRequest={agent.questionRequest}
-              mcpElicitationRequest={agent.mcpElicitationRequest}
+              questionRequest={visibleQuestionRequest}
+              mcpElicitationRequest={visibleMcpElicitationRequest}
               draftText={activeTask.draftText}
               followUps={activeTask.followUps}
               sendingFollowUpId={sendingFollowUpId}
@@ -4533,6 +4729,7 @@ export function App() {
               routineBusyIds={routineController.busyIds}
               routineOpenRunId={attentionOpenRunId ?? routineOpenTarget?.runId ?? null}
               observatoryOpenRunId={attentionOpenRunId}
+              changesOpenPublicationTarget={attentionOpenPublicationTarget}
               onOpenRunConsumed={consumeOpenRunTarget}
               nativeRoutinesAvailable={isTauriHost()}
               dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}

@@ -22,7 +22,9 @@ import {
   agentRuntimeTaskWorkspaceScopeMatches,
   agentRuntimeWorkspaceScopeMatches,
   clearResolvedAgentQuestionRequest,
+  enqueueAgentQuestionRequest,
   handleAgentApprovalRequest,
+  interactiveRequestMatchesCompletedRun,
   listenerRecoveryPendingAfterConnect,
   loadAllXiaoRunEvents,
   fileChangeTimelineEntry,
@@ -30,6 +32,7 @@ import {
   projectFileChangePatchUpdate,
   projectAgentRateLimitsUpdate,
   reconcileFetchedAgentRateLimits,
+  removeAgentQuestionRequest,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
   resetPendingInputReplayForTaskRestore,
@@ -739,6 +742,53 @@ describe("agent runtime workspace scope", () => {
     expect(stateAfterResolution).toBe(replacement);
     expect(refAfterResolution).toBe(replacement);
     expect(clearResolvedAgentQuestionRequest(replacement, replacement)).toBeNull();
+  });
+
+  it("queues reused question request IDs by durable occurrence and removes only the resolved one", () => {
+    const first: AgentQuestionRequest = {
+      requestId: 7,
+      pendingInputId: "input-a",
+      runId: "run-a",
+      taskId: "task-a",
+      threadId: "thread-a",
+      turnId: "turn-a",
+      itemId: "item-a",
+      questions: [],
+      autoResolutionMs: null,
+      receivedAt: 1,
+    };
+    const second: AgentQuestionRequest = {
+      ...first,
+      pendingInputId: "input-b",
+      runId: "run-b",
+      threadId: "thread-b",
+      turnId: "turn-b",
+      itemId: "item-b",
+      receivedAt: 2,
+    };
+
+    const queued = enqueueAgentQuestionRequest(
+      enqueueAgentQuestionRequest([], first),
+      second,
+    );
+
+    expect(queued).toEqual([first, second]);
+    expect(removeAgentQuestionRequest(queued, first)).toEqual([second]);
+  });
+
+  it("clears interactive requests only for the completed Run when a route is available", () => {
+    const first = {
+      taskId: "task-a",
+      runId: "run-a",
+    };
+    const second = {
+      taskId: "task-a",
+      runId: "run-b",
+    };
+
+    expect(interactiveRequestMatchesCompletedRun(first, "task-a", "run-a")).toBe(true);
+    expect(interactiveRequestMatchesCompletedRun(second, "task-a", "run-a")).toBe(false);
+    expect(interactiveRequestMatchesCompletedRun(second, "task-a", null)).toBe(true);
   });
 
   const runtimeState = (

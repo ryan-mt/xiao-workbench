@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const host = vi.hoisted(() => {
@@ -8,7 +8,9 @@ const host = vi.hoisted(() => {
   const state = {
     document: null as Record<string, any> | null,
     runs: [] as Array<Record<string, any>>,
+    pendingInputs: [] as Array<Record<string, any>>,
     attention: [] as Array<Record<string, any>>,
+    resolutions: [] as string[],
     acknowledgements: [] as string[],
     transitions: [] as Array<Record<string, any>>,
     publicationCalls: [] as string[],
@@ -244,6 +246,62 @@ const failedRun = () => ({
   version: 3,
 });
 
+const waitingRun = () => ({
+  ...failedRun(),
+  latestVerificationAttemptId: null,
+  status: "waiting_for_input",
+  agentOutcome: "pending",
+  verificationOutcome: "pending",
+  finishedAt: null,
+  version: 2,
+});
+
+const otherWaitingRun = () => ({
+  ...waitingRun(),
+  id: "run-other",
+  idempotencyKey: "run-request-other",
+  threadId: "thread-other",
+  turnId: "turn-other",
+  prompt: "Handle the unrelated approval",
+  queuedAt: now - 16_000,
+  startedAt: now - 15_500,
+});
+
+const pendingInput = () => ({
+  id: "pending-supervision",
+  runId,
+  runtimeGeneration: 1,
+  requestId: JSON.stringify("approval-supervision"),
+  threadId: "thread-supervision",
+  turnId: "turn-supervision",
+  itemId: "command-supervision",
+  kind: "command_approval",
+  safeSummary: {
+    command: "npm test",
+    cwd: `${workspacePath}/.xiao/${taskId}`,
+    reason: "Frozen gate approval.",
+  },
+  openedAt: now - 11_000,
+  resolvedAt: null,
+  invalidatedAt: null,
+});
+
+const otherPendingInput = () => ({
+  ...pendingInput(),
+  id: "pending-other",
+  runId: "run-other",
+  requestId: JSON.stringify("approval-other"),
+  threadId: "thread-other",
+  turnId: "turn-other",
+  itemId: "command-other",
+  safeSummary: {
+    command: "npm run lint",
+    cwd: `${workspacePath}/.xiao/${taskId}`,
+    reason: "Unrelated lint approval.",
+  },
+  openedAt: now - 12_000,
+});
+
 const routine = () => ({
   id: "routine-supervision",
   workspacePath,
@@ -301,6 +359,17 @@ const attentionItem = (
   ...patch,
 });
 
+const pendingAttentionItem = () => attentionItem({
+  id: "attention-pending-1",
+  kind: "decision",
+  priority: 0,
+  title: "Command approval needed",
+  safeSummary: "Run the frozen npm test gate.",
+  sourceOccurrenceKey: "workspace:1:pending:pending-supervision",
+  surface: "timeline",
+  createdAt: now - 11_000,
+});
+
 const clone = <T,>(value: T): T => structuredClone(value);
 
 const verificationAttempt = (passed: boolean) => ({
@@ -346,8 +415,10 @@ const installHost = () => {
     showArchived: false,
     tasks: [task()],
   };
-  host.state.runs = [failedRun()];
-  host.state.attention = [attentionItem()];
+  host.state.runs = [waitingRun(), otherWaitingRun()];
+  host.state.pendingInputs = [otherPendingInput(), pendingInput()];
+  host.state.attention = [pendingAttentionItem()];
+  host.state.resolutions = [];
   host.state.acknowledgements = [];
   host.state.transitions = [];
   host.state.publicationCalls = [];
@@ -518,7 +589,42 @@ const installHost = () => {
     },
     listXiaoRuns: async (_path: string, activeTaskId?: string | null) =>
       clone(host.state.runs.filter((run) => !activeTaskId || run.taskId === activeTaskId)),
-    listXiaoPendingInputs: async () => [],
+    listXiaoPendingInputs: async (_path: string, activeTaskId?: string | null) => {
+      const runIds = new Set(
+        host.state.runs
+          .filter((run) => !activeTaskId || run.taskId === activeTaskId)
+          .map((run) => run.id),
+      );
+      return clone(host.state.pendingInputs.filter((pending) => runIds.has(pending.runId)));
+    },
+    resolveXiaoRunInput: async (pendingInputId: string) => {
+      const pending = host.state.pendingInputs.find((item) => item.id === pendingInputId);
+      if (!pending) throw new Error(`Unknown pending input ${pendingInputId}`);
+      host.state.resolutions.push(pendingInputId);
+      pending.resolvedAt = now - 9_000;
+      const resolvedRun = pending.runId === runId
+        ? failedRun()
+        : {
+            ...otherWaitingRun(),
+            status: "cancelled",
+            agentOutcome: "cancelled",
+            verificationOutcome: "not_requested",
+            finishedAt: now - 8_500,
+            version: 3,
+          };
+      host.state.runs = host.state.runs.map((run) =>
+        run.id === resolvedRun.id ? resolvedRun : run
+      );
+      if (pending.runId === runId) host.state.attention = [attentionItem()];
+      queueMicrotask(() => {
+        host.emit("xiao://run-update", {
+          snapshot: clone(resolvedRun),
+          event: null,
+          pendingInput: clone(pending),
+        });
+      });
+      return clone(resolvedRun);
+    },
     loadXiaoRunEvents: async () => ({ events: [], nextSequence: null }),
     listXiaoTurnCheckpoints: async () => [{
       id: "checkpoint-supervision",
@@ -590,7 +696,21 @@ const installHost = () => {
       host.state.attention = host.state.attention.filter((item) => item.id !== itemId);
       return true;
     },
-    listXiaoTaskPublications: async () => [],
+    listXiaoTaskPublications: async () => [{
+      id: "publication-42",
+      projectPath: workspacePath,
+      taskId,
+      sourceRunId: runId,
+      kind: "pull_request",
+      status: "active",
+      branch: "codex/supervision",
+      remote: "origin",
+      url: "https://github.example/xiao/pull/42",
+      pullRequestNumber: 42,
+      checkState: "passing",
+      createdAt: now,
+      updatedAt: now,
+    }],
     rerunXiaoVerification: async () => {
       const passed = {
         ...host.state.runs[0],
@@ -675,12 +795,13 @@ const installHost = () => {
       persistedTask.updatedAt = now;
       host.state.attention = [attentionItem({
         id: "attention-publication-4",
-        runId: null,
+        runId,
         kind: "publication",
         priority: 2,
         title: "Published outcome awaits acceptance",
         safeSummary: "Supervise current outcome",
-        sourceOccurrenceKey: "task-stage:task-supervision:published:4",
+        sourceOccurrenceKey:
+          "workspace:1:publication:publication-42:active:passing:1780000000000",
         surface: "changes",
         taskStage: "published",
         taskStageVersion: 4,
@@ -732,6 +853,22 @@ const openAttention = async () => {
   return screen.findByRole("heading", { name: "Attention" });
 };
 
+const mcpSummary = (serverName: string, fieldName: string) => ({
+  mode: "form",
+  serverName,
+  message: `${serverName} needs one value.`,
+  requestedSchema: {
+    type: "object",
+    properties: {
+      [fieldName]: {
+        type: "string",
+        title: `${serverName} value`,
+      },
+    },
+    required: [fieldName],
+  },
+});
+
 describe("outcome and supervision application-shell journey", () => {
   beforeEach(() => {
     installHost();
@@ -761,16 +898,55 @@ describe("outcome and supervision application-shell journey", () => {
 
     await screen.findAllByText("Supervise current outcome");
     expect(await screen.findByText("In progress")).toBeTruthy();
-    expect(await screen.findAllByText("Verification failed")).toHaveLength(2);
     expect(host.state.runs[0]?.acceptanceContractSourceVersionId).toBe(contract.versionId);
     expect(host.state.runs[0]?.acceptanceContractSnapshotSha256).toBe(contract.hash);
+    const scrollIntoView = vi.mocked(HTMLElement.prototype.scrollIntoView);
+    scrollIntoView.mockClear();
 
     const attentionHeading = await openAttention();
     const attentionCenter = attentionHeading.closest(".attention-center") as HTMLElement;
-    expect(within(attentionCenter).getByText(/The frozen npm test gate failed for the current outcome\./))
+    expect(within(attentionCenter).getByText(/Run the frozen npm test gate\./))
       .toBeTruthy();
     expect(within(attentionCenter).getByText(`Run ${runId}`)).toBeTruthy();
     fireEvent.click(within(attentionCenter).getByRole("button", {
+      name: "Open task: Run the frozen npm test gate.",
+    }));
+
+    const allowButtons = await screen.findAllByText("Allow once");
+    expect(allowButtons).toHaveLength(2);
+    const unrelatedApproval = (await screen.findByText("Unrelated lint approval."))
+      .closest(".activity") as HTMLElement;
+    const targetedApproval = (await screen.findByText("Frozen gate approval."))
+      .closest(".activity") as HTMLElement;
+    await waitFor(() => {
+      expect(targetedApproval.classList.contains("timeline-search-hit")).toBe(true);
+      expect(unrelatedApproval.classList.contains("timeline-search-hit")).toBe(false);
+    });
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(scrollIntoView.mock.instances[0]).toBe(targetedApproval);
+
+    fireEvent.click(within(targetedApproval).getByText("Allow once"));
+    await waitFor(() => {
+      expect(host.state.resolutions).toEqual(["pending-supervision"]);
+      expect(host.state.pendingInputs[0]?.resolvedAt).toBeNull();
+      expect(host.state.pendingInputs[1]?.resolvedAt).toBe(now - 9_000);
+      expect(host.state.runs[0]?.status).toBe("needs_attention");
+    });
+    fireEvent.click(within(unrelatedApproval).getByText("Decline"));
+    await waitFor(() => expect(host.state.resolutions).toEqual([
+      "pending-supervision",
+      "pending-other",
+    ]));
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(await screen.findAllByText("Verification failed")).toHaveLength(2);
+
+    const failedAttentionHeading = await openAttention();
+    const failedAttentionCenter = failedAttentionHeading.closest(".attention-center") as HTMLElement;
+    expect(within(failedAttentionCenter).getByText(
+      /The frozen npm test gate failed for the current outcome\./,
+    )).toBeTruthy();
+    fireEvent.click(within(failedAttentionCenter).getByRole("button", {
       name: "Open task: The frozen npm test gate failed for the current outcome.",
     }));
 
@@ -817,6 +993,8 @@ describe("outcome and supervision application-shell journey", () => {
     fireEvent.click(screen.getByRole("button", {
       name: "Open task: Supervise current outcome",
     }));
+    expect((await screen.findByRole("region", { name: "Attention publication" })).textContent)
+      .toContain("PR #42");
 
     fireEvent.click(await screen.findByRole("button", { name: "Accept outcome" }));
     await screen.findByText("Completed");
@@ -865,5 +1043,220 @@ describe("outcome and supervision application-shell journey", () => {
       "import:C:/handoffs/task-supervision.xiao-handoff",
     ]);
     expect(confirm).toHaveBeenCalledTimes(4);
+  });
+
+  it("opens and focuses the exact non-head interactive pending request", async () => {
+    host.state.pendingInputs = [
+      {
+        ...otherPendingInput(),
+        kind: "mcp_elicitation",
+        requestId: JSON.stringify("shared-mcp-request"),
+        safeSummary: mcpSummary("Unrelated server", "unrelated"),
+      },
+      {
+        ...pendingInput(),
+        kind: "mcp_elicitation",
+        requestId: JSON.stringify("shared-mcp-request"),
+        safeSummary: mcpSummary("Target server", "target"),
+      },
+    ];
+    host.state.attention = [attentionItem({
+      id: "attention-target-mcp",
+      kind: "decision",
+      priority: 0,
+      title: "MCP input requested",
+      safeSummary: "Target server needs one value.",
+      sourceOccurrenceKey: "workspace:1:pending:pending-supervision",
+      surface: "timeline",
+      createdAt: now - 10_000,
+    })];
+
+    render(<App />);
+    await screen.findAllByText("Supervise current outcome");
+    const attentionHeading = await openAttention();
+    const attentionCenter = attentionHeading.closest(".attention-center") as HTMLElement;
+    fireEvent.click(within(attentionCenter).getByRole("button", {
+      name: "Open task: Target server needs one value.",
+    }));
+
+    expect(await screen.findByText("Target server · MCP")).toBeTruthy();
+    expect(screen.queryByText("Unrelated server · MCP")).toBeNull();
+    const targetInput = screen.getByRole("textbox", { name: /Target server value/ });
+    await waitFor(() => expect(document.activeElement).toBe(targetInput));
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    await waitFor(() => {
+      expect(host.state.resolutions).toEqual(["pending-supervision"]);
+      expect(host.state.pendingInputs[0]?.resolvedAt).toBeNull();
+      expect(host.state.pendingInputs[1]?.resolvedAt).toBe(now - 9_000);
+    });
+    expect(await screen.findByText("Unrelated server · MCP")).toBeTruthy();
+  });
+
+  it("releases an exact pending selection after external resolution before projection refresh", async () => {
+    host.state.pendingInputs = [
+      {
+        ...otherPendingInput(),
+        kind: "mcp_elicitation",
+        requestId: JSON.stringify("shared-mcp-request"),
+        safeSummary: mcpSummary("Unrelated server", "unrelated"),
+      },
+      {
+        ...pendingInput(),
+        kind: "mcp_elicitation",
+        requestId: JSON.stringify("shared-mcp-request"),
+        safeSummary: mcpSummary("Target server", "target"),
+      },
+    ];
+    host.state.attention = [attentionItem({
+      id: "attention-target-mcp",
+      kind: "decision",
+      priority: 0,
+      title: "MCP input requested",
+      safeSummary: "Target server needs one value.",
+      sourceOccurrenceKey: "workspace:1:pending:pending-supervision",
+      surface: "timeline",
+      createdAt: now - 10_000,
+    })];
+
+    render(<App />);
+    await screen.findAllByText("Supervise current outcome");
+    const attentionHeading = await openAttention();
+    const attentionCenter = attentionHeading.closest(".attention-center") as HTMLElement;
+    fireEvent.click(within(attentionCenter).getByRole("button", {
+      name: "Open task: Target server needs one value.",
+    }));
+    expect(await screen.findByText("Target server · MCP")).toBeTruthy();
+
+    act(() => {
+      host.emit("xiao://run-protocol", {
+        runId,
+        taskId,
+        executionEnvironmentId: "windows",
+        runtimeGeneration: 1,
+        threadId: "thread-supervision",
+        turnId: "turn-supervision",
+        itemId: "command-supervision",
+        sequence: 1,
+        message: {
+          method: "serverRequest/resolved",
+          params: { requestId: "shared-mcp-request" },
+        },
+        turnDiff: null,
+        pendingInput: clone(host.state.pendingInputs[1]),
+      });
+    });
+
+    expect(await screen.findByText("Unrelated server · MCP")).toBeTruthy();
+    expect(host.state.pendingInputs[1]?.resolvedAt).toBeNull();
+    expect(host.state.resolutions).toEqual([]);
+  });
+
+  it("releases a stale pending target that resolves before its dialog mounts", async () => {
+    host.state.pendingInputs = [{
+      ...otherPendingInput(),
+      kind: "mcp_elicitation",
+      requestId: JSON.stringify("shared-mcp-request"),
+      safeSummary: mcpSummary("Unrelated server", "unrelated"),
+    }];
+    host.state.attention = [attentionItem({
+      id: "attention-stale-mcp",
+      kind: "decision",
+      priority: 0,
+      title: "MCP input requested",
+      safeSummary: "Resolved target server input.",
+      sourceOccurrenceKey: "workspace:1:pending:pending-supervision",
+      surface: "timeline",
+      createdAt: now - 10_000,
+    })];
+
+    render(<App />);
+    await screen.findAllByText("Supervise current outcome");
+    const attentionHeading = await openAttention();
+    const attentionCenter = attentionHeading.closest(".attention-center") as HTMLElement;
+    fireEvent.click(within(attentionCenter).getByRole("button", {
+      name: "Open task: Resolved target server input.",
+    }));
+
+    expect(await screen.findByText("Unrelated server · MCP")).toBeTruthy();
+    expect(screen.queryByText("Target server · MCP")).toBeNull();
+  });
+
+  it("opens and focuses the exact non-head multi-question request", async () => {
+    const questionSummary = (
+      prefix: string,
+      questions: Array<{ id: string; question: string; answer: string }>,
+    ) => ({
+      questions: questions.map((question) => ({
+        id: question.id,
+        header: `${prefix} choice`,
+        question: question.question,
+        isOther: false,
+        isSecret: false,
+        options: [{
+          label: question.answer,
+          description: `Use the ${prefix.toLowerCase()} answer.`,
+        }],
+      })),
+      autoResolutionMs: null,
+    });
+    host.state.pendingInputs = [
+      {
+        ...otherPendingInput(),
+        kind: "question",
+        requestId: JSON.stringify("shared-question-request"),
+        safeSummary: questionSummary("Unrelated", [{
+          id: "unrelated-question",
+          question: "Which unrelated option?",
+          answer: "Unrelated answer",
+        }]),
+      },
+      {
+        ...pendingInput(),
+        kind: "question",
+        requestId: JSON.stringify("shared-question-request"),
+        safeSummary: questionSummary("Target", [
+          {
+            id: "target-question-one",
+            question: "Which target option comes first?",
+            answer: "Target answer",
+          },
+          {
+            id: "target-question-two",
+            question: "Which target option comes second?",
+            answer: "Second target answer",
+          },
+        ]),
+      },
+    ];
+    host.state.attention = [attentionItem({
+      id: "attention-target-question",
+      kind: "decision",
+      priority: 0,
+      title: "Question input requested",
+      safeSummary: "Choose the target answer.",
+      sourceOccurrenceKey: "workspace:1:pending:pending-supervision",
+      surface: "timeline",
+      createdAt: now - 10_000,
+    })];
+
+    render(<App />);
+    await screen.findAllByText("Supervise current outcome");
+    const attentionHeading = await openAttention();
+    const attentionCenter = attentionHeading.closest(".attention-center") as HTMLElement;
+    fireEvent.click(within(attentionCenter).getByRole("button", {
+      name: "Open task: Choose the target answer.",
+    }));
+
+    expect(await screen.findByText("Which target option comes first?")).toBeTruthy();
+    expect(screen.queryByText("Which unrelated option?")).toBeNull();
+    const targetAnswer = screen.getByRole("radio", { name: /Target answer/ });
+    await waitFor(() => expect(document.activeElement).toBe(targetAnswer));
+    fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    await waitFor(() => {
+      expect(host.state.resolutions).toEqual(["pending-supervision"]);
+      expect(host.state.pendingInputs[0]?.resolvedAt).toBeNull();
+      expect(host.state.pendingInputs[1]?.resolvedAt).toBe(now - 9_000);
+    });
+    expect(await screen.findByText("Which unrelated option?")).toBeTruthy();
   });
 });

@@ -46,6 +46,14 @@ const snapshot = (
   generatedAt: 1_700_000_000_100,
 });
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+};
+
 beforeEach(() => {
   bridge.acknowledgeXiaoAttentionItem.mockReset().mockResolvedValue(true);
   bridge.listXiaoAttentionItems.mockReset();
@@ -112,5 +120,60 @@ describe("cross-project Attention hydration", () => {
 
     expect(bridge.acknowledgeXiaoAttentionItem).toHaveBeenCalledWith(acknowledged.id);
     expect(result.current.items).toEqual([remaining]);
+  });
+
+  it("keeps the newest snapshot when overlapping refreshes finish out of order", async () => {
+    const initial = item("initial");
+    bridge.listXiaoAttentionItems.mockResolvedValueOnce(snapshot([initial]));
+    const { result } = renderHook(() => useAttentionCenter());
+    await waitFor(() => expect(result.current.items).toEqual([initial]));
+
+    const older = deferred<AttentionSnapshot>();
+    const newer = deferred<AttentionSnapshot>();
+    bridge.listXiaoAttentionItems
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+
+    let olderRefresh!: Promise<void>;
+    let newerRefresh!: Promise<void>;
+    act(() => {
+      olderRefresh = result.current.refresh();
+      newerRefresh = result.current.refresh();
+    });
+    newer.resolve(snapshot([item("newer")]));
+    await act(async () => {
+      await newerRefresh;
+    });
+    expect(result.current.items.map(({ id }) => id)).toEqual(["newer"]);
+
+    older.resolve(snapshot([item("older")]));
+    await act(async () => {
+      await olderRefresh;
+    });
+    expect(result.current.items.map(({ id }) => id)).toEqual(["newer"]);
+  });
+
+  it("does not resurrect an acknowledged occurrence from an older refresh", async () => {
+    const acknowledged = item("review-a");
+    bridge.listXiaoAttentionItems.mockResolvedValueOnce(snapshot([acknowledged]));
+    const { result } = renderHook(() => useAttentionCenter());
+    await waitFor(() => expect(result.current.items).toEqual([acknowledged]));
+
+    const stale = deferred<AttentionSnapshot>();
+    bridge.listXiaoAttentionItems.mockImplementationOnce(() => stale.promise);
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = result.current.refresh();
+    });
+    await act(async () => {
+      await result.current.acknowledge(acknowledged.id);
+    });
+    expect(result.current.items).toEqual([]);
+
+    stale.resolve(snapshot([acknowledged]));
+    await act(async () => {
+      await refresh;
+    });
+    expect(result.current.items).toEqual([]);
   });
 });
