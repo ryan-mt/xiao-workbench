@@ -109,6 +109,7 @@ const APP_COMMANDS: &[&str] = &[
     "open_xiao_project",
 ];
 
+#[cfg(not(test))]
 fn main() {
     let certification = validate_ticket03_certification()
         .expect("Ticket 03 release certification does not match the verified source");
@@ -278,6 +279,7 @@ fn normalize_build_version(relative: &str, source: Vec<u8>) -> Vec<u8> {
         Ok(text) => text,
         Err(error) => return error.into_bytes(),
     };
+    text = text.replace("\r\n", "\n").replace('\r', "\n");
     const DAILY_PREFIX: &str = "0.0.0-day";
     let mut search_start = 0;
     while let Some(offset) = text[search_start..].find(DAILY_PREFIX) {
@@ -348,4 +350,21 @@ fn hex_string(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_build_version;
+
+    #[test]
+    fn fingerprint_text_is_stable_across_checkout_line_endings() {
+        let lf = normalize_build_version("source.rs", b"first\nsecond\n".to_vec());
+        let crlf = normalize_build_version("source.rs", b"first\r\nsecond\r\n".to_vec());
+        let mixed = normalize_build_version("source.rs", b"first\r\nsecond\n".to_vec());
+        let changed = normalize_build_version("source.rs", b"first\nchanged\n".to_vec());
+
+        assert_eq!(lf, crlf);
+        assert_eq!(lf, mixed);
+        assert_ne!(lf, changed);
+    }
 }
