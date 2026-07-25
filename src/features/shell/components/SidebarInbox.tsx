@@ -1,5 +1,8 @@
 import {
+  Fragment,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -23,6 +26,7 @@ type InboxItem = {
   updatedAt: number;
   selected: boolean;
   working: boolean;
+  done: boolean;
   waiting: boolean;
   failed: boolean;
   unread: boolean;
@@ -131,6 +135,7 @@ const itemStatus = (item: InboxItem) => {
   if (item.working) return { label: "Working", tone: "working" };
   if (item.waiting) return { label: "Needs input", tone: "waiting" };
   if (item.failed) return { label: "Failed", tone: "failed" };
+  if (item.done) return { label: "Done", tone: "done" };
   if (item.unread) return { label: "Updated", tone: "unread" };
   return null;
 };
@@ -152,6 +157,7 @@ function InboxRow({
   onOpen,
   onContextMenu,
   onSettle,
+  settling,
 }: {
   item: InboxItem;
   compact: boolean;
@@ -159,6 +165,7 @@ function InboxRow({
   onOpen: () => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
   onSettle: () => void;
+  settling: boolean;
 }) {
   const status = itemStatus(item);
   return (
@@ -168,6 +175,7 @@ function InboxRow({
         compact ? "is-compact" : "",
         item.selected ? "is-selected" : "",
         item.working ? "is-working" : "",
+        settling ? "is-settling" : "",
       ].filter(Boolean).join(" ")}
       style={{ viewTransitionName: `sidebar-${item.key.replace(/[^a-zA-Z0-9_-]/g, "-")}` }}
       onContextMenu={onContextMenu}
@@ -176,7 +184,10 @@ function InboxRow({
         className="sidebar-inbox__open"
         type="button"
         aria-label={`Open ${item.title}`}
-        onClick={onOpen}
+        onClick={(event) => {
+          onOpen();
+          if (event.detail > 0) event.currentTarget.blur();
+        }}
       >
         <span className="sidebar-inbox__row-topline">
           <span className="sidebar-inbox__project">
@@ -198,9 +209,8 @@ function InboxRow({
           )}
         </span>
         <strong>{item.title}</strong>
-        {!compact ? (
+        {!compact && (item.additions > 0 || item.deletions > 0) ? (
           <span className="sidebar-inbox__row-meta">
-            <span>{monthHeading(item.createdAt, now)}</span>
             <ChangePill additions={item.additions} deletions={item.deletions} />
           </span>
         ) : null}
@@ -209,13 +219,13 @@ function InboxRow({
         className="sidebar-inbox__settle"
         type="button"
         aria-label={compact ? `Restore ${item.title} to inbox` : `Settle ${item.title}`}
+        title={compact ? "Restore to inbox" : "Settle thread"}
         onClick={(event) => {
           event.stopPropagation();
           onSettle();
         }}
       >
         <XiaoIcon name={compact ? "undo" : "check"} size={13} />
-        {!compact ? <span>Settle</span> : null}
       </button>
     </article>
   );
@@ -244,6 +254,8 @@ export function SidebarInbox({
   const [settledShelfOpen, setSettledShelfOpen] = useState(true);
   const [inboxExpanded, setInboxExpanded] = useState(false);
   const [otherExpanded, setOtherExpanded] = useState(false);
+  const [settlingKeys, setSettlingKeys] = useState<ReadonlySet<string>>(new Set());
+  const settleTimers = useRef(new Map<string, number>());
   const activeProject = projectForPath(projects, activeProjectPath);
   const working = useMemo(() => new Set(workingTaskIds), [workingTaskIds]);
 
@@ -264,6 +276,7 @@ export function SidebarInbox({
           updatedAt: task.updatedAt,
           selected: activeTaskId === task.id,
           working: working.has(task.id),
+          done: task.stage === "completed",
           waiting: false,
           failed: false,
           unread: task.unread,
@@ -287,6 +300,7 @@ export function SidebarInbox({
           updatedAt: thread.updatedAt,
           selected: activeTaskId === `codex:${thread.id}`,
           working: thread.status === "working",
+          done: false,
           waiting: thread.status === "waiting",
           failed: thread.status === "failed",
           unread: false,
@@ -297,7 +311,7 @@ export function SidebarInbox({
       });
     return [...taskItems, ...codexItems].sort(
       (left, right) =>
-        right.createdAt - left.createdAt ||
+        right.updatedAt - left.updatedAt ||
         left.key.localeCompare(right.key),
     );
   }, [activeProjectPath, activeTaskId, codexThreads, projects, tasks, working]);
@@ -321,27 +335,43 @@ export function SidebarInbox({
     : selectedHiddenInboxItem
       ? [...collapsedInboxItems.slice(0, inboxPreviewLimit - 1), selectedHiddenInboxItem]
       : collapsedInboxItems;
-  const hiddenInboxCount = Math.max(0, inboxItems.length - shownInboxItems.length);
   const shownSettled = settledExpanded ? settledItems : settledItems.slice(0, settledPreviewLimit);
 
-  const toggleSettled = (key: string) => {
-    const update = () => {
-      setSettled((current) => {
+  useEffect(() => () => {
+    for (const timer of settleTimers.current.values()) window.clearTimeout(timer);
+    settleTimers.current.clear();
+  }, []);
+
+  const commitSettledToggle = (key: string) => {
+    setSettled((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      storeSettledItems(next);
+      return next;
+    });
+  };
+
+  const toggleSettled = (key: string, restoring = false) => {
+    const motionAllowed =
+      typeof window.matchMedia === "function" &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (restoring || !motionAllowed) {
+      commitSettledToggle(key);
+      return;
+    }
+    if (settleTimers.current.has(key)) return;
+    setSettlingKeys((current) => new Set(current).add(key));
+    const timer = window.setTimeout(() => {
+      settleTimers.current.delete(key);
+      commitSettledToggle(key);
+      setSettlingKeys((current) => {
         const next = new Set(current);
-        if (next.has(key)) next.delete(key);
-        else next.add(key);
-        storeSettledItems(next);
+        next.delete(key);
         return next;
       });
-    };
-    const transitionDocument = document as Document & {
-      startViewTransition?: (callback: () => void) => { finished: Promise<void> };
-    };
-    if (transitionDocument.startViewTransition) {
-      transitionDocument.startViewTransition(update);
-    } else {
-      update();
-    }
+    }, 520);
+    settleTimers.current.set(key, timer);
   };
 
   const openItem = (item: InboxItem) => {
@@ -403,32 +433,31 @@ export function SidebarInbox({
 
       <div className="sidebar-inbox__scroll">
         <section className="sidebar-inbox__section" aria-label="Open threads">
-          {shownInboxItems.map((item) => (
-            <InboxRow
-              key={item.key}
-              item={item}
-              compact={false}
-              now={now}
-              onOpen={() => openItem(item)}
-              onContextMenu={(event) => contextItem(event, item)}
-              onSettle={() => toggleSettled(item.key)}
-            />
-          ))}
-          {inboxItems.length > inboxPreviewLimit ? (
-            <button
-              className="sidebar-inbox__more"
-              type="button"
-              aria-expanded={inboxExpanded}
-              onClick={() => setInboxExpanded((expanded) => !expanded)}
-            >
-              <span>{inboxExpanded ? "Show fewer" : `Show ${hiddenInboxCount} more`}</span>
-              <XiaoIcon
-                className={inboxExpanded ? "is-expanded" : ""}
-                name="caret"
-                size={11}
-              />
-            </button>
-          ) : null}
+          {shownInboxItems.map((item, index) => {
+            const heading = monthHeading(item.updatedAt, now);
+            const previousHeading = index > 0
+              ? monthHeading(shownInboxItems[index - 1]!.updatedAt, now)
+              : null;
+            return (
+              <Fragment key={item.key}>
+                {heading !== previousHeading ? (
+                  <div className="sidebar-inbox__date-separator">
+                    <span>{heading}</span>
+                    <i aria-hidden="true" />
+                  </div>
+                ) : null}
+                <InboxRow
+                  item={item}
+                  compact={false}
+                  now={now}
+                  settling={settlingKeys.has(item.key)}
+                  onOpen={() => openItem(item)}
+                  onContextMenu={(event) => contextItem(event, item)}
+                  onSettle={() => toggleSettled(item.key)}
+                />
+              </Fragment>
+            );
+          })}
           {!inboxItems.length ? (
             <div className="sidebar-inbox__empty">
               <XiaoIcon name="check" size={16} />
@@ -464,9 +493,10 @@ export function SidebarInbox({
                     item={item}
                     compact
                     now={now}
+                    settling={false}
                     onOpen={() => openItem(item)}
                     onContextMenu={(event) => contextItem(event, item)}
-                    onSettle={() => toggleSettled(item.key)}
+                    onSettle={() => toggleSettled(item.key, true)}
                   />
                 ))}
               </div>
@@ -504,9 +534,10 @@ export function SidebarInbox({
                       item={item}
                       compact
                       now={now}
+                      settling={false}
                       onOpen={() => openItem(item)}
                       onContextMenu={(event) => contextItem(event, item)}
-                      onSettle={() => toggleSettled(item.key)}
+                      onSettle={() => toggleSettled(item.key, true)}
                     />
                   ))}
                 </div>
@@ -538,6 +569,25 @@ export function SidebarInbox({
           <div className="sidebar-inbox__error" role="status">{codexHistoryError}</div>
         ) : null}
       </div>
+      {inboxItems.length > inboxPreviewLimit ? (
+        <button
+          className="sidebar-inbox__more is-floating"
+          type="button"
+          aria-expanded={inboxExpanded}
+          onClick={() => setInboxExpanded((expanded) => !expanded)}
+        >
+          <span>
+            {inboxExpanded
+              ? "Show fewer"
+              : `Show ${inboxItems.length - inboxPreviewLimit} more`}
+          </span>
+          <XiaoIcon
+            className={inboxExpanded ? "is-expanded" : ""}
+            name="caret"
+            size={11}
+          />
+        </button>
+      ) : null}
     </div>
   );
 }

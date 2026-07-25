@@ -140,7 +140,7 @@ afterEach(() => {
 });
 
 describe("SidebarInbox ordering", () => {
-  it("orders rows by creation time, not mutable activity time", () => {
+  it("orders rows by real activity time", () => {
     renderInbox({
       tasks: [
         task("Older creation, newer activity", now - 20_000, {
@@ -154,8 +154,8 @@ describe("SidebarInbox ordering", () => {
 
     const buttons = screen.getAllByRole("button", { name: /^Open / });
     expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
-      "Open Newer creation, older activity",
       "Open Older creation, newer activity",
+      "Open Newer creation, older activity",
     ]);
   });
 
@@ -201,6 +201,27 @@ describe("SidebarInbox ordering", () => {
     expect(buttons[1]?.getAttribute("aria-label")).toBe("Open Working but older");
     expect(screen.getByText("Working")).not.toBeNull();
     expect(buttons[1]?.closest("article")?.classList.contains("is-working")).toBe(true);
+  });
+
+  it("orders chats by real activity rather than creation time", () => {
+    renderInbox({
+      tasks: [
+        task("Created later", now - 1_000, { updatedAt: now - 5_000 }),
+        task("Updated later", now - 10_000, { updatedAt: now - 500 }),
+      ],
+    });
+
+    const buttons = screen.getAllByRole("button", { name: /^Open / });
+    expect(buttons[0]?.getAttribute("aria-label")).toBe("Open Updated later");
+    expect(buttons[1]?.getAttribute("aria-label")).toBe("Open Created later");
+  });
+
+  it("shows one concise done state for a completed Xiao task", () => {
+    renderInbox({
+      tasks: [task("Finished", now, { stage: "completed" })],
+    });
+
+    expect(screen.getAllByText("Done")).toHaveLength(1);
   });
 });
 

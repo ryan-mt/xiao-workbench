@@ -972,9 +972,10 @@
   scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
 }
 
-/* Sidebar V2: a stable thread inbox. Rows are ordered by creation time and
+/* Sidebar V2: a stable thread inbox. Rows are ordered by real activity time and
    settlement is presentation state, so opening a task never moves it. */
 .sidebar-inbox {
+  position: relative;
   display: flex;
   min-height: 0;
   flex: 1;
@@ -1100,7 +1101,7 @@
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 0 1px 14px;
+  padding: 0 1px 48px;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
 }
@@ -1108,6 +1109,39 @@
 .sidebar-inbox__section {
   display: grid;
   gap: 3px;
+}
+
+.sidebar-inbox__date-separator {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 7px 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+
+.sidebar-inbox__date-separator i {
+  min-width: 12px;
+  height: 1px;
+  flex: 1;
+  background: color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.sidebar-inbox__more.is-floating {
+  position: absolute;
+  z-index: 12;
+  right: 11px;
+  bottom: 10px;
+  left: 11px;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--canvas) 36%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .sidebar-inbox__row {
@@ -1122,6 +1156,78 @@
   overflow: visible;
   transition: border-color 140ms ease, background 140ms ease, color 140ms ease,
     box-shadow 140ms ease, transform 140ms ease;
+}
+
+.sidebar-inbox__row.is-settling {
+  z-index: 2;
+  pointer-events: none;
+  will-change: opacity, filter, mask-position, transform;
+  animation: sidebar-snap-away 520ms cubic-bezier(.22, .7, .22, 1) forwards;
+}
+
+.sidebar-inbox__row.is-settling::before,
+.sidebar-inbox__row.is-settling::after {
+  position: absolute;
+  z-index: 3;
+  inset: -3px -10px -3px 52%;
+  border-radius: inherit;
+  background-image:
+    radial-gradient(circle at 12% 18%, currentColor 0 1px, transparent 1.5px),
+    radial-gradient(circle at 34% 72%, currentColor 0 1.2px, transparent 1.7px),
+    radial-gradient(circle at 57% 24%, currentColor 0 .8px, transparent 1.4px),
+    radial-gradient(circle at 76% 63%, currentColor 0 1.1px, transparent 1.7px),
+    radial-gradient(circle at 92% 35%, currentColor 0 .8px, transparent 1.4px);
+  background-size: 31px 23px, 37px 29px, 43px 31px, 29px 37px, 41px 27px;
+  color: color-mix(in srgb, var(--text-soft) 72%, transparent);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  animation: sidebar-snap-dust 500ms cubic-bezier(.18, .7, .28, 1) forwards;
+}
+
+.sidebar-inbox__row.is-settling::after {
+  inset: 24% -13px -5px 64%;
+  color: color-mix(in srgb, var(--accent) 34%, var(--muted));
+  animation-delay: 45ms;
+}
+
+@keyframes sidebar-snap-away {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    mask-image: linear-gradient(90deg, #000 0 55%, #000c 68%, transparent 82%);
+    mask-position: 0 0;
+    mask-size: 260% 100%;
+    transform: translateX(0);
+  }
+  58% {
+    opacity: .9;
+    filter: blur(.35px);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(1.8px);
+    mask-image: linear-gradient(90deg, #000 0 55%, #000c 68%, transparent 82%);
+    mask-position: 100% 0;
+    mask-size: 260% 100%;
+    transform: translateX(9px);
+  }
+}
+
+@keyframes sidebar-snap-dust {
+  0% {
+    opacity: 0;
+    filter: blur(0);
+    transform: translate(0, 0) scale(.82);
+  }
+  24% {
+    opacity: .52;
+  }
+  100% {
+    opacity: 0;
+    filter: blur(.9px);
+    transform: translate(12px, -5px) scale(1.08);
+  }
 }
 
 ::view-transition-group(*) {
@@ -1154,13 +1260,21 @@
   background: color-mix(in srgb, var(--info) 4%, transparent);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-inbox__row.is-settling,
+  .sidebar-inbox__row.is-settling::before,
+  .sidebar-inbox__row.is-settling::after {
+    animation: none;
+  }
+}
+
 .sidebar-inbox__open {
   display: grid;
   min-width: 0;
   min-height: 55px;
   align-content: center;
   gap: 2px;
-  padding: 6px 4px 6px 10px;
+  padding: 6px 38px 6px 10px;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -1245,6 +1359,10 @@
   color: var(--danger);
 }
 
+.sidebar-inbox__status.is-done {
+  color: var(--success);
+}
+
 .sidebar-inbox__status.is-unread {
   color: var(--accent);
 }
@@ -1274,34 +1392,27 @@
 
 .sidebar-inbox__settle {
   position: absolute;
-  top: 5px;
+  top: 50%;
   right: 4px;
   display: inline-flex;
-  width: auto;
+  width: 27px;
   height: 27px;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 0 7px;
+  padding: 0;
   border-radius: 7px;
   background: var(--surface-hover);
   color: var(--muted);
   opacity: 0;
-  transform: translateX(3px);
+  transform: translate(3px, -50%);
   transition: background 130ms ease, color 130ms ease, opacity 130ms ease,
     transform 130ms ease;
 }
 
-.sidebar-inbox__settle > span {
-  font-size: 9px;
-  font-weight: 620;
-}
-
 .sidebar-inbox__row:hover .sidebar-inbox__settle,
-.sidebar-inbox__row:focus-within .sidebar-inbox__settle,
-.sidebar-inbox__row.is-selected .sidebar-inbox__settle {
+.sidebar-inbox__row:focus-within .sidebar-inbox__settle {
   opacity: 1;
-  transform: translateX(0);
+  transform: translate(0, -50%);
 }
 
 .sidebar-inbox__settle:hover,
@@ -1501,7 +1612,6 @@
 }
 
 .sidebar-inbox__row.is-compact .sidebar-inbox__settle {
-  top: 6px;
   width: 27px;
   padding: 0;
   background: var(--surface-hover);

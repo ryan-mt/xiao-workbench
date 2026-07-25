@@ -279,6 +279,7 @@ export function Composer({
   const [revealedRuntimeError, setRevealedRuntimeError] = useState<string | null>(null);
   const [selectingAttachments, setSelectingAttachments] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [deliveryMenuOpen, setDeliveryMenuOpen] = useState(false);
   const [goalEditorOpen, setGoalEditorOpen] = useState(false);
   const [goalValue, setGoalValue] = useState(goal?.objective ?? "");
   const [dragging, setDragging] = useState(false);
@@ -298,6 +299,7 @@ export function Composer({
   const promptHistoryIndex = useRef(-1);
   const promptHistoryDraft = useRef<string | null>(null);
   const addMenu = useRef<HTMLDivElement>(null);
+  const deliveryMenu = useRef<HTMLDivElement>(null);
   const addMenuTrigger = useRef<HTMLButtonElement>(null);
   const fileSearchRequest = useRef(0);
   const submittingRef = useRef(false);
@@ -437,6 +439,24 @@ export function Composer({
       window.removeEventListener("keydown", escape);
     };
   }, [addMenuOpen]);
+
+  useEffect(() => {
+    if (!deliveryMenuOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!deliveryMenu.current?.contains(event.target as Node)) {
+        setDeliveryMenuOpen(false);
+      }
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDeliveryMenuOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [deliveryMenuOpen]);
 
   useLayoutEffect(() => {
     const menu = slashMenu.current;
@@ -1323,6 +1343,11 @@ export function Composer({
                   return;
                 }
               }
+              if (event.key === "Escape" && currentTaskWorking) {
+                event.preventDefault();
+                void onInterrupt();
+                return;
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 const delivery = currentTaskWorking && (event.ctrlKey || event.metaKey) && canSteer
@@ -1493,18 +1518,14 @@ export function Composer({
           </div>
           <div className="composer__actions">
             {currentTaskWorking && (
-              <button className="composer__stop" type="button" aria-label="Stop current turn" onClick={() => void onInterrupt()}>
-                <span aria-hidden="true" />
-              </button>
-            )}
-            {canSteer && canSubmit && (
               <button
-                className="composer__steer"
+                className="composer__stop"
                 type="button"
-                title="Send immediately to the current turn (Ctrl/Command+Enter)"
-                onClick={() => void submit("steer")}
+                aria-label="Stop current turn"
+                title="Stop current turn (Esc)"
+                onClick={() => void onInterrupt()}
               >
-                Steer now
+                <span aria-hidden="true" />
               </button>
             )}
             <button
@@ -1515,6 +1536,48 @@ export function Composer({
             >
               <XiaoIcon name="send" size={14} strokeWidth={2} />
             </button>
+            {currentTaskWorking ? (
+              <div className="composer-delivery" ref={deliveryMenu}>
+                <button
+                  className="composer-delivery__trigger"
+                  type="button"
+                  aria-label="Choose message delivery"
+                  aria-expanded={deliveryMenuOpen}
+                  title="Choose Queue or Steer"
+                  onClick={() => setDeliveryMenuOpen((open) => !open)}
+                >
+                  <XiaoIcon name="caret" size={10} />
+                </button>
+                {deliveryMenuOpen ? (
+                  <div className="composer-delivery__menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!canSubmit}
+                      onClick={() => {
+                        setDeliveryMenuOpen(false);
+                        void submit("queue");
+                      }}
+                    >
+                      <span><strong>Queue</strong><small>Send after this turn</small></span>
+                      <kbd>Enter</kbd>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!canSubmit || !canSteer}
+                      onClick={() => {
+                        setDeliveryMenuOpen(false);
+                        void submit("steer");
+                      }}
+                    >
+                      <span><strong>Steer</strong><small>Send into this turn</small></span>
+                      <kbd>Ctrl ↵</kbd>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
