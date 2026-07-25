@@ -4634,6 +4634,29 @@ export function App() {
       });
   };
 
+  const activeImportedThread = activeTask.origin === "codex"
+    ? codexThreads.find((thread) => thread.id === activeTask.threadId) ?? null
+    : null;
+  const importedTaskWorking = activeImportedThread?.status === "working";
+  const importedTurnStartedAt = importedTaskWorking
+    ? [...activeTask.timeline]
+        .reverse()
+        .find((entry) => entry.kind === "user" || entry.kind === "brief")
+        ?.createdAt ?? activeImportedThread.updatedAt
+    : null;
+  const taskDisplayRuntime = importedTaskWorking
+    ? {
+        ...agent.runtime,
+        phase: "working" as const,
+        taskId: activeTask.id,
+        threadId: activeImportedThread.id,
+        turnStartedAt: importedTurnStartedAt,
+        eventsSeen: activeTask.timeline.length,
+        error: null,
+      }
+    : agent.runtime;
+  const taskDisplayStage = importedTaskWorking ? "in_progress" as const : activeTask.stage;
+
   return (
     <>
       <GlobalContextMenu />
@@ -4979,18 +5002,18 @@ export function App() {
               executionTaskId={executionTaskId}
               taskTitle={activeTask.title}
               taskArchived={activeTask.archived}
-              taskStage={activeTask.stage}
+              taskStage={taskDisplayStage}
               hasAcceptanceContract={outcomeHasAcceptanceContract(
                 activeTask.acceptanceContract,
                 agent.latestRun?.acceptanceContractSourceVersionId,
               )}
-              hasActiveRuns={agent.isTaskWorking(activeTask.id)}
+              hasActiveRuns={importedTaskWorking || agent.isTaskWorking(activeTask.id)}
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
               taskStateLoading={taskWorkspaceStateLoading}
               initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? 0}
               timeline={agent.timeline}
-              runtime={agent.runtime}
+              runtime={taskDisplayRuntime}
               rateLimits={agent.rateLimits}
               latestRun={agent.latestRun}
               models={visibleModels}

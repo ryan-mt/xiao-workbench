@@ -239,6 +239,8 @@ export const readCodexThreadTimeline = async (
     const turnId = typeof turn.id === "string" ? turn.id : crypto.randomUUID();
     const createdAt =
       typeof turn.startedAt === "number" ? turn.startedAt * 1_000 : Date.now();
+    const completedAt =
+      typeof turn.completedAt === "number" ? turn.completedAt * 1_000 : null;
     const items = Array.isArray(turn.items) ? turn.items : [];
     return items.flatMap((rawItem) => {
       if (!rawItem || typeof rawItem !== "object") return [];
@@ -248,7 +250,13 @@ export const readCodexThreadTimeline = async (
         return entry ? [entry] : [];
       }
       const entry = timelineEntryFromItem(item);
-      return entry ? [{ ...entry, createdAt, turnId }] : [];
+      const itemCreatedAt =
+        typeof item.createdAt === "number"
+          ? item.createdAt * 1_000
+          : item.type === "agentMessage" && item.phase !== "commentary" && completedAt
+            ? completedAt
+            : createdAt;
+      return entry ? [{ ...entry, createdAt: itemCreatedAt, turnId }] : [];
     });
   });
 };

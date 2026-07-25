@@ -7,6 +7,7 @@ import { ActivityItem, TimelineImages } from "./ActivityItem";
 import { ExplorationGroup } from "./ExplorationGroup";
 import { LiveTurnStatus } from "./LiveTurnStatus";
 import { ToolCallGroup, toolCallRecovery } from "./ToolCallGroup";
+import { TurnWorkGroup } from "./TurnWorkGroup";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
 
 type TaskTimelineProps = {
@@ -38,7 +39,8 @@ type TaskTimelineProps = {
 export type TimelineRow =
   | { kind: "entry"; entry: TimelineEntry; index: number }
   | { kind: "exploration"; entries: TimelineEntry[]; index: number }
-  | { kind: "toolGroup"; entries: TimelineEntry[]; index: number };
+  | { kind: "toolGroup"; entries: TimelineEntry[]; index: number }
+  | { kind: "turnWork"; entries: TimelineEntry[]; index: number };
 
 const isContextEntry = (entry: TimelineEntry) =>
   entry.kind === "explore" ||
@@ -48,6 +50,20 @@ const isContextEntry = (entry: TimelineEntry) =>
   );
 
 const isCompactToolEntry = (entry: TimelineEntry) => entry.kind === "command";
+const isFinalResponse = (entry: TimelineEntry) =>
+  entry.kind === "result" &&
+  entry.title === "Agent response" &&
+  entry.meta !== "Commentary";
+const isTurnWorkEntry = (entry: TimelineEntry) =>
+  entry.kind === "thought" ||
+  entry.kind === "command" ||
+  entry.kind === "explore" ||
+  entry.kind === "change" ||
+  entry.kind === "agent" ||
+  (entry.kind === "result" && (
+    entry.meta === "Commentary" ||
+    entry.meta?.toLowerCase() === "browser tool"
+  ));
 
 const timelineRowsCache = new WeakMap<TimelineEntry[], TimelineRow[]>();
 
@@ -57,9 +73,29 @@ export const timelineRows = (timeline: TimelineEntry[]): TimelineRow[] => {
 
   const rows: TimelineRow[] = [];
   let index = 0;
+  let insideTurn = false;
 
   while (index < timeline.length) {
     const entry = timeline[index];
+    if (entry.kind === "user" || entry.kind === "brief") {
+      insideTurn = true;
+      rows.push({ kind: "entry", entry, index });
+      index += 1;
+      continue;
+    }
+    if (isFinalResponse(entry)) {
+      insideTurn = false;
+      rows.push({ kind: "entry", entry, index });
+      index += 1;
+      continue;
+    }
+    if (insideTurn && isTurnWorkEntry(entry)) {
+      let end = index + 1;
+      while (end < timeline.length && isTurnWorkEntry(timeline[end])) end += 1;
+      rows.push({ kind: "turnWork", entries: timeline.slice(index, end), index });
+      index = end;
+      continue;
+    }
     if (!isContextEntry(entry)) {
       if (isCompactToolEntry(entry)) {
         let end = index + 1;
@@ -193,6 +229,103 @@ function TaskTimelineView({
         </div>
       ) : null}
       {rows.map((row) => {
+        if (row.kind === "turnWork") {
+          const workRows = timelineRows(row.entries);
+          const workLive = taskWorking && row.index >= latestTurnStartIndex;
+          return (
+            <div
+              className="timeline-turn-work-anchor"
+              key={`turn-work-${row.entries[0]?.id ?? row.index}`}
+            >
+              {row.entries.map((entry) => (
+                <span
+                  aria-hidden="true"
+                  className="timeline-entry-anchor-target"
+                  id={`timeline-entry-${entry.id}`}
+                  key={entry.id}
+                />
+              ))}
+              <TurnWorkGroup entries={row.entries} live={workLive}>
+                {workRows.map((workRow) => {
+                  if (workRow.kind === "exploration") {
+                    return (
+                      <ExplorationGroup
+                        entries={workRow.entries}
+                        expandByDefault={expandToolOutput}
+                        index={row.index + workRow.index}
+                        isLive={workLive}
+                        key={`work-explore-${workRow.index}`}
+                      />
+                    );
+                  }
+                  if (workRow.kind === "toolGroup") {
+                    const recovery = toolCallRecovery(workRow.entries);
+                    return (
+                      <ToolCallGroup
+                        entries={workRow.entries}
+                        expandByDefault={expandToolOutput}
+                        index={row.index + workRow.index}
+                        isLive={workLive}
+                        key={`work-tools-${workRow.index}`}
+                      >
+                        {workRow.entries.map((entry, entryOffset) => (
+                          <ActivityItem
+                            entry={{
+                              ...entry,
+                              attachments: entry.attachments?.filter(
+                                (attachment) => attachment.kind !== "image",
+                              ),
+                            }}
+                            index={row.index + workRow.index + entryOffset}
+                            showReasoningSummaries={showReasoningSummaries}
+                            expandToolOutput={expandToolOutput}
+                            workspacePath={workspacePath}
+                            onOpenResource={onOpenResource}
+                            taskId={taskId}
+                            canFork={false}
+                            onForkTask={onForkTask}
+                            onResolveApproval={onResolveApproval}
+                            onReviewChanges={onReviewChanges}
+                            canUndo={false}
+                            undoing={false}
+                            recovered={recovery.recoveredIds.has(entry.id)}
+                            isLive={workLive}
+                            key={entry.id}
+                          />
+                        ))}
+                      </ToolCallGroup>
+                    );
+                  }
+                  if (workRow.kind !== "entry") return null;
+                  return (
+                    <ActivityItem
+                      entry={workRow.entry}
+                      index={row.index + workRow.index}
+                      showReasoningSummaries={showReasoningSummaries}
+                      expandToolOutput={expandToolOutput}
+                      workspacePath={workspacePath}
+                      onOpenResource={onOpenResource}
+                      taskId={taskId}
+                      canFork={false}
+                      onForkTask={onForkTask}
+                      onResolveApproval={onResolveApproval}
+                      onReviewChanges={onReviewChanges}
+                      canUndo={false}
+                      undoing={false}
+                      isLive={workLive}
+                      key={workRow.entry.id}
+                    />
+                  );
+                })}
+              </TurnWorkGroup>
+              <TimelineImages
+                attachments={row.entries.flatMap((entry) =>
+                  entry.attachments?.filter((attachment) => attachment.kind === "image") ?? []
+                )}
+              />
+            </div>
+          );
+        }
         if (row.kind === "exploration") {
           return (
             <div

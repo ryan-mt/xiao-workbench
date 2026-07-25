@@ -857,13 +857,14 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
   const createdAt = Date.now();
 
   if (item.type === "agentMessage" && typeof item.text === "string") {
+    const commentary = item.phase === "commentary";
     return {
       id,
       kind: "result",
       title: "Agent response",
       createdAt,
       body: item.text,
-      meta: "Xiao",
+      meta: commentary ? "Commentary" : "Xiao",
       status: "success",
     };
   }

@@ -233,6 +233,22 @@ describe("tool image output", () => {
   });
 });
 
+describe("agent message projection", () => {
+  it("keeps live commentary inside turn work instead of presenting it as the final answer", () => {
+    expect(timelineEntryFromItem({
+      id: "commentary-1",
+      type: "agentMessage",
+      phase: "commentary",
+      text: "Checking the runtime events now.",
+    })).toMatchObject({
+      kind: "result",
+      title: "Agent response",
+      body: "Checking the runtime events now.",
+      meta: "Commentary",
+    });
+  });
+});
+
 describe("command exit projection", () => {
   it("treats ripgrep exit 1 as an empty search instead of a failed tool call", () => {
     expect(timelineEntryFromItem({

@@ -10,7 +10,7 @@ const entry = (id: string, kind: TimelineEntry["kind"]): TimelineEntry => ({
 });
 
 describe("timelineRows", () => {
-  it("groups every adjacent command tool, including failures", () => {
+  it("groups turn work without moving the user or response rows", () => {
     const rows = timelineRows([
       entry("user", "user"),
       { ...entry("command-1", "command"), meta: "Dynamic tool" },
@@ -22,12 +22,12 @@ describe("timelineRows", () => {
 
     expect(rows.map((row) => row.kind)).toEqual([
       "entry",
-      "toolGroup",
+      "turnWork",
       "entry",
-      "entry",
+      "turnWork",
     ]);
     expect(rows[1]).toMatchObject({
-      kind: "toolGroup",
+      kind: "turnWork",
       index: 1,
       entries: [
         { id: "command-1" },
@@ -35,7 +35,11 @@ describe("timelineRows", () => {
         { id: "command-3" },
       ],
     });
-    expect(rows[3]).toMatchObject({ kind: "entry", index: 5, entry: { id: "command-4" } });
+    expect(rows[3]).toMatchObject({
+      kind: "turnWork",
+      index: 5,
+      entries: [{ id: "command-4" }],
+    });
   });
 
   it("groups adjacent browser searches with other context tools", () => {
