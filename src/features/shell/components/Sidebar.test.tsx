@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
@@ -80,14 +83,15 @@ type SidebarContent = {
   activeTaskId?: string;
 };
 
-const renderSidebar = (
+const sidebarElement = (
   attentionCount: number,
   activePage: AppPage = "tasks",
   attentionHydrationStatus: AttentionHydrationStatus = "ready",
   content: SidebarContent = {},
-) =>
-  renderToStaticMarkup(
-    <Sidebar
+  canOpenProjects = false,
+  onCreateProjectGroup: (name: string) => void = noop,
+) => (
+  <Sidebar
       activePage={activePage}
       projects={content.projects ?? []}
       projectGroups={content.projectGroups ?? []}
@@ -98,7 +102,7 @@ const renderSidebar = (
       workingTaskIds={[]}
       account={null}
       profile={{ name: "Xiao User", avatarDataUrl: null }}
-      canOpenProjects={false}
+      canOpenProjects={canOpenProjects}
       attentionCount={attentionCount}
       attentionHydrationStatus={attentionHydrationStatus}
       onOpenMenu={noop}
@@ -107,6 +111,7 @@ const renderSidebar = (
       onOpenSettings={noop}
       onOpenTasks={noop}
       onAddProject={noop}
+      onCreateProjectGroup={onCreateProjectGroup}
       onNewTask={noop}
       onSelectProject={noop}
       onSelectTask={noop}
@@ -120,8 +125,20 @@ const renderSidebar = (
       onRenameProject={noop}
       onArchiveProjectTasks={noop}
       onRemoveProject={noop}
-    />,
-  );
+  />
+);
+
+const renderSidebar = (
+  attentionCount: number,
+  activePage: AppPage = "tasks",
+  attentionHydrationStatus: AttentionHydrationStatus = "ready",
+  content: SidebarContent = {},
+  canOpenProjects = false,
+) => renderToStaticMarkup(
+  sidebarElement(attentionCount, activePage, attentionHydrationStatus, content, canOpenProjects),
+);
+
+afterEach(cleanup);
 
 describe("Sidebar attention trigger", () => {
   it("keeps a labeled trigger without a zero badge", () => {
@@ -193,6 +210,35 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain('class="sidebar app-sidebar"');
     expect(markup).toContain(">No tasks yet</span>");
     expect(markup).toContain(">New task</span>");
+  });
+
+  it("labels project and group creation actions", () => {
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project] }, true);
+
+    expect(markup).toContain('aria-label="Create project group"');
+    expect(markup).toContain(">Group</span>");
+    expect(markup).toContain('aria-label="Add project"');
+    expect(markup).toContain(">Add</span>");
+  });
+
+  it("creates project groups through an in-app dialog", () => {
+    const onCreateProjectGroup = vi.fn();
+    render(sidebarElement(
+      0,
+      "tasks",
+      "ready",
+      { projects: [project] },
+      true,
+      onCreateProjectGroup,
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Create project group" }));
+    const dialog = screen.getByRole("dialog", { name: "New project group" });
+    fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Client work" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create group" }));
+
+    expect(onCreateProjectGroup).toHaveBeenCalledWith("Client work");
+    expect(dialog.isConnected).toBe(false);
   });
 
   it("keeps empty project groups visible and manageable", () => {

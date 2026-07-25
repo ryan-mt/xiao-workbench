@@ -54,6 +54,7 @@ import { useRoutines } from "../features/focus-rail/hooks/useRoutines";
 import { ProfilePage } from "../features/profile/components/ProfilePage";
 import { useLocalProfile } from "../features/profile/hooks/useLocalProfile";
 import {
+  canSelectCodexProfile,
   SettingsPage,
   SettingsSidebar,
   type ArchivedTaskItem,
@@ -166,6 +167,12 @@ export const explicitlyOpenedTaskSuppressesFocusedLaunch = (
   workspacePath: string,
   taskId: string,
 ) => explicitlyOpenedTaskKey === workspaceTaskKey(workspacePath, taskId);
+
+export const shouldRestoreSidebarAfterFocusedLaunch = (
+  autoCollapsed: boolean,
+  focusedLaunch: boolean,
+  compact: boolean,
+) => autoCollapsed && !focusedLaunch && !compact;
 
 export const taskReviewContext = (
   current: ReviewContextState,
@@ -1766,12 +1773,23 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!focusedLaunch || !preferences.focusNewTasks) return;
+    const focusActive = focusedLaunch && preferences.focusNewTasks;
     const taskKey = workspaceTaskKey(workspace.path, activeTask.id);
-    if (focusedLaunchTaskRef.current === taskKey) return;
-    focusedLaunchTaskRef.current = taskKey;
-    setSidebarOpen(false);
-    closeFocusPanel();
+    if (focusActive) {
+      if (focusedLaunchTaskRef.current === taskKey) return;
+      focusedLaunchTaskRef.current = taskKey;
+      setSidebarOpen(false);
+      closeFocusPanel();
+      return;
+    }
+
+    const restoreSidebar = shouldRestoreSidebarAfterFocusedLaunch(
+      focusedLaunchTaskRef.current !== null,
+      focusActive,
+      window.matchMedia("(max-width: 760px)").matches,
+    );
+    focusedLaunchTaskRef.current = null;
+    if (restoreSidebar) setSidebarOpen(true);
   }, [activeTask.id, focusedLaunch, preferences.focusNewTasks, workspace.path]);
 
   const enqueueWorkspaceSave = useCallback((update: XiaoWorkspaceUpdate) => {
@@ -4283,6 +4301,31 @@ export function App() {
     taskStateReady,
   ]);
 
+  const changeCodexProfile = (codexProfileId: string) => {
+    if (activeTask.stage === "draft" || !executionTaskId) {
+      patchActiveTask({ codexProfileId });
+      return;
+    }
+    if (!window.confirm(
+      "Switch this Task to the selected Codex profile? Xiao will validate compatibility and restart the Task runtime.",
+    )) return;
+    void nativeBridge.stopAgent(workspace.path, executionTaskId)
+      .then(() => nativeBridge.bindXiaoTaskCodexProfile(
+        workspace.path,
+        executionTaskId,
+        codexProfileId,
+        activeTask.stageVersion,
+        true,
+      ))
+      .then(() => {
+        patchActiveTask({ codexProfileId });
+        void agent.connect();
+      })
+      .catch((reason) => {
+        window.alert(reason instanceof Error ? reason.message : String(reason));
+      });
+  };
+
   return (
     <>
       <GlobalContextMenu />
@@ -4482,6 +4525,15 @@ export function App() {
               archivedTasksLoading={archivedTasksLoading}
               archivedTasksError={archivedTasksError}
               codexProfiles={codexProfiles}
+              selectedCodexProfileId={activeTask.codexProfileId}
+              codexProfileSelectionDisabled={!canSelectCodexProfile({
+                taskArchived: activeTask.archived,
+                taskStateLoading: taskWorkspaceStateLoading,
+                taskStateError,
+                environmentBusy: activeEnvironmentBusy,
+                runtimeBusy: agent.runtime.phase === "working" || agent.runtime.phase === "starting",
+                profileCount: codexProfiles.length,
+              })}
               onThemeChange={setTheme}
               onPreferencesChange={updatePreferences}
               onRestoreArchivedTask={(item) => void restoreArchivedTask(item)}
@@ -4493,6 +4545,7 @@ export function App() {
                   if (result) void refresh();
                 });
               }}
+              onCodexProfileChange={changeCodexProfile}
               onCreateCodexProfile={() => {
                 const displayName = window.prompt("Profile name")?.trim();
                 if (!displayName) return;
@@ -4595,8 +4648,6 @@ export function App() {
               models={visibleModels}
               selectedModel={activeTask.model}
               selectedReasoningEffort={activeTask.reasoningEffort}
-              codexProfiles={codexProfiles}
-              selectedCodexProfileId={activeTask.codexProfileId}
               fastMode={preferences.fastMode}
               mode={activeTask.mode}
               approvalPolicy={activeTask.approvalPolicy}
@@ -4647,30 +4698,6 @@ export function App() {
               onReasoningEffortChange={(reasoningEffort) => {
                 patchActiveTask({ reasoningEffort });
                 updateTaskRunDefaults({ reasoningEffort });
-              }}
-              onCodexProfileChange={(codexProfileId) => {
-                if (activeTask.stage === "draft" || !executionTaskId) {
-                  patchActiveTask({ codexProfileId });
-                  return;
-                }
-                if (!window.confirm(
-                  "Switch this Task to the selected Codex profile? Xiao will validate compatibility and restart the Task runtime.",
-                )) return;
-                void nativeBridge.stopAgent(workspace.path, executionTaskId)
-                  .then(() => nativeBridge.bindXiaoTaskCodexProfile(
-                    workspace.path,
-                    executionTaskId,
-                    codexProfileId,
-                    activeTask.stageVersion,
-                    true,
-                  ))
-                  .then(() => {
-                    patchActiveTask({ codexProfileId });
-                    void agent.connect();
-                  })
-                  .catch((reason) => {
-                    window.alert(reason instanceof Error ? reason.message : String(reason));
-                  });
               }}
               onFastModeChange={(fastMode) => updatePreferences({ fastMode })}
               onModeChange={(mode) => {

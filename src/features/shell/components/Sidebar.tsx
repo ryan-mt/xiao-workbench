@@ -163,6 +163,8 @@ export function Sidebar({
   const [expandedProjectPath, setExpandedProjectPath] = useState<string | null>(activeProjectPath);
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState | null>(null);
   const [renamingProject, setRenamingProject] = useState<RenamingProject | null>(null);
+  const [projectGroupDialogOpen, setProjectGroupDialogOpen] = useState(false);
+  const [projectGroupName, setProjectGroupName] = useState("");
   const [taskMenu, setTaskMenu] = useState<TaskMenuState | null>(null);
   const [renamingTask, setRenamingTask] = useState<RenamingTask | null>(null);
   const [expandedTaskGroups, setExpandedTaskGroups] = useState<ReadonlySet<TaskGroup>>(
@@ -472,30 +474,34 @@ export function Sidebar({
           </div>
 
         <div className="sidebar__projects-heading">
-          <div>
+          <div className="sidebar__projects-title">
             <span>Projects</span>
             <small>{projects.length}</small>
           </div>
-          <button
-            aria-label="Add project"
-            disabled={projectSwitchLocked}
-            title={projectSwitchLocked ? "Wait for the active task to finish" : "Add workspace"}
-            onClick={onAddProject}
-          >
-            <XiaoIcon name="add" size={14} />
-          </button>
-          {canOpenProjects ? (
+          <div className="sidebar__project-actions">
+            {canOpenProjects ? (
+              <button
+                aria-label="Create project group"
+                title="Create a project group"
+                onClick={() => {
+                  setProjectGroupName("");
+                  setProjectGroupDialogOpen(true);
+                }}
+              >
+                <XiaoIcon name="folder" size={13} />
+                <span>Group</span>
+              </button>
+            ) : null}
             <button
-              aria-label="Create Project Group"
-              title="Create Project Group"
-              onClick={() => {
-                const name = window.prompt("Project Group name");
-                if (name?.trim()) onCreateProjectGroup(name);
-              }}
+              aria-label="Add project"
+              disabled={projectSwitchLocked}
+              title={projectSwitchLocked ? "Wait for the active task to finish" : "Add a project"}
+              onClick={onAddProject}
             >
-              <XiaoIcon name="folder" size={14} />
+              <XiaoIcon name="add" size={13} />
+              <span>Add</span>
             </button>
-          ) : null}
+          </div>
         </div>
 
         <div className="sidebar__projects">
@@ -845,6 +851,67 @@ export function Sidebar({
           </footer>
         </div>
       </aside>
+
+      {projectGroupDialogOpen
+        ? createPortal(
+            <div className="sidebar-dialog-backdrop">
+              <section
+                className="sidebar-dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="create-project-group-title"
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  setProjectGroupDialogOpen(false);
+                }}
+              >
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = projectGroupName.trim();
+                    if (!name) return;
+                    onCreateProjectGroup(name);
+                    setProjectGroupDialogOpen(false);
+                    setProjectGroupName("");
+                  }}
+                >
+                  <header>
+                    <span>Projects</span>
+                    <h2 id="create-project-group-title">New project group</h2>
+                    <p>Keep related projects together in the sidebar.</p>
+                  </header>
+                  <label>
+                    <span>Group name</span>
+                    <input
+                      autoFocus
+                      value={projectGroupName}
+                      placeholder="e.g. Client work"
+                      onChange={(event) => setProjectGroupName(event.target.value)}
+                    />
+                  </label>
+                  <footer>
+                    <button
+                      className="sidebar-dialog__cancel"
+                      type="button"
+                      onClick={() => setProjectGroupDialogOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="sidebar-dialog__submit"
+                      type="submit"
+                      disabled={!projectGroupName.trim()}
+                    >
+                      Create group
+                    </button>
+                  </footer>
+                </form>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {projectMenu && menuProject
         ? createPortal(

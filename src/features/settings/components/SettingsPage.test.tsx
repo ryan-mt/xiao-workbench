@@ -2,9 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { AgentRuntimeState } from "../../../core/models/agent";
+import type { CodexProfile } from "../../../core/models/xiao";
 import type { AppPreferences } from "../hooks/useAppPreferences";
 import type { Theme } from "../hooks/useTheme";
-import { SettingsPage } from "./SettingsPage";
+import { canSelectCodexProfile, SettingsPage } from "./SettingsPage";
 import { DEFAULT_COMMAND_BINDINGS } from "../../command-menu/commandBindings";
 
 const noop = () => undefined;
@@ -41,7 +42,47 @@ const runtime: AgentRuntimeState = {
   eventsSeen: 17,
 };
 
-const renderSettings = (theme: Theme) => renderToStaticMarkup(
+const codexProfiles: CodexProfile[] = [
+  {
+    id: "default",
+    displayName: "Default Codex",
+    codexHome: null,
+    authenticationHome: null,
+    environment: {},
+    availability: "available",
+    authenticatedIdentity: null,
+    models: [],
+    capabilities: {},
+    usage: null,
+    rateLimits: null,
+    diagnostic: null,
+    version: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+  {
+    id: "review",
+    displayName: "Review profile",
+    codexHome: null,
+    authenticationHome: null,
+    environment: {},
+    availability: "available",
+    authenticatedIdentity: null,
+    models: [],
+    capabilities: {},
+    usage: null,
+    rateLimits: null,
+    diagnostic: null,
+    version: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+];
+
+const renderSettings = (
+  theme: Theme,
+  activeSection: "general" | "runtime" = "general",
+) => renderToStaticMarkup(
   <SettingsPage
     theme={theme}
     preferences={preferences}
@@ -57,6 +98,9 @@ const renderSettings = (theme: Theme) => renderToStaticMarkup(
     archivedTasks={[]}
     archivedTasksLoading={false}
     archivedTasksError={null}
+    codexProfiles={codexProfiles}
+    selectedCodexProfileId="default"
+    codexProfileSelectionDisabled={false}
     onThemeChange={noop}
     onPreferencesChange={noop}
     onRestoreArchivedTask={noop}
@@ -64,7 +108,9 @@ const renderSettings = (theme: Theme) => renderToStaticMarkup(
     onReconnect={noop}
     onCheckCodexUpdate={noop}
     onUpdateCodex={noop}
+    onCodexProfileChange={noop}
     onClose={noop}
+    activeSection={activeSection}
   />,
 );
 
@@ -99,5 +145,24 @@ describe("SettingsPage", () => {
 
     expect(markup).toContain("Back to workspace");
     expect(markup).toContain('aria-label="Close settings"');
+  });
+
+  it("keeps Codex profile selection in Settings", () => {
+    const markup = renderSettings("system", "runtime");
+
+    expect(markup).toContain('aria-label="Codex profile for the current Task"');
+    expect(markup).toContain("Default Codex");
+    expect(markup).toContain("Review profile");
+  });
+
+  it("disables Task profile changes while task state has a storage error", () => {
+    expect(canSelectCodexProfile({
+      taskArchived: false,
+      taskStateLoading: false,
+      taskStateError: "Could not save Task state.",
+      environmentBusy: false,
+      runtimeBusy: false,
+      profileCount: 2,
+    })).toBe(false);
   });
 });

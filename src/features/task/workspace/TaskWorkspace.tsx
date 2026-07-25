@@ -32,7 +32,6 @@ import type { RunSnapshot } from "../../../core/models/run";
 import type { AcceptanceContractDraft } from "../../../core/models/verification";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type {
-  CodexProfile,
   TaskStage,
   XiaoProjectSummary,
   XiaoWorkspaceMode,
@@ -87,27 +86,6 @@ export const newTaskProjectOptions = (
     disabled: !canChangeProject && workspacePathComparisonKey(project.path) !== activeKey,
   }));
 };
-
-export const canSelectCodexProfile = ({
-  taskArchived,
-  taskStateLoading,
-  taskStateError,
-  environmentBusy,
-  runtimeBusy,
-  profileCount,
-}: {
-  taskArchived: boolean;
-  taskStateLoading: boolean;
-  taskStateError: string | null;
-  environmentBusy: boolean;
-  runtimeBusy: boolean;
-  profileCount: number;
-}) => !taskArchived
-  && !taskStateLoading
-  && !taskStateError
-  && !environmentBusy
-  && !runtimeBusy
-  && profileCount >= 2;
 
 type TimelineSelection = {
   text: string;
@@ -169,8 +147,6 @@ type TaskWorkspaceProps = {
   models: AgentModelSummary[];
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
-  codexProfiles: CodexProfile[];
-  selectedCodexProfileId: string | null;
   fastMode: boolean;
   mode: AgentMode;
   approvalPolicy: AgentApprovalPolicy;
@@ -231,7 +207,6 @@ type TaskWorkspaceProps = {
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;
   onReasoningEffortChange: (effort: string | null) => void;
-  onCodexProfileChange: (profileId: string) => void;
   onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
   onApprovalPolicyChange: (policy: AgentApprovalPolicy) => void;
@@ -313,8 +288,6 @@ export function TaskWorkspace({
   models,
   selectedModel,
   selectedReasoningEffort,
-  codexProfiles,
-  selectedCodexProfileId,
   fastMode,
   mode,
   approvalPolicy,
@@ -369,7 +342,6 @@ export function TaskWorkspace({
   onResolveMcpElicitation,
   onModelChange,
   onReasoningEffortChange,
-  onCodexProfileChange,
   onFastModeChange,
   onModeChange,
   onApprovalPolicyChange,
@@ -534,30 +506,7 @@ export function TaskWorkspace({
   }, []);
 
   const composer = (
-    <div className="task-composer-stack">
-      <label className="task-codex-profile">
-        <span>Codex profile</span>
-        <select
-          aria-label="Codex profile for this Task"
-          disabled={!canSelectCodexProfile({
-            taskArchived,
-            taskStateLoading,
-            taskStateError,
-            environmentBusy,
-            runtimeBusy: runtime.phase === "working" || runtime.phase === "starting",
-            profileCount: codexProfiles.length,
-          })}
-          value={selectedCodexProfileId ?? codexProfiles[0]?.id ?? ""}
-          onChange={(event) => onCodexProfileChange(event.target.value)}
-        >
-          {codexProfiles.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.displayName} · {profile.availability}
-            </option>
-          ))}
-        </select>
-      </label>
-      <Composer
+    <Composer
       key={taskId}
       taskId={taskId}
       executionTaskId={executionTaskId}
@@ -635,8 +584,7 @@ export function TaskWorkspace({
       }
       disabledPlaceholder={taskStateLoading ? "Loading task history…" : undefined}
       storageError={taskStateError ?? definitionOfDoneError}
-      />
-    </div>
+    />
   );
 
   const branch = workspace.git?.branch ?? "No Git";

@@ -35,6 +35,27 @@ export type SettingsSection =
   | "runtime"
   | "shortcuts";
 
+export const canSelectCodexProfile = ({
+  taskArchived,
+  taskStateLoading,
+  taskStateError,
+  environmentBusy,
+  runtimeBusy,
+  profileCount,
+}: {
+  taskArchived: boolean;
+  taskStateLoading: boolean;
+  taskStateError: string | null;
+  environmentBusy: boolean;
+  runtimeBusy: boolean;
+  profileCount: number;
+}) => !taskArchived
+  && !taskStateLoading
+  && !taskStateError
+  && !environmentBusy
+  && !runtimeBusy
+  && profileCount >= 2;
+
 type SettingsPageProps = {
   theme: Theme;
   preferences: AppPreferences;
@@ -51,6 +72,8 @@ type SettingsPageProps = {
   archivedTasksLoading: boolean;
   archivedTasksError: string | null;
   codexProfiles?: CodexProfile[];
+  selectedCodexProfileId?: string | null;
+  codexProfileSelectionDisabled?: boolean;
   onThemeChange: (theme: Theme) => void;
   onPreferencesChange: (patch: Partial<AppPreferences>) => void;
   onRestoreArchivedTask: (item: ArchivedTaskItem) => void;
@@ -58,6 +81,7 @@ type SettingsPageProps = {
   onReconnect: () => void;
   onCheckCodexUpdate: () => void;
   onUpdateCodex: () => void;
+  onCodexProfileChange?: (profileId: string) => void;
   onCreateCodexProfile?: () => void;
   onRenameCodexProfile?: (profile: CodexProfile) => void;
   onDeleteCodexProfile?: (profile: CodexProfile) => void;
@@ -304,6 +328,8 @@ export function SettingsPage({
   archivedTasksLoading,
   archivedTasksError,
   codexProfiles = [],
+  selectedCodexProfileId = null,
+  codexProfileSelectionDisabled = true,
   onThemeChange,
   onPreferencesChange,
   onRestoreArchivedTask,
@@ -311,6 +337,7 @@ export function SettingsPage({
   onReconnect,
   onCheckCodexUpdate,
   onUpdateCodex,
+  onCodexProfileChange = () => {},
   onCreateCodexProfile = () => {},
   onRenameCodexProfile = () => {},
   onDeleteCodexProfile = () => {},
@@ -620,6 +647,22 @@ export function SettingsPage({
 
                 <SettingsGroup title="Codex profiles" meta={`${codexProfiles.length} local`}>
                   <div className="settings-list">
+                    <SettingRow
+                      title="Task profile"
+                      description="Choose the Codex profile used by the current Task."
+                    >
+                      <SelectMenu
+                        className="settings-profile-select"
+                        ariaLabel="Codex profile for the current Task"
+                        value={selectedCodexProfileId ?? codexProfiles[0]?.id ?? ""}
+                        options={codexProfiles.map((profile) => ({
+                          value: profile.id,
+                          label: `${profile.displayName} · ${profile.availability}`,
+                        }))}
+                        disabled={codexProfileSelectionDisabled}
+                        onValueChange={onCodexProfileChange}
+                      />
+                    </SettingRow>
                     {codexProfiles.map((profile) => (
                       <SettingRow
                         key={profile.id}

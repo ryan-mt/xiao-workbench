@@ -19,6 +19,7 @@ const host = vi.hoisted(() => {
     resolutions: [] as string[],
     terminals: [] as string[],
     navigations: [] as string[],
+    startedProfileIds: [] as string[],
     browserUrls: new Map<string, string>(),
   };
   const methods: Record<string, (...arguments_: any[]) => any> = {};
@@ -230,6 +231,7 @@ const installHost = () => {
   host.state.resolutions = [];
   host.state.terminals = [];
   host.state.navigations = [];
+  host.state.startedProfileIds = [];
   host.state.browserUrls.clear();
   webviews.clear();
 
@@ -330,6 +332,7 @@ const installHost = () => {
       if (!profileId) {
         throw new Error("Select a Codex profile before starting this Task.");
       }
+      host.state.startedProfileIds.push(profileId);
       return {
         version: "0.200.0",
         alreadyRunning: true,
@@ -535,11 +538,11 @@ describe("control-model application shell journey", () => {
   it("persists a fresh New Task before starting its runtime", async () => {
     render(<App />);
 
-    expect(await screen.findByRole("option", { name: "Default Codex · unknown" })).toBeTruthy();
     await waitFor(() => {
       expect(screen.queryByText("Starting Codex requires a persisted Xiao Task.")).toBeNull();
       expect(screen.queryByText("Ready")).not.toBeNull();
     });
+    expect(screen.queryByLabelText("Codex profile for this Task")).toBeNull();
     expect(host.state.document.tasks).toHaveLength(1);
     expect(host.state.document.activeTaskId).toBe(host.state.document.tasks[0]?.id);
   });
@@ -581,10 +584,9 @@ describe("control-model application shell journey", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("option", { name: "Default Codex · unknown" })).toBeTruthy();
     expect(await screen.findByText("Ready")).toBeTruthy();
     expect(screen.queryByText("Select a Codex profile before starting this Task.")).toBeNull();
-    expect(await screen.findByRole("option", { name: "Default Codex · available" })).toBeTruthy();
+    expect(host.state.startedProfileIds).toContain("default");
   });
 
   it("blocks New Task startup when profile discovery finds no profile", async () => {

@@ -48,6 +48,7 @@ import {
   shouldInvalidateTaskWorkspaceState,
   shouldLoadTaskWorkspaceState,
   shouldCreateDraftWhenOpeningNewTaskTab,
+  shouldRestoreSidebarAfterFocusedLaunch,
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
   taskIsVisible,
@@ -388,6 +389,26 @@ describe("explicit Task navigation", () => {
       ),
     ).toBe(false);
   });
+});
+
+describe("focused Task launch layout", () => {
+  it.each([
+    [true, false, false, true],
+    [true, true, false, false],
+    [true, false, true, false],
+    [false, false, false, false],
+  ])(
+    "restores the sidebar for auto-collapsed=%s, focused=%s, compact=%s",
+    (autoCollapsed, focusedLaunch, compact, expected) => {
+      expect(
+        shouldRestoreSidebarAfterFocusedLaunch(
+          autoCollapsed,
+          focusedLaunch,
+          compact,
+        ),
+      ).toBe(expected);
+    },
+  );
 });
 
 describe("acceptance-contract save identity", () => {

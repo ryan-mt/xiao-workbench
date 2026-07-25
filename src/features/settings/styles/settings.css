@@ -347,6 +347,10 @@
   min-width: 152px;
 }
 
+.settings-profile-select {
+  min-width: 210px;
+}
+
 .settings-theme-select .select-menu__trigger {
   height: 32px;
   grid-template-columns: 28px minmax(0, 1fr) 12px;
