@@ -5188,6 +5188,7 @@ export function App() {
       <CommandMenu
         open={commandMenuOpen}
         tasks={tasks}
+        codexThreads={codexThreads}
         workspace={workspace}
         onClose={() => setCommandMenuOpen(false)}
         onSearchHistory={searchHistory}
@@ -5201,6 +5202,20 @@ export function App() {
             matchKind: result.matchKind,
           });
           setCommandMenuOpen(false);
+          closeSidebarOnNarrow();
+        }}
+        onSelectCodexThread={(thread) => {
+          if (agent.hasActiveRuns) return;
+          setPendingCodexThread({
+            thread,
+            context: {
+              projectPath: workspace.path,
+              taskId: codexHistoryContextTaskId,
+            },
+          });
+          setActivePage("tasks");
+          setCommandMenuOpen(false);
+          closeFocusPanel();
           closeSidebarOnNarrow();
         }}
         onSelectTask={(taskId) => {

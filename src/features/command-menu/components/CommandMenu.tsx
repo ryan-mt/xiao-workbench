@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
+import type { CodexThreadSummary } from "../../../core/models/agent";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { XiaoHistorySearchResult } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
@@ -17,10 +18,12 @@ import "../styles/command-menu.css";
 type CommandMenuProps = {
   open: boolean;
   tasks: WorkbenchTask[];
+  codexThreads: CodexThreadSummary[];
   workspace: WorkspaceSnapshot;
   onClose: () => void;
   onSearchHistory: (query: string) => Promise<XiaoHistorySearchResult[]>;
   onSelectHistoryResult: (result: XiaoHistorySearchResult) => void;
+  onSelectCodexThread: (thread: CodexThreadSummary) => void;
   onSelectTask: (taskId: string) => void;
   onSelectView: (view: FocusView) => void;
 };
@@ -45,13 +48,24 @@ const actions: Array<{
   { id: "run", label: "Xiao Break", description: "Take a short reset", group: "Automation", icon: "game", view: "run" },
 ];
 
+export const matchesCodexThreadSearch = (
+  thread: CodexThreadSummary,
+  normalizedQuery: string,
+) =>
+  !thread.archived &&
+  `${thread.title} ${thread.preview} ${thread.cwd}`
+    .toLowerCase()
+    .includes(normalizedQuery);
+
 export function CommandMenu({
   open,
   tasks,
+  codexThreads,
   workspace,
   onClose,
   onSearchHistory,
   onSelectHistoryResult,
+  onSelectCodexThread,
   onSelectTask,
   onSelectView,
 }: CommandMenuProps) {
@@ -117,15 +131,25 @@ export function CommandMenu({
         ? tasks
             .filter(
               (task) =>
+                task.origin !== "codex" &&
                 `${task.title} ${task.meta}`.toLowerCase().includes(normalized),
             )
             .slice(0, 6)
         : [],
+      codex: normalized
+        ? codexThreads
+            .filter((thread) => matchesCodexThreadSearch(thread, normalized))
+            .slice(0, 8)
+        : [],
       history: normalized ? historyResults : [],
     };
-  }, [historyResults, query, tasks]);
+  }, [codexThreads, historyResults, query, tasks]);
 
-  const resultCount = filtered.actions.length + filtered.tasks.length + filtered.history.length;
+  const resultCount =
+    filtered.actions.length +
+    filtered.tasks.length +
+    filtered.codex.length +
+    filtered.history.length;
 
   useEffect(() => {
     if (!open) return;
@@ -155,8 +179,18 @@ export function CommandMenu({
       onSelectTask(task.id);
       return;
     }
-    const historyResult = filtered.history[
+    const codexThread = filtered.codex[
       activeIndex - filtered.actions.length - filtered.tasks.length
+    ];
+    if (codexThread) {
+      onSelectCodexThread(codexThread);
+      return;
+    }
+    const historyResult = filtered.history[
+      activeIndex -
+        filtered.actions.length -
+        filtered.tasks.length -
+        filtered.codex.length
     ];
     if (historyResult) onSelectHistoryResult(historyResult);
   };
@@ -264,9 +298,37 @@ export function CommandMenu({
               </button>
             );
           })}
+          {filtered.codex.length > 0 && <header>Codex chats</header>}
+          {filtered.codex.map((thread, threadIndex) => {
+            const index = filtered.actions.length + filtered.tasks.length + threadIndex;
+            return (
+              <button
+                className={activeIndex === index ? "is-active" : undefined}
+                key={`codex:${thread.id}`}
+                ref={(node) => {
+                  resultButtons.current[index] = node;
+                }}
+                onClick={() => onSelectCodexThread(thread)}
+                onFocus={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(index)}
+              >
+                <span className="command-menu__result-icon">
+                  <XiaoIcon name="taskQueue" size={17} />
+                </span>
+                <span className="command-menu__result-copy">
+                  <strong>{thread.title}</strong>
+                  <small>{thread.preview || thread.cwd}</small>
+                </span>
+              </button>
+            );
+          })}
           {filtered.history.length > 0 && <header>Tasks and messages across Projects</header>}
           {filtered.history.map((result, historyIndex) => {
-            const index = filtered.actions.length + filtered.tasks.length + historyIndex;
+            const index =
+              filtered.actions.length +
+              filtered.tasks.length +
+              filtered.codex.length +
+              historyIndex;
             return (
               <button
                 className={activeIndex === index ? "is-active" : undefined}
@@ -297,13 +359,13 @@ export function CommandMenu({
               </button>
             );
           })}
-          {filtered.actions.length === 0 && filtered.tasks.length === 0 && filtered.history.length === 0 && !historyLoading && (
+          {filtered.actions.length === 0 && filtered.tasks.length === 0 && filtered.codex.length === 0 && filtered.history.length === 0 && !historyLoading && (
             <div className="command-menu__empty">
               <strong>{historyError ? "History search unavailable" : "No matching result"}</strong>
               <p>{historyError ?? "Try a task title, message, \"runtime\", or \"changes\"."}</p>
             </div>
           )}
-          {historyLoading && filtered.actions.length === 0 && filtered.tasks.length === 0 && (
+          {historyLoading && filtered.actions.length === 0 && filtered.tasks.length === 0 && filtered.codex.length === 0 && (
             <div className="command-menu__empty">
               <strong>Searching history…</strong>
               <p>Looking through durable Task history across Projects.</p>
