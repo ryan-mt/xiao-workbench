@@ -1744,13 +1744,16 @@ export function App() {
   const activeTaskHistoryLoading = Boolean(
     selectedTask && hasUnloadedTimeline(selectedTask) && !taskHistoryError,
   );
-  const taskWorkspaceStateLoading = isTaskWorkspaceStateLoading(
-    loading,
-    taskStateReady,
-    taskWorkspacePath,
-    workspace.path,
-    activeTaskHistoryLoading,
-  );
+  const taskWorkspaceStateLoading =
+    selectedTask?.origin === "codex"
+      ? false
+      : isTaskWorkspaceStateLoading(
+          loading,
+          taskStateReady,
+          taskWorkspacePath,
+          workspace.path,
+          activeTaskHistoryLoading,
+        );
   const activeEnvironmentBusy = environmentBusyTaskId === activeTask.id;
   const taskStateError = taskLoadError ?? taskHistoryError ?? taskSaveError;
   const pendingReviewContext = taskReviewContext(
