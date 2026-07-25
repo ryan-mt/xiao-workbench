@@ -1440,6 +1440,20 @@ describe("confirmed native task materialization", () => {
     ).toBe(false);
   });
 
+  it("connects a workspace-scoped runtime for optional live Codex history", () => {
+    expect(
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        null,
+        true,
+        workspacePath,
+        workspacePath,
+        true,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps a fresh task unconfirmed while its bridge save is pending and after failure", async () => {
     let confirmation = confirmNativeTaskIds(
       beginNativeTaskConfirmation(

@@ -199,6 +199,17 @@ export const resetPendingInputReplayForTaskRestore = (replayed: Set<string>) => 
   replayed.clear();
 };
 
+export const shouldRestoreTaskRunState = (
+  tauriHost: boolean,
+  listenersReady: boolean,
+  timelineComplete: boolean,
+  executionTaskId: string | null,
+) =>
+  tauriHost &&
+  listenersReady &&
+  timelineComplete &&
+  executionTaskId !== null;
+
 export const agentRuntimeTaskWorkspaceScopeMatches = (
   current: AgentRuntimeWorkspaceScope,
   scope: AgentRuntimeTaskScope,
@@ -2687,7 +2698,13 @@ export function useAgentRuntime(
   ]);
 
   useEffect(() => {
-    if (!isTauriHost() || !listenersReady || !activeTaskTimelineComplete) return;
+    if (!shouldRestoreTaskRunState(
+      isTauriHost(),
+      listenersReady,
+      activeTaskTimelineComplete,
+      executionTaskId,
+    )) return;
+    const taskId = executionTaskId;
     resetPendingInputReplayForTaskRestore(replayedPendingInputs.current);
     let cancelled = false;
     const restoreScope = workspaceScopeRef.current;
@@ -2700,8 +2717,8 @@ export function useAgentRuntime(
       );
     const restore = async () => {
       const [runs, pendingInputs] = await Promise.all([
-        nativeBridge.listXiaoRuns(workspacePath, activeTaskId, 50),
-        nativeBridge.listXiaoPendingInputs(workspacePath, activeTaskId),
+        nativeBridge.listXiaoRuns(workspacePath, taskId, 50),
+        nativeBridge.listXiaoPendingInputs(workspacePath, taskId),
       ]);
       if (!restoreIsCurrent()) return;
       const scopedRuns = runs.filter((run) => run.workspacePath === workspacePath);
@@ -2808,6 +2825,7 @@ export function useAgentRuntime(
   }, [
     activeTaskId,
     activeTaskTimelineComplete,
+    executionTaskId,
     handleMessage,
     listenersReady,
     publishRunProjection,

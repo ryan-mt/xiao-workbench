@@ -131,6 +131,7 @@ type ProjectPreferences = Record<string, ProjectPreference>;
 const projectPreferencesStorageKey = "xiao.projects.v1";
 const activeProjectStorageKey = "xiao.active-project.v1";
 const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
+export const codexActivityGraceMs = 15_000;
 const focusViews = new Set<FocusView>([
   "plan",
   "files",
@@ -530,10 +531,11 @@ export const shouldAutoConnectAgentRuntime = (
   workspaceActionable: boolean,
   taskWorkspacePath: string,
   workspacePath: string,
+  workspaceRuntimeRequired = false,
 ) => (
   !codexUpdating &&
   taskStateReady &&
-  Boolean(executionTaskId) &&
+  (Boolean(executionTaskId) || workspaceRuntimeRequired) &&
   workspaceActionable &&
   comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
   Boolean(workspacePath)
@@ -2558,6 +2560,7 @@ export function App() {
       workspaceActionable,
       taskWorkspacePath,
       workspace.path,
+      preferences.importCodexHistory,
     ),
   );
   useEffect(() => {
@@ -2614,7 +2617,10 @@ export function App() {
             previousRecency !== undefined &&
             thread.updatedAt > previousRecency
           ) {
-            codexThreadActiveUntilRef.current.set(thread.id, observedAt + 6_000);
+            codexThreadActiveUntilRef.current.set(
+              thread.id,
+              observedAt + codexActivityGraceMs,
+            );
           }
           codexThreadRecencyRef.current.set(thread.id, thread.updatedAt);
           const inferredWorking =

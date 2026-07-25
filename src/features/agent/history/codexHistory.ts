@@ -49,6 +49,17 @@ const titleForThread = (name: unknown, preview: unknown) => {
   return firstLine.length > 72 ? `${firstLine.slice(0, 69).trimEnd()}…` : firstLine;
 };
 
+export const codexThreadActivityAt = (
+  createdAt: number,
+  updatedAt: unknown,
+  recencyAt: unknown,
+) =>
+  typeof updatedAt === "number"
+    ? updatedAt * 1_000
+    : typeof recencyAt === "number"
+      ? recencyAt * 1_000
+      : createdAt;
+
 const summaryFromThread = (
   value: unknown,
   archived: boolean,
@@ -58,12 +69,11 @@ const summaryFromThread = (
   if (typeof thread.id !== "string" || typeof thread.cwd !== "string") return null;
   const createdAt =
     typeof thread.createdAt === "number" ? thread.createdAt * 1_000 : Date.now();
-  const updatedAt =
-    typeof thread.recencyAt === "number"
-      ? thread.recencyAt * 1_000
-      : typeof thread.updatedAt === "number"
-        ? thread.updatedAt * 1_000
-        : createdAt;
+  const updatedAt = codexThreadActivityAt(
+    createdAt,
+    thread.updatedAt,
+    thread.recencyAt,
+  );
   return {
     id: thread.id,
     title: titleForThread(thread.name, thread.preview),

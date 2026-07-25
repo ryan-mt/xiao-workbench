@@ -41,6 +41,7 @@ import {
   runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
   shouldClearAgentPlan,
+  shouldRestoreTaskRunState,
   timelineEntryFromItem,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
@@ -74,6 +75,13 @@ describe("shouldClearAgentPlan", () => {
     expect(shouldClearAgentPlan("completed")).toBe(true);
     expect(shouldClearAgentPlan("failed")).toBe(false);
     expect(shouldClearAgentPlan("interrupted")).toBe(false);
+  });
+});
+
+describe("task run restoration", () => {
+  it("never sends imported Codex chat IDs to the Xiao task repository", () => {
+    expect(shouldRestoreTaskRunState(true, true, true, null)).toBe(false);
+    expect(shouldRestoreTaskRunState(true, true, true, "task-1")).toBe(true);
   });
 });
 

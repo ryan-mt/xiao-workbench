@@ -202,20 +202,12 @@ impl AgentRuntime {
                 }
             }
         }
-        let runtime_state_dir = app
-            .state::<XiaoRepository>()
-            .app_data_dir()
-            .join("codex-runtime")
-            .join(environment_id);
-        std::fs::create_dir_all(&runtime_state_dir).map_err(|error| error.to_string())?;
-        command
-            .args([
-                "app-server",
-                "--stdio",
-                "--enable",
-                "default_mode_request_user_input",
-            ])
-            .env("CODEX_SQLITE_HOME", runtime_state_dir);
+        command.args([
+            "app-server",
+            "--stdio",
+            "--enable",
+            "default_mode_request_user_input",
+        ]);
         *self.profile_id.lock().map_err(|error| error.to_string())? =
             profile.map(|profile| profile.id.clone());
         let mut command = crate::process::supervise_command(command)?;
