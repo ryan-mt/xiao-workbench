@@ -1383,24 +1383,39 @@ describe("focus resource completion identity", () => {
 });
 
 describe("confirmed native task materialization", () => {
-  it("allows the workspace runtime to connect before a draft task is confirmed", () => {
+  it("blocks runtime auto-connect until a draft task is confirmed", () => {
     const confirmation = beginNativeTaskConfirmation(
       { workspacePath: "", generation: 0, taskIds: new Set() },
       workspacePath,
     );
 
-    expect(confirmedExecutionTaskId(confirmation, workspacePath, null)).toBeNull();
+    const executionTaskId = confirmedExecutionTaskId(confirmation, workspacePath, "fresh-task");
+    expect(executionTaskId).toBeNull();
     expect(
-      shouldAutoConnectAgentRuntime(false, true, true, workspacePath, workspacePath),
-    ).toBe(true);
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        executionTaskId,
+        true,
+        workspacePath,
+        workspacePath,
+      ),
+    ).toBe(false);
   });
 
   it("blocks runtime auto-connect during updates and stale workspace transitions", () => {
     expect(
-      shouldAutoConnectAgentRuntime(true, true, true, workspacePath, workspacePath),
+      shouldAutoConnectAgentRuntime(true, true, "task", true, workspacePath, workspacePath),
     ).toBe(false);
     expect(
-      shouldAutoConnectAgentRuntime(false, true, true, "D:/projects/other", workspacePath),
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        "task",
+        true,
+        "D:/projects/other",
+        workspacePath,
+      ),
     ).toBe(false);
   });
 
