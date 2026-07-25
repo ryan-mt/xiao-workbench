@@ -22,6 +22,7 @@ import {
 } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
 import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
+import { SidebarInbox } from "./SidebarInbox";
 
 type SidebarProps = {
   activePage: AppPage;
@@ -32,6 +33,7 @@ type SidebarProps = {
   tasks: WorkbenchTask[];
   codexThreads?: CodexThreadSummary[];
   codexHistoryError?: string | null;
+  sidebarV2?: boolean;
   activeTaskId: string;
   workspace: WorkspaceSnapshot;
   workingTaskIds: string[];
@@ -57,6 +59,7 @@ type SidebarProps = {
   onSelectProject: (path: string) => void;
   onSelectTask: (taskId: string) => void;
   onSelectCodexThread?: (thread: CodexThreadSummary) => void;
+  onArchiveCodexThread?: (thread: CodexThreadSummary) => void;
   onToggleTaskPinned: (taskId: string) => void;
   onSetTaskArchived: (taskId: string, archived: boolean) => void;
   onRenameTask: (taskId: string, title: string) => void;
@@ -137,6 +140,7 @@ export function Sidebar({
   tasks,
   codexThreads = [],
   codexHistoryError = null,
+  sidebarV2 = false,
   activeTaskId,
   workspace,
   workingTaskIds,
@@ -162,6 +166,7 @@ export function Sidebar({
   onSelectProject,
   onSelectTask,
   onSelectCodexThread = () => {},
+  onArchiveCodexThread = () => {},
   onToggleTaskPinned,
   onSetTaskArchived,
   onRenameTask,
@@ -534,6 +539,29 @@ export function Sidebar({
             </button>
           </div>
 
+        {sidebarV2 ? (
+          <SidebarInbox
+            projects={projects}
+            activeProjectPath={activeProjectPath}
+            tasks={tasks}
+            codexThreads={codexThreads}
+            activeTaskId={activeTaskId}
+            workingTaskIds={workingTaskIds}
+            now={now}
+            codexHistoryError={codexHistoryError}
+            onNewTask={onNewTask}
+            onAddProject={onAddProject}
+            onSelectProject={onSelectProject}
+            onSelectTask={(taskId) => {
+              onSelectTask(taskId);
+              onOpenTasks();
+            }}
+            onSelectCodexThread={onSelectCodexThread}
+            onTaskContextMenu={openTaskContextMenu}
+            onCodexContextMenu={openCodexThreadContextMenu}
+          />
+        ) : (
+          <>
         <div className="sidebar__projects-heading">
           <div className="sidebar__projects-title">
             <span>Projects</span>
@@ -768,7 +796,6 @@ export function Sidebar({
                                         <button
                                           className={`task-list__item ${selected ? "is-selected" : ""}`}
                                           aria-label={`${task.title}${stateLabel}${task.pinned ? ", pinned" : ""}`}
-                                          title={task.title}
                                           onClick={() => {
                                             onSelectTask(task.id);
                                             onOpenTasks();
@@ -840,7 +867,6 @@ export function Sidebar({
                                 type="button"
                                 key={thread.id}
                                 className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
-                                title={thread.preview || thread.title}
                                 onClick={() => onSelectCodexThread(thread)}
                                 onContextMenu={(event) =>
                                   openCodexThreadContextMenu(event, thread.id)}
@@ -890,7 +916,6 @@ export function Sidebar({
                     type="button"
                     key={thread.id}
                     className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
-                    title={`${thread.title}\n${thread.cwd}`}
                     onClick={() => onSelectCodexThread(thread)}
                     onContextMenu={(event) =>
                       openCodexThreadContextMenu(event, thread.id)}
@@ -915,6 +940,8 @@ export function Sidebar({
             ))}
           </details>
         ) : null}
+          </>
+        )}
 
           <footer className="sidebar__footer">
             <nav className="sidebar__footer-nav" aria-label="Workspace utilities">
@@ -1225,7 +1252,7 @@ export function Sidebar({
       {codexThreadMenu && menuCodexThread
         ? createPortal(
             <div
-              className="project-actions-menu"
+              className="project-actions-menu codex-thread-actions-menu"
               ref={codexThreadMenuRef}
               role="menu"
               aria-label={`Actions for ${menuCodexThread.title}`}
@@ -1238,6 +1265,14 @@ export function Sidebar({
                 <XiaoIcon name="folderOpen" size={15} />
                 <span>Open chat</span>
               </button>
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                onArchiveCodexThread(menuCodexThread);
+              }}>
+                <XiaoIcon name="archive" size={15} />
+                <span>Archive chat</span>
+              </button>
+              <i className="context-menu-separator" />
               <button role="menuitem" onClick={() => {
                 setCodexThreadMenu(null);
                 void navigator.clipboard.writeText(menuCodexThread.title);

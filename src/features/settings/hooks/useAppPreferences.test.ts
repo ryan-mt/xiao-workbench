@@ -33,6 +33,7 @@ describe("normalizeAppPreferences", () => {
 
     expect(preferences).toEqual({
       importCodexHistory: true,
+      sidebarV2: true,
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,

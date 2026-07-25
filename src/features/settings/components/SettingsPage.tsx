@@ -472,6 +472,16 @@ export function SettingsPage({
                 <SettingsGroup title="Behavior">
                   <div className="settings-list">
                     <SettingRow
+                      title="Inbox sidebar"
+                      description="Use the focused thread inbox with settle actions and a compact completed shelf."
+                    >
+                      <Toggle
+                        label="Inbox sidebar"
+                        checked={preferences.sidebarV2}
+                        onChange={(sidebarV2) => onPreferencesChange({ sidebarV2 })}
+                      />
+                    </SettingRow>
+                    <SettingRow
                       title="Focused new tasks"
                       description="Collapse side panels for a blank task."
                     >

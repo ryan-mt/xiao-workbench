@@ -187,6 +187,9 @@ export type CodexThreadSummary = {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
+  status?: "working" | "waiting" | "failed" | "ready";
+  additions?: number;
+  deletions?: number;
 };
 
 export type AgentFollowUp = {
