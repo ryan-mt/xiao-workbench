@@ -9,7 +9,8 @@ import { createPortal } from "react-dom";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { APP_DISPLAY_NAME, APP_STAGE } from "../../../core/branding";
-import type { AgentAccountSummary } from "../../../core/models/agent";
+import type { AgentAccountSummary, CodexThreadSummary } from "../../../core/models/agent";
+import { sameWorkspacePath } from "../../agent/history/codexHistory";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
@@ -29,6 +30,9 @@ type SidebarProps = {
   projectGroups?: ProjectGroup[];
   activeProjectPath: string;
   tasks: WorkbenchTask[];
+  codexThreads?: CodexThreadSummary[];
+  codexHistoryLoading?: boolean;
+  codexHistoryError?: string | null;
   activeTaskId: string;
   workspace: WorkspaceSnapshot;
   workingTaskIds: string[];
@@ -53,6 +57,7 @@ type SidebarProps = {
   onNewTask: () => void;
   onSelectProject: (path: string) => void;
   onSelectTask: (taskId: string) => void;
+  onSelectCodexThread?: (thread: CodexThreadSummary) => void;
   onToggleTaskPinned: (taskId: string) => void;
   onSetTaskArchived: (taskId: string, archived: boolean) => void;
   onRenameTask: (taskId: string, title: string) => void;
@@ -125,6 +130,9 @@ export function Sidebar({
   projectGroups = [],
   activeProjectPath,
   tasks,
+  codexThreads = [],
+  codexHistoryLoading = false,
+  codexHistoryError = null,
   activeTaskId,
   workspace,
   workingTaskIds,
@@ -149,6 +157,7 @@ export function Sidebar({
   onNewTask,
   onSelectProject,
   onSelectTask,
+  onSelectCodexThread = () => {},
   onToggleTaskPinned,
   onSetTaskArchived,
   onRenameTask,
@@ -223,6 +232,11 @@ export function Sidebar({
     );
   }
   const menuTask = tasks.find((task) => task.id === taskMenu?.taskId);
+  const unmatchedCodexThreads = codexThreads.filter(
+    (thread) =>
+      !thread.archived &&
+      !projects.some((project) => sameWorkspacePath(project.path, thread.cwd)),
+  );
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
   const initials = profileInitials(profile.name);
@@ -534,6 +548,12 @@ export function Sidebar({
             const menuOpen = projectMenu?.projectPath === project.path;
             const renaming = renamingProject?.path === project.path;
             const running = active && workingTasks.size > 0;
+            const projectCodexThreads = codexThreads.filter(
+              (thread) =>
+                !thread.archived &&
+                sameWorkspacePath(thread.cwd, project.path) &&
+                !tasks.some((task) => task.origin === "codex" && task.threadId === thread.id),
+            );
             const updatedAt = active
               ? Math.max(project.updatedAt, ...visibleTasks.map((task) => task.updatedAt))
               : project.updatedAt;
@@ -767,9 +787,31 @@ export function Sidebar({
                           </section>
                         );
                       })}
+                      {projectCodexThreads.length ? (
+                        <section className="task-group sidebar-codex-chats">
+                          <h3>
+                            <span>Codex chats</span>
+                            <small>{projectCodexThreads.length}</small>
+                          </h3>
+                          <div className="sidebar-codex-chats__list">
+                            {projectCodexThreads.slice(0, 20).map((thread) => (
+                              <button
+                                type="button"
+                                key={thread.id}
+                                className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
+                                title={thread.preview || thread.title}
+                                onClick={() => onSelectCodexThread(thread)}
+                              >
+                                <span>{thread.title}</span>
+                                <small>{relativeTime(thread.updatedAt, now)}</small>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+                      ) : null}
                     </div>
 
-                    {!visibleTasks.length ? (
+                    {!visibleTasks.length && !projectCodexThreads.length ? (
                       <div className="sidebar__empty-project">
                         <span>No tasks yet</span>
                         <button type="button" onClick={onNewTask}>
@@ -783,6 +825,38 @@ export function Sidebar({
               </section>
             );
           })}
+          {codexHistoryLoading ? (
+            <div className="sidebar-codex-state">Importing local Codex chats…</div>
+          ) : null}
+          {codexHistoryError ? (
+            <div className="sidebar-codex-state is-error">{codexHistoryError}</div>
+          ) : null}
+          {unmatchedCodexThreads.length ? (
+            <section className="sidebar-other-chats" aria-label="Other Codex chats">
+              <header>
+                <span>Other Codex chats</span>
+                <small>{unmatchedCodexThreads.length}</small>
+              </header>
+              <div className="sidebar-codex-chats__list">
+                {unmatchedCodexThreads.slice(0, 30).map((thread) => (
+                  <button
+                    type="button"
+                    key={thread.id}
+                    className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
+                    title={`${thread.title}\n${thread.cwd}`}
+                    onClick={() => onSelectCodexThread(thread)}
+                  >
+                    <span>{thread.title}</span>
+                    <small>
+                      {thread.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Outside projects"}
+                      {" · "}
+                      {relativeTime(thread.updatedAt, now)}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </div>
         {hiddenProjects.length ? (
           <details className="sidebar__hidden-projects">

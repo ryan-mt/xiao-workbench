@@ -7,6 +7,7 @@ import {
   contextUsedPercent,
   visiblePromptFromSelectedContext,
   type AgentAttachment,
+  type CodexThreadSummary,
   type AgentFollowUp,
   type AgentGoal,
   type AgentPlan,
@@ -32,6 +33,11 @@ import type {
 } from "../core/models/xiao";
 import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/workspacePath";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
+import {
+  listCodexThreads,
+  readCodexThreadTimeline,
+  sameWorkspacePath,
+} from "../features/agent/history/codexHistory";
 import {
   titleFromPrompt,
   useAgentRuntime,
@@ -1125,15 +1131,19 @@ const updateFromState = (
   state: StoredTaskState,
   previous?: PersistedWorkspaceSnapshot,
 ): XiaoWorkspaceUpdate => {
+  const persistedTasks = state.tasks.filter((task) => task.origin !== "codex");
+  const persistedActiveTaskId = persistedTasks.some((task) => task.id === state.activeTaskId)
+    ? state.activeTaskId
+    : null;
   const changedTasks = previous
-    ? state.tasks.filter((task) => previous.tasks.get(task.id) !== task)
-    : state.tasks;
+    ? persistedTasks.filter((task) => previous.tasks.get(task.id) !== task)
+    : persistedTasks;
   return {
     schemaVersion: 1,
     workspacePath,
-    activeTaskId: state.activeTaskId,
+    activeTaskId: persistedActiveTaskId,
     showArchived: state.showArchived,
-    taskIds: state.tasks.map((task) => task.id),
+    taskIds: persistedTasks.map((task) => task.id),
     tasks: changedTasks.map((task) => {
       const previousTask = previous?.tasks.get(task.id);
       return toXiaoTaskDocument(task, !previousTask || previousTask.timeline !== task.timeline);
@@ -1612,6 +1622,11 @@ export function App() {
   const notifiedAttentionIdsRef = useRef(new Set<string>());
   const attentionNotificationsPrimedRef = useRef(false);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
+  const [codexThreads, setCodexThreads] = useState<CodexThreadSummary[]>([]);
+  const [codexHistoryLoading, setCodexHistoryLoading] = useState(false);
+  const [codexHistoryError, setCodexHistoryError] = useState<string | null>(null);
+  const [pendingCodexThread, setPendingCodexThread] =
+    useState<CodexThreadSummary | null>(null);
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
@@ -1905,6 +1920,81 @@ export function App() {
       removeListener?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !pendingCodexThread ||
+      !taskStateReady ||
+      !sameWorkspacePath(pendingCodexThread.cwd, workspace.path)
+    ) return;
+    let cancelled = false;
+    const thread = pendingCodexThread;
+    setTaskHistoryLoadingId(`codex:${thread.id}`);
+    void readCodexThreadTimeline(thread.id)
+      .then((timeline) => {
+        if (cancelled) return;
+        const importedTask: WorkbenchTask = {
+          id: `codex:${thread.id}`,
+          title: thread.title,
+          meta: taskMeta(thread.updatedAt),
+          group: taskGroup(thread.updatedAt, false),
+          archived: thread.archived,
+          pinned: false,
+          unread: false,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+          stage: "completed",
+          stageVersion: 0,
+          codexProfileId: null,
+          workbenchState: {},
+          draftText: "",
+          followUps: [],
+          model: null,
+          reasoningEffort: null,
+          threadId: thread.id,
+          threadBinding: null,
+          mode: "default",
+          approvalPolicy: "on-request",
+          sandboxMode: "workspace-write",
+          goal: null,
+          acceptanceContract: null,
+          timeline,
+          timelineLoaded: true,
+          timelineComplete: true,
+          timelineStart: 0,
+          timelineEntryCount: timeline.length,
+          plan: null,
+          executionEnvironmentId: null,
+          workspaceMode: "local",
+          managedWorktreeId: null,
+          origin: "codex",
+        };
+        setTasks((current) => [
+          ...current.filter((task) => task.id !== importedTask.id),
+          importedTask,
+        ]);
+        setActiveTaskId(importedTask.id);
+        setOpenTaskIds((current) =>
+          current.includes(importedTask.id) ? current : [...current, importedTask.id]);
+        setDraftTabOpen(false);
+        setActivePage("tasks");
+        setPendingCodexThread(null);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setCodexHistoryError(
+            reason instanceof Error ? reason.message : "Could not open this Codex chat.",
+          );
+          setPendingCodexThread(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setTaskHistoryLoadingId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingCodexThread, taskStateReady, workspace.path]);
 
   useEffect(() => {
     if (
@@ -2413,6 +2503,37 @@ export function App() {
       workspace.path,
     ),
   );
+  useEffect(() => {
+    if (!preferences.importCodexHistory) {
+      setCodexThreads([]);
+      setCodexHistoryError(null);
+      setCodexHistoryLoading(false);
+      setTasks((current) => current.filter((task) => task.origin !== "codex"));
+      setActiveTaskId((current) => current?.startsWith("codex:") ? null : current);
+      return;
+    }
+    if (!isTauriHost() || agent.runtime.phase !== "ready") return;
+    let cancelled = false;
+    setCodexHistoryLoading(true);
+    setCodexHistoryError(null);
+    void listCodexThreads()
+      .then((threads) => {
+        if (!cancelled) setCodexThreads(threads);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setCodexHistoryError(
+            reason instanceof Error ? reason.message : "Could not import Codex chats.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCodexHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.runtime.phase, preferences.importCodexHistory]);
   const attentionQuestionRequest = attentionSelectedPendingTarget
     ? agent.questionRequests.find((request) =>
         pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
@@ -4406,6 +4527,9 @@ export function App() {
               projectGroups={projectGroups}
               activeProjectPath={workspace.path}
               tasks={tasks}
+              codexThreads={preferences.importCodexHistory ? codexThreads : []}
+              codexHistoryLoading={codexHistoryLoading}
+              codexHistoryError={codexHistoryError}
               activeTaskId={selectedTask?.id ?? ""}
               workspace={workspace}
               workingTaskIds={agent.workingTaskIds}
@@ -4471,6 +4595,16 @@ export function App() {
               onSelectTask={(taskId) => {
                 setActiveTaskId(taskId);
                 setActivePage("tasks");
+                closeSidebarOnNarrow();
+              }}
+              onSelectCodexThread={(thread) => {
+                if (agent.hasActiveRuns) return;
+                setPendingCodexThread(thread);
+                if (!sameWorkspacePath(thread.cwd, workspace.path)) {
+                  setActiveProjectPath(thread.cwd);
+                }
+                setActivePage("tasks");
+                closeFocusPanel();
                 closeSidebarOnNarrow();
               }}
               onToggleTaskPinned={toggleTaskPinned}

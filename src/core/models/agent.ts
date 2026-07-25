@@ -179,6 +179,16 @@ export type AgentAttachment = {
   sourceRevision?: string;
 };
 
+export type CodexThreadSummary = {
+  id: string;
+  title: string;
+  preview: string;
+  cwd: string;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+};
+
 export type AgentFollowUp = {
   id: string;
   prompt: string;

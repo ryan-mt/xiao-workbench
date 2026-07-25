@@ -33,6 +33,7 @@ export const taskGroupForUpdatedAt = (
 };
 
 export type WorkbenchTask = {
+  origin?: "xiao" | "codex";
   id: string;
   title: string;
   meta: string;

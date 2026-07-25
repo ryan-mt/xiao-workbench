@@ -501,6 +501,17 @@ export function SettingsPage({
                 <SettingsGroup title="Timeline" description="Control the detail level of the live feed.">
                   <div className="settings-list">
                     <SettingRow
+                      title="Codex chat history"
+                      description="Import conversations from this computer. History stays local and never creates projects."
+                    >
+                      <Toggle
+                        label="Import Codex chats"
+                        checked={preferences.importCodexHistory}
+                        onChange={(importCodexHistory) =>
+                          onPreferencesChange({ importCodexHistory })}
+                      />
+                    </SettingRow>
+                    <SettingRow
                       title="Reasoning summaries"
                       description="Show summaries Codex explicitly publishes."
                     >
