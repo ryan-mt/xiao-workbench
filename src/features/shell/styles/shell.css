@@ -1198,8 +1198,11 @@
 .sidebar-codex-chats__list button {
   display: grid;
   min-width: 0;
-  gap: 2px;
-  padding: 7px 9px;
+  min-height: 34px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
   border-radius: 6px;
   background: transparent;
   color: var(--muted-strong);
@@ -1211,6 +1214,7 @@
 .sidebar-codex-chats__list button.is-selected {
   background: var(--surface-hover);
   color: var(--text);
+  box-shadow: inset 2px 0 var(--accent);
 }
 
 .sidebar-codex-chats__list button > span,
@@ -1226,24 +1230,68 @@
 }
 
 .sidebar-codex-chats__list button > small {
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
   font-size: var(--text-caption);
 }
 
 .sidebar-other-chats {
   margin: 12px 4px 4px;
-  padding-top: 10px;
+  padding: 10px 4px 4px;
   border-top: 1px solid var(--line);
 }
 
-.sidebar-other-chats > header {
+.sidebar-other-chats > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 7px 6px;
-  color: var(--muted);
+  padding: 0 5px 2px;
+  color: var(--muted-strong);
   font-size: var(--text-caption);
   font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sidebar-other-chats > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-other-chats__summary-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+}
+
+.sidebar-other-chats__summary-end svg {
+  transition: transform 120ms ease;
+}
+
+.sidebar-other-chats[open] .sidebar-other-chats__summary-end svg {
+  transform: rotate(90deg);
+}
+
+.sidebar-codex-chats__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-other-chats > p {
+  margin: 0;
+  padding: 0 5px 7px 24px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.sidebar-other-chats .sidebar-codex-chats__list {
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
 }
 
 .sidebar-codex-state {

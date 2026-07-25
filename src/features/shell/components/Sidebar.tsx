@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { APP_DISPLAY_NAME, APP_STAGE } from "../../../core/branding";
 import type { AgentAccountSummary, CodexThreadSummary } from "../../../core/models/agent";
-import { sameWorkspacePath } from "../../agent/history/codexHistory";
+import { workspaceContainsPath } from "../../agent/history/codexHistory";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
@@ -31,7 +31,6 @@ type SidebarProps = {
   activeProjectPath: string;
   tasks: WorkbenchTask[];
   codexThreads?: CodexThreadSummary[];
-  codexHistoryLoading?: boolean;
   codexHistoryError?: string | null;
   activeTaskId: string;
   workspace: WorkspaceSnapshot;
@@ -89,6 +88,12 @@ type TaskMenuState = {
   focusFirst: boolean;
 };
 
+type CodexThreadMenuState = {
+  threadId: string;
+  top: number;
+  left: number;
+};
+
 type RenamingTask = {
   id: string;
   title: string;
@@ -131,7 +136,6 @@ export function Sidebar({
   activeProjectPath,
   tasks,
   codexThreads = [],
-  codexHistoryLoading = false,
   codexHistoryError = null,
   activeTaskId,
   workspace,
@@ -175,6 +179,7 @@ export function Sidebar({
   const [projectGroupDialogOpen, setProjectGroupDialogOpen] = useState(false);
   const [projectGroupName, setProjectGroupName] = useState("");
   const [taskMenu, setTaskMenu] = useState<TaskMenuState | null>(null);
+  const [codexThreadMenu, setCodexThreadMenu] = useState<CodexThreadMenuState | null>(null);
   const [renamingTask, setRenamingTask] = useState<RenamingTask | null>(null);
   const [expandedTaskGroups, setExpandedTaskGroups] = useState<ReadonlySet<TaskGroup>>(
     () => new Set(),
@@ -183,6 +188,7 @@ export function Sidebar({
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuTriggerRef = useRef<HTMLElement | null>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
+  const codexThreadMenuRef = useRef<HTMLDivElement>(null);
   const taskMenuTriggerRef = useRef<HTMLElement | null>(null);
   const visibleTasks = [...tasks]
     .filter((task) => !task.archived)
@@ -232,10 +238,13 @@ export function Sidebar({
     );
   }
   const menuTask = tasks.find((task) => task.id === taskMenu?.taskId);
+  const menuCodexThread = codexThreads.find(
+    (thread) => thread.id === codexThreadMenu?.threadId,
+  );
   const unmatchedCodexThreads = codexThreads.filter(
     (thread) =>
       !thread.archived &&
-      !projects.some((project) => sameWorkspacePath(project.path, thread.cwd)),
+      !projects.some((project) => workspaceContainsPath(project.path, thread.cwd)),
   );
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
@@ -333,6 +342,21 @@ export function Sidebar({
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - taskMenuHeight - 8)),
       left: Math.max(8, Math.min(event.clientX, window.innerWidth - projectMenuWidth - 8)),
       focusFirst: false,
+    });
+  };
+
+  const openCodexThreadContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    threadId: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectMenu();
+    closeTaskMenu();
+    setCodexThreadMenu({
+      threadId,
+      top: Math.max(8, Math.min(event.clientY, window.innerHeight - 150)),
+      left: Math.max(8, Math.min(event.clientX, window.innerWidth - projectMenuWidth - 8)),
     });
   };
 
@@ -473,6 +497,23 @@ export function Sidebar({
     };
   }, [taskMenu]);
 
+  useEffect(() => {
+    if (!codexThreadMenu) return;
+    const close = (event: PointerEvent) => {
+      if (codexThreadMenuRef.current?.contains(event.target as Node)) return;
+      setCodexThreadMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCodexThreadMenu(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [codexThreadMenu]);
+
   return (
     <>
       <aside className="sidebar app-sidebar" aria-label="Workspace navigation">
@@ -543,7 +584,7 @@ export function Sidebar({
               );
             }
             const project = item.project;
-            const active = project.path === activeProjectPath;
+            const active = workspaceContainsPath(project.path, activeProjectPath);
             const expanded = active && expandedProjectPath === project.path;
             const menuOpen = projectMenu?.projectPath === project.path;
             const renaming = renamingProject?.path === project.path;
@@ -551,7 +592,7 @@ export function Sidebar({
             const projectCodexThreads = codexThreads.filter(
               (thread) =>
                 !thread.archived &&
-                sameWorkspacePath(thread.cwd, project.path) &&
+                workspaceContainsPath(project.path, thread.cwd) &&
                 !tasks.some((task) => task.origin === "codex" && task.threadId === thread.id),
             );
             const updatedAt = active
@@ -794,13 +835,15 @@ export function Sidebar({
                             <small>{projectCodexThreads.length}</small>
                           </h3>
                           <div className="sidebar-codex-chats__list">
-                            {projectCodexThreads.slice(0, 20).map((thread) => (
+                            {projectCodexThreads.map((thread) => (
                               <button
                                 type="button"
                                 key={thread.id}
                                 className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
                                 title={thread.preview || thread.title}
                                 onClick={() => onSelectCodexThread(thread)}
+                                onContextMenu={(event) =>
+                                  openCodexThreadContextMenu(event, thread.id)}
                               >
                                 <span>{thread.title}</span>
                                 <small>{relativeTime(thread.updatedAt, now)}</small>
@@ -825,37 +868,41 @@ export function Sidebar({
               </section>
             );
           })}
-          {codexHistoryLoading ? (
-            <div className="sidebar-codex-state">Importing local Codex chats…</div>
-          ) : null}
           {codexHistoryError ? (
             <div className="sidebar-codex-state is-error">{codexHistoryError}</div>
           ) : null}
           {unmatchedCodexThreads.length ? (
-            <section className="sidebar-other-chats" aria-label="Other Codex chats">
-              <header>
-                <span>Other Codex chats</span>
-                <small>{unmatchedCodexThreads.length}</small>
-              </header>
+            <details className="sidebar-other-chats">
+              <summary>
+                <span className="sidebar-codex-chats__title">
+                  <XiaoIcon name="branch" size={13} />
+                  <span>Other Codex chats</span>
+                </span>
+                <span className="sidebar-other-chats__summary-end">
+                  <small>{unmatchedCodexThreads.length}</small>
+                  <XiaoIcon name="caret" size={11} />
+                </span>
+              </summary>
+              <p>Chats outside your added project folders</p>
               <div className="sidebar-codex-chats__list">
-                {unmatchedCodexThreads.slice(0, 30).map((thread) => (
+                {unmatchedCodexThreads.map((thread) => (
                   <button
                     type="button"
                     key={thread.id}
                     className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
                     title={`${thread.title}\n${thread.cwd}`}
                     onClick={() => onSelectCodexThread(thread)}
+                    onContextMenu={(event) =>
+                      openCodexThreadContextMenu(event, thread.id)}
                   >
                     <span>{thread.title}</span>
                     <small>
-                      {thread.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Outside projects"}
-                      {" · "}
                       {relativeTime(thread.updatedAt, now)}
                     </small>
                   </button>
                 ))}
               </div>
-            </section>
+            </details>
           ) : null}
         </div>
         {hiddenProjects.length ? (
@@ -1169,6 +1216,41 @@ export function Sidebar({
               }}>
                 <XiaoIcon name="taskQueue" size={15} />
                 <span>Continue in new task</span>
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {codexThreadMenu && menuCodexThread
+        ? createPortal(
+            <div
+              className="project-actions-menu"
+              ref={codexThreadMenuRef}
+              role="menu"
+              aria-label={`Actions for ${menuCodexThread.title}`}
+              style={{ top: codexThreadMenu.top, left: codexThreadMenu.left }}
+            >
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                onSelectCodexThread(menuCodexThread);
+              }}>
+                <XiaoIcon name="folderOpen" size={15} />
+                <span>Open chat</span>
+              </button>
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                void navigator.clipboard.writeText(menuCodexThread.title);
+              }}>
+                <XiaoIcon name="copy" size={15} />
+                <span>Copy title</span>
+              </button>
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                void navigator.clipboard.writeText(menuCodexThread.cwd);
+              }}>
+                <XiaoIcon name="folder" size={15} />
+                <span>Copy project path</span>
               </button>
             </div>,
             document.body,

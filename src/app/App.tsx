@@ -35,8 +35,9 @@ import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/w
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
   listCodexThreads,
+  isLegacyCodexImportPath,
   readCodexThreadTimeline,
-  sameWorkspacePath,
+  workspaceContainsPath,
 } from "../features/agent/history/codexHistory";
 import {
   titleFromPrompt,
@@ -1434,6 +1435,18 @@ const mergeProject = (
   );
 };
 
+export const collapseNestedProjects = (
+  projects: XiaoProjectSummary[],
+): XiaoProjectSummary[] => projects.filter(
+  (project) => !isLegacyCodexImportPath(project.path),
+).filter(
+  (project) => !projects.some(
+    (candidate) =>
+      candidate.path !== project.path &&
+      workspaceContainsPath(candidate.path, project.path),
+  ),
+);
+
 export const clearProjectGroup = (
   projects: XiaoProjectSummary[],
   groupId: string,
@@ -1623,10 +1636,12 @@ export function App() {
   const attentionNotificationsPrimedRef = useRef(false);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
   const [codexThreads, setCodexThreads] = useState<CodexThreadSummary[]>([]);
-  const [codexHistoryLoading, setCodexHistoryLoading] = useState(false);
+  const [, setCodexHistoryLoading] = useState(false);
   const [codexHistoryError, setCodexHistoryError] = useState<string | null>(null);
-  const [pendingCodexThread, setPendingCodexThread] =
-    useState<CodexThreadSummary | null>(null);
+  const [pendingCodexThread, setPendingCodexThread] = useState<{
+    thread: CodexThreadSummary;
+    context: { projectPath: string; taskId: string | null };
+  } | null>(null);
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
@@ -1663,6 +1678,8 @@ export function App() {
   const [failedFollowUpId, setFailedFollowUpId] = useState<string | null>(null);
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
+  const codexHistoryContextTaskId =
+    tasks.find((task) => task.origin !== "codex")?.id ?? activeTask.id;
   const restoredWorkbenchTaskRef = useRef("");
   const definitionOfDoneChanged = Object.prototype.hasOwnProperty.call(
     pendingDefinitionsOfDone,
@@ -1924,13 +1941,12 @@ export function App() {
   useEffect(() => {
     if (
       !pendingCodexThread ||
-      !taskStateReady ||
-      !sameWorkspacePath(pendingCodexThread.cwd, workspace.path)
+      !taskStateReady
     ) return;
     let cancelled = false;
-    const thread = pendingCodexThread;
+    const { thread, context } = pendingCodexThread;
     setTaskHistoryLoadingId(`codex:${thread.id}`);
-    void readCodexThreadTimeline(thread.id)
+    void readCodexThreadTimeline(thread.id, context)
       .then((timeline) => {
         if (cancelled) return;
         const importedTask: WorkbenchTask = {
@@ -1983,7 +1999,7 @@ export function App() {
       .catch((reason) => {
         if (!cancelled) {
           setCodexHistoryError(
-            reason instanceof Error ? reason.message : "Could not open this Codex chat.",
+            reason instanceof Error ? reason.message : String(reason),
           );
           setPendingCodexThread(null);
         }
@@ -2086,8 +2102,12 @@ export function App() {
       nativeBridge.listXiaoCodexProfiles(),
     ])
       .then(([items, groups, profiles]) => {
-        setProjects(items.filter((project) => !project.hidden));
-        setHiddenProjects(items.filter((project) => project.hidden));
+        setProjects(collapseNestedProjects(items.filter((project) => !project.hidden)));
+        setHiddenProjects(
+          items.filter(
+            (project) => project.hidden && !isLegacyCodexImportPath(project.path),
+          ),
+        );
         setProjectGroups(groups);
         setCodexProfiles(profiles);
         const defaultProfileId = profiles[0]?.id ?? null;
@@ -2184,6 +2204,20 @@ export function App() {
         taskStateReadyRef.current = true;
         setTaskStateReady(true);
         setProjects((current) => {
+          const containingProject = current.find((project) =>
+            workspaceContainsPath(project.path, workspace.path));
+          if (containingProject) {
+            return current.map((project) =>
+              project.path === containingProject.path
+                ? {
+                    ...project,
+                    updatedAt: Math.max(
+                      project.updatedAt,
+                      ...nextState.tasks.map((task) => task.updatedAt),
+                    ),
+                  }
+                : project);
+          }
           const existing = current.find((project) => project.path === workspace.path);
           return applyProjectPreferences(
             mergeProject(current, {
@@ -2516,14 +2550,17 @@ export function App() {
     let cancelled = false;
     setCodexHistoryLoading(true);
     setCodexHistoryError(null);
-    void listCodexThreads()
+    void listCodexThreads({
+      projectPath: workspace.path,
+      taskId: codexHistoryContextTaskId,
+    })
       .then((threads) => {
         if (!cancelled) setCodexThreads(threads);
       })
       .catch((reason) => {
         if (!cancelled) {
           setCodexHistoryError(
-            reason instanceof Error ? reason.message : "Could not import Codex chats.",
+            reason instanceof Error ? reason.message : String(reason),
           );
         }
       })
@@ -2533,7 +2570,12 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [agent.runtime.phase, preferences.importCodexHistory]);
+  }, [
+    agent.runtime.phase,
+    codexHistoryContextTaskId,
+    preferences.importCodexHistory,
+    workspace.path,
+  ]);
   const attentionQuestionRequest = attentionSelectedPendingTarget
     ? agent.questionRequests.find((request) =>
         pendingRequestMatchesAttentionTarget(request, attentionSelectedPendingTarget)
@@ -4528,7 +4570,6 @@ export function App() {
               activeProjectPath={workspace.path}
               tasks={tasks}
               codexThreads={preferences.importCodexHistory ? codexThreads : []}
-              codexHistoryLoading={codexHistoryLoading}
               codexHistoryError={codexHistoryError}
               activeTaskId={selectedTask?.id ?? ""}
               workspace={workspace}
@@ -4590,22 +4631,22 @@ export function App() {
                 setActiveProjectPath(path);
                 setActivePage("tasks");
                 closeFocusPanel();
-                closeSidebarOnNarrow();
               }}
               onSelectTask={(taskId) => {
                 setActiveTaskId(taskId);
                 setActivePage("tasks");
-                closeSidebarOnNarrow();
               }}
               onSelectCodexThread={(thread) => {
                 if (agent.hasActiveRuns) return;
-                setPendingCodexThread(thread);
-                if (!sameWorkspacePath(thread.cwd, workspace.path)) {
-                  setActiveProjectPath(thread.cwd);
-                }
+                setPendingCodexThread({
+                  thread,
+                  context: {
+                    projectPath: workspace.path,
+                    taskId: codexHistoryContextTaskId,
+                  },
+                });
                 setActivePage("tasks");
                 closeFocusPanel();
-                closeSidebarOnNarrow();
               }}
               onToggleTaskPinned={toggleTaskPinned}
               onSetTaskArchived={setTaskArchived}

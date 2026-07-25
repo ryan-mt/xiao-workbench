@@ -18,6 +18,7 @@ type ThreadListResponse = {
 };
 
 const sourceKinds = ["cli", "vscode", "appServer"];
+type AgentContext = { projectPath: string; taskId: string | null };
 
 const titleForThread = (name: unknown, preview: unknown) => {
   const explicit = typeof name === "string" ? name.trim() : "";
@@ -53,7 +54,7 @@ const summaryFromThread = (
   };
 };
 
-const listPage = (archived: boolean, cursor: string | null) =>
+const listPage = (archived: boolean, cursor: string | null, context: AgentContext) =>
   nativeBridge.agentRequest<ThreadListResponse>("thread/list", {
     archived,
     cursor,
@@ -61,15 +62,17 @@ const listPage = (archived: boolean, cursor: string | null) =>
     sortKey: "recency_at",
     sortDirection: "desc",
     sourceKinds,
-  });
+  }, context);
 
-export const listCodexThreads = async (): Promise<CodexThreadSummary[]> => {
+export const listCodexThreads = async (
+  context: AgentContext,
+): Promise<CodexThreadSummary[]> => {
   const threads: CodexThreadSummary[] = [];
   for (const archived of [false, true]) {
     let cursor: string | null = null;
     const seen = new Set<string>();
     do {
-      const response = await listPage(archived, cursor);
+      const response = await listPage(archived, cursor, context);
       const rows = Array.isArray(response.data) ? response.data : [];
       for (const row of rows) {
         const summary = summaryFromThread(row, archived);
@@ -113,16 +116,20 @@ const userEntry = (
 
 export const readCodexThreadTimeline = async (
   threadId: string,
+  context: AgentContext,
 ): Promise<TimelineEntry[]> => {
-  const response = await nativeBridge.agentRequest<{ thread?: unknown }>("thread/read", {
-    threadId,
-    includeTurns: true,
-  });
-  const root =
-    response.thread && typeof response.thread === "object"
-      ? response.thread as Record<string, unknown>
-      : response as unknown as Record<string, unknown>;
-  const turns = Array.isArray(root.turns) ? root.turns : [];
+  const response = await nativeBridge.agentRequest<{ data?: unknown }>(
+    "thread/turns/list",
+    {
+      threadId,
+      cursor: null,
+      limit: 100,
+      sortDirection: "desc",
+      itemsView: "full",
+    },
+    context,
+  );
+  const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
   return turns.flatMap((rawTurn) => {
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
@@ -144,5 +151,16 @@ export const readCodexThreadTimeline = async (
 };
 
 export const sameWorkspacePath = (left: string, right: string) =>
-  left.replace(/[\\/]+$/, "").toLocaleLowerCase() ===
-  right.replace(/[\\/]+$/, "").toLocaleLowerCase();
+  left.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase() ===
+  right.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
+
+export const workspaceContainsPath = (workspace: string, candidate: string) => {
+  const parent = workspace.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
+  const child = candidate.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
+  return child === parent || child.startsWith(`${parent}/`);
+};
+
+export const isLegacyCodexImportPath = (path: string) =>
+  /\/documents\/codex\/\d{4}-\d{2}-\d{2}\//i.test(
+    path.replace(/[\\/]+/g, "/"),
+  );
