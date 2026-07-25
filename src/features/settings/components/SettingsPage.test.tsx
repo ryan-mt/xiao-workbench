@@ -81,7 +81,7 @@ const codexProfiles: CodexProfile[] = [
 
 const renderSettings = (
   theme: Theme,
-  activeSection: "general" | "runtime" = "general",
+  activeSection: "general" | "runtime" | "shortcuts" = "general",
 ) => renderToStaticMarkup(
   <SettingsPage
     theme={theme}
@@ -153,6 +153,17 @@ describe("SettingsPage", () => {
     expect(markup).toContain('aria-label="Codex profile for the current Task"');
     expect(markup).toContain("Default Codex");
     expect(markup).toContain("Review profile");
+  });
+
+  it("renders editable shortcuts as labeled keyboard controls", () => {
+    const markup = renderSettings("system", "shortcuts");
+
+    expect(markup).toContain('class="shortcut-row"');
+    expect(markup).toContain('<label class="shortcut-row__copy" for="shortcut-task.create">');
+    expect(markup).toContain('id="shortcut-task.create"');
+    expect(markup).toContain('class="shortcut-input"');
+    expect(markup).toContain('autoComplete="off"');
+    expect(markup).toContain('class="button button--quiet shortcut-actions__reset"');
   });
 
   it("disables Task profile changes while task state has a storage error", () => {

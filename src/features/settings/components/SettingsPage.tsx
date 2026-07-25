@@ -741,40 +741,56 @@ export function SettingsPage({
               <SettingsGroup title="Keyboard">
                 <div className="shortcut-grid">
                   {shortcuts.map((shortcut) => (
-                    <div key={shortcut.action}>
-                      <strong>{shortcut.action}<small>{shortcut.id}</small></strong>
-                      <input
-                        aria-label={`Shortcut for ${shortcut.action}`}
-                        value={preferences.shortcutBindings[shortcut.id]}
-                        onChange={(event) => {
-                          onPreferencesChange({
-                            shortcutBindings: normalizeCommandBindings({
-                              ...preferences.shortcutBindings,
-                              [shortcut.id]: event.target.value,
-                            }),
-                          });
-                        }}
-                      />
+                    <div className="shortcut-row" key={shortcut.action}>
+                      <label className="shortcut-row__copy" htmlFor={`shortcut-${shortcut.id}`}>
+                        <strong>{shortcut.action}</strong>
+                        <small aria-hidden="true">{shortcut.id}</small>
+                      </label>
+                      <div className="shortcut-row__control">
+                        <input
+                          id={`shortcut-${shortcut.id}`}
+                          className="shortcut-input"
+                          autoCapitalize="none"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={preferences.shortcutBindings[shortcut.id]}
+                          onChange={(event) => {
+                            onPreferencesChange({
+                              shortcutBindings: normalizeCommandBindings({
+                                ...preferences.shortcutBindings,
+                                [shortcut.id]: event.target.value,
+                              }),
+                            });
+                          }}
+                        />
+                      </div>
                     </div>
                   ))}
                   {composerShortcuts.map((shortcut) => (
-                    <div key={shortcut.action}>
-                      <strong>{shortcut.action}</strong>
-                      <span>{shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}</span>
+                    <div className="shortcut-row" key={shortcut.action}>
+                      <div className="shortcut-row__copy">
+                        <strong>{shortcut.action}</strong>
+                      </div>
+                      <span className="shortcut-row__keys">
+                        {shortcut.keys.map((key) => <kbd key={key}>{key}</kbd>)}
+                      </span>
                     </div>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onPreferencesChange({
-                    shortcutBindings: { ...DEFAULT_COMMAND_BINDINGS },
-                  })}
-                >
-                  Reset command shortcuts
-                </button>
-                <p className="settings-note">
-                  Conflicting command shortcuts keep their previous binding.
-                </p>
+                <div className="shortcut-actions">
+                  <button
+                    className="button button--quiet shortcut-actions__reset"
+                    type="button"
+                    onClick={() => onPreferencesChange({
+                      shortcutBindings: { ...DEFAULT_COMMAND_BINDINGS },
+                    })}
+                  >
+                    Reset command shortcuts
+                  </button>
+                  <p className="settings-note">
+                    Conflicting command shortcuts keep their previous binding.
+                  </p>
+                </div>
               </SettingsGroup>
             )}
 
