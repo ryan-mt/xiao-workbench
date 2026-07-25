@@ -92,8 +92,17 @@ pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
     process::run_if_requested()
 }
 
+fn install_process_crypto_provider() -> Result<(), String> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| {
+            "A Rustls crypto provider was installed before Xiao initialized TLS.".to_owned()
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_process_crypto_provider().expect("failed to install Xiao's TLS crypto provider");
     let preview_registry = PreviewRegistry::default();
     let protocol_previews = preview_registry.clone();
     let preview_navigation = preview_registry.clone();
@@ -285,4 +294,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Xiao Workbench");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::install_process_crypto_provider;
+
+    #[test]
+    fn runtime_installs_crypto_provider_before_tls_configuration() {
+        install_process_crypto_provider().expect("crypto provider");
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+        let _ = rustls::ServerConfig::builder();
+    }
 }
