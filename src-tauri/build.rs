@@ -111,14 +111,29 @@ const APP_COMMANDS: &[&str] = &[
 
 #[cfg(not(test))]
 fn main() {
-    let certification = validate_ticket03_certification()
-        .expect("Ticket 03 release certification does not match the verified source");
-    println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
+    match validate_ticket03_certification() {
+        Ok(certification) => {
+            println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
+        }
+        Err(error) if allows_uncertified_build(std::env::var("PROFILE").as_deref().ok()) => {
+            println!(
+                "cargo:warning=Ticket 03 release certification is stale; \
+                 continuing with an uncertified debug build: {error}"
+            );
+        }
+        Err(error) => {
+            panic!("Ticket 03 release certification does not match the verified source: {error}");
+        }
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
     )
     .expect("failed to build Xiao's Tauri manifest");
+}
+
+fn allows_uncertified_build(profile: Option<&str>) -> bool {
+    profile == Some("debug")
 }
 
 fn validate_ticket03_certification() -> Result<String, String> {
@@ -354,7 +369,15 @@ fn hex_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_build_version;
+    use super::{allows_uncertified_build, normalize_build_version};
+
+    #[test]
+    fn only_debug_builds_may_run_without_release_certification() {
+        assert!(allows_uncertified_build(Some("debug")));
+        assert!(!allows_uncertified_build(Some("release")));
+        assert!(!allows_uncertified_build(Some("production")));
+        assert!(!allows_uncertified_build(None));
+    }
 
     #[test]
     fn fingerprint_text_is_stable_across_checkout_line_endings() {
