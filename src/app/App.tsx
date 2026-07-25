@@ -2325,11 +2325,14 @@ export function App() {
     [activePage, activeTaskId, preferences.notifyCompletions, routineController.routines, tasks],
   );
 
+  const effectiveCodexProfileId =
+    activeTask.codexProfileId ?? codexProfiles[0]?.id ?? null;
   const agent = useAgentRuntime(
     workspace.path,
     workspace.execution.environment.id,
     activeTask.id,
     executionTaskId,
+    effectiveCodexProfileId,
     activeTask.title,
     activeTask.timeline,
     activeTaskTimelineReady,
@@ -2369,7 +2372,7 @@ export function App() {
   useEffect(() => {
     if (!isTauriHost() || !codexProfiles.length || agent.runtime.phase === "starting") return;
     const profile = codexProfiles.find((item) => item.id === agent.runtime.profileId);
-    if (!profile || agent.runtime.profileId !== activeTask.codexProfileId) return;
+    if (!profile || agent.runtime.profileId !== effectiveCodexProfileId) return;
     const runtimeSnapshot = {
       availability: !system.codexVersion
         ? "unavailable" as const
@@ -2410,8 +2413,8 @@ export function App() {
     agent.runtime.phase,
     agent.runtime.profileId,
     agent.usage,
-    activeTask.codexProfileId,
     codexProfiles,
+    effectiveCodexProfileId,
     system.codexVersion,
   ]);
   const activeComposerAttachments =

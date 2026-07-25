@@ -116,21 +116,21 @@ import { App } from "./App";
 
 const workspacePath = "C:/journey";
 const profile = {
-  id: "profile-journey",
-  displayName: "Journey profile",
+  id: "default",
+  displayName: "Default Codex",
   codexHome: null,
   authenticationHome: null,
   environment: {},
-  availability: "available",
-  authenticatedIdentity: { email: "journey@example.test" },
+  availability: "unknown",
+  authenticatedIdentity: null,
   models: [],
   capabilities: {},
   usage: null,
   rateLimits: null,
-  diagnostic: null,
-  version: 1,
-  createdAt: 1,
-  updatedAt: 1,
+  diagnostic: "Profile will be diagnosed when Codex starts.",
+  version: 0,
+  createdAt: 0,
+  updatedAt: 0,
 };
 const model = {
   model: "gpt-journey",
@@ -317,15 +317,32 @@ const installHost = () => {
     },
     getXiaoExecutionContext: async (_path: string, taskId: string | null) => execution(taskId),
     listXiaoManagedWorktrees: async () => [],
-    startAgent: async (_path: string, taskId: string | null) => ({
-      version: "0.200.0",
-      alreadyRunning: true,
-      environmentId: "windows",
-      generation: 1,
-      profileId: taskId ? "profile-journey" : null,
-    }),
+    startAgent: async (
+      _path: string,
+      taskId: string | null,
+      selectedProfileId: string | null,
+    ) => {
+      const task = host.state.document.tasks.find((item) => item.id === taskId);
+      const profileId = task?.codexProfileId ?? selectedProfileId;
+      if (!profileId) {
+        throw new Error("Select a Codex profile before starting this Task.");
+      }
+      return {
+        version: "0.200.0",
+        alreadyRunning: true,
+        environmentId: "windows",
+        generation: 1,
+        profileId,
+      };
+    },
     stopAgent: async () => undefined,
-    readAgentAccount: async () => ({ type: "chatgpt", email: "journey@example.test", planType: "plus" }),
+    readAgentAccount: async () => ({
+      authenticated: true,
+      authMode: "chatgpt",
+      email: "journey@example.test",
+      planType: "plus",
+      requiresOpenaiAuth: true,
+    }),
     readAgentUsage: async () => ({ planType: "plus", credits: null }),
     readAgentRateLimits: async () => ({ rateLimits: null, rateLimitsByLimitId: {} }),
     listAgentModels: async () => [model],
@@ -510,6 +527,61 @@ describe("control-model application shell journey", () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.clearAllTimers();
+  });
+
+  it("starts a persisted New Task with the discovered default profile before diagnosis", async () => {
+    host.state.document.activeTaskId = "task-unbound";
+    host.state.document.tasks = [{
+      id: "task-unbound",
+      title: "New task",
+      createdAt: 1,
+      updatedAt: 1,
+      stage: "draft",
+      stageVersion: 0,
+      codexProfileId: null,
+      workbenchState: {},
+      draftText: "",
+      followUps: [],
+      archived: false,
+      pinned: false,
+      unread: false,
+      model: null,
+      reasoningEffort: null,
+      threadBinding: null,
+      mode: "default",
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
+      goal: null,
+      plan: null,
+      timeline: [],
+      timelineLoaded: true,
+      timelineComplete: true,
+      timelineStart: 0,
+      timelineEntryCount: 0,
+      executionEnvironmentId: "windows",
+      workspaceMode: "local",
+      managedWorktreeId: null,
+      acceptanceContract: null,
+    }];
+
+    render(<App />);
+
+    expect(await screen.findByRole("option", { name: "Default Codex · unknown" })).toBeTruthy();
+    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(screen.queryByText("Select a Codex profile before starting this Task.")).toBeNull();
+    expect(await screen.findByRole("option", { name: "Default Codex · available" })).toBeTruthy();
+  });
+
+  it("blocks New Task startup when profile discovery finds no profile", async () => {
+    host.methods.listXiaoCodexProfiles = async () => [];
+
+    render(<App />);
+
+    expect(await screen.findByText("Select a Codex profile before starting this Task.")).toBeTruthy();
+    const prompt = screen.getByLabelText("Prompt");
+    fireEvent.change(prompt, { target: { value: "Must stay blocked" } });
+    expect((screen.getByRole("button", { name: "Send task" }) as HTMLButtonElement).disabled)
+      .toBe(true);
   });
 
   it("creates, runs, reviews, and resumes two isolated Task workbenches without leakage", async () => {

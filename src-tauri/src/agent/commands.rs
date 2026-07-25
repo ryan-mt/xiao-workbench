@@ -13,14 +13,16 @@ pub fn start_agent_runtime(
     app: AppHandle,
     project_path: String,
     task_id: Option<String>,
+    profile_id: Option<String>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
-    let task_id = task_id
-        .as_deref()
-        .ok_or("Starting Codex requires a persisted Xiao Task.")?;
-    let profile = repository.task_codex_profile(&project_path, task_id)?;
+    let profile = repository.runtime_codex_profile(
+        &project_path,
+        task_id.as_deref(),
+        profile_id.as_deref(),
+    )?;
     runtimes.start_with_profile(app, &context.environment.id, &profile)
 }
 

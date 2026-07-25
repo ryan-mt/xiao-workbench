@@ -1029,6 +1029,7 @@ export function useAgentRuntime(
   workspaceEnvironmentId: string,
   activeTaskId: string,
   executionTaskId: string | null,
+  selectedCodexProfileId: string | null,
   activeTaskTitle: string,
   activeTaskTimeline: TimelineEntry[],
   activeTaskTimelineComplete: boolean,
@@ -2830,7 +2831,11 @@ export function useAgentRuntime(
     setRuntime((current) => ({ ...current, phase: "starting", error: null }));
     appendRuntimeLog("system", "Starting Codex app-server.");
     try {
-      const result = await nativeBridge.startAgent(workspacePath, executionTaskIdRef.current);
+      const result = await nativeBridge.startAgent(
+        workspacePath,
+        executionTaskIdRef.current,
+        selectedCodexProfileId,
+      );
       if (!agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
         workspacePath,
@@ -2870,7 +2875,7 @@ export function useAgentRuntime(
         error: reason instanceof Error ? reason.message : String(reason),
       }));
     }
-  }, [appendRuntimeLog, refreshRuntimeIdentity, workspacePath]);
+  }, [appendRuntimeLog, refreshRuntimeIdentity, selectedCodexProfileId, workspacePath]);
 
   useEffect(() => {
     if (
