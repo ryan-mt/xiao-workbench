@@ -509,12 +509,14 @@ export const confirmedExecutionTaskId = (
 export const shouldAutoConnectAgentRuntime = (
   codexUpdating: boolean,
   taskStateReady: boolean,
+  executionTaskId: string | null,
   workspaceActionable: boolean,
   taskWorkspacePath: string,
   workspacePath: string,
 ) => (
   !codexUpdating &&
   taskStateReady &&
+  Boolean(executionTaskId) &&
   workspaceActionable &&
   comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
   Boolean(workspacePath)
@@ -1584,6 +1586,7 @@ export function App() {
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const persistedWorkspaceSnapshotsRef = useRef(new Map<string, PersistedWorkspaceSnapshot>());
   const latestTaskStateRef = useRef<{ path: string; state: StoredTaskState } | null>(null);
+  const materializingDraftTaskRef = useRef<string | null>(null);
   const replaceConfirmedNativeTaskIds = useCallback(
     (scope: ConfirmedNativeTaskScope, taskIds: Iterable<string>) => {
       const next = confirmNativeTaskIds(confirmedNativeTasksRef.current, scope, taskIds);
@@ -2126,6 +2129,43 @@ export function App() {
   ]);
 
   useEffect(() => {
+    if (
+      !isTauriHost() ||
+      !taskStateReady ||
+      comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(workspace.path) ||
+      selectedTask ||
+      materializingDraftTaskRef.current === draftTask.id
+    ) return;
+
+    materializingDraftTaskRef.current = draftTask.id;
+    const task: WorkbenchTask = {
+      ...draftTask,
+      codexProfileId: draftTask.codexProfileId ?? codexProfiles[0]?.id ?? null,
+      meta: "Now",
+      group: "Active",
+    };
+    const persistedTasks = [task, ...tasks];
+    setTasks(persistedTasks);
+    setActiveTaskId(task.id);
+    setOpenTaskIds((current) => current.includes(task.id) ? current : [...current, task.id]);
+    setDraftTabOpen(false);
+    void persistTaskState(workspace.path, {
+      tasks: persistedTasks,
+      activeTaskId: task.id,
+      showArchived: false,
+    }).catch(() => undefined);
+  }, [
+    codexProfiles,
+    draftTask,
+    persistTaskState,
+    selectedTask,
+    taskStateReady,
+    taskWorkspacePath,
+    tasks,
+    workspace.path,
+  ]);
+
+  useEffect(() => {
     setTaskHistoryError(null);
     setEnvironmentError(null);
   }, [activeTaskId, taskWorkspacePath]);
@@ -2214,8 +2254,9 @@ export function App() {
       setOpenTaskIds((current) => current.includes(activeTaskId) ? current : [...current, activeTaskId]);
       return;
     }
+    if (materializingDraftTaskRef.current === draftTask.id) return;
     setDraftTabOpen(true);
-  }, [activeTaskId, taskStateReady]);
+  }, [activeTaskId, draftTask.id, taskStateReady]);
 
   useEffect(() => {
     if (!attentionTaskStateMatchesWorkspace(
@@ -2348,6 +2389,7 @@ export function App() {
     shouldAutoConnectAgentRuntime(
       codexUpdate.updating,
       taskStateReady,
+      executionTaskId,
       workspaceActionable,
       taskWorkspacePath,
       workspace.path,

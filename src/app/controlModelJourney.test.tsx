@@ -323,6 +323,9 @@ const installHost = () => {
       selectedProfileId: string | null,
     ) => {
       const task = host.state.document.tasks.find((item) => item.id === taskId);
+      if (!task) {
+        throw new Error("Starting Codex requires a persisted Xiao Task.");
+      }
       const profileId = task?.codexProfileId ?? selectedProfileId;
       if (!profileId) {
         throw new Error("Select a Codex profile before starting this Task.");
@@ -529,6 +532,18 @@ describe("control-model application shell journey", () => {
     vi.clearAllTimers();
   });
 
+  it("persists a fresh New Task before starting its runtime", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("option", { name: "Default Codex · unknown" })).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText("Starting Codex requires a persisted Xiao Task.")).toBeNull();
+      expect(screen.queryByText("Ready")).not.toBeNull();
+    });
+    expect(host.state.document.tasks).toHaveLength(1);
+    expect(host.state.document.activeTaskId).toBe(host.state.document.tasks[0]?.id);
+  });
+
   it("starts a persisted New Task with the discovered default profile before diagnosis", async () => {
     host.state.document.activeTaskId = "task-unbound";
     host.state.document.tasks = [{
@@ -612,6 +627,7 @@ describe("control-model application shell journey", () => {
     });
 
     fireEvent.click(screen.getByLabelText("New task tab"));
+    await waitFor(() => expect(host.state.document.tasks).toHaveLength(2));
     fireEvent.click(await screen.findByLabelText("Add context or task settings"));
     fireEvent.click(screen.getByText("Run settings"));
     fireEvent.click(screen.getByLabelText("Approval policy"));
