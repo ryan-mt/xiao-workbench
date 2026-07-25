@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,11 @@ import {
   taskOutcomeAction,
   TaskWorkspaceFrame,
 } from "./TaskWorkspace";
+
+const taskWorkspaceStyles = readFileSync(
+  new URL("../styles/task.css", import.meta.url),
+  "utf8",
+);
 
 const collaboratorEntry = (
   id: string,
@@ -142,6 +148,12 @@ describe("task outcome actions", () => {
 });
 
 describe("task workspace frame", () => {
+  it("assigns the flexible grid row to the timeline in conversation mode", () => {
+    expect(taskWorkspaceStyles).toMatch(
+      /\.task-workspace\s*{[^}]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto;/s,
+    );
+  });
+
   it("keeps one unconditional composer slot across launch and conversation modes", () => {
     const renderFrame = (launchMode: boolean) => renderToStaticMarkup(createElement(
       TaskWorkspaceFrame,
