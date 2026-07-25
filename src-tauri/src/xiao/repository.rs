@@ -1825,25 +1825,36 @@ impl XiaoRepository {
         })
     }
 
-    pub(crate) fn task_codex_profile(
+    pub(crate) fn runtime_codex_profile(
         &self,
         workspace_path: &str,
-        task_id: &str,
+        task_id: Option<&str>,
+        selected_profile_id: Option<&str>,
     ) -> Result<CodexProfile, String> {
         let workspace_path = normalize_workspace_path(workspace_path);
         self.with_connection(|connection| {
-            let profile_id = connection
-                .query_row(
-                    r#"SELECT tasks.codex_profile_id
-                       FROM tasks
-                       JOIN workspaces ON workspaces.id = tasks.workspace_id
-                       WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
-                    params![workspace_path, task_id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .map_err(|error| format!("Could not load Task Codex profile binding: {error}"))?
+            let bound_profile_id = task_id
+                .map(|task_id| {
+                    connection
+                        .query_row(
+                            r#"SELECT tasks.codex_profile_id
+                               FROM tasks
+                               JOIN workspaces ON workspaces.id = tasks.workspace_id
+                               WHERE workspaces.workspace_path = ?1 AND tasks.task_id = ?2"#,
+                            params![workspace_path, task_id],
+                            |row| row.get::<_, Option<String>>(0),
+                        )
+                        .map_err(|error| {
+                            format!("Could not load Task Codex profile binding: {error}")
+                        })
+                })
+                .transpose()?
+                .flatten();
+            let profile_id = bound_profile_id
+                .as_deref()
+                .or(selected_profile_id)
                 .ok_or("Select a Codex profile before starting this Task.")?;
-            let profile = load_codex_profile(connection, &profile_id)?
+            let profile = load_codex_profile(connection, profile_id)?
                 .ok_or("The selected Codex profile no longer exists.")?;
             if matches!(
                 profile.availability.as_str(),
@@ -6692,6 +6703,77 @@ mod tests {
             .unwrap_err();
         assert!(invalid_value.contains("null character"));
         assert_eq!(repository.list_codex_profiles().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_profile_uses_the_discovered_selection_only_without_a_task_binding() {
+        let directory = TestDirectory::new("runtime-profile-selection");
+        let workspace = directory.workspace("workspace");
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .save_workspace(update(document(&workspace, vec![task("task", 0)])))
+            .unwrap();
+
+        let selected = repository
+            .runtime_codex_profile(&workspace.to_string_lossy(), Some("task"), Some("default"))
+            .unwrap();
+        assert_eq!(selected.id, "default");
+        assert_eq!(selected.availability, "unknown");
+        assert_eq!(
+            repository
+                .runtime_codex_profile(&workspace.to_string_lossy(), Some("task"), None)
+                .unwrap_err(),
+            "Select a Codex profile before starting this Task."
+        );
+
+        repository
+            .save_codex_profile(CodexProfileUpdate {
+                id: "default".to_owned(),
+                display_name: "Default Codex".to_owned(),
+                codex_home: None,
+                authentication_home: None,
+                environment: serde_json::json!({}),
+                availability: "unavailable".to_owned(),
+                authenticated_identity: None,
+                models: serde_json::json!([]),
+                capabilities: serde_json::json!({}),
+                usage: None,
+                rate_limits: None,
+                diagnostic: Some("Codex CLI is unavailable.".to_owned()),
+                expected_version: Some(0),
+            })
+            .unwrap();
+        assert_eq!(
+            repository
+                .runtime_codex_profile(&workspace.to_string_lossy(), Some("task"), Some("default"),)
+                .unwrap_err(),
+            "Codex CLI is unavailable."
+        );
+
+        repository
+            .save_codex_profile(CodexProfileUpdate {
+                id: "work".to_owned(),
+                display_name: "Work account".to_owned(),
+                codex_home: None,
+                authentication_home: None,
+                environment: serde_json::json!({}),
+                availability: "available".to_owned(),
+                authenticated_identity: None,
+                models: serde_json::json!([]),
+                capabilities: serde_json::json!({}),
+                usage: None,
+                rate_limits: None,
+                diagnostic: None,
+                expected_version: None,
+            })
+            .unwrap();
+        repository
+            .bind_task_codex_profile(&workspace.to_string_lossy(), "task", "work", 0, false)
+            .unwrap();
+        let bound = repository
+            .runtime_codex_profile(&workspace.to_string_lossy(), Some("task"), Some("default"))
+            .unwrap();
+        assert_eq!(bound.id, "work");
     }
 
     #[test]
