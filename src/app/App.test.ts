@@ -45,6 +45,7 @@ import {
   restoreTaskAfterUndo,
   shouldAdoptResolvedWorkspacePath,
   shouldAutoConnectAgentRuntime,
+  observedCodexThreadStatus,
   shouldInvalidateTaskWorkspaceState,
   shouldLoadTaskWorkspaceState,
   shouldCreateDraftWhenOpeningNewTaskTab,
@@ -1613,6 +1614,18 @@ describe("confirmed native task materialization", () => {
       ["shared-task"],
     );
     expect(confirmedExecutionTaskId(confirmation, secondPath, "shared-task")).toBe("shared-task");
+  });
+});
+
+describe("observed Codex thread status", () => {
+  it("marks a previously working thread done after its activity grace ends", () => {
+    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("done");
+    expect(observedCodexThreadStatus("ready", false, false, true)).toBe("done");
+  });
+
+  it("clears done when new live activity arrives and preserves real failures", () => {
+    expect(observedCodexThreadStatus("ready", true, false, true)).toBe("working");
+    expect(observedCodexThreadStatus("failed", true, true, false)).toBe("failed");
   });
 });
 

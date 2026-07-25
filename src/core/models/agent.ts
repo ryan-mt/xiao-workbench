@@ -187,7 +187,7 @@ export type CodexThreadSummary = {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
-  status?: "working" | "waiting" | "failed" | "ready";
+  status?: "working" | "waiting" | "failed" | "ready" | "done";
   additions?: number;
   deletions?: number;
 };

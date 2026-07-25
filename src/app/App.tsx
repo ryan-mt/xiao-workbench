@@ -132,6 +132,18 @@ const projectPreferencesStorageKey = "xiao.projects.v1";
 const activeProjectStorageKey = "xiao.active-project.v1";
 const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
 export const codexActivityGraceMs = 15_000;
+
+export const observedCodexThreadStatus = (
+  sourceStatus: CodexThreadSummary["status"],
+  inferredWorking: boolean,
+  wasWorking: boolean,
+  wasDone: boolean,
+): CodexThreadSummary["status"] => {
+  if (sourceStatus === "failed" || sourceStatus === "waiting") return sourceStatus;
+  if (sourceStatus === "working" || inferredWorking) return "working";
+  if (wasWorking || wasDone) return "done";
+  return sourceStatus;
+};
 const focusViews = new Set<FocusView>([
   "plan",
   "files",
@@ -1649,6 +1661,12 @@ export function App() {
     new Map(readCodexThreadSnapshot().map((thread) => [thread.id, thread.updatedAt])),
   );
   const codexThreadActiveUntilRef = useRef(new Map<string, number>());
+  const codexThreadWorkingRef = useRef(new Set<string>());
+  const codexThreadDoneRef = useRef(new Set(
+    readCodexThreadSnapshot()
+      .filter((thread) => thread.status === "done")
+      .map((thread) => thread.id),
+  ));
   const [, setCodexHistoryLoading] = useState(false);
   const [codexHistoryError, setCodexHistoryError] = useState<string | null>(null);
   const [pendingCodexThread, setPendingCodexThread] = useState<{
@@ -2625,9 +2643,23 @@ export function App() {
           codexThreadRecencyRef.current.set(thread.id, thread.updatedAt);
           const inferredWorking =
             (codexThreadActiveUntilRef.current.get(thread.id) ?? 0) > observedAt;
+          const status = observedCodexThreadStatus(
+            thread.status,
+            inferredWorking,
+            codexThreadWorkingRef.current.has(thread.id),
+            codexThreadDoneRef.current.has(thread.id),
+          );
+          if (status === "working") {
+            codexThreadWorkingRef.current.add(thread.id);
+            codexThreadDoneRef.current.delete(thread.id);
+          } else {
+            codexThreadWorkingRef.current.delete(thread.id);
+            if (status === "done") codexThreadDoneRef.current.add(thread.id);
+            else codexThreadDoneRef.current.delete(thread.id);
+          }
           return {
             ...thread,
-            status: inferredWorking ? "working" as const : thread.status,
+            status,
           };
         });
         setCodexThreads((current) => {
