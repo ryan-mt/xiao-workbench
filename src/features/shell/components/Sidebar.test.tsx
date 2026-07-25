@@ -273,6 +273,22 @@ describe("Sidebar Companion trigger", () => {
 });
 
 describe("Sidebar task group disclosure", () => {
+  it("keeps task order stable when activity timestamps change", () => {
+    const now = Date.now();
+    const olderTask = { ...task("Created first", now), createdAt: now - 2_000 };
+    const newerTask = {
+      ...task("Created second", now - 1_000),
+      createdAt: now - 1_000,
+      updatedAt: now - 2_000,
+    };
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [olderTask, newerTask],
+    });
+
+    expect(markup.indexOf("Created second")).toBeLessThan(markup.indexOf("Created first"));
+  });
+
   it("keeps the active task in its recent time group", () => {
     const now = Date.now();
     const activeTask = task("Active task", now);

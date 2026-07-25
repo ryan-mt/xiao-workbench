@@ -177,7 +177,12 @@ export function Sidebar({
   const taskMenuTriggerRef = useRef<HTMLElement | null>(null);
   const visibleTasks = [...tasks]
     .filter((task) => !task.archived)
-    .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt);
+    .sort(
+      (left, right) =>
+        Number(right.pinned) - Number(left.pinned) ||
+        right.createdAt - left.createdAt ||
+        left.id.localeCompare(right.id),
+    );
   const groupedTasks = taskGroupOrder
     .map((group) => ({
       group,
@@ -195,9 +200,10 @@ export function Sidebar({
       return (projectGroupPositions.get(leftGroup) ?? Number.MAX_SAFE_INTEGER) -
         (projectGroupPositions.get(rightGroup) ?? Number.MAX_SAFE_INTEGER);
     }
-    return (left.projectGroupPosition ?? 0) - (right.projectGroupPosition ?? 0) ||
-      Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
-      right.updatedAt - left.updatedAt;
+    return Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
+      (left.projectGroupPosition ?? Number.MAX_SAFE_INTEGER) -
+        (right.projectGroupPosition ?? Number.MAX_SAFE_INTEGER) ||
+      left.name.localeCompare(right.name);
   });
   const navigationItems: ProjectNavigationItem[] = [...projectGroups]
     .sort((left, right) => left.position - right.position)

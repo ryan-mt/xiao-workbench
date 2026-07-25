@@ -1172,7 +1172,12 @@
 
 .sidebar-project__tasks {
   position: relative;
+  max-height: min(44vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 3px 0 7px 18px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
 }
 
 .sidebar-project__tasks::before {
