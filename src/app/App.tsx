@@ -36,7 +36,10 @@ import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
   listCodexThreads,
   isLegacyCodexImportPath,
+  readCodexThreadChangeSummary,
+  readCodexThreadSnapshot,
   readCodexThreadTimeline,
+  writeCodexThreadSnapshot,
   workspaceContainsPath,
 } from "../features/agent/history/codexHistory";
 import {
@@ -1617,6 +1620,7 @@ export function App() {
   const persistedWorkspaceSnapshotsRef = useRef(new Map<string, PersistedWorkspaceSnapshot>());
   const latestTaskStateRef = useRef<{ path: string; state: StoredTaskState } | null>(null);
   const materializingDraftTaskRef = useRef<string | null>(null);
+  const draftCreationRequestedRef = useRef(false);
   const replaceConfirmedNativeTaskIds = useCallback(
     (scope: ConfirmedNativeTaskScope, taskIds: Iterable<string>) => {
       const next = confirmNativeTaskIds(confirmedNativeTasksRef.current, scope, taskIds);
@@ -1627,6 +1631,7 @@ export function App() {
     [],
   );
   const focusedLaunchTaskRef = useRef<string | null>(null);
+  const focusedNewTaskRequestRef = useRef(false);
   const explicitlyOpenedTaskRef = useRef<string | null>(null);
   const notifiedRuntimeErrorRef = useRef<string | null>(null);
   const notifiedApprovalRef = useRef<string | null>(null);
@@ -1635,7 +1640,13 @@ export function App() {
   const notifiedAttentionIdsRef = useRef(new Set<string>());
   const attentionNotificationsPrimedRef = useRef(false);
   const [projects, setProjects] = useState<XiaoProjectSummary[]>([]);
-  const [codexThreads, setCodexThreads] = useState<CodexThreadSummary[]>([]);
+  const [codexThreads, setCodexThreads] = useState<CodexThreadSummary[]>(
+    () => preferences.importCodexHistory ? readCodexThreadSnapshot() : [],
+  );
+  const codexThreadRecencyRef = useRef(
+    new Map(readCodexThreadSnapshot().map((thread) => [thread.id, thread.updatedAt])),
+  );
+  const codexThreadActiveUntilRef = useRef(new Map<string, number>());
   const [, setCodexHistoryLoading] = useState(false);
   const [codexHistoryError, setCodexHistoryError] = useState<string | null>(null);
   const [pendingCodexThread, setPendingCodexThread] = useState<{
@@ -1679,7 +1690,7 @@ export function App() {
   const selectedTask = tasks.find((task) => task.id === activeTaskId) ?? null;
   const activeTask = selectedTask ?? draftTask;
   const codexHistoryContextTaskId =
-    tasks.find((task) => task.origin !== "codex")?.id ?? activeTask.id;
+    tasks.find((task) => task.origin !== "codex")?.id ?? null;
   const restoredWorkbenchTaskRef = useRef("");
   const definitionOfDoneChanged = Object.prototype.hasOwnProperty.call(
     pendingDefinitionsOfDone,
@@ -1805,11 +1816,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const focusActive = focusedLaunch && preferences.focusNewTasks;
+    const focusActive =
+      focusedLaunch &&
+      preferences.focusNewTasks &&
+      focusedNewTaskRequestRef.current;
     const taskKey = workspaceTaskKey(workspace.path, activeTask.id);
     if (focusActive) {
       if (focusedLaunchTaskRef.current === taskKey) return;
       focusedLaunchTaskRef.current = taskKey;
+      focusedNewTaskRequestRef.current = false;
       setSidebarOpen(false);
       closeFocusPanel();
       return;
@@ -2183,11 +2198,11 @@ export function App() {
         );
         taskWorkspacePathRef.current = workspace.path;
         setTasks(nextState.tasks);
-        setActiveTaskId(openingNewTaskLauncher ? null : nextState.activeTaskId);
+        setActiveTaskId(null);
         const nextDraft = createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode);
         setDraftTask(nextDraft);
-        setOpenTaskIds(nextState.activeTaskId ? [nextState.activeTaskId] : []);
-        setDraftTabOpen(openingNewTaskLauncher || nextState.activeTaskId === null);
+        setOpenTaskIds([]);
+        setDraftTabOpen(true);
         setTaskWorkspacePath(workspace.path);
         setTaskHistoryLoadingId(null);
         setSendingFollowUpId(null);
@@ -2276,10 +2291,14 @@ export function App() {
       !taskStateReady ||
       comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(workspace.path) ||
       selectedTask ||
+      (!draftCreationRequestedRef.current &&
+        !draftTask.draftText.trim() &&
+        draftTask.timeline.length === 0) ||
       materializingDraftTaskRef.current === draftTask.id
     ) return;
 
     materializingDraftTaskRef.current = draftTask.id;
+    draftCreationRequestedRef.current = false;
     const task: WorkbenchTask = {
       ...draftTask,
       codexProfileId: draftTask.codexProfileId ?? codexProfiles[0]?.id ?? null,
@@ -2318,6 +2337,7 @@ export function App() {
       !taskStateReady ||
       taskWorkspacePath !== workspace.path ||
       !selectedTask ||
+      selectedTask.origin === "codex" ||
       !hasUnloadedTimeline(selectedTask) ||
       taskHistoryLoadingId === selectedTask.id
     ) return;
@@ -2548,32 +2568,114 @@ export function App() {
     }
     if (!isTauriHost() || agent.runtime.phase !== "ready") return;
     let cancelled = false;
-    setCodexHistoryLoading(true);
-    setCodexHistoryError(null);
-    void listCodexThreads({
+    let refreshInFlight = false;
+    const context = {
       projectPath: workspace.path,
       taskId: codexHistoryContextTaskId,
-    })
-      .then((threads) => {
-        if (!cancelled) setCodexThreads(threads);
-      })
-      .catch((reason) => {
+    };
+    setCodexHistoryLoading(true);
+    setCodexHistoryError(null);
+    const hydrateChangePills = async (threads: CodexThreadSummary[]) => {
+      const queue = threads
+        .filter((thread) => !thread.archived && thread.additions === undefined)
+      const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+        while (!cancelled) {
+          const thread = queue.shift();
+          if (!thread) return;
+          try {
+            const changes = await readCodexThreadChangeSummary(thread.id, context);
+            if (cancelled) return;
+            setCodexThreads((current) => {
+              const next = current.map((item) =>
+                item.id === thread.id ? { ...item, ...changes } : item);
+              writeCodexThreadSnapshot(next);
+              return next;
+            });
+          } catch {
+            // A single old/corrupt rollout should not block the sidebar.
+          }
+        }
+      });
+      await Promise.all(workers);
+    };
+    const refreshThreads = async (includeArchived: boolean) => {
+      if (refreshInFlight || cancelled) return;
+      refreshInFlight = true;
+      try {
+        const listedThreads = await listCodexThreads(context, includeArchived);
+        if (cancelled) return;
+        const observedAt = Date.now();
+        const threads = listedThreads.map((thread) => {
+          const previousRecency = codexThreadRecencyRef.current.get(thread.id);
+          if (
+            previousRecency !== undefined &&
+            thread.updatedAt > previousRecency
+          ) {
+            codexThreadActiveUntilRef.current.set(thread.id, observedAt + 6_000);
+          }
+          codexThreadRecencyRef.current.set(thread.id, thread.updatedAt);
+          const inferredWorking =
+            (codexThreadActiveUntilRef.current.get(thread.id) ?? 0) > observedAt;
+          return {
+            ...thread,
+            status: inferredWorking ? "working" as const : thread.status,
+          };
+        });
+        setCodexThreads((current) => {
+          const previous = new Map(current.map((thread) => [thread.id, thread]));
+          const activeIds = new Set(threads.map((thread) => thread.id));
+          const merged = [
+            ...threads.map((thread) => ({
+              ...previous.get(thread.id),
+              ...thread,
+            })),
+            ...current.filter((thread) => thread.archived && !activeIds.has(thread.id)),
+          ].sort((left, right) => right.updatedAt - left.updatedAt);
+          writeCodexThreadSnapshot(merged);
+          return merged;
+        });
+        const openImportedThreadId =
+          selectedTask?.origin === "codex" ? selectedTask.threadId : null;
+        const openImportedThread = openImportedThreadId
+          ? threads.find((thread) => thread.id === openImportedThreadId)
+          : null;
+        if (
+          openImportedThread &&
+          selectedTask &&
+          openImportedThread.updatedAt > selectedTask.updatedAt
+        ) {
+          setPendingCodexThread({
+            thread: openImportedThread,
+            context,
+          });
+        }
+        setCodexHistoryError(null);
+        if (includeArchived) void hydrateChangePills(threads);
+      } catch (reason) {
         if (!cancelled) {
           setCodexHistoryError(
             reason instanceof Error ? reason.message : String(reason),
           );
         }
-      })
-      .finally(() => {
+      } finally {
+        refreshInFlight = false;
         if (!cancelled) setCodexHistoryLoading(false);
-      });
+      }
+    };
+    void refreshThreads(true);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshThreads(false);
+    }, 2_500);
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, [
     agent.runtime.phase,
     codexHistoryContextTaskId,
     preferences.importCodexHistory,
+    selectedTask?.id,
+    selectedTask?.updatedAt,
     workspace.path,
   ]);
   const attentionQuestionRequest = attentionSelectedPendingTarget
@@ -3846,6 +3948,8 @@ export function App() {
   const openNewTaskTab = () => {
     if (!taskStateReady) return;
     newTaskLauncherProjectRef.current = null;
+    draftCreationRequestedRef.current = true;
+    focusedNewTaskRequestRef.current = true;
     setActiveTaskId(null);
     setDraftTabOpen(true);
     if (shouldCreateDraftWhenOpeningNewTaskTab(draftTabOpen)) {
@@ -4571,6 +4675,7 @@ export function App() {
               tasks={tasks}
               codexThreads={preferences.importCodexHistory ? codexThreads : []}
               codexHistoryError={codexHistoryError}
+              sidebarV2={preferences.sidebarV2}
               activeTaskId={selectedTask?.id ?? ""}
               workspace={workspace}
               workingTaskIds={agent.workingTaskIds}
@@ -4633,6 +4738,8 @@ export function App() {
                 closeFocusPanel();
               }}
               onSelectTask={(taskId) => {
+                focusedNewTaskRequestRef.current = false;
+                explicitlyOpenedTaskRef.current = workspaceTaskKey(workspace.path, taskId);
                 setActiveTaskId(taskId);
                 setActivePage("tasks");
               }}
@@ -4647,6 +4754,31 @@ export function App() {
                 });
                 setActivePage("tasks");
                 closeFocusPanel();
+              }}
+              onArchiveCodexThread={(thread) => {
+                void nativeBridge.agentRequest(
+                  "thread/archive",
+                  { threadId: thread.id },
+                  {
+                    projectPath: workspace.path,
+                    taskId: codexHistoryContextTaskId,
+                  },
+                ).then(() => {
+                  setCodexThreads((current) => {
+                    const next = current.map((item) =>
+                      item.id === thread.id ? { ...item, archived: true } : item);
+                    writeCodexThreadSnapshot(next);
+                    return next;
+                  });
+                  setTasks((current) =>
+                    current.filter((task) => task.id !== `codex:${thread.id}`));
+                  setActiveTaskId((current) =>
+                    current === `codex:${thread.id}` ? null : current);
+                }).catch((reason) => {
+                  setCodexHistoryError(
+                    reason instanceof Error ? reason.message : String(reason),
+                  );
+                });
               }}
               onToggleTaskPinned={toggleTaskPinned}
               onSetTaskArchived={setTaskArchived}

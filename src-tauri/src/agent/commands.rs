@@ -63,7 +63,10 @@ pub async fn agent_request(
         strip_execution_path_fields(&mut params);
         apply_execution_root(&method, &mut params, &context.execution_root)?;
     }
-    if method != "thread/turns/list" {
+    if !matches!(
+        method.as_str(),
+        "thread/turns/list" | "thread/archive" | "thread/unarchive"
+    ) {
         if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
             runtimes.require_thread_task(
                 &context.environment.id,
@@ -112,6 +115,8 @@ fn renderer_agent_method(method: &str) -> bool {
             | "skills/list"
             | "thread/list"
             | "thread/turns/list"
+            | "thread/archive"
+            | "thread/unarchive"
             | "thread/compact/start"
             | "thread/goal/clear"
             | "thread/goal/set"
@@ -129,8 +134,6 @@ fn native_run_method(method: &str) -> bool {
                 | "thread/inject_items"
                 | "thread/delete"
                 | "thread/fork"
-                | "thread/archive"
-                | "thread/unarchive"
         )
 }
 
@@ -355,8 +358,10 @@ mod tests {
             "plugin/uninstall",
             "skills/config/write",
             "skills/list",
+            "thread/archive",
             "thread/list",
             "thread/turns/list",
+            "thread/unarchive",
             "thread/compact/start",
             "thread/goal/clear",
             "thread/goal/set",

@@ -10,6 +10,7 @@ type RawThread = {
   createdAt?: unknown;
   updatedAt?: unknown;
   recencyAt?: unknown;
+  status?: unknown;
 };
 
 type ThreadListResponse = {
@@ -19,6 +20,26 @@ type ThreadListResponse = {
 
 const sourceKinds = ["cli", "vscode", "appServer"];
 type AgentContext = { projectPath: string; taskId: string | null };
+const snapshotKey = "xiao.codex-thread-snapshot.v2";
+
+const threadStatus = (
+  value: unknown,
+): CodexThreadSummary["status"] => {
+  const raw = typeof value === "string"
+    ? value
+    : value && typeof value === "object"
+      ? String(
+          (value as Record<string, unknown>).type ??
+          (value as Record<string, unknown>).status ??
+          "",
+        )
+      : "";
+  const normalized = raw.toLocaleLowerCase();
+  if (/(active|working|running|inprogress)/.test(normalized)) return "working";
+  if (/(waiting|approval|input|blocked)/.test(normalized)) return "waiting";
+  if (/(failed|error|cancelled|interrupted)/.test(normalized)) return "failed";
+  return "ready";
+};
 
 const titleForThread = (name: unknown, preview: unknown) => {
   const explicit = typeof name === "string" ? name.trim() : "";
@@ -51,7 +72,32 @@ const summaryFromThread = (
     createdAt,
     updatedAt,
     archived,
+    status: threadStatus(thread.status),
   };
+};
+
+export const readCodexThreadSnapshot = (): CodexThreadSummary[] => {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(snapshotKey) ?? "[]") as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter((thread): thread is CodexThreadSummary => Boolean(
+      thread &&
+      typeof thread === "object" &&
+      typeof (thread as CodexThreadSummary).id === "string" &&
+      typeof (thread as CodexThreadSummary).cwd === "string" &&
+      typeof (thread as CodexThreadSummary).title === "string",
+    ));
+  } catch {
+    return [];
+  }
+};
+
+export const writeCodexThreadSnapshot = (threads: CodexThreadSummary[]) => {
+  try {
+    window.localStorage.setItem(snapshotKey, JSON.stringify(threads));
+  } catch {
+    // The live result remains usable when private storage is unavailable.
+  }
 };
 
 const listPage = (archived: boolean, cursor: string | null, context: AgentContext) =>
@@ -66,9 +112,10 @@ const listPage = (archived: boolean, cursor: string | null, context: AgentContex
 
 export const listCodexThreads = async (
   context: AgentContext,
+  includeArchived = true,
 ): Promise<CodexThreadSummary[]> => {
   const threads: CodexThreadSummary[] = [];
-  for (const archived of [false, true]) {
+  for (const archived of includeArchived ? [false, true] : [false]) {
     let cursor: string | null = null;
     const seen = new Set<string>();
     do {
@@ -86,6 +133,52 @@ export const listCodexThreads = async (
   }
   return [...new Map(threads.map((thread) => [thread.id, thread])).values()]
     .sort((left, right) => right.updatedAt - left.updatedAt);
+};
+
+export const readCodexThreadChangeSummary = async (
+  threadId: string,
+  context: AgentContext,
+) => {
+  const response = await nativeBridge.agentRequest<{ data?: unknown }>(
+    "thread/turns/list",
+    {
+      threadId,
+      cursor: null,
+      // The newest turn is often only a follow-up or status update. A small
+      // tail finds the latest real edit without loading the conversation.
+      limit: 6,
+      sortDirection: "desc",
+      itemsView: "full",
+    },
+    context,
+  );
+  const turns = Array.isArray(response.data) ? response.data : [];
+  for (const rawTurn of turns) {
+    if (!rawTurn || typeof rawTurn !== "object") continue;
+    const turn = rawTurn as Record<string, unknown>;
+    const items = Array.isArray(turn.items) ? turn.items : [];
+    let additions = 0;
+    let deletions = 0;
+    let changed = false;
+    for (const rawItem of items) {
+      if (!rawItem || typeof rawItem !== "object") continue;
+      const item = rawItem as Record<string, unknown>;
+      if (item.type !== "fileChange" || !Array.isArray(item.changes)) continue;
+      for (const rawChange of item.changes) {
+        if (!rawChange || typeof rawChange !== "object") continue;
+        const change = rawChange as Record<string, unknown>;
+        if (typeof change.path !== "string") continue;
+        changed = true;
+        const diff = typeof change.diff === "string" ? change.diff : "";
+        for (const line of diff.replace(/\r\n?/g, "\n").split("\n")) {
+          if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+          if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+        }
+      }
+    }
+    if (changed) return { additions, deletions };
+  }
+  return { additions: 0, deletions: 0 };
 };
 
 const userEntry = (
