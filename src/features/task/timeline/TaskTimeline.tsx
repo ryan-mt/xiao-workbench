@@ -93,7 +93,7 @@ function TaskTimelineView({
               onOpenResource={onOpenResource}
               onReviewChanges={onReviewChanges}
               onUndo={onUndo}
-              onEditUserMessage={onEditUserMessage}
+              onEditUserMessage={rowIndex === lastTurnIndex ? onEditUserMessage : undefined}
               onResolveApproval={onResolveApproval}
             />
           );
@@ -116,7 +116,6 @@ function TaskTimelineView({
               canUndo={false}
               undoing={false}
               isLive={runtime.phase === "working" && runtime.taskId === taskId}
-              onEditUserMessage={onEditUserMessage}
             />
           </span>
         );

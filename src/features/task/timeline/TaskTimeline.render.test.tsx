@@ -19,6 +19,7 @@ const render = (
   timeline: TimelineEntry[],
   expandToolOutput = false,
   runtime: AgentRuntimeState = idleRuntime,
+  onEditUserMessage?: (text: string) => void,
 ) => renderToStaticMarkup(
   <TaskTimeline
     timeline={timeline}
@@ -39,6 +40,7 @@ const render = (
     canUndo={false}
     undoing={false}
     onUndo={() => undefined}
+    onEditUserMessage={onEditUserMessage}
   />,
 );
 
@@ -131,5 +133,24 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain(">Shell retry<");
     expect(markup).toContain(">recovered<");
     expect(markup).not.toContain(">Shell failed<");
+  });
+
+  it("offers Edit only on the newest user message", () => {
+    const markup = render([{
+      id: "older-user",
+      kind: "user",
+      title: "Older prompt",
+    }, {
+      id: "older-response",
+      kind: "result",
+      title: "Agent response",
+      body: "Older response",
+    }, {
+      id: "newest-user",
+      kind: "user",
+      title: "Newest prompt",
+    }], false, idleRuntime, () => undefined);
+
+    expect(markup.match(/Edit this prompt in the composer/g)).toHaveLength(1);
   });
 });

@@ -22,7 +22,7 @@ type SharedProps = {
   onOpenResource: (target: string) => boolean;
   onReviewChanges: () => void;
   onUndo: () => void;
-  onEditUserMessage: (text: string) => void;
+  onEditUserMessage?: (text: string) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
