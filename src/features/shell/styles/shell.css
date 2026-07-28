@@ -1100,6 +1100,7 @@
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   padding: 0 1px 48px;
   scrollbar-width: thin;

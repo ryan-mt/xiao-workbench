@@ -9,8 +9,6 @@
 .conversation-turn {
   min-width: 0;
   margin-bottom: 44px;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 420px;
 }
 
 .conversation-turn > .timeline-entry-anchor:first-child {

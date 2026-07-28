@@ -362,7 +362,7 @@ export function TaskWorkspace({
   const scrollArea = useRef<HTMLDivElement>(null);
   const timelineShell = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
-  const previousTaskId = useRef(taskId);
+  const initialScrollRestored = useRef(false);
   const scrollPersistTimer = useRef<number | null>(null);
   const pendingScrollTop = useRef(initialTimelineScrollTop);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -468,14 +468,8 @@ export function TaskWorkspace({
   useLayoutEffect(() => {
     const node = scrollArea.current;
     if (!node) return;
-    if (previousTaskId.current !== taskId) {
-      previousTaskId.current = taskId;
-      node.scrollTop = initialTimelineScrollTop;
-      followLiveOutput.current = shouldFollowLiveOutput(node);
-      setShowJumpToLatest(!followLiveOutput.current);
-      return;
-    }
-    if (initialTimelineScrollTop > 0 && timeline.length > 0) {
+    if (!initialScrollRestored.current && timeline.length > 0) {
+      initialScrollRestored.current = true;
       node.scrollTop = initialTimelineScrollTop;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
@@ -698,7 +692,7 @@ export function TaskWorkspace({
             scrollPersistTimer.current = window.setTimeout(() => {
               scrollPersistTimer.current = null;
               onTimelineScrollTopChange(pendingScrollTop.current);
-            }, 180);
+            }, 700);
           }}
         >
           <TaskTimeline
