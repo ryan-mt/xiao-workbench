@@ -39,6 +39,7 @@ import type {
 import { workspacePathComparisonKey } from "../../../core/workspacePath";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
+import { projectLiveFileChanges } from "../composer/liveFileChanges";
 import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
@@ -538,6 +539,12 @@ export function TaskWorkspace({
       mcpElicitationRequest={mcpElicitationRequest}
       draftText={draftText}
       followUps={followUps}
+      liveFileChanges={useMemo(
+        () => runtime.phase === "working" && runtime.taskId === taskId
+          ? projectLiveFileChanges(timeline)
+          : null,
+        [runtime.phase, runtime.taskId, taskId, timeline],
+      )}
       sendingFollowUpId={sendingFollowUpId}
       failedFollowUpId={failedFollowUpId}
       attachments={attachments}

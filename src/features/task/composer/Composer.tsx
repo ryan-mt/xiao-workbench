@@ -29,6 +29,8 @@ import type { XiaoWorkspaceMode } from "../../../core/models/xiao";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { fileMentionAtCursor, removeFileMention, type FileMention } from "./fileMention";
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
+import { LiveFileChangePill } from "./LiveFileChangePill";
+import type { LiveFileChangeSummary } from "./liveFileChanges";
 import { ModelPicker } from "./ModelPicker";
 import { McpElicitationDock } from "./McpElicitationDock";
 import {
@@ -86,6 +88,7 @@ type ComposerProps = {
   mcpElicitationRequest: AgentMcpElicitationRequest | null;
   draftText: string;
   followUps: AgentFollowUp[];
+  liveFileChanges: LiveFileChangeSummary | null;
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
   attachments: AgentAttachment[];
@@ -227,6 +230,7 @@ export function Composer({
   mcpElicitationRequest,
   draftText,
   followUps,
+  liveFileChanges,
   sendingFollowUpId,
   failedFollowUpId,
   attachments,
@@ -1047,6 +1051,10 @@ export function Composer({
           </div>
         </section>
       )}
+      <LiveFileChangePill
+        summary={currentTaskWorking ? liveFileChanges : null}
+        onReview={() => onOpenView("changes")}
+      />
       <QueuedMessages
         followUps={followUps}
         sendingFollowUpId={sendingFollowUpId}

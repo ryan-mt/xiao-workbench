@@ -3532,6 +3532,63 @@
 
 .composer.is-question-paused { display: none; }
 
+.composer-live-changes {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 32px;
+  align-items: center;
+  justify-self: center;
+  gap: 7px;
+  margin: 0 auto 10px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 94%, var(--text) 2%);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--backdrop) 20%, transparent);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.composer-live-changes:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+
+.composer-live-changes:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--focus) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.composer-live-changes > svg {
+  color: var(--muted);
+}
+
+.composer-live-changes > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  animation: composer-change-count 180ms ease-out;
+}
+
+.composer-live-changes b {
+  color: var(--success);
+  font-weight: 570;
+}
+
+.composer-live-changes em {
+  color: var(--danger);
+  font-style: normal;
+  font-weight: 570;
+}
+
+@keyframes composer-change-count {
+  from { opacity: .45; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .composer {
   position: relative;
   isolation: isolate;
