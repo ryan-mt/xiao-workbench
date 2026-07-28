@@ -363,6 +363,8 @@ export function TaskWorkspace({
   const timelineShell = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
   const previousTaskId = useRef(taskId);
+  const scrollPersistTimer = useRef<number | null>(null);
+  const pendingScrollTop = useRef(initialTimelineScrollTop);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -410,6 +412,12 @@ export function TaskWorkspace({
     setTimelineSelection(null);
     setSelectedContext(null);
   }, [taskId]);
+
+  useEffect(() => () => {
+    if (scrollPersistTimer.current !== null) {
+      window.clearTimeout(scrollPersistTimer.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!timelineSelection) return;
@@ -681,9 +689,16 @@ export function TaskWorkspace({
           onScroll={(event) => {
             const following = shouldFollowLiveOutput(event.currentTarget);
             followLiveOutput.current = following;
-            setShowJumpToLatest(!following);
-            setTimelineSelection(null);
-            onTimelineScrollTopChange(event.currentTarget.scrollTop);
+            setShowJumpToLatest((current) => current === !following ? current : !following);
+            setTimelineSelection((current) => current === null ? current : null);
+            pendingScrollTop.current = event.currentTarget.scrollTop;
+            if (scrollPersistTimer.current !== null) {
+              window.clearTimeout(scrollPersistTimer.current);
+            }
+            scrollPersistTimer.current = window.setTimeout(() => {
+              scrollPersistTimer.current = null;
+              onTimelineScrollTopChange(pendingScrollTop.current);
+            }, 180);
           }}
         >
           <TaskTimeline

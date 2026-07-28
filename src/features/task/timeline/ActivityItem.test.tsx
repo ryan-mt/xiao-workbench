@@ -46,6 +46,7 @@ describe("ActivityItem user message", () => {
     });
 
     expect(markup).toContain("thấy gì?");
+    expect(markup).not.toContain(">You<");
     expect(markup).not.toContain("selected_text");
     expect(markup).not.toContain("Hi! What would you like to work on?");
   });

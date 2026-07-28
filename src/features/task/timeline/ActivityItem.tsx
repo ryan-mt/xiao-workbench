@@ -317,7 +317,7 @@ export const ActivityItem = memo(function ActivityItem({
               })}
             </div>
           )}
-          {entry.kind === "user" && entry.meta ? (
+          {entry.kind === "user" && entry.meta && entry.meta !== "You" ? (
             <span className={`activity__user-state is-${entry.status ?? "idle"}`}>
               <XiaoIcon
                 className={entry.status === "active" && isLive ? "spin" : undefined}

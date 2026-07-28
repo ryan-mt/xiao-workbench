@@ -148,6 +148,8 @@ export type TimelineEntry = {
   approvalKind?: AgentApprovalRequestKind;
   approvalPermissions?: Record<string, unknown>;
   turnId?: string;
+  /** App-server supplied wall-clock duration for the owning turn. */
+  turnDurationMs?: number;
   turnDiff?: string;
   collaborators?: AgentCollaborator[];
   collaborationTool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";

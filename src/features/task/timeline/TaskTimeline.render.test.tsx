@@ -69,7 +69,7 @@ describe("TaskTimeline turn canvas", () => {
       status: "error",
     }]);
 
-    expect(markup).toContain("Worked for 0s");
+    expect(markup).toContain(">Worked<");
     expect(markup).toContain("aria-expanded=\"false\"");
     expect(markup.match(/src="data:image\/png;base64,iVBORw0KGgo="/g)).toHaveLength(1);
     expect(markup).not.toContain("npm test");

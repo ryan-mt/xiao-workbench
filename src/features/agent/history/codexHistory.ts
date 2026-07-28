@@ -22,6 +22,25 @@ const sourceKinds = ["cli", "vscode", "appServer"];
 type AgentContext = { projectPath: string; taskId: string | null };
 const snapshotKey = "xiao.codex-thread-snapshot.v2";
 
+const timestampMilliseconds = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value >= 1_000_000_000_000 ? value : value * 1_000;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const firstTimestamp = (record: Record<string, unknown>, keys: string[]) => {
+  for (const key of keys) {
+    const parsed = timestampMilliseconds(record[key]);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+};
+
 const threadStatus = (
   value: unknown,
 ): CodexThreadSummary["status"] => {
@@ -211,7 +230,6 @@ const userEntry = (
     kind: "user",
     title,
     createdAt,
-    meta: "You",
     status: "success",
     turnId,
   };
@@ -237,26 +255,42 @@ export const readCodexThreadTimeline = async (
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
     const turnId = typeof turn.id === "string" ? turn.id : crypto.randomUUID();
-    const createdAt =
-      typeof turn.startedAt === "number" ? turn.startedAt * 1_000 : Date.now();
-    const completedAt =
-      typeof turn.completedAt === "number" ? turn.completedAt * 1_000 : null;
+    const createdAt = firstTimestamp(
+      turn,
+      ["startedAt", "started_at", "createdAt", "created_at"],
+    ) ?? Date.now();
+    const completedAt = firstTimestamp(
+      turn,
+      ["completedAt", "completed_at", "updatedAt", "updated_at"],
+    );
+    const turnDurationMs =
+      typeof turn.durationMs === "number" && Number.isFinite(turn.durationMs)
+        ? Math.max(0, turn.durationMs)
+        : null;
     const items = Array.isArray(turn.items) ? turn.items : [];
     return items.flatMap((rawItem) => {
       if (!rawItem || typeof rawItem !== "object") return [];
       const item = rawItem as Record<string, unknown>;
       if (item.type === "userMessage") {
         const entry = userEntry(item, createdAt, turnId);
-        return entry ? [entry] : [];
+        return entry ? [{ ...entry, ...(turnDurationMs !== null ? { turnDurationMs } : {}) }] : [];
       }
       const entry = timelineEntryFromItem(item);
-      const itemCreatedAt =
-        typeof item.createdAt === "number"
-          ? item.createdAt * 1_000
-          : item.type === "agentMessage" && item.phase !== "commentary" && completedAt
-            ? completedAt
-            : createdAt;
-      return entry ? [{ ...entry, createdAt: itemCreatedAt, turnId }] : [];
+      const explicitItemTimestamp = firstTimestamp(
+        item,
+        ["createdAt", "created_at", "timestamp", "updatedAt", "updated_at"],
+      );
+      const itemCreatedAt = explicitItemTimestamp ?? (
+        item.type === "agentMessage" && item.phase !== "commentary" && completedAt
+          ? completedAt
+          : createdAt
+      );
+      return entry ? [{
+        ...entry,
+        createdAt: itemCreatedAt,
+        turnId,
+        ...(turnDurationMs !== null ? { turnDurationMs } : {}),
+      }] : [];
     });
   });
 };

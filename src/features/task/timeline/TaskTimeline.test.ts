@@ -67,4 +67,15 @@ describe("conversation projection", () => {
       99_000,
     )).toBe(65_000);
   });
+
+  it("prefers the app-server turn duration over projected item timestamps", () => {
+    expect(turnDuration(
+      { ...entry("user", "user", 10_000), turnDurationMs: 42_350 },
+      [entry("command", "command", 10_000)],
+      { ...entry("response", "result", 10_000), title: "Agent response" },
+      false,
+      null,
+      99_000,
+    )).toBe(42_350);
+  });
 });

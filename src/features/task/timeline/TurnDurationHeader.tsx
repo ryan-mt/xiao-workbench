@@ -21,12 +21,17 @@ export const turnDuration = (
   runtimeStartedAt: number | null,
   now = Date.now(),
 ) => {
+  const protocolDuration = user.turnDurationMs ?? response?.turnDurationMs;
+  if (!live && typeof protocolDuration === "number" && protocolDuration > 0) {
+    return protocolDuration;
+  }
   const timestamps = [user, ...entries, ...(response ? [response] : [])]
     .map((entry) => entry.createdAt)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   const startedAt = runtimeStartedAt ?? user.createdAt ?? (timestamps.length ? Math.min(...timestamps) : now);
   const endedAt = live ? now : response?.createdAt ?? (timestamps.length ? Math.max(...timestamps) : startedAt);
-  return Math.max(0, endedAt - startedAt);
+  const duration = Math.max(0, endedAt - startedAt);
+  return live || duration > 0 ? duration : null;
 };
 
 export function TurnDurationHeader({
@@ -47,10 +52,12 @@ export function TurnDurationHeader({
   onToggle: () => void;
 }) {
   const labelRef = useRef<HTMLSpanElement>(null);
-  const label = () =>
-    `${live ? "Working" : "Worked"} for ${formatElapsed(
-      turnDuration(user, entries, response, live, runtimeStartedAt),
-    )}`;
+  const label = () => {
+    const duration = turnDuration(user, entries, response, live, runtimeStartedAt);
+    return duration === null
+      ? "Worked"
+      : `${live ? "Working" : "Worked"} for ${formatElapsed(duration)}`;
+  };
 
   useEffect(() => {
     if (!live) return;
