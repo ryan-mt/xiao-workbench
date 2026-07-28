@@ -41,6 +41,7 @@ import {
 } from "./promptHistory";
 import { QuestionDock } from "./QuestionDock";
 import { SteerMessageBar } from "./SteerMessageBar";
+import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
 import {
   filterSlashCommands,
   SLASH_COMMANDS,
@@ -283,7 +284,6 @@ export function Composer({
   const [revealedRuntimeError, setRevealedRuntimeError] = useState<string | null>(null);
   const [selectingAttachments, setSelectingAttachments] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [deliveryMenuOpen, setDeliveryMenuOpen] = useState(false);
   const [goalEditorOpen, setGoalEditorOpen] = useState(false);
   const [goalValue, setGoalValue] = useState(goal?.objective ?? "");
   const [dragging, setDragging] = useState(false);
@@ -303,7 +303,6 @@ export function Composer({
   const promptHistoryIndex = useRef(-1);
   const promptHistoryDraft = useRef<string | null>(null);
   const addMenu = useRef<HTMLDivElement>(null);
-  const deliveryMenu = useRef<HTMLDivElement>(null);
   const addMenuTrigger = useRef<HTMLButtonElement>(null);
   const fileSearchRequest = useRef(0);
   const submittingRef = useRef(false);
@@ -316,6 +315,11 @@ export function Composer({
     mcpElicitationRequest?.taskId === taskId ? mcpElicitationRequest : null;
   const interactiveRequestOpen = Boolean(activeQuestionRequest || activeMcpElicitationRequest);
   const canSteer = currentTaskWorking && Boolean(runtime.threadId && runtime.turnId);
+  const hasSubmissionContent =
+    value.trim().length > 0
+    || attachments.length > 0
+    || reviewContext.length > 0
+    || Boolean(selectedContext?.trim());
   const canSubmit =
     !submitting &&
     !disabled &&
@@ -323,7 +327,7 @@ export function Composer({
     !undoing &&
     (!definitionOfDoneAvailable || definitionOfDoneReady) &&
     !interactiveRequestOpen &&
-    (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0 || Boolean(selectedContext?.trim())) &&
+    hasSubmissionContent &&
     (runtime.phase === "ready" || currentTaskWorking);
   const planSteps = plan?.steps ?? [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
@@ -443,24 +447,6 @@ export function Composer({
       window.removeEventListener("keydown", escape);
     };
   }, [addMenuOpen]);
-
-  useEffect(() => {
-    if (!deliveryMenuOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!deliveryMenu.current?.contains(event.target as Node)) {
-        setDeliveryMenuOpen(false);
-      }
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDeliveryMenuOpen(false);
-    };
-    window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", escape);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [deliveryMenuOpen]);
 
   useLayoutEffect(() => {
     const menu = slashMenu.current;
@@ -1525,67 +1511,14 @@ export function Composer({
             />
           </div>
           <div className="composer__actions">
-            {currentTaskWorking && (
-              <button
-                className="composer__stop"
-                type="button"
-                aria-label="Stop current turn"
-                title="Stop current turn (Esc)"
-                onClick={() => void onInterrupt()}
-              >
-                <span aria-hidden="true" />
-              </button>
-            )}
-            <button
-              className="composer__submit"
-              aria-label={currentTaskWorking ? "Queue follow-up" : "Send task"}
-              disabled={!canSubmit}
-              onClick={() => void submit(currentTaskWorking ? "queue" : "send")}
-            >
-              <XiaoIcon name="send" size={14} strokeWidth={2} />
-            </button>
-            {currentTaskWorking ? (
-              <div className="composer-delivery" ref={deliveryMenu}>
-                <button
-                  className="composer-delivery__trigger"
-                  type="button"
-                  aria-label="Choose message delivery"
-                  aria-expanded={deliveryMenuOpen}
-                  title="Choose Queue or Steer"
-                  onClick={() => setDeliveryMenuOpen((open) => !open)}
-                >
-                  <XiaoIcon name="caret" size={10} />
-                </button>
-                {deliveryMenuOpen ? (
-                  <div className="composer-delivery__menu" role="menu">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      disabled={!canSubmit}
-                      onClick={() => {
-                        setDeliveryMenuOpen(false);
-                        void submit("queue");
-                      }}
-                    >
-                      <span><strong>Queue</strong><small>Send after this turn</small></span>
-                      <kbd>Enter</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      disabled={!canSubmit || !canSteer}
-                      onClick={() => {
-                        setDeliveryMenuOpen(false);
-                        void submit("steer");
-                      }}
-                    >
-                      <span><strong>Steer</strong><small>Send into this turn</small></span>
-                      <kbd>Ctrl ↵</kbd>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+            <ComposerPrimaryAction
+              working={currentTaskWorking}
+              hasContent={hasSubmissionContent}
+              canSubmit={canSubmit}
+              canSteer={canSteer}
+              onInterrupt={() => void onInterrupt()}
+              onDeliver={(delivery) => void submit(delivery)}
+            />
           </div>
         </div>
       </div>
