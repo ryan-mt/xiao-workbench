@@ -134,7 +134,7 @@ const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
 // Thread/list currently reports active work as recency changes and often emits
 // quiet gaps while a command is still running. Keep the observed working state
 // across those gaps so the sidebar cannot flash Done between live events.
-export const codexActivityGraceMs = 45_000;
+export const codexActivityGraceMs = 8_000;
 
 export const observedCodexThreadStatus = (
   sourceStatus: CodexThreadSummary["status"],
@@ -1663,6 +1663,7 @@ export function App() {
   const codexThreadRecencyRef = useRef(
     new Map(readCodexThreadSnapshot().map((thread) => [thread.id, thread.updatedAt])),
   );
+  const codexThreadBaselineSeenRef = useRef(new Set<string>());
   const codexThreadActiveUntilRef = useRef(new Map<string, number>());
   const codexThreadWorkingRef = useRef(new Set<string>());
   const codexThreadDoneRef = useRef(new Set(
@@ -2634,7 +2635,13 @@ export function App() {
         const observedAt = Date.now();
         const threads = listedThreads.map((thread) => {
           const previousRecency = codexThreadRecencyRef.current.get(thread.id);
+          const baselineSeen = codexThreadBaselineSeenRef.current.has(thread.id);
+          if (!baselineSeen && thread.status !== "working") {
+            codexThreadActiveUntilRef.current.delete(thread.id);
+            codexThreadWorkingRef.current.delete(thread.id);
+          }
           if (
+            baselineSeen &&
             previousRecency !== undefined &&
             thread.updatedAt > previousRecency
           ) {
@@ -2643,6 +2650,7 @@ export function App() {
               observedAt + codexActivityGraceMs,
             );
           }
+          codexThreadBaselineSeenRef.current.add(thread.id);
           codexThreadRecencyRef.current.set(thread.id, thread.updatedAt);
           const inferredWorking =
             (codexThreadActiveUntilRef.current.get(thread.id) ?? 0) > observedAt;

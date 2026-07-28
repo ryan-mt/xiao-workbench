@@ -9,6 +9,8 @@
 .conversation-turn {
   min-width: 0;
   margin-bottom: 44px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
 }
 
 .conversation-turn > .timeline-entry-anchor:first-child {
@@ -69,6 +71,20 @@
 
 .conversation-turn__execution .activity {
   margin: 0 !important;
+  animation: none;
+}
+
+.conversation-turn__execution .activity__tool-icon {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #8f918e;
+}
+
+.conversation-turn__execution .activity__tool-icon + .activity__tool-summary {
+  min-width: 0;
 }
 
 .conversation-turn__execution :is(

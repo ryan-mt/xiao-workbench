@@ -405,6 +405,9 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="activity__tool-disclosure activity__tool-disclosure--static">
           <div className="activity__tool-summary-row">
+            <span className="activity__tool-icon" aria-hidden="true">
+              <XiaoIcon name="search" size={13} />
+            </span>
             <span className="activity__tool-summary">
               <strong>Web search</strong>
               {query && query !== "Web search" ? <span title={query}>{query}</span> : null}
@@ -535,6 +538,13 @@ export const ActivityItem = memo(function ActivityItem({
       : entry.body ?? "";
     const summary = (
       <>
+        <span className="activity__tool-icon" aria-hidden="true">
+          <XiaoIcon
+            className={active ? "spin" : undefined}
+            name={active ? "pending" : entry.meta === "Plugin tool" || entry.meta === "Dynamic tool" ? "cpu" : "command"}
+            size={13}
+          />
+        </span>
         <span className="activity__tool-summary">
           <strong className={active ? "is-active" : undefined}>{toolTitle}</strong>
           {entry.command ? <span title={toolDetail}>{toolDetail}</span> : null}
@@ -613,6 +623,9 @@ export const ActivityItem = memo(function ActivityItem({
               <details key={file.path} open={expandToolOutput}>
                 <summary>
                   <span className="patch-activity__title">
+                    <span className="activity__tool-icon" aria-hidden="true">
+                      <XiaoIcon name="mutation" size={13} />
+                    </span>
                     <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
                       {verb}
                     </strong>
