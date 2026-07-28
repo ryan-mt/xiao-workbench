@@ -40,7 +40,7 @@ import {
   prependPromptHistory,
 } from "./promptHistory";
 import { QuestionDock } from "./QuestionDock";
-import { QueuedMessages } from "./QueuedMessages";
+import { SteerMessageBar } from "./SteerMessageBar";
 import {
   filterSlashCommands,
   SLASH_COMMANDS,
@@ -1055,7 +1055,7 @@ export function Composer({
         summary={currentTaskWorking ? liveFileChanges : null}
         onReview={() => onOpenView("changes")}
       />
-      <QueuedMessages
+      <SteerMessageBar
         followUps={followUps}
         sendingFollowUpId={sendingFollowUpId}
         failedFollowUpId={failedFollowUpId}
@@ -1083,7 +1083,7 @@ export function Composer({
           dragging ? "is-dragging" : ""
         } ${interactiveRequestOpen ? "is-question-paused" : ""} ${
           selectedContext ? "has-selected-context" : ""
-        }`}
+        } ${followUps.length ? "has-steer-message" : ""}`}
         aria-hidden={interactiveRequestOpen ? true : undefined}
         onDragEnter={(event) => {
           event.preventDefault();
