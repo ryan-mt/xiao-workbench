@@ -43,6 +43,7 @@ import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
 import "../styles/timeline.css";
+import "../styles/chat-canvas.css";
 
 const useEventCallback = <Args extends unknown[], Result>(
   callback: (...args: Args) => Result,

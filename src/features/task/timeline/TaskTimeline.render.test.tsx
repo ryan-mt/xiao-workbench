@@ -15,10 +15,37 @@ const idleRuntime: AgentRuntimeState = {
   eventsSeen: 0,
 };
 
-describe("TaskTimeline grouped tool output", () => {
-  it("keeps image output visible once outside the collapsed tool list", () => {
+const render = (
+  timeline: TimelineEntry[],
+  expandToolOutput = false,
+  runtime: AgentRuntimeState = idleRuntime,
+) => renderToStaticMarkup(
+  <TaskTimeline
+    timeline={timeline}
+    runtime={runtime}
+    latestRun={null}
+    showReasoningSummaries
+    expandToolOutput={expandToolOutput}
+    workspacePath="C:\\work\\xiao"
+    onOpenResource={() => true}
+    historyLoading={false}
+    canFork={false}
+    onForkTask={() => undefined}
+    onResolveApproval={async () => undefined}
+    taskId="task-1"
+    onReviewChanges={() => undefined}
+    onFixVerificationFailures={async () => true}
+    fixVerificationFailuresDisabled={false}
+    canUndo={false}
+    undoing={false}
+    onUndo={() => undefined}
+  />,
+);
+
+describe("TaskTimeline turn canvas", () => {
+  it("keeps image output visible outside a completed turn's collapsed execution list", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
-    const timeline: TimelineEntry[] = [{
+    const markup = render([{
       id: "user",
       kind: "user",
       title: "Generate an image",
@@ -40,40 +67,20 @@ describe("TaskTimeline grouped tool output", () => {
       command: "npm test",
       body: "failed",
       status: "error",
-    }];
+    }]);
 
-    const markup = renderToStaticMarkup(
-      <TaskTimeline
-        timeline={timeline}
-        runtime={idleRuntime}
-        latestRun={null}
-        showReasoningSummaries
-        expandToolOutput={false}
-        workspacePath="C:\\work\\xiao"
-        onOpenResource={() => true}
-        historyLoading={false}
-        canFork={false}
-        onForkTask={() => undefined}
-        onResolveApproval={async () => undefined}
-        taskId="task-1"
-        onReviewChanges={() => undefined}
-        onFixVerificationFailures={async () => true}
-        fixVerificationFailuresDisabled={false}
-        canUndo={false}
-        undoing={false}
-        onUndo={() => undefined}
-      />,
-    );
-
-    expect(markup).toContain("Show 2 calls · 1 failed");
+    expect(markup).toContain("Worked for 0s");
+    expect(markup).toContain("aria-expanded=\"false\"");
     expect(markup.match(/src="data:image\/png;base64,iVBORw0KGgo="/g)).toHaveLength(1);
-    expect(markup).toContain(
-      "</details></article><div class=\"activity__image-attachments\" aria-label=\"Image output\">",
-    );
+    expect(markup).not.toContain("npm test");
   });
 
-  it("marks a failed shell call as recovered when the corrected call succeeds", () => {
-    const timeline: TimelineEntry[] = [{
+  it("marks a failed shell call as recovered when a corrected call succeeds", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Search the workspace",
+    }, {
       id: "failed-search",
       kind: "command",
       title: "Command did not complete",
@@ -86,32 +93,13 @@ describe("TaskTimeline grouped tool output", () => {
       title: "Command completed",
       command: "\"powershell.exe\" -Command \"rg -n -F 'valid' src\"",
       status: "success",
-    }];
+    }], true, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 2_000,
+    });
 
-    const markup = renderToStaticMarkup(
-      <TaskTimeline
-        timeline={timeline}
-        runtime={idleRuntime}
-        latestRun={null}
-        showReasoningSummaries
-        expandToolOutput
-        workspacePath="C:\\work\\xiao"
-        onOpenResource={() => true}
-        historyLoading={false}
-        canFork={false}
-        onForkTask={() => undefined}
-        onResolveApproval={async () => undefined}
-        taskId="task-1"
-        onReviewChanges={() => undefined}
-        onFixVerificationFailures={async () => true}
-        fixVerificationFailuresDisabled={false}
-        canUndo={false}
-        undoing={false}
-        onUndo={() => undefined}
-      />,
-    );
-
-    expect(markup).toContain("tool-call-group is-recovered");
     expect(markup).toContain(">Shell retry<");
     expect(markup).toContain(">recovered<");
     expect(markup).not.toContain(">Shell failed<");

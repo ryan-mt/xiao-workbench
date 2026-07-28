@@ -131,7 +131,10 @@ type ProjectPreferences = Record<string, ProjectPreference>;
 const projectPreferencesStorageKey = "xiao.projects.v1";
 const activeProjectStorageKey = "xiao.active-project.v1";
 const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
-export const codexActivityGraceMs = 15_000;
+// Thread/list currently reports active work as recency changes and often emits
+// quiet gaps while a command is still running. Keep the observed working state
+// across those gaps so the sidebar cannot flash Done between live events.
+export const codexActivityGraceMs = 45_000;
 
 export const observedCodexThreadStatus = (
   sourceStatus: CodexThreadSummary["status"],

@@ -582,7 +582,6 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (entry.kind === "change" && entry.files?.length) {
-    const verb = entry.status === "error" ? "Edit failed" : "Edit";
     return (
       <article
         className={`activity activity--patch activity--${entry.status ?? "idle"}`}
@@ -591,11 +590,23 @@ export const ActivityItem = memo(function ActivityItem({
         <div className="patch-activity__files">
           {entry.files.map((file) => {
             const lines = file.patch ? patchLines(file.patch) : [];
+            const created = /---\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
+            const deleted = /\+\+\+\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
+            const verb = entry.status === "error"
+              ? "Edit failed"
+              : created
+                ? "Created"
+                : deleted
+                  ? "Deleted"
+                  : "Edited";
             const absolutePath = /^[A-Za-z]:[\\/]/.test(file.path)
               ? file.path
               : `${workspacePath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`;
-            const displayPath = file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? file.path;
-            const directory = file.path.split(/[\\/]/).slice(0, -1).join("/");
+            const normalizedWorkspace = workspacePath.replace(/\\/g, "/").replace(/\/+$/, "");
+            const normalizedPath = file.path.replace(/\\/g, "/");
+            const displayPath = normalizedPath.toLowerCase().startsWith(`${normalizedWorkspace.toLowerCase()}/`)
+              ? normalizedPath.slice(normalizedWorkspace.length + 1)
+              : normalizedPath;
             const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
             const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
             return (
@@ -606,7 +617,7 @@ export const ActivityItem = memo(function ActivityItem({
                       {verb}
                     </strong>
                     <span
-                      className="patch-activity__path"
+                      className={`patch-activity__path is-${created ? "created" : deleted ? "deleted" : "edited"}`}
                       title={`Open ${absolutePath}`}
                       role="link"
                       tabIndex={0}
@@ -623,7 +634,6 @@ export const ActivityItem = memo(function ActivityItem({
                       }}
                     >
                       <strong>{displayPath}</strong>
-                      {directory ? <small>{directory}</small> : null}
                       {lineNumber ? <small>line {lineNumber}</small> : null}
                     </span>
                   </span>

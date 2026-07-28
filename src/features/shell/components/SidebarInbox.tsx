@@ -175,6 +175,7 @@ function InboxRow({
         compact ? "is-compact" : "",
         item.selected ? "is-selected" : "",
         item.working ? "is-working" : "",
+        item.done ? "is-done" : "",
         settling ? "is-settling" : "",
       ].filter(Boolean).join(" ")}
       style={{ viewTransitionName: `sidebar-${item.key.replace(/[^a-zA-Z0-9_-]/g, "-")}` }}

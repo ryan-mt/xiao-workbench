@@ -384,7 +384,7 @@ describe("ActivityItem timeline disclosures", () => {
 
     expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
     expect(markup).toContain("line 10");
-    expect(markup).toContain(">Edit<");
+    expect(markup).toContain(">Edited<");
     expect(markup).toContain("patch-activity__verb is-active");
     expect(markup).not.toContain("<details open=\"\"");
   });
