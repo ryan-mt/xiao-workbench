@@ -420,6 +420,10 @@
   transition: opacity 120ms ease;
 }
 
+.activity--user-message .message-actions {
+  justify-content: flex-end;
+}
+
 .activity--user-message:hover .message-actions,
 .activity--user-message:focus-within .message-actions,
 .activity--assistant-message:hover .message-actions,
@@ -453,8 +457,12 @@
 .message-edit {
   display: grid;
   width: min(100%, 560px);
+  min-width: min(420px, 76vw);
   gap: 8px;
-  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 11px;
+  background: var(--surface-deep);
 }
 
 .message-edit textarea {
@@ -462,10 +470,10 @@
   min-height: 92px;
   resize: vertical;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, .12);
-  border-radius: 10px;
+  border: 0;
+  border-radius: 7px;
   outline: none;
-  background: #1c1c1b;
+  background: transparent;
   color: #ededeb;
   font: inherit;
 }

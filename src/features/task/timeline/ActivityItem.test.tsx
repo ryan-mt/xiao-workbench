@@ -74,8 +74,9 @@ describe("ActivityItem user message", () => {
       />,
     );
 
-    expect(renderUser(true)).toContain("Fork from here");
-    expect(renderUser(false)).not.toContain("Fork from here");
+    expect(renderUser(true)).toContain("title=\"Fork from here\"");
+    expect(renderUser(true)).toContain(">Fork<");
+    expect(renderUser(false)).not.toContain("title=\"Fork from here\"");
   });
 
   it("keeps sent images visible while the prompt is queued", () => {

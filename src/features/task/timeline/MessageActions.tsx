@@ -24,16 +24,16 @@ export function MessageActions({
   createdAt,
   editable = false,
   onEdit,
+  onFork,
   copyLabel = "Copy message",
 }: {
   text: string;
   createdAt?: number;
   editable?: boolean;
   onEdit?: (text: string) => void;
+  onFork?: () => void;
   copyLabel?: string;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(text);
   const timestamp = useMemo(
     () => createdAt ? {
       relative: relativeTime(createdAt),
@@ -42,38 +42,59 @@ export function MessageActions({
     [createdAt],
   );
 
-  if (editing) {
-    return (
-      <div className="message-edit">
-        <textarea value={draft} autoFocus onChange={(event) => setDraft(event.target.value)} />
-        <span>
-          <button type="button" onClick={() => setEditing(false)}>Cancel</button>
-          <button
-            className="is-primary"
-            type="button"
-            disabled={!draft.trim()}
-            onClick={() => {
-              onEdit?.(draft.trim());
-              setEditing(false);
-            }}
-          >
-            Use in composer
-          </button>
-        </span>
-      </div>
-    );
-  }
-
   return (
     <footer className="message-actions">
       <CopyButton text={text} label={copyLabel} />
+      {onFork ? (
+        <button type="button" title="Fork from here" onClick={onFork}>
+          <XiaoIcon name="branch" size={12} />
+          <span>Fork</span>
+        </button>
+      ) : null}
       {editable && onEdit ? (
-        <button type="button" title="Edit this prompt in the composer" onClick={() => setEditing(true)}>
+        <button type="button" title="Edit this prompt in the composer" onClick={() => onEdit(text)}>
           <XiaoIcon name="mutation" size={12} />
           <span>Edit</span>
         </button>
       ) : null}
       {timestamp ? <time dateTime={new Date(createdAt!).toISOString()} title={timestamp.exact}>{timestamp.relative}</time> : null}
     </footer>
+  );
+}
+
+export function InlineMessageEditor({
+  text,
+  onCancel,
+  onSubmit,
+}: {
+  text: string;
+  onCancel: () => void;
+  onSubmit: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(text);
+  return (
+    <form
+      className="message-edit"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (draft.trim()) onSubmit(draft.trim());
+      }}
+    >
+      <textarea
+        value={draft}
+        autoFocus
+        aria-label="Edit prompt"
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onCancel();
+        }}
+      />
+      <span>
+        <button type="button" onClick={onCancel}>Cancel</button>
+        <button className="is-primary" type="submit" disabled={!draft.trim()}>
+          Use in composer
+        </button>
+      </span>
+    </form>
   );
 }

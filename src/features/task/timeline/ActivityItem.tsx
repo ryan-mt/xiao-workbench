@@ -1,11 +1,11 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
 import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
-import { MessageActions } from "./MessageActions";
+import { InlineMessageEditor, MessageActions } from "./MessageActions";
 import { MessageImage } from "./MessageImage";
 
 const agentProgressDots = Array.from({ length: 25 }, (_, index) => ({
@@ -238,6 +238,7 @@ export const ActivityItem = memo(function ActivityItem({
   recovered = false,
   isLive = true,
 }: ActivityItemProps) {
+  const [editingPrompt, setEditingPrompt] = useState(false);
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
   const assistantMessage = entry.kind === "result" && entry.title === "Agent response";
@@ -261,6 +262,7 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (userMessage) {
+    const visiblePrompt = visiblePromptFromSelectedContext(entry.body ?? entry.title);
     const reviewComments = entry.attachments?.filter((attachment) => attachment.kind === "review") ?? [];
     const sentAttachments = entry.attachments?.filter((attachment) => attachment.kind !== "review") ?? [];
     return (
@@ -269,9 +271,18 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__user-message-content">
-          {(entry.body ?? entry.title).trim() ? (
+          {editingPrompt && onEditUserMessage ? (
+            <InlineMessageEditor
+              text={visiblePrompt}
+              onCancel={() => setEditingPrompt(false)}
+              onSubmit={(text) => {
+                onEditUserMessage(text);
+                setEditingPrompt(false);
+              }}
+            />
+          ) : (entry.body ?? entry.title).trim() ? (
             <div className="activity__user-bubble">
-              {visiblePromptFromSelectedContext(entry.body ?? entry.title)}
+              {visiblePrompt}
             </div>
           ) : null}
           {sentAttachments.length > 0 && (
@@ -332,25 +343,16 @@ export const ActivityItem = memo(function ActivityItem({
               })}
             </div>
           )}
-          {entry.kind === "user" && canFork ? (
-            <div className="activity__user-actions">
-              <button
-                type="button"
-                title="Create a new task from the conversation before this prompt"
-                onClick={() => onForkTask(entry.id)}
-              >
-                <XiaoIcon name="branch" size={12} />
-                Fork from here
-              </button>
-            </div>
+          {!editingPrompt ? (
+            <MessageActions
+              text={visiblePrompt}
+              createdAt={entry.createdAt}
+              editable
+              onEdit={onEditUserMessage ? () => setEditingPrompt(true) : undefined}
+              onFork={entry.kind === "user" && canFork ? () => onForkTask(entry.id) : undefined}
+              copyLabel="Copy prompt"
+            />
           ) : null}
-          <MessageActions
-            text={visiblePromptFromSelectedContext(entry.body ?? entry.title)}
-            createdAt={entry.createdAt}
-            editable
-            onEdit={onEditUserMessage}
-            copyLabel="Copy prompt"
-          />
         </div>
       </article>
     );
