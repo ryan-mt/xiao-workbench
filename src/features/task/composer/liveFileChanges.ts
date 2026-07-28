@@ -4,6 +4,8 @@ export type LiveFileChangeSummary = {
   fileCount: number;
   additions: number;
   deletions: number;
+  stepIndex?: number;
+  stepTotal?: number;
 };
 
 const isUserEntry = (entry: TimelineEntry) =>

@@ -408,6 +408,15 @@ export function TaskWorkspace({
     hasActiveRuns,
     latestRun?.status ?? null,
   );
+  const liveFileChanges = useMemo(() => {
+    if (runtime.phase !== "working" || runtime.taskId !== taskId) return null;
+    const summary = projectLiveFileChanges(timeline);
+    if (!summary) return null;
+    const activeStepIndex = plan?.steps.findIndex((step) => step.status === "inProgress") ?? -1;
+    return activeStepIndex >= 0
+      ? { ...summary, stepIndex: activeStepIndex + 1, stepTotal: plan!.steps.length }
+      : summary;
+  }, [plan, runtime.phase, runtime.taskId, taskId, timeline]);
 
   useEffect(() => {
     setTimelineSelection(null);
@@ -539,12 +548,7 @@ export function TaskWorkspace({
       mcpElicitationRequest={mcpElicitationRequest}
       draftText={draftText}
       followUps={followUps}
-      liveFileChanges={useMemo(
-        () => runtime.phase === "working" && runtime.taskId === taskId
-          ? projectLiveFileChanges(timeline)
-          : null,
-        [runtime.phase, runtime.taskId, taskId, timeline],
-      )}
+      liveFileChanges={liveFileChanges}
       sendingFollowUpId={sendingFollowUpId}
       failedFollowUpId={failedFollowUpId}
       attachments={attachments}

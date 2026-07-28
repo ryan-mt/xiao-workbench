@@ -3573,6 +3573,18 @@
   animation: composer-change-count 180ms ease-out;
 }
 
+.composer-live-changes__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-soft);
+}
+
+.composer-live-changes__step i {
+  color: var(--muted);
+  font-style: normal;
+}
+
 .composer-live-changes b {
   color: var(--success);
   font-weight: 570;
