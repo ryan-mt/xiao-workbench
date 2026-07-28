@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import { buildCompanionBrowserPairingUrl } from "./companionClient";
 import type {
   CompanionAction,
   CompanionCommand,
@@ -76,6 +77,7 @@ export function CompanionCredentialTransfer({
     ? "Single-use pairing bundle"
     : "Rotation credential — transfer it once";
   const noun = kind === "pairing" ? "pairing bundle" : "rotation credential";
+  const copyLabel = kind === "pairing" ? "Copy phone link" : `Copy ${noun}`;
 
   useEffect(() => {
     setRevealed(false);
@@ -89,7 +91,7 @@ export function CompanionCredentialTransfer({
           <strong>{title}</strong>
           <small>
             {kind === "pairing"
-              ? "Copy this bundle to the device you want to connect."
+              ? "Open this one-time link in the phone browser you want to connect."
               : "The connected device validates this credential against the pinned host."}
           </small>
           {expiresAt ? <small>Expires {dateTime.format(expiresAt)}</small> : null}
@@ -99,12 +101,15 @@ export function CompanionCredentialTransfer({
             type="button"
             onClick={() => {
               setCopyState("idle");
-              void copyText(credential)
+              const copyValue = kind === "pairing"
+                ? buildCompanionBrowserPairingUrl(credential)
+                : credential;
+              void copyText(copyValue)
                 .then(() => setCopyState("copied"))
                 .catch(() => setCopyState("failed"));
             }}
           >
-            Copy {noun}
+            {copyLabel}
           </button>
           <button type="button" onClick={() => setRevealed((current) => !current)}>
             {revealed ? "Hide" : "Reveal"} {noun}

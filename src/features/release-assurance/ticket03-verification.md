@@ -4,15 +4,15 @@ Verified on 2026-07-28 for the frozen T3 Code v0.0.28 baseline at
 `fda6486233e0b2f07ecfea166e1a94533cb923c4`.
 
 Certified Ticket 03 source fingerprint:
-`sha256:cee5a5d9fad7befca6e845dd4126ad0cbaa2e41d0e04ee21cbfde3f7abcaadaf`.
+`sha256:a648db864ab872ec17053353b9f15dc2fe3f416b39824e827e705a552e4a4b5f`.
 
 The combined release gate passed:
 
 - Version sync: `npm run version:test` and `npm run version:check` — UTC default and validated `XIAO_RELEASE_DATE=YYYY-MM-DD` override
 - TypeScript: `npm run check`
-- Frontend: `npm test` — 83 files and 657 tests passed
+- Frontend: `npm test` — 84 files and 663 tests passed
 - Rust formatting: `cargo fmt --all -- --check`
-- Rust: `cargo test` — 386 library tests passed (22 ignored), 3
+- Rust: `cargo test` — 388 library tests passed (22 ignored), 3
   build-certification integration tests passed, and 2 process-supervisor
   integration tests passed (2 ignored)
 - Rust build gate: `cargo check` and `cargo build`

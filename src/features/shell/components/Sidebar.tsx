@@ -459,7 +459,10 @@ export function Sidebar({
         <div className="sidebar__panel">
           <header className="sidebar__header">
             <SidebarStageBackdrop variant={APP_STAGE} />
-            <div className="sidebar__brand is-on-stage" aria-label={APP_DISPLAY_NAME}>
+            <div
+              className={`sidebar__brand${APP_STAGE === "production" ? "" : " is-on-stage"}`}
+              aria-label={APP_DISPLAY_NAME}
+            >
               <strong>XIAO</strong>
               <span>Workbench</span>
             </div>

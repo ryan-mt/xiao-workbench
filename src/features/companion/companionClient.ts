@@ -224,6 +224,21 @@ export const parseCompanionPairingBundle = (
   };
 };
 
+const encodeBase64Url = (value: string) => {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+export const buildCompanionBrowserPairingUrl = (
+  pairingCode: string,
+  now = Date.now(),
+) => {
+  const bundle = parseCompanionPairingBundle(pairingCode, now);
+  return `${bundle.endpoint}/#pair=${encodeBase64Url(pairingCode.trim())}`;
+};
+
 export const pairCompanionDevice = async (
   request: CompanionPairingRequest,
   nativeClient: NativeCompanionClient,

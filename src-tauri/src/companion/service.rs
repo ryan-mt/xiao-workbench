@@ -678,6 +678,7 @@ fn requires_runtime_outbox(capability: super::models::CommandCapability) -> bool
             | CommandCapability::StopRun
             | CommandCapability::RetryRun
             | CommandCapability::SendFollowUp
+            | CommandCapability::CreateTask
     )
 }
 

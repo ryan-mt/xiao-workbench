@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Xiao Companion</title>
+    <link rel="stylesheet" href="/companion.css">
+    <script src="/companion.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Xiao Companion home">
+        <img class="brand-mark" src="/xiao-mark.png" alt="">
+        <span>Xiao Companion</span>
+      </a>
+      <span id="connection" class="status is-idle">Not paired</span>
+    </header>
+
+    <main class="app-shell">
+      <section id="pairing" class="pairing-view">
+        <div class="page-heading">
+          <h1>Connect to Xiao</h1>
+          <p id="pair-copy" class="muted">
+            Open a new phone link from Workbench to pair this device.
+          </p>
+        </div>
+
+        <form id="pair-form" class="pairing-form">
+          <div class="field">
+            <label for="device-name">Device name</label>
+            <input
+              id="device-name"
+              name="deviceName"
+              maxlength="80"
+              autocomplete="name"
+              placeholder="My phone"
+              required
+            >
+          </div>
+          <button id="pair-button" class="primary" type="submit" disabled>Pair device</button>
+          <p id="pair-error" class="error" role="alert" hidden></p>
+        </form>
+
+        <p class="security-note">
+          The pairing credential is single-use and disappears from the address bar.
+        </p>
+      </section>
+
+      <section id="companion" hidden>
+        <div class="companion-heading">
+          <div>
+            <h1>Companion</h1>
+            <p id="host-label" class="muted"></p>
+          </div>
+          <div class="heading-actions">
+            <button id="new-task" class="primary" type="button">New task</button>
+            <button id="refresh" type="button">Refresh</button>
+            <button id="forget" class="quiet-danger" type="button">Forget</button>
+          </div>
+        </div>
+
+        <p id="notice" class="notice" role="status" aria-live="polite"></p>
+
+        <section class="conversation" aria-labelledby="conversation-title">
+          <div class="conversation-heading">
+            <div>
+              <span class="context-label">Current task</span>
+              <h2 id="conversation-title">Conversation</h2>
+              <p id="conversation-meta"></p>
+            </div>
+            <select id="run-select" aria-label="Active conversation" hidden></select>
+          </div>
+          <div id="conversation-list" class="conversation-list" aria-live="polite"></div>
+          <form id="chat-form" class="composer">
+            <textarea
+              id="chat-input"
+              aria-label="Message Xiao"
+              maxlength="500"
+              rows="2"
+              placeholder="Message Xiao"
+            ></textarea>
+            <div class="composer-footer">
+              <span id="chat-count">0 / 500</span>
+              <button id="chat-send" class="primary" type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+
+        <details id="workspace-details" class="workspace-details">
+          <summary>Workspace details</summary>
+          <div class="dashboard">
+            <section class="data-section" aria-labelledby="projects-heading">
+              <div class="section-heading">
+                <h2 id="projects-heading">Projects and tasks</h2>
+              </div>
+              <div id="projects-list" class="stack"></div>
+            </section>
+
+            <section class="data-section" aria-labelledby="runs-heading">
+              <div class="section-heading">
+                <h2 id="runs-heading">Runs</h2>
+              </div>
+              <div id="runs-list" class="stack"></div>
+            </section>
+
+            <section class="data-section" aria-labelledby="pending-heading">
+              <div class="section-heading">
+                <h2 id="pending-heading">Pending input</h2>
+              </div>
+              <div id="pending-list" class="stack"></div>
+            </section>
+
+            <section class="data-section" aria-labelledby="attention-heading">
+              <div class="section-heading">
+                <h2 id="attention-heading">Attention</h2>
+              </div>
+              <div id="attention-list" class="stack"></div>
+            </section>
+
+            <section class="data-section" aria-labelledby="verification-heading">
+              <div class="section-heading">
+                <h2 id="verification-heading">Verification</h2>
+              </div>
+              <div id="verification-list" class="stack"></div>
+            </section>
+
+            <section class="data-section" aria-labelledby="observatory-heading">
+              <div class="section-heading">
+                <h2 id="observatory-heading">Agents</h2>
+              </div>
+              <div id="observatory-list" class="stack"></div>
+            </section>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <dialog id="new-task-dialog">
+      <form id="new-task-form" class="new-task-form">
+        <div class="dialog-heading">
+          <h2>New task</h2>
+          <p>Assign work to Xiao on the primary host.</p>
+          <p>The task uses a configured model and permissions from this project.</p>
+        </div>
+        <div class="field">
+          <label for="project-select">Project</label>
+          <select id="project-select" required></select>
+        </div>
+        <div class="field">
+          <label for="task-prompt">What should Xiao do?</label>
+          <textarea
+            id="task-prompt"
+            maxlength="8192"
+            rows="6"
+            placeholder="Describe the task"
+            required
+          ></textarea>
+        </div>
+        <p id="new-task-error" class="error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-new-task" type="button">Cancel</button>
+          <button id="create-task" class="primary" type="submit">Start task</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

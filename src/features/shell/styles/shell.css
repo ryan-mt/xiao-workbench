@@ -516,34 +516,26 @@
     radial-gradient(circle at 22% 62%, var(--stage-glow-soft) 0, transparent 38%);
 }
 
-.sidebar-stage-backdrop--official {
-  --stage-deep: #0b49bd;
-  --stage-mid: #178cf0;
-  --stage-bright: #7bd4ff;
-  --stage-glow: rgba(220, 249, 255, 0.72);
-  --stage-glow-soft: rgba(111, 219, 255, 0.34);
-  --stage-ink: rgba(235, 250, 255, 0.54);
+.sidebar-stage-backdrop--release,
+.sidebar-stage-backdrop--dev {
+  --stage-deep: #1538d0;
+  --stage-mid: #347ff8;
+  --stage-bright: #67c2ff;
+  --stage-glow: rgba(210, 255, 255, 0.68);
+  --stage-glow-soft: rgba(72, 220, 245, 0.3);
+  --stage-ink: rgba(221, 247, 255, 0.6);
 }
 
 .sidebar-stage-backdrop--beta {
-  --stage-deep: #090f2b;
-  --stage-mid: #27164f;
-  --stage-bright: #6d2a85;
-  --stage-glow: rgba(137, 142, 255, 0.3);
-  --stage-glow-soft: rgba(197, 107, 255, 0.22);
-  --stage-ink: rgba(236, 239, 255, 0.82);
+  --stage-deep: #07152f;
+  --stage-mid: #151443;
+  --stage-bright: #32155b;
+  --stage-glow: rgba(81, 101, 216, 0.4);
+  --stage-glow-soft: rgba(168, 91, 234, 0.24);
+  --stage-ink: rgba(228, 234, 255, 0.82);
 }
 
-.sidebar-stage-backdrop--dev {
-  --stage-deep: #71300e;
-  --stage-mid: #d2761d;
-  --stage-bright: #ffc66c;
-  --stage-glow: rgba(255, 242, 196, 0.68);
-  --stage-glow-soft: rgba(255, 180, 76, 0.3);
-  --stage-ink: rgba(255, 245, 219, 0.56);
-}
-
-.sidebar-stage-backdrop--official .sidebar-stage-backdrop__texture,
+.sidebar-stage-backdrop--release .sidebar-stage-backdrop__texture,
 .sidebar-stage-backdrop--dev .sidebar-stage-backdrop__texture {
   background-image:
     linear-gradient(var(--stage-ink) 1px, transparent 1px),

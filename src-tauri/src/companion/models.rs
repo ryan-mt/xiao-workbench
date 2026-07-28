@@ -9,12 +9,14 @@ pub enum CompanionGrant {
     ReadRuns,
     ReadAttention,
     ReadSafeTimeline,
+    ReadConversation,
     ReadVerification,
     ReadObservatory,
     ResolvePendingInput,
     StopRun,
     RetryRun,
     SendFollowUp,
+    CreateTask,
     AcknowledgeAttention,
     AcceptOutcome,
 }
@@ -46,6 +48,7 @@ impl CompanionGrant {
             ) | (Self::StopRun, CommandCapability::StopRun)
                 | (Self::RetryRun, CommandCapability::RetryRun)
                 | (Self::SendFollowUp, CommandCapability::SendFollowUp)
+                | (Self::CreateTask, CommandCapability::CreateTask)
                 | (
                     Self::AcknowledgeAttention,
                     CommandCapability::AcknowledgeAttention
@@ -78,6 +81,7 @@ pub enum CommandCapability {
     StopRun,
     RetryRun,
     SendFollowUp,
+    CreateTask,
     AcknowledgeAttention,
     AcceptOutcome,
     OpenTerminal,
@@ -115,6 +119,7 @@ impl CommandCapability {
                 Some(TargetKind::PendingInput)
             }
             Self::StopRun | Self::RetryRun | Self::SendFollowUp => Some(TargetKind::Run),
+            Self::CreateTask => Some(TargetKind::Project),
             Self::AcknowledgeAttention => Some(TargetKind::Attention),
             Self::AcceptOutcome => Some(TargetKind::Task),
             _ => None,

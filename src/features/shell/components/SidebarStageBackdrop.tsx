@@ -1,6 +1,8 @@
 import type { AppStage } from "../../../core/branding";
 
 export function SidebarStageBackdrop({ variant }: { variant: AppStage }) {
+  if (variant === "production") return null;
+
   const isBlueprint = variant !== "beta";
 
   return (

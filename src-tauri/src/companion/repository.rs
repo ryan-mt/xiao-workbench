@@ -1872,7 +1872,8 @@ fn hydrate_projection(
                         (SELECT COUNT(*) FROM tasks t WHERE t.workspace_id = w.id),
                         (SELECT COUNT(*) FROM attention_occurrences a
                          WHERE a.workspace_id = w.id AND a.resolved_at IS NULL
-                           AND a.acknowledged_at IS NULL)
+                           AND a.acknowledged_at IS NULL),
+                        w.updated_at
                  FROM workspaces w
                  WHERE COALESCE(w.public_id, CAST(w.id AS TEXT)) = ?1",
                 [&journal.entity_id],
@@ -1882,6 +1883,7 @@ fn hydrate_projection(
                         "name": row.get::<_, String>(1)?,
                         "taskCount": row.get::<_, i64>(2)?,
                         "attentionCount": row.get::<_, i64>(3)?,
+                        "version": row.get::<_, i64>(4)?,
                     }))
                 },
             )
@@ -2424,6 +2426,7 @@ fn command_capability_database(capability: CommandCapability) -> &'static str {
         CommandCapability::StopRun => "stop_run",
         CommandCapability::RetryRun => "retry_run",
         CommandCapability::SendFollowUp => "send_follow_up",
+        CommandCapability::CreateTask => "create_task",
         CommandCapability::AcknowledgeAttention => "acknowledge_attention",
         CommandCapability::AcceptOutcome => "accept_outcome",
         CommandCapability::OpenTerminal => "open_terminal",
@@ -2447,6 +2450,7 @@ fn command_capability_from_database(value: &str) -> Result<CommandCapability, St
         "stop_run" => Ok(CommandCapability::StopRun),
         "retry_run" => Ok(CommandCapability::RetryRun),
         "send_follow_up" => Ok(CommandCapability::SendFollowUp),
+        "create_task" => Ok(CommandCapability::CreateTask),
         "acknowledge_attention" => Ok(CommandCapability::AcknowledgeAttention),
         "accept_outcome" => Ok(CommandCapability::AcceptOutcome),
         "open_terminal" => Ok(CommandCapability::OpenTerminal),

@@ -17,6 +17,7 @@ tauri-build = { version = "2.4", features = [] }
 
 [dev-dependencies]
 tauri = { version = "2.8", features = ["test"] }
+tower = { version = "0.5", features = ["util"] }
 
 [dependencies]
 axum = "0.8"
