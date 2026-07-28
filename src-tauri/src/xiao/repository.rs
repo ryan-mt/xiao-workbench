@@ -2413,6 +2413,7 @@ fn open_connection(
         app_data_dir,
         options.fail_legacy_before_commit,
     )?;
+    crate::time_travel::repository::recover_pending_restore(&mut connection, app_data_dir)?;
     Ok(connection)
 }
 

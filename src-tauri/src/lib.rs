@@ -15,6 +15,11 @@ mod verification;
 mod workspace;
 mod xiao;
 
+// Dialog code in Windows unit tests needs Tauri's embedded Common Controls v6 manifest.
+#[cfg(all(test, target_os = "windows"))]
+#[link(name = "resource", kind = "static")]
+unsafe extern "C" {}
+
 use agent::commands::{
     agent_request, list_agent_models, read_agent_account, read_agent_rate_limits, read_agent_usage,
     start_agent_runtime, stop_agent_runtime,

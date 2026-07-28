@@ -122,6 +122,46 @@ describe("cross-project Attention hydration", () => {
     expect(result.current.items).toEqual([remaining]);
   });
 
+  it("scopes acknowledgment failure without changing hydrated read status and remains retryable", async () => {
+    const review = item("review-a");
+    bridge.listXiaoAttentionItems.mockResolvedValue(snapshot([review]));
+    const { result } = renderHook(() => useAttentionCenter());
+    await waitFor(() => expect(result.current.items).toEqual([review]));
+    bridge.acknowledgeXiaoAttentionItem.mockRejectedValueOnce(
+      new Error("acknowledgment unavailable"),
+    );
+
+    await act(async () => {
+      await result.current.acknowledge(review.id);
+    });
+
+    expect(result.current.items).toEqual([review]);
+    expect(result.current.status).toBe("live");
+    expect(result.current.error).toBeNull();
+    expect(result.current.actionError).toEqual({
+      itemId: review.id,
+      message: "acknowledgment unavailable",
+    });
+
+    const retry = deferred<boolean>();
+    bridge.acknowledgeXiaoAttentionItem.mockReturnValueOnce(retry.promise);
+    let retryPromise!: Promise<void>;
+    act(() => {
+      retryPromise = result.current.acknowledge(review.id);
+    });
+
+    expect(result.current.actionError).toBeNull();
+    expect(result.current.acknowledgingItemIds).toEqual(new Set([review.id]));
+
+    retry.resolve(true);
+    await act(async () => retryPromise);
+
+    expect(result.current.items).toEqual([]);
+    expect(result.current.status).toBe("live");
+    expect(result.current.actionError).toBeNull();
+    expect(result.current.acknowledgingItemIds).toEqual(new Set());
+  });
+
   it("keeps the newest snapshot when overlapping refreshes finish out of order", async () => {
     const initial = item("initial");
     bridge.listXiaoAttentionItems.mockResolvedValueOnce(snapshot([initial]));

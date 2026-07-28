@@ -276,6 +276,7 @@ export function Composer({
   const [value, setValue] = useState(draftText);
   const [submitting, setSubmitting] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [revealedRuntimeError, setRevealedRuntimeError] = useState<string | null>(null);
   const [selectingAttachments, setSelectingAttachments] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -370,6 +371,7 @@ export function Composer({
   }, [selectedContext]);
 
   useEffect(() => {
+    const requestId = ++fileSearchRequest.current;
     if (!fileMention) {
       setFileResults([]);
       setFileSearchLoading(false);
@@ -378,11 +380,11 @@ export function Composer({
     }
     if (!isTauriHost() || runtime.phase === "offline" || runtime.phase === "starting") {
       setFileResults([]);
+      setFileSearchLoading(false);
       setFileSearchError("File search needs the connected Xiao desktop runtime.");
       return;
     }
 
-    const requestId = ++fileSearchRequest.current;
     const timer = window.setTimeout(() => {
       setFileSearchLoading(true);
       setFileSearchError(null);
@@ -697,27 +699,47 @@ export function Composer({
 
     submittingRef.current = true;
     setSubmitting(true);
+    setSubmissionError(null);
+    let delivered = false;
     try {
       const result = await runComposerSubmission(
-        () => deliverComposerSubmission(
-          delivery,
-          submittedValue,
-          submittedAttachments,
-          { queue: onQueueFollowUp, send: onSubmit, steer: onSteer },
-        ),
+        async () => {
+          delivered = await deliverComposerSubmission(
+            delivery,
+            submittedValue,
+            submittedAttachments,
+            { queue: onQueueFollowUp, send: onSubmit, steer: onSteer },
+          );
+          return delivered;
+        },
         () => onSubmissionSucceeded(submissionRevision),
       );
       if (!result.submitted) return;
+      if (!result.cleared) {
+        if (mounted.current) {
+          setSubmissionError(
+            "The task was sent, but its saved draft could not be cleared. Check the timeline before retrying.",
+          );
+        }
+        return;
+      }
 
       savePromptToHistory(historyValue);
       onReviewContextSent(submittedReviewContext);
       if (submittedSelectedContext) onSelectedContextSent(submittedSelectedContext);
-      if (!result.cleared || !mounted.current) return;
+      if (!mounted.current) return;
 
       resetPromptHistoryNavigation();
       setValue("");
       setSlashQuery(null);
       if (textarea.current) textarea.current.style.height = "auto";
+    } catch (reason) {
+      if (mounted.current) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setSubmissionError(delivered
+          ? `${message} The task was sent, but its saved draft could not be cleared. Check the timeline before retrying.`
+          : `${message} Draft and attachments were kept so you can retry.`);
+      }
     } finally {
       submittingRef.current = false;
       if (mounted.current) setSubmitting(false);
@@ -729,7 +751,7 @@ export function Composer({
   };
 
   const visibleRuntimeError = runtime.error === revealedRuntimeError ? runtime.error : null;
-  const visibleError = attachmentError ?? storageError ?? visibleRuntimeError;
+  const visibleError = attachmentError ?? submissionError ?? storageError ?? visibleRuntimeError;
   const showOfflineNotice = runtime.phase === "offline" && !attachmentError && !storageError && !runtime.error;
   const offlineMessage = isTauriHost()
     ? "Xiao is offline. Check the Codex connection before sending this task."

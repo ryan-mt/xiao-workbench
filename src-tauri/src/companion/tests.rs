@@ -380,6 +380,52 @@ fn forbidden_grant_denied_and_stale_version_commands_are_refused_and_audited() {
 }
 
 #[test]
+fn exact_authenticated_duplicate_returns_its_durable_result_after_the_clock_window() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let session = paired_session(
+        &service,
+        &mut connection,
+        vec![CompanionGrant::AcceptOutcome],
+    );
+    let host = TestHost {
+        version: Cell::new(4),
+        executions: Cell::new(0),
+        uncertain: false,
+    };
+    let envelope = command(
+        &session,
+        "late-duplicate",
+        "late-duplicate-idempotency",
+        CommandCapability::AcceptOutcome,
+        TargetKind::Task,
+        4,
+    );
+    let first = service
+        .execute_command(
+            &mut connection,
+            &session.credential,
+            envelope.clone(),
+            NOW_MILLIS,
+            &host,
+        )
+        .unwrap();
+
+    let replay = service
+        .execute_command(
+            &mut connection,
+            &session.credential,
+            envelope,
+            NOW_MILLIS + 300_001,
+            &host,
+        )
+        .unwrap();
+
+    assert_eq!(replay, first);
+    assert_eq!(host.executions.get(), 1);
+}
+
+#[test]
 fn command_audit_clock_uses_a_five_minute_millisecond_window() {
     let mut connection = test_connection();
     let service = CompanionService;
@@ -907,6 +953,53 @@ fn runtime_outbox_survives_reopen_and_command_replay_stays_duplicate_safe() {
 }
 
 #[test]
+fn stop_runtime_failure_keeps_the_execution_lease_for_receipt_recovery() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let session = paired_session(&service, &mut connection, vec![CompanionGrant::StopRun]);
+    let host = TestHost {
+        version: Cell::new(4),
+        executions: Cell::new(0),
+        uncertain: false,
+    };
+    service
+        .execute_command(
+            &mut connection,
+            &session.credential,
+            command(
+                &session,
+                "recover-stop-command",
+                "recover-stop-key",
+                CommandCapability::StopRun,
+                TargetKind::Run,
+                4,
+            ),
+            NOW_MILLIS,
+            &host,
+        )
+        .unwrap();
+    CompanionRepository::claim_runtime_effects(&mut connection, 10).unwrap();
+    CompanionRepository::mark_runtime_effect_executing(&connection, "recover-stop-command")
+        .unwrap();
+
+    CompanionRepository::record_runtime_dispatch_failure(
+        &connection,
+        "recover-stop-command",
+        "injected runtime error",
+    )
+    .unwrap();
+
+    let status: String = connection
+        .query_row(
+            "SELECT status FROM companion_command_outbox WHERE command_id = 'recover-stop-command'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "executing");
+}
+
+#[test]
 fn runtime_refusal_rolls_back_outbox_cancellation_when_command_update_fails() {
     let mut connection = test_connection();
     let service = CompanionService;
@@ -984,6 +1077,61 @@ fn runtime_refusal_rolls_back_outbox_cancellation_when_command_update_fails() {
         )
         .unwrap();
     assert_eq!(refusal_audit_count, 0);
+}
+
+#[test]
+fn revocation_does_not_refuse_an_effect_after_its_execution_lease_linearizes() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let session = paired_session(&service, &mut connection, vec![CompanionGrant::StopRun]);
+    let host = TestHost {
+        version: Cell::new(4),
+        executions: Cell::new(0),
+        uncertain: false,
+    };
+    let result = service
+        .execute_command(
+            &mut connection,
+            &session.credential,
+            command(
+                &session,
+                "executing-revoked-command",
+                "executing-revoked-key",
+                CommandCapability::StopRun,
+                TargetKind::Run,
+                4,
+            ),
+            NOW_MILLIS,
+            &host,
+        )
+        .unwrap();
+    assert_eq!(result.state, CommandState::PendingHostAcknowledgement);
+    CompanionRepository::claim_runtime_effects(&mut connection, 10).unwrap();
+    CompanionRepository::mark_runtime_effect_executing(&connection, "executing-revoked-command")
+        .unwrap();
+
+    service
+        .revoke_session(&mut connection, &session.session.session_id, NOW + 1)
+        .unwrap();
+
+    let (command_status, outbox_status): (String, String) = connection
+        .query_row(
+            "SELECT command.status, outbox.status
+             FROM companion_commands command
+             JOIN companion_command_outbox outbox ON outbox.command_id = command.command_id
+             WHERE command.command_id = 'executing-revoked-command'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (command_status.as_str(), outbox_status.as_str()),
+        ("pending", "executing")
+    );
+    assert!(CompanionRepository::list_audit(&connection, None, 10)
+        .unwrap()
+        .iter()
+        .all(|record| record.command_id.as_deref() != Some("executing-revoked-command")));
 }
 
 #[test]

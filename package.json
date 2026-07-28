@@ -1,11 +1,13 @@
 {
   "name": "xiao-workbench",
   "private": true,
-  "version": "0.0.0-day07242026",
+  "version": "0.0.0-day07282026",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "version:build": "node scripts/sync-build-version.mjs",
+    "version:check": "node scripts/sync-build-version.mjs --check",
+    "version:test": "node --test scripts/sync-build-version.node-test.mjs",
     "predev": "node scripts/sync-build-version.mjs",
     "dev": "vite",
     "predev:beta": "node scripts/sync-build-version.mjs",

@@ -394,6 +394,19 @@
   right: calc(min(var(--focus-rail-width, 520px), 100%) - 4px);
 }
 
+.focus-rail-load-state {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-content: center;
+  gap: 10px;
+  padding: 24px;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  text-align: center;
+}
+
 .focus-rail-resizer {
   position: absolute;
   z-index: 15;

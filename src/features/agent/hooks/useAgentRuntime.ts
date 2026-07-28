@@ -322,6 +322,21 @@ export const loadAllXiaoRunEvents = async (
   }
 };
 
+export const replayTaskRestoreRuns = async (
+  runs: readonly RunSnapshot[],
+  replay: (run: RunSnapshot) => Promise<void>,
+) => {
+  const failures: Array<{ runId: string; reason: unknown }> = [];
+  for (const run of runs) {
+    try {
+      await replay(run);
+    } catch (reason) {
+      failures.push({ runId: run.id, reason });
+    }
+  }
+  return failures;
+};
+
 const readMessageThreadId = (message: AgentMessage) => {
   const id = message.params?.threadId;
   return typeof id === "string" ? id : null;
@@ -2757,9 +2772,9 @@ export function useAgentRuntime(
         return reconcilePendingApprovalEntries(next, activePendingInputIds);
       });
 
-      for (const run of orderedRuns) {
+      const runRestoreFailures = await replayTaskRestoreRuns(orderedRuns, async (run) => {
         if (!restoreIsCurrent()) return;
-        if (run.runtimeGeneration == null || !run.threadId) continue;
+        if (run.runtimeGeneration == null || !run.threadId) return;
         if (run.turnId) activeTurnIds.current.set(run.taskId, run.turnId);
         const events = await loadAllXiaoRunEvents(run.id);
         for (const event of events) {
@@ -2778,7 +2793,7 @@ export function useAgentRuntime(
             replayed: true,
           });
         }
-      }
+      });
 
       for (const pending of scopedPendingInputs) {
         if (
@@ -2794,6 +2809,19 @@ export function useAgentRuntime(
           runId: run.id,
           pendingInput: pending,
         });
+      }
+      const failedRunRestore = runRestoreFailures[0];
+      if (failedRunRestore && restoreIsCurrent()) {
+        const detail = failedRunRestore.reason instanceof Error
+          ? failedRunRestore.reason.message
+          : String(failedRunRestore.reason);
+        const remaining = runRestoreFailures.length - 1;
+        setRuntime((current) => ({
+          ...current,
+          error: `Run history is partially unavailable (${failedRunRestore.runId}${
+            remaining ? ` and ${remaining} more` : ""
+          }): ${detail}`,
+        }));
       }
     };
     void restore().catch((reason) => {

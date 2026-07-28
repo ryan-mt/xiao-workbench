@@ -424,13 +424,23 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
         let result = match intent.envelope.capability {
             CommandCapability::StopRun => app
                 .state::<RunService>()
-                .cancel(app, &intent.envelope.target.id)
+                .cancel_at_version(
+                    app,
+                    &intent.envelope.target.id,
+                    intent.envelope.expected_version,
+                    &intent.command_id,
+                )
                 .await
-                .map(|run| run.version),
+                .and_then(|_| completed_runtime_effect_receipt_version(app, &intent)),
             CommandCapability::RetryRun => app
                 .state::<RunService>()
-                .retry(app, &intent.envelope.target.id, &intent.command_id)
-                .map(|run| run.version),
+                .retry_at_version(
+                    app,
+                    &intent.envelope.target.id,
+                    &intent.command_id,
+                    intent.envelope.expected_version,
+                )
+                .and_then(|_| completed_runtime_effect_receipt_version(app, &intent)),
             CommandCapability::ResolveApproval
             | CommandCapability::ResolveQuestion
             | CommandCapability::ResolveMcpElicitation => {
@@ -443,9 +453,15 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                     &intent.envelope,
                 )?;
                 app.state::<RunService>()
-                    .resolve_input(app, &intent.envelope.target.id, result)
+                    .resolve_input_at_version(
+                        app,
+                        &intent.envelope.target.id,
+                        result,
+                        intent.envelope.expected_version,
+                        &intent.command_id,
+                    )
                     .await
-                    .map(|run| run.version)
+                    .and_then(|_| completed_runtime_effect_receipt_version(app, &intent))
             }
             CommandCapability::SendFollowUp => {
                 let message = bounded_follow_up_message(&intent.envelope)?;
@@ -453,7 +469,7 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                     .state::<XiaoRepository>()
                     .get_run(&intent.envelope.target.id)?;
                 app.state::<RunService>()
-                    .steer(
+                    .steer_at_version(
                         app,
                         SteerRunRequest {
                             project_path: run.workspace_path,
@@ -466,6 +482,7 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                                 "text_elements": [],
                             })],
                         },
+                        intent.envelope.expected_version,
                     )
                     .await
                     .and_then(|_| {
@@ -530,6 +547,12 @@ enum RuntimePreparation {
     Execute,
     Acknowledge(i64),
     Refuse { code: &'static str, message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeEffectReceipt {
+    Started,
+    Completed(i64),
 }
 
 fn prepare_runtime_effect(
@@ -612,34 +635,45 @@ fn recover_interrupted_runtime_effect(
     match intent.envelope.capability {
         CommandCapability::ResolveApproval
         | CommandCapability::ResolveQuestion
-        | CommandCapability::ResolveMcpElicitation => Ok(Some(RuntimePreparation::Refuse {
-            code: "host_ack_unknown",
-            message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
-        })),
+        | CommandCapability::ResolveMcpElicitation => {
+            if let Some(RuntimeEffectReceipt::Completed(version)) =
+                runtime_effect_receipt(connection, intent)?
+            {
+                Ok(Some(RuntimePreparation::Acknowledge(version)))
+            } else {
+                Ok(Some(RuntimePreparation::Refuse {
+                    code: "host_ack_unknown",
+                    message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
+                }))
+            }
+        }
         CommandCapability::StopRun => {
+            let receipt = runtime_effect_receipt(connection, intent)?;
+            if let Some(RuntimeEffectReceipt::Completed(version)) = receipt {
+                return Ok(Some(RuntimePreparation::Acknowledge(version)));
+            }
             let state = connection
                 .query_row(
-                    "SELECT status, cancel_requested, version FROM runs WHERE id = ?1",
+                    "SELECT status, cancel_requested FROM runs WHERE id = ?1",
                     [&intent.envelope.target.id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, bool>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
                 )
                 .optional()
                 .map_err(|error| {
                     format!("Could not reconcile interrupted Companion stop: {error}")
                 })?;
             match state {
-                Some((status, cancel_requested, version))
-                    if cancel_requested || status == "cancelled" =>
-                {
-                    Ok(Some(RuntimePreparation::Acknowledge(version)))
+                Some((status, true)) if !RunStatus::from_database(&status)?.is_terminal() => {
+                    if receipt == Some(RuntimeEffectReceipt::Started) {
+                        Ok(Some(RuntimePreparation::Execute))
+                    } else {
+                        Ok(Some(RuntimePreparation::Refuse {
+                            code: "host_ack_unknown",
+                            message: "The Run was stopped without this command's durable receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
+                        }))
+                    }
                 }
-                Some((status, _, _)) if RunStatus::from_database(&status)?.is_terminal() => {
+                Some((status, _)) if RunStatus::from_database(&status)?.is_terminal() => {
                     Ok(Some(RuntimePreparation::Refuse {
                         code: "host_ack_unknown",
                         message: "The Run became terminal without a command-correlated stop receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
@@ -653,17 +687,28 @@ fn recover_interrupted_runtime_effect(
             }
         }
         CommandCapability::RetryRun => {
-            let retried_version = connection
+            if let Some(RuntimeEffectReceipt::Completed(version)) =
+                runtime_effect_receipt(connection, intent)?
+            {
+                return Ok(Some(RuntimePreparation::Acknowledge(version)));
+            }
+            let retry_exists = connection
                 .query_row(
-                    "SELECT version FROM runs WHERE idempotency_key = ?1",
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE idempotency_key = ?1)",
                     [&intent.command_id],
-                    |row| row.get::<_, i64>(0),
+                    |row| row.get::<_, bool>(0),
                 )
-                .optional()
                 .map_err(|error| {
                     format!("Could not reconcile interrupted Companion retry: {error}")
                 })?;
-            Ok(retried_version.map(RuntimePreparation::Acknowledge))
+            if retry_exists {
+                Ok(Some(RuntimePreparation::Refuse {
+                    code: "host_ack_unknown",
+                    message: "The retry Run exists without this command's durable receipt, so Xiao will not infer acknowledgement from its current version.".to_owned(),
+                }))
+            } else {
+                Ok(None)
+            }
         }
         CommandCapability::SendFollowUp => Ok(Some(RuntimePreparation::Refuse {
             code: "host_ack_unknown",
@@ -671,6 +716,75 @@ fn recover_interrupted_runtime_effect(
         })),
         _ => Ok(None),
     }
+}
+
+fn runtime_effect_receipt(
+    connection: &rusqlite::Connection,
+    intent: &super::models::CompanionOutboxIntent,
+) -> Result<Option<RuntimeEffectReceipt>, String> {
+    let target_kind = match intent.envelope.target.kind {
+        TargetKind::Run => "run",
+        TargetKind::PendingInput => "pending_input",
+        _ => return Ok(None),
+    };
+    connection
+        .query_row(
+            "SELECT CASE
+                        WHEN json_type(
+                            safe_payload_json,
+                            '$.companionCommandReceipt.resultingVersion'
+                        ) = 'integer'
+                        THEN json_extract(
+                            safe_payload_json,
+                            '$.companionCommandReceipt.resultingVersion'
+                        )
+                        ELSE NULL
+                    END
+             FROM run_events
+             WHERE json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.commandId'
+                   ) = ?1
+               AND json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.targetKind'
+                   ) = ?2
+               AND json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.targetId'
+                   ) = ?3
+             ORDER BY json_type(
+                        safe_payload_json,
+                        '$.companionCommandReceipt.resultingVersion'
+                      ) = 'integer' DESC,
+                      sequence DESC
+             LIMIT 1",
+            params![intent.command_id, target_kind, intent.envelope.target.id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(|receipt| {
+            receipt.map(|resulting_version| match resulting_version {
+                Some(version) => RuntimeEffectReceipt::Completed(version),
+                None => RuntimeEffectReceipt::Started,
+            })
+        })
+        .map_err(|error| format!("Could not inspect the Companion command receipt: {error}"))
+}
+
+fn completed_runtime_effect_receipt_version(
+    app: &AppHandle,
+    intent: &super::models::CompanionOutboxIntent,
+) -> Result<i64, String> {
+    app.state::<XiaoRepository>().with_connection(|connection| {
+        match runtime_effect_receipt(connection, intent)? {
+            Some(RuntimeEffectReceipt::Completed(version)) => Ok(version),
+            _ => Err(
+                "The canonical runtime mutation has no completed Companion command receipt."
+                    .to_owned(),
+            ),
+        }
+    })
 }
 
 fn requires_runtime_dispatch(capability: CommandCapability) -> bool {
@@ -1069,6 +1183,62 @@ mod tests {
     }
 
     #[test]
+    fn runtime_receipt_replay_keeps_the_original_run_resulting_version() {
+        let connection = interrupted_effect_connection();
+        let intent = interrupted_intent(CommandCapability::StopRun, TargetKind::Run);
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":8}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE runs
+                 SET status = 'cancelled', version = 12
+                 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Acknowledge(8))
+        );
+    }
+
+    #[test]
+    fn pending_input_runtime_receipt_uses_the_pending_input_resulting_version() {
+        let connection = interrupted_effect_connection();
+        let intent =
+            interrupted_intent(CommandCapability::ResolveApproval, TargetKind::PendingInput);
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"pending_input\",\"targetId\":\"same-task\",\"resultingVersion\":11}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE runs SET version = 42 WHERE id = 'same-task'", [])
+            .unwrap();
+
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Acknowledge(11))
+        );
+    }
+
+    #[test]
     fn interrupted_input_without_a_command_receipt_is_never_acknowledged_or_repeated() {
         let connection = interrupted_effect_connection();
         let mut intent =
@@ -1085,6 +1255,20 @@ mod tests {
         connection
             .execute(
                 "UPDATE pending_inputs SET resolved_at = 10 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES ('same-task', 1, '{\"companionCommandId\":\"command\"}')",
                 [],
             )
             .unwrap();
@@ -1136,12 +1320,69 @@ mod tests {
                 [],
             )
             .unwrap();
+        assert!(matches!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                ..
+            })
+        ));
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES ('same-task', 1, '{\"companionCommandId\":\"command\"}')",
+                [],
+            )
+            .unwrap();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
-            Some(RuntimePreparation::Acknowledge(9))
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The Run was stopped without this command's durable receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    2,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\"}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Execute)
+        );
+        connection
+            .execute(
+                "UPDATE runs
+                 SET status = 'cancelled', cancel_requested = 0, version = 12
+                 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    3,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":11}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Acknowledge(11))
         );
 
-        let retry = interrupted_intent(CommandCapability::RetryRun, TargetKind::Run);
+        let mut retry = interrupted_intent(CommandCapability::RetryRun, TargetKind::Run);
+        retry.command_id = "retry-command".to_owned();
+        retry.envelope.command_id = "retry-command".to_owned();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
             None
@@ -1149,13 +1390,34 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runs(id, status, cancel_requested, version, idempotency_key)
-                 VALUES ('retried-run', 'queued', 0, 1, 'command')",
+                 VALUES ('retried-run', 'queued', 0, 1, 'retry-command')",
                 [],
             )
             .unwrap();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
-            Some(RuntimePreparation::Acknowledge(1))
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The retry Run exists without this command's durable receipt, so Xiao will not infer acknowledgement from its current version.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'retried-run',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"retry-command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":7}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE runs SET version = 4 WHERE id = 'retried-run'", [])
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
+            Some(RuntimePreparation::Acknowledge(7))
         );
     }
 
@@ -1175,6 +1437,11 @@ mod tests {
                     run_id TEXT NOT NULL,
                     resolved_at INTEGER,
                     invalidated_at INTEGER
+                 );
+                 CREATE TABLE run_events (
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    safe_payload_json TEXT NOT NULL
                  );
                  INSERT INTO runs(id, status, cancel_requested, version, idempotency_key)
                  VALUES ('same-task', 'running', 0, 7, NULL);

@@ -194,6 +194,11 @@
   font-size: var(--text-micro);
 }
 
+.attention-center__copy .attention-center__action-error {
+  margin-top: 8px;
+  color: var(--danger);
+}
+
 .attention-center__actions {
   display: flex;
   align-items: center;
@@ -224,6 +229,11 @@
 
 .attention-center__actions button:active {
   transform: translateY(1px);
+}
+
+.attention-center__actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .attention-center__actions .attention-center__dismiss {

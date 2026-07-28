@@ -1,13 +1,16 @@
+use std::fs;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::git::models::{WorkspaceCheckpointCapture, WorkspaceRestoreStep};
 use crate::git::service::{
-    restore_workspace_checkpoints_with_rollback, rollback_workspace_restore,
+    restore_workspace_checkpoints_with_rollback, rollback_workspace_restore, workspace_fingerprint,
 };
-use crate::runs::repository::{append_event, new_uuid_v7};
+use crate::runs::repository::{append_event, execution_roots_overlap, new_uuid_v7};
 use crate::xiao::repository::{normalize_workspace_path, XiaoRepository};
 
 use super::models::{RestoreTurnsResult, StoredTurnCheckpoint, TurnCheckpointSummary};
@@ -15,6 +18,26 @@ use super::models::{RestoreTurnsResult, StoredTurnCheckpoint, TurnCheckpointSumm
 const DEFAULT_CHECKPOINT_LIMIT: usize = 50;
 const MAX_CHECKPOINT_LIMIT: usize = 100;
 const MAX_TURN_PATCH_BYTES: usize = 8 * 1024 * 1024;
+const RESTORE_INTENT_FILE_NAME: &str = "time-travel-restore-intent.json";
+const RESTORE_INTENT_VERSION: u32 = 1;
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_RESTORE_INTENT_REMOVAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PendingRestoreIntent {
+    version: u32,
+    restore_batch_id: String,
+    checkpoint_ids: Vec<String>,
+    target_run_id: String,
+    execution_root: String,
+    original_fingerprint: String,
+    target_fingerprint: String,
+    restored_at: i64,
+}
 
 pub(crate) struct TurnCheckpointOwner<'a> {
     pub run_id: &'a str,
@@ -110,6 +133,214 @@ fn ensure_current_execution_root(
         return Err("The task execution root changed before the operation could start.".to_owned());
     }
     Ok(())
+}
+
+fn restore_intent_path(app_data_dir: &Path) -> std::path::PathBuf {
+    app_data_dir.join(RESTORE_INTENT_FILE_NAME)
+}
+
+fn write_restore_intent(app_data_dir: &Path, intent: &PendingRestoreIntent) -> Result<(), String> {
+    let path = restore_intent_path(app_data_dir);
+    if path.exists() {
+        return Err(
+            "A previous time-travel restore still requires repository recovery.".to_owned(),
+        );
+    }
+    let temporary_path = app_data_dir.join(format!(
+        "{RESTORE_INTENT_FILE_NAME}.{}.tmp",
+        intent.restore_batch_id
+    ));
+    let contents = serde_json::to_vec(intent)
+        .map_err(|error| format!("Could not encode the time-travel restore intent: {error}"))?;
+    let persistence = (|| {
+        fs::write(&temporary_path, contents)
+            .map_err(|error| format!("Could not write the time-travel restore intent: {error}"))?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("Could not sync the time-travel restore intent: {error}"))?;
+        fs::rename(&temporary_path, &path)
+            .map_err(|error| format!("Could not publish the time-travel restore intent: {error}"))
+    })();
+    if persistence.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+        let _ = fs::remove_file(&path);
+    }
+    persistence
+}
+
+fn remove_restore_intent(app_data_dir: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_RESTORE_INTENT_REMOVAL.with(|fail| fail.replace(false)) {
+        return Err("Injected restore intent cleanup failure.".to_owned());
+    }
+    let path = restore_intent_path(app_data_dir);
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Could not clear the completed time-travel restore intent: {error}"
+        )),
+    }
+}
+
+fn complete_restore(
+    transaction: &Transaction<'_>,
+    intent: &PendingRestoreIntent,
+) -> Result<(), String> {
+    for checkpoint_id in &intent.checkpoint_ids {
+        let changed = transaction
+            .execute(
+                r#"UPDATE turn_checkpoints
+                   SET restored_at = ?1, restore_batch_id = ?2
+                   WHERE id = ?3 AND execution_root = ?4
+                     AND (
+                         (restored_at IS NULL AND restore_batch_id IS NULL)
+                         OR (restored_at = ?1 AND restore_batch_id = ?2)
+                     )"#,
+                params![
+                    intent.restored_at,
+                    intent.restore_batch_id,
+                    checkpoint_id,
+                    intent.execution_root
+                ],
+            )
+            .map_err(|error| format!("Could not reconcile a restored checkpoint: {error}"))?;
+        if changed != 1 {
+            return Err(
+                "A checkpoint conflicts with the pending time-travel restore recovery.".to_owned(),
+            );
+        }
+    }
+    append_event(
+        transaction,
+        &intent.target_run_id,
+        "time_travel.restored",
+        Some(&format!("time-travel:{}", intent.restore_batch_id)),
+        &serde_json::json!({
+            "restoreBatchId": intent.restore_batch_id,
+            "restoredTurnCount": intent.checkpoint_ids.len(),
+            "targetFingerprint": intent.target_fingerprint,
+        }),
+    )
+    .map(|_| ())
+}
+
+pub(crate) fn recover_pending_restore(
+    connection: &mut Connection,
+    app_data_dir: &Path,
+) -> Result<(), String> {
+    let path = restore_intent_path(app_data_dir);
+    let contents = match fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Could not read the pending time-travel restore intent: {error}"
+            ))
+        }
+    };
+    let intent = serde_json::from_slice::<PendingRestoreIntent>(&contents).map_err(|error| {
+        format!("Could not decode the pending time-travel restore intent: {error}")
+    })?;
+    if intent.version != RESTORE_INTENT_VERSION
+        || intent.restore_batch_id.trim().is_empty()
+        || intent.checkpoint_ids.is_empty()
+        || intent.target_run_id.trim().is_empty()
+        || intent.execution_root.trim().is_empty()
+        || intent.restored_at < 0
+        || !valid_fingerprint(&intent.original_fingerprint)
+        || !valid_fingerprint(&intent.target_fingerprint)
+    {
+        return Err("The pending time-travel restore intent is invalid.".to_owned());
+    }
+
+    let expected_checkpoint_count = i64::try_from(intent.checkpoint_ids.len())
+        .map_err(|_| "The pending time-travel restore intent is too large.".to_owned())?;
+    let committed_checkpoint_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM turn_checkpoints WHERE restore_batch_id = ?1",
+            [&intent.restore_batch_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect the pending restore batch: {error}"))?;
+    let mut restore_is_committed = committed_checkpoint_count == expected_checkpoint_count;
+    if restore_is_committed {
+        for checkpoint_id in &intent.checkpoint_ids {
+            let checkpoint_matches = connection
+                .query_row(
+                    r#"SELECT EXISTS(
+                           SELECT 1 FROM turn_checkpoints
+                           WHERE id = ?1 AND execution_root = ?2
+                             AND restored_at = ?3 AND restore_batch_id = ?4
+                       )"#,
+                    params![
+                        checkpoint_id,
+                        intent.execution_root,
+                        intent.restored_at,
+                        intent.restore_batch_id
+                    ],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| {
+                    format!("Could not inspect a pending restored checkpoint: {error}")
+                })?;
+            if !checkpoint_matches {
+                restore_is_committed = false;
+                break;
+            }
+        }
+    }
+    if restore_is_committed {
+        let event_key = format!("time-travel:{}", intent.restore_batch_id);
+        let committed_event = connection
+            .query_row(
+                r#"SELECT event_type, safe_payload_json FROM run_events
+                   WHERE run_id = ?1 AND event_key = ?2"#,
+                params![intent.target_run_id, event_key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Could not inspect the pending restore event: {error}"))?;
+        let expected_payload = serde_json::json!({
+            "restoreBatchId": intent.restore_batch_id,
+            "restoredTurnCount": intent.checkpoint_ids.len(),
+            "targetFingerprint": intent.target_fingerprint,
+        });
+        restore_is_committed = committed_event.is_some_and(|(event_type, payload)| {
+            event_type == "time_travel.restored"
+                && serde_json::from_str::<serde_json::Value>(&payload).ok()
+                    == Some(expected_payload)
+        });
+    }
+    if restore_is_committed {
+        return remove_restore_intent(app_data_dir);
+    }
+
+    let current_fingerprint = workspace_fingerprint(&intent.execution_root).map_err(|error| {
+        format!("Could not inspect the workspace for time-travel recovery: {error}")
+    })?;
+    if current_fingerprint == intent.original_fingerprint
+        && intent.original_fingerprint != intent.target_fingerprint
+    {
+        return remove_restore_intent(app_data_dir);
+    }
+    if current_fingerprint != intent.target_fingerprint {
+        return Err(
+            "The workspace changed during an interrupted time-travel restore; Xiao preserved the recovery intent for manual reconciliation."
+                .to_owned(),
+        );
+    }
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start time-travel restore recovery: {error}"))?;
+    complete_restore(&transaction, &intent)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit time-travel restore recovery: {error}"))?;
+    remove_restore_intent(app_data_dir)
 }
 
 impl XiaoRepository {
@@ -227,6 +458,7 @@ impl XiaoRepository {
         if target_checkpoint_id.trim().is_empty() {
             return Err("Choose a checkpoint to restore.".to_owned());
         }
+        let app_data_dir = self.app_data_dir();
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -246,17 +478,24 @@ impl XiaoRepository {
                 &normalized_workspace,
                 execution_root,
             )?;
-            let active_runs: i64 = transaction
-                .query_row(
-                    r#"SELECT COUNT(*) FROM runs
-                       WHERE workspace_id = ?1 AND task_id = ?2
-                         AND status IN ('queued', 'preparing', 'running',
-                                        'waiting_for_input', 'verifying')"#,
-                    params![workspace_id, task_id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| format!("Could not inspect active Xiao runs: {error}"))?;
-            if active_runs != 0 {
+            let active_execution_roots = {
+                let mut statement = transaction
+                    .prepare(
+                        r#"SELECT execution_root FROM runs
+                           WHERE status IN ('queued', 'preparing', 'running',
+                                            'waiting_for_input', 'verifying')"#,
+                    )
+                    .map_err(|error| format!("Could not inspect active Xiao runs: {error}"))?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| format!("Could not query active Xiao runs: {error}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("Could not decode active Xiao runs: {error}"))?
+            };
+            if active_execution_roots
+                .iter()
+                .any(|active_root| execution_roots_overlap(active_root, execution_root))
+            {
                 return Err(
                     "Wait for active runs to settle before restoring earlier turns.".to_owned(),
                 );
@@ -336,56 +575,78 @@ impl XiaoRepository {
                     after_fingerprint: checkpoint.after_fingerprint.clone(),
                 })
                 .collect::<Vec<_>>();
-            let restore = restore_workspace_checkpoints_with_rollback(execution_root, &steps)?;
             let restore_batch_id = new_uuid_v7();
             let restored_at = now_millis()?;
-            let persistence = (|| {
-                for checkpoint in &plan {
-                    let changed = transaction
-                        .execute(
-                            r#"UPDATE turn_checkpoints
-                               SET restored_at = ?1, restore_batch_id = ?2
-                               WHERE id = ?3 AND restored_at IS NULL"#,
-                            params![restored_at, restore_batch_id, checkpoint.id],
-                        )
-                        .map_err(|error| {
-                            format!("Could not record restored checkpoint: {error}")
-                        })?;
-                    if changed != 1 {
-                        return Err(
-                            "The restore lineage changed before it could be recorded.".to_owned()
-                        );
-                    }
-                }
-                let target_run_id = plan
+            let target_run_id = plan
+                .last()
+                .map(|checkpoint| checkpoint.run_id.clone())
+                .ok_or("The restore plan is empty.")?;
+            let intent = PendingRestoreIntent {
+                version: RESTORE_INTENT_VERSION,
+                restore_batch_id: restore_batch_id.clone(),
+                checkpoint_ids: plan
+                    .iter()
+                    .map(|checkpoint| checkpoint.id.clone())
+                    .collect(),
+                target_run_id,
+                execution_root: execution_root.to_owned(),
+                original_fingerprint: plan
+                    .first()
+                    .map(|checkpoint| checkpoint.after_fingerprint.clone())
+                    .ok_or("The restore plan is empty.")?,
+                target_fingerprint: plan
                     .last()
-                    .map(|checkpoint| checkpoint.run_id.as_str())
-                    .ok_or("The restore plan is empty.")?;
-                append_event(
-                    &transaction,
-                    target_run_id,
-                    "time_travel.restored",
-                    Some(&format!("time-travel:{restore_batch_id}")),
-                    &serde_json::json!({
-                        "restoreBatchId": restore_batch_id,
-                        "restoredTurnCount": plan.len(),
-                        "targetFingerprint": restore.target_fingerprint,
-                    }),
-                )?;
+                    .map(|checkpoint| checkpoint.before_fingerprint.clone())
+                    .ok_or("The restore plan is empty.")?,
+                restored_at,
+            };
+            if workspace_fingerprint(execution_root)? != intent.original_fingerprint {
+                return Err(
+                    "The workspace no longer matches the newest restorable turn fingerprint."
+                        .to_owned(),
+                );
+            }
+            write_restore_intent(&app_data_dir, &intent)?;
+            let restore = match restore_workspace_checkpoints_with_rollback(execution_root, &steps) {
+                Ok(restore) => restore,
+                Err(error) => {
+                    if workspace_fingerprint(execution_root).ok().as_deref()
+                        == Some(intent.original_fingerprint.as_str())
+                    {
+                        if let Err(cleanup_error) = remove_restore_intent(&app_data_dir) {
+                            return Err(format!("{error} {cleanup_error}"));
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            #[cfg(test)]
+            if std::env::var_os("XIAO_TEST_INTERRUPTED_TIME_TRAVEL_RESTORE").is_some() {
+                std::process::exit(86);
+            }
+            let persistence = complete_restore(&transaction, &intent).and_then(|()| {
                 transaction
                     .commit()
                     .map_err(|error| format!("Could not commit Xiao guarded restore: {error}"))
-            })();
+            });
             if let Err(error) = persistence {
                 return Err(match rollback_workspace_restore(execution_root, &restore) {
                     Ok(()) => {
-                        format!("{error} Xiao restored the workspace to its pre-restore state.")
+                        match remove_restore_intent(&app_data_dir) {
+                            Ok(()) => format!(
+                                "{error} Xiao restored the workspace to its pre-restore state."
+                            ),
+                            Err(cleanup_error) => format!(
+                                "{error} Xiao restored the workspace to its pre-restore state. {cleanup_error}"
+                            ),
+                        }
                     }
                     Err(rollback_error) => {
                         format!("{error} Workspace rollback also failed: {rollback_error}")
                     }
                 });
             }
+            remove_restore_intent(&app_data_dir)?;
             Ok(RestoreTurnsResult {
                 restore_batch_id,
                 restored_checkpoint_ids: plan
@@ -505,6 +766,26 @@ mod tests {
         turn_id: &str,
         execution_root: &str,
     ) {
+        insert_run(
+            repository,
+            workspace_path,
+            run_id,
+            "task",
+            turn_id,
+            execution_root,
+            "completed",
+        );
+    }
+
+    fn insert_run(
+        repository: &XiaoRepository,
+        workspace_path: &str,
+        run_id: &str,
+        task_id: &str,
+        turn_id: &str,
+        execution_root: &str,
+        status: &str,
+    ) {
         repository
             .with_connection(|connection| {
                 let (workspace_id, environment_id): (i64, String) = connection
@@ -526,15 +807,17 @@ mod tests {
                             mode, approval_policy, sandbox_mode, turn_id,
                             verification_baseline_state
                          ) VALUES (
-                            ?1, ?2, 'task', ?3, 'completed', 'completed',
-                            'not_requested', ?4, 1, 1, 1, 0, ?5, '[]', '[]',
+                            ?1, ?2, ?3, ?4, ?5, 'completed',
+                            'not_requested', ?6, 1, 1, 1, 0, ?7, '[]', '[]',
                             'Change note', 'default', 'on-request', 'workspace-write',
-                            ?6, 'not_required'
+                            ?8, 'not_required'
                          )"#,
                         params![
                             run_id,
                             workspace_id,
+                            task_id,
                             format!("test:{run_id}"),
+                            status,
                             execution_root,
                             environment_id,
                             turn_id,
@@ -700,6 +983,399 @@ mod tests {
         );
 
         drop(repository);
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn preflight_failure_does_not_leave_restore_intent() {
+        let app_data = test_directory("preflight-repo");
+        let workspace = test_directory("preflight-workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "before\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![task()],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "after\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        let run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &run_id,
+            "turn-preflight",
+            &workspace_path,
+        );
+        repository
+            .record_turn_checkpoint(&run_id, "turn-preflight", &capture)
+            .unwrap();
+        let checkpoint_id = repository
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()
+            .remove(0)
+            .id;
+        fs::write(workspace.join("note.txt"), "concurrent change\n").unwrap();
+
+        let error = repository
+            .restore_turn_checkpoints(&workspace_path, "task", &checkpoint_id, &workspace_path)
+            .unwrap_err();
+        assert!(error.contains("no longer matches"));
+        assert!(!restore_intent_path(&app_data).exists());
+        drop(repository);
+        XiaoRepository::open(&app_data).unwrap();
+
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn committed_restore_with_stale_intent_recovers_after_workspace_changes() {
+        let app_data = test_directory("cleanup-repo");
+        let workspace = test_directory("cleanup-workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "before\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![task()],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "after\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        let run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &run_id,
+            "turn-cleanup",
+            &workspace_path,
+        );
+        repository
+            .record_turn_checkpoint(&run_id, "turn-cleanup", &capture)
+            .unwrap();
+        let checkpoint_id = repository
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()
+            .remove(0)
+            .id;
+
+        FAIL_RESTORE_INTENT_REMOVAL.with(|fail| fail.set(true));
+        let error = repository
+            .restore_turn_checkpoints(&workspace_path, "task", &checkpoint_id, &workspace_path)
+            .unwrap_err();
+        assert!(error.contains("restore intent cleanup failure"));
+        assert_eq!(read_text(&workspace.join("note.txt")), "before\n");
+        assert!(restore_intent_path(&app_data).exists());
+        drop(repository);
+        fs::write(workspace.join("note.txt"), "later workspace change\n").unwrap();
+
+        let reopened = XiaoRepository::open(&app_data).unwrap();
+        assert_eq!(
+            read_text(&workspace.join("note.txt")),
+            "later workspace change\n"
+        );
+        assert!(!restore_intent_path(&app_data).exists());
+        assert!(reopened
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()[0]
+            .restored_at
+            .is_some());
+        assert_eq!(
+            reopened
+                .list_run_events(&run_id, None, None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "time_travel.restored")
+                .count(),
+            1
+        );
+
+        drop(reopened);
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn active_run_from_another_task_with_overlapping_root_blocks_restore() {
+        let app_data = test_directory("active-root-repo");
+        let workspace = test_directory("active-root-workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "before\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        let mut other_task = task();
+        other_task.id = "other-task".to_owned();
+        other_task.title = "Other task".to_owned();
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned(), "other-task".to_owned()],
+                tasks: vec![task(), other_task],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "after\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        let run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &run_id,
+            "turn-active-root",
+            &workspace_path,
+        );
+        repository
+            .record_turn_checkpoint(&run_id, "turn-active-root", &capture)
+            .unwrap();
+        let checkpoint_id = repository
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()
+            .remove(0)
+            .id;
+        insert_run(
+            &repository,
+            &workspace_path,
+            &new_uuid_v7(),
+            "other-task",
+            "turn-other-task",
+            &normalize_workspace_path(&workspace.join("nested").to_string_lossy()),
+            "running",
+        );
+
+        let error = repository
+            .restore_turn_checkpoints(&workspace_path, "task", &checkpoint_id, &workspace_path)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Wait for active runs to settle before restoring earlier turns."
+        );
+        assert_eq!(read_text(&workspace.join("note.txt")), "after\n");
+        assert!(!restore_intent_path(&app_data).exists());
+
+        drop(repository);
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn interrupted_restore_is_reconciled_on_repository_reopen() {
+        const CHILD_ENV: &str = "XIAO_TEST_INTERRUPTED_TIME_TRAVEL_RESTORE";
+        const APP_DATA_ENV: &str = "XIAO_TEST_TIME_TRAVEL_APP_DATA";
+        const WORKSPACE_ENV: &str = "XIAO_TEST_TIME_TRAVEL_WORKSPACE";
+        const CHECKPOINT_ENV: &str = "XIAO_TEST_TIME_TRAVEL_CHECKPOINT";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let app_data = std::path::PathBuf::from(std::env::var_os(APP_DATA_ENV).unwrap());
+            let workspace_path = std::env::var(WORKSPACE_ENV).unwrap();
+            let checkpoint_id = std::env::var(CHECKPOINT_ENV).unwrap();
+            let repository = XiaoRepository::open(&app_data).unwrap();
+            repository
+                .restore_turn_checkpoints(&workspace_path, "task", &checkpoint_id, &workspace_path)
+                .unwrap();
+            panic!("the restore failpoint did not terminate the subprocess");
+        }
+
+        let app_data = test_directory("interrupted-repo");
+        let workspace = test_directory("interrupted-workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "before\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![task()],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "after\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        let run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &run_id,
+            "turn-interrupted",
+            &workspace_path,
+        );
+        repository
+            .record_turn_checkpoint(&run_id, "turn-interrupted", &capture)
+            .unwrap();
+        let checkpoint_id = repository
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()
+            .remove(0)
+            .id;
+        drop(repository);
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("interrupted_restore_is_reconciled_on_repository_reopen")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .env(APP_DATA_ENV, &app_data)
+            .env(WORKSPACE_ENV, &workspace_path)
+            .env(CHECKPOINT_ENV, &checkpoint_id)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(86));
+        assert_eq!(read_text(&workspace.join("note.txt")), "before\n");
+
+        let reopened = XiaoRepository::open(&app_data).unwrap();
+        let checkpoints = reopened
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].id, checkpoint_id);
+        assert!(checkpoints[0].restored_at.is_some());
+        assert_eq!(
+            reopened
+                .list_run_events(&run_id, None, None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "time_travel.restored")
+                .count(),
+            1
+        );
+
+        drop(reopened);
+        fs::remove_dir_all(app_data).unwrap();
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn interrupted_no_op_restore_is_committed_once_on_repository_reopen() {
+        const CHILD_ENV: &str = "XIAO_TEST_INTERRUPTED_TIME_TRAVEL_RESTORE";
+        const APP_DATA_ENV: &str = "XIAO_TEST_NO_OP_TIME_TRAVEL_APP_DATA";
+        const WORKSPACE_ENV: &str = "XIAO_TEST_NO_OP_TIME_TRAVEL_WORKSPACE";
+        const CHECKPOINT_ENV: &str = "XIAO_TEST_NO_OP_TIME_TRAVEL_CHECKPOINT";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let app_data = std::path::PathBuf::from(std::env::var_os(APP_DATA_ENV).unwrap());
+            let workspace_path = std::env::var(WORKSPACE_ENV).unwrap();
+            let checkpoint_id = std::env::var(CHECKPOINT_ENV).unwrap();
+            let repository = XiaoRepository::open(&app_data).unwrap();
+            repository
+                .restore_turn_checkpoints(&workspace_path, "task", &checkpoint_id, &workspace_path)
+                .unwrap();
+            panic!("the restore failpoint did not terminate the subprocess");
+        }
+
+        let app_data = test_directory("interrupted-no-op-repo");
+        let workspace = test_directory("interrupted-no-op-workspace");
+        fs::create_dir_all(&app_data).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("note.txt"), "unchanged\n").unwrap();
+        let repository = XiaoRepository::open(&app_data).unwrap();
+        let workspace_path = normalize_workspace_path(&workspace.to_string_lossy());
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![task()],
+            })
+            .unwrap();
+
+        let token = create_workspace_checkpoint(&workspace_path).unwrap();
+        fs::write(workspace.join("note.txt"), "transient\n").unwrap();
+        fs::write(workspace.join("note.txt"), "unchanged\n").unwrap();
+        let capture = finish_workspace_checkpoint_capture(&workspace_path, &token).unwrap();
+        assert_eq!(capture.before_fingerprint, capture.after_fingerprint);
+        let run_id = new_uuid_v7();
+        insert_completed_run(
+            &repository,
+            &workspace_path,
+            &run_id,
+            "turn-interrupted-no-op",
+            &workspace_path,
+        );
+        repository
+            .record_turn_checkpoint(&run_id, "turn-interrupted-no-op", &capture)
+            .unwrap();
+        let checkpoint_id = repository
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()
+            .remove(0)
+            .id;
+        drop(repository);
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("interrupted_no_op_restore_is_committed_once_on_repository_reopen")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .env(APP_DATA_ENV, &app_data)
+            .env(WORKSPACE_ENV, &workspace_path)
+            .env(CHECKPOINT_ENV, &checkpoint_id)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(86));
+        assert_eq!(read_text(&workspace.join("note.txt")), "unchanged\n");
+        assert!(restore_intent_path(&app_data).exists());
+
+        let reopened = XiaoRepository::open(&app_data).unwrap();
+        assert!(!restore_intent_path(&app_data).exists());
+        assert!(reopened
+            .list_turn_checkpoints(&workspace_path, "task", &workspace_path, None)
+            .unwrap()[0]
+            .restored_at
+            .is_some());
+        assert_eq!(
+            reopened
+                .list_run_events(&run_id, None, None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "time_travel.restored")
+                .count(),
+            1
+        );
+        drop(reopened);
+
+        let reopened_again = XiaoRepository::open(&app_data).unwrap();
+        assert_eq!(
+            reopened_again
+                .list_run_events(&run_id, None, None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "time_travel.restored")
+                .count(),
+            1
+        );
+
+        drop(reopened_again);
         fs::remove_dir_all(app_data).unwrap();
         fs::remove_dir_all(workspace).unwrap();
     }

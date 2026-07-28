@@ -35,6 +35,7 @@ import {
   removeAgentQuestionRequest,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
+  replayTaskRestoreRuns,
   resetPendingInputReplayForTaskRestore,
   restoredRunProtocolEnvelope,
   runtimeAfterListenerAttachSuccess,
@@ -471,6 +472,24 @@ const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapsh
 });
 
 describe("agent runtime workspace scope", () => {
+  it("continues later run restore work and reports isolated history failures", async () => {
+    const first = run("C:/A", { id: "run-a" });
+    const second = run("C:/A", { id: "run-b" });
+    const replayed: string[] = [];
+
+    const failures = await replayTaskRestoreRuns([first, second], async (snapshot) => {
+      replayed.push(snapshot.id);
+      if (snapshot.id === first.id) throw new Error("history unavailable");
+    });
+    replayed.push("pending-input");
+
+    expect(replayed).toEqual(["run-a", "run-b", "pending-input"]);
+    expect(failures).toEqual([{
+      runId: first.id,
+      reason: expect.objectContaining({ message: "history unavailable" }),
+    }]);
+  });
+
   it("restores every durable run event in sequence across pages", async () => {
     const events = Array.from({ length: 450 }, (_, sequence): RunEventRecord => ({
       runId: "run-a",

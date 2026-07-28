@@ -6,7 +6,30 @@ const storageVersion = 1;
 
 export type ComposerAttachmentRecoveryMap = Record<string, AgentAttachment[]>;
 
+export type ComposerAttachmentRecoveryFailure = {
+  operation: "get" | "set" | "remove";
+  message: string;
+};
+
+export type ComposerAttachmentRecoveryResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ComposerAttachmentRecoveryFailure };
+
 type AttachmentRecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+const storageFailure = (
+  operation: ComposerAttachmentRecoveryFailure["operation"],
+  reason: unknown,
+): ComposerAttachmentRecoveryResult<never> => ({
+  ok: false,
+  error: {
+    operation,
+    message: reason && typeof reason === "object" && "message" in reason &&
+      typeof reason.message === "string"
+      ? reason.message
+      : String(reason),
+  },
+});
 
 const recoveryTaskKey = (workspacePath: string, taskId: string) =>
   `${workspacePathComparisonKey(workspacePath)}\u0000${taskId}`;
@@ -26,28 +49,38 @@ const isAttachment = (value: unknown): value is AgentAttachment => {
 
 export const readComposerAttachmentRecoveries = (
   storage?: AttachmentRecoveryStorage,
-): ComposerAttachmentRecoveryMap => {
+): ComposerAttachmentRecoveryResult<ComposerAttachmentRecoveryMap> => {
+  let serialized: string | null;
   try {
-    const parsed = JSON.parse(
-      (storage ?? window.localStorage).getItem(storageKey) ?? "null",
-    ) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    serialized = (storage ?? window.localStorage).getItem(storageKey);
+  } catch (reason) {
+    return storageFailure("get", reason);
+  }
+
+  try {
+    const parsed = JSON.parse(serialized ?? "null") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: true, value: {} };
+    }
     const stored = parsed as { version?: unknown; byTask?: unknown };
     if (
       stored.version !== storageVersion ||
       !stored.byTask ||
       typeof stored.byTask !== "object" ||
       Array.isArray(stored.byTask)
-    ) return {};
+    ) return { ok: true, value: {} };
 
-    return Object.fromEntries(
-      Object.entries(stored.byTask).filter(
-        (entry): entry is [string, AgentAttachment[]] =>
-          Array.isArray(entry[1]) && entry[1].length > 0 && entry[1].every(isAttachment),
+    return {
+      ok: true,
+      value: Object.fromEntries(
+        Object.entries(stored.byTask).filter(
+          (entry): entry is [string, AgentAttachment[]] =>
+            Array.isArray(entry[1]) && entry[1].length > 0 && entry[1].every(isAttachment),
+        ),
       ),
-    );
+    };
   } catch {
-    return {};
+    return { ok: true, value: {} };
   }
 };
 
@@ -62,27 +95,36 @@ export const storeComposerAttachmentRecovery = (
   taskId: string,
   attachments: AgentAttachment[],
   storage?: AttachmentRecoveryStorage,
-): ComposerAttachmentRecoveryMap => {
+): ComposerAttachmentRecoveryResult<ComposerAttachmentRecoveryMap> => {
   let target: AttachmentRecoveryStorage;
   try {
     target = storage ?? window.localStorage;
-  } catch {
-    return {};
+  } catch (reason) {
+    return storageFailure("get", reason);
   }
-  const current = readComposerAttachmentRecoveries(target);
+  const recovered = readComposerAttachmentRecoveries(target);
+  if (!recovered.ok) return recovered;
+  const current = recovered.value;
   const key = recoveryTaskKey(workspacePath, taskId);
   const next = { ...current };
-  if (attachments.length) next[key] = attachments;
+  const durableAttachments = attachments.filter(
+    (attachment) => !attachment.url?.startsWith("data:"),
+  );
+  if (durableAttachments.length) next[key] = durableAttachments;
   else delete next[key];
 
-  try {
-    if (Object.keys(next).length) {
+  if (Object.keys(next).length) {
+    try {
       target.setItem(storageKey, JSON.stringify({ version: storageVersion, byTask: next }));
-    } else {
-      target.removeItem(storageKey);
+    } catch (reason) {
+      return storageFailure("set", reason);
     }
-  } catch {
-    // Undo recovery remains available for this mount when local storage is unavailable.
+  } else {
+    try {
+      target.removeItem(storageKey);
+    } catch (reason) {
+      return storageFailure("remove", reason);
+    }
   }
-  return next;
+  return { ok: true, value: next };
 };

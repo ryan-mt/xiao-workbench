@@ -398,7 +398,7 @@ impl CompanionService {
         now: i64,
         host: &impl CompanionCommandHost,
     ) -> Result<CommandResult, String> {
-        validate_command_envelope(&envelope, now)?;
+        validate_command_envelope_shape(&envelope)?;
         if credential.session_id != envelope.session_id
             || credential.device_id != envelope.device_id
             || credential.generation != envelope.session_generation
@@ -409,6 +409,12 @@ impl CompanionService {
         }
         let _session = CompanionRepository::authenticate(connection, credential, now)?;
         let fingerprint = command_fingerprint(&envelope)?;
+        if let Some(result) =
+            CompanionRepository::existing_command(connection, &envelope, &fingerprint)?
+        {
+            return Ok(result);
+        }
+        validate_command_audit_timestamp(&envelope, now)?;
 
         if envelope.capability.is_forbidden() {
             return self.record_refusal(
@@ -610,7 +616,7 @@ impl CompanionService {
     }
 }
 
-fn validate_command_envelope(envelope: &CommandEnvelope, now: i64) -> Result<(), String> {
+fn validate_command_envelope_shape(envelope: &CommandEnvelope) -> Result<(), String> {
     validate_required(
         "Companion command session id",
         &envelope.session_id,
@@ -642,11 +648,6 @@ fn validate_command_envelope(envelope: &CommandEnvelope, now: i64) -> Result<(),
     if envelope.expected_version < 0 {
         return Err("Companion expected entity versions cannot be negative.".to_owned());
     }
-    if envelope.audit_timestamp.abs_diff(now) > MAX_CLOCK_SKEW_MILLIS as u64 {
-        return Err(
-            "The Companion command audit timestamp is outside the accepted window.".to_owned(),
-        );
-    }
     let payload_bytes = serde_json::to_vec(&envelope.payload)
         .map_err(|error| format!("Could not encode the Companion command payload: {error}"))?
         .len();
@@ -654,6 +655,15 @@ fn validate_command_envelope(envelope: &CommandEnvelope, now: i64) -> Result<(),
         return Err(format!(
             "Companion command payloads cannot exceed {MAX_COMMAND_PAYLOAD_BYTES} bytes."
         ));
+    }
+    Ok(())
+}
+
+fn validate_command_audit_timestamp(envelope: &CommandEnvelope, now: i64) -> Result<(), String> {
+    if envelope.audit_timestamp.abs_diff(now) > MAX_CLOCK_SKEW_MILLIS as u64 {
+        return Err(
+            "The Companion command audit timestamp is outside the accepted window.".to_owned(),
+        );
     }
     Ok(())
 }
