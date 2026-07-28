@@ -19,6 +19,7 @@ import {
   projectStreamingMarkdown,
   type MarkdownStreamProjection,
 } from "./markdownStream";
+import { MessageImage } from "./MessageImage";
 
 const markdownPlugins = [remarkGfm];
 const maxMarkdownCharacters = 200_000;
@@ -279,10 +280,8 @@ function MarkdownImage({
   node: _node,
   src,
   alt,
-  onError,
   ...props
 }: ComponentProps<"img"> & { node?: unknown }) {
-  const [failed, setFailed] = useState(false);
   const localPath = localMarkdownImagePath(src);
   const tauriHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const resolvedSource = localPath
@@ -292,7 +291,7 @@ function MarkdownImage({
     : src;
   const label = alt || localPath?.split(/[\\/]/).pop() || "Image";
 
-  if (!resolvedSource || failed) {
+  if (!resolvedSource) {
     return (
       <span
         className="markdown-image-fallback"
@@ -308,17 +307,11 @@ function MarkdownImage({
   }
 
   return (
-    <img
-      {...props}
-      src={resolvedSource}
-      alt={alt}
-      data-local-image={localPath ? "true" : undefined}
-      decoding={props.decoding ?? "async"}
-      loading={props.loading ?? "lazy"}
-      onError={(event) => {
-        onError?.(event);
-        setFailed(true);
-      }}
+    <MessageImage
+      source={resolvedSource}
+      name={label}
+      className={props.className ? `is-markdown ${props.className}` : "is-markdown"}
+      local={Boolean(localPath)}
     />
   );
 }

@@ -714,6 +714,7 @@ export function TaskWorkspace({
             canUndo={canUndo}
             undoing={undoing}
             onUndo={undoTimelineTurn}
+            onEditUserMessage={onDraftChange}
           />
         </div>
         {timelineSelection ? (

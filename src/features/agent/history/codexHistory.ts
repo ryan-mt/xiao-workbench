@@ -1,5 +1,9 @@
 import { nativeBridge } from "../../../core/bridges/tauri";
-import type { CodexThreadSummary, TimelineEntry } from "../../../core/models/agent";
+import type {
+  AgentAttachment,
+  CodexThreadSummary,
+  TimelineEntry,
+} from "../../../core/models/agent";
 import { timelineEntryFromItem } from "../hooks/useAgentRuntime";
 
 type RawThread = {
@@ -210,13 +214,13 @@ export const readCodexThreadChangeSummary = async (
   return { additions: 0, deletions: 0 };
 };
 
-const userEntry = (
+export const userEntryFromItem = (
   item: Record<string, unknown>,
   createdAt: number,
   turnId: string,
 ): TimelineEntry | null => {
   if (!Array.isArray(item.content)) return null;
-  const title = item.content
+  const rawTitle = item.content
     .flatMap((part) => {
       if (!part || typeof part !== "object") return [];
       const value = part as Record<string, unknown>;
@@ -224,11 +228,46 @@ const userEntry = (
     })
     .join("\n\n")
     .trim();
-  if (!title) return null;
+  const requestMarker = /(?:^|\n)#{1,3}\s*My request for Codex:\s*\n/i;
+  const requestMatch = requestMarker.exec(rawTitle);
+  const title = requestMatch
+    ? rawTitle.slice(requestMatch.index + requestMatch[0].length).trim()
+    : rawTitle;
+  const attachments = item.content.flatMap((part, index): AgentAttachment[] => {
+    if (!part || typeof part !== "object") return [];
+    const value = part as Record<string, unknown>;
+    const type = value.type;
+    const rawPath = type === "localImage" && typeof value.path === "string"
+      ? value.path.trim()
+      : null;
+    const rawUrl = type === "image" && typeof value.url === "string"
+      ? value.url.trim()
+      : null;
+    if (!rawPath && !rawUrl) return [];
+    let path = rawPath ?? rawUrl ?? "";
+    if (/^file:\/\//i.test(path)) {
+      try {
+        path = decodeURIComponent(new URL(path).pathname).replace(/^\/([A-Za-z]:\/)/, "$1");
+      } catch {
+        // Keep the original URL if a legacy record is malformed.
+      }
+    }
+    const local = Boolean(rawPath || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\"));
+    const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? `Image ${index + 1}`;
+    return [{
+      id: `${typeof item.id === "string" ? item.id : turnId}-image-${index + 1}`,
+      name,
+      path,
+      kind: "image",
+      ...(local ? {} : { url: rawUrl ?? path }),
+    }];
+  });
+  if (!title && !attachments.length) return null;
   return {
     id: typeof item.id === "string" ? item.id : crypto.randomUUID(),
     kind: "user",
     title,
+    attachments: attachments.length ? attachments : undefined,
     createdAt,
     status: "success",
     turnId,
@@ -272,7 +311,7 @@ export const readCodexThreadTimeline = async (
       if (!rawItem || typeof rawItem !== "object") return [];
       const item = rawItem as Record<string, unknown>;
       if (item.type === "userMessage") {
-        const entry = userEntry(item, createdAt, turnId);
+        const entry = userEntryFromItem(item, createdAt, turnId);
         return entry ? [{ ...entry, ...(turnDurationMs !== null ? { turnDurationMs } : {}) }] : [];
       }
       const entry = timelineEntryFromItem(item);

@@ -279,6 +279,220 @@
   transform: rotate(-90deg);
 }
 
+.message-image {
+  position: relative;
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 10px;
+  background: #151514;
+  cursor: zoom-in;
+}
+
+.message-image > img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(68vh, 640px);
+  object-fit: contain;
+}
+
+.message-image.is-user-attachment {
+  width: 76px;
+  height: 58px;
+  border-radius: 9px;
+}
+
+.timeline .activity__user-attachment.is-image {
+  width: 78px;
+  height: 60px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.message-image.is-user-attachment > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message-image__zoom {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(12, 12, 12, .76);
+  color: #e8e8e5;
+  opacity: 0;
+  transform: scale(.88);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.message-image:hover .message-image__zoom,
+.message-image:focus-visible .message-image__zoom {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.message-image__fallback {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.message-lightbox {
+  position: fixed;
+  z-index: 10000;
+  display: grid;
+  inset: 0;
+  place-items: center;
+  padding: 44px;
+}
+
+.message-lightbox__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 5, 5, .9);
+  backdrop-filter: blur(12px);
+  cursor: zoom-out;
+}
+
+.message-lightbox figure {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  max-width: 94vw;
+  max-height: 90vh;
+  gap: 10px;
+  margin: 0;
+}
+
+.message-lightbox figure img {
+  max-width: 94vw;
+  max-height: 84vh;
+  border-radius: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
+  object-fit: contain;
+}
+
+.message-lightbox figcaption {
+  overflow: hidden;
+  color: #b8b9b6;
+  font-size: 11px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-lightbox__close {
+  position: fixed;
+  z-index: 2;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 50%;
+  background: rgba(30, 30, 29, .9);
+  color: #ededeb;
+}
+
+.message-actions {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 3px;
+  margin-top: 6px;
+  color: #858683;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.activity--user-message:hover .message-actions,
+.activity--user-message:focus-within .message-actions,
+.activity--assistant-message:hover .message-actions,
+.activity--assistant-message:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-actions > button,
+.message-actions .copy-button {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: inherit;
+  font-size: 10px;
+}
+
+.message-actions > button:hover,
+.message-actions .copy-button:hover {
+  background: rgba(255, 255, 255, .05);
+  color: #d4d5d2;
+}
+
+.message-actions time {
+  margin-left: 4px;
+  font-size: 10px;
+}
+
+.message-edit {
+  display: grid;
+  width: min(100%, 560px);
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-edit textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 10px;
+  outline: none;
+  background: #1c1c1b;
+  color: #ededeb;
+  font: inherit;
+}
+
+.message-edit textarea:focus {
+  border-color: rgba(255, 255, 255, .24);
+}
+
+.message-edit > span {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.message-edit > span button {
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: #aaa;
+  font-size: 11px;
+}
+
+.message-edit > span button.is-primary {
+  background: #ededeb;
+  color: #181817;
+}
+
 @media (max-width: 760px) {
   .timeline { padding-inline: 18px; }
   .timeline .activity__user-message-content { max-width: 90%; }

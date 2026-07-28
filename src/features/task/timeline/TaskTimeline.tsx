@@ -33,6 +33,7 @@ type TaskTimelineProps = {
   canUndo: boolean;
   undoing: boolean;
   onUndo: () => void;
+  onEditUserMessage?: (text: string) => void;
 };
 
 function TaskTimelineView({
@@ -53,6 +54,7 @@ function TaskTimelineView({
   canUndo,
   undoing,
   onUndo,
+  onEditUserMessage = () => undefined,
 }: TaskTimelineProps) {
   const rows = useMemo(() => projectConversation(timeline), [timeline]);
   const lastTurnIndex = rows.reduce(
@@ -91,6 +93,7 @@ function TaskTimelineView({
               onOpenResource={onOpenResource}
               onReviewChanges={onReviewChanges}
               onUndo={onUndo}
+              onEditUserMessage={onEditUserMessage}
               onResolveApproval={onResolveApproval}
             />
           );
@@ -113,6 +116,7 @@ function TaskTimelineView({
               canUndo={false}
               undoing={false}
               isLive={runtime.phase === "working" && runtime.taskId === taskId}
+              onEditUserMessage={onEditUserMessage}
             />
           </span>
         );

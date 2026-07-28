@@ -1,10 +1,12 @@
-import { memo, useState } from "react";
+import { memo } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
 import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
+import { MessageActions } from "./MessageActions";
+import { MessageImage } from "./MessageImage";
 
 const agentProgressDots = Array.from({ length: 25 }, (_, index) => ({
   index,
@@ -43,34 +45,6 @@ const directImageSource = (value: string | undefined) => {
   return /^data:image\//i.test(source) || /^https?:\/\//i.test(source) ? source : null;
 };
 
-function TimelineImage({
-  name,
-  source,
-}: {
-  name: string;
-  source: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  if (failed) {
-    return (
-      <div className="activity__image-fallback" role="img" aria-label={`${name}: image unavailable`}>
-        <XiaoIcon name="file" size={14} />
-        <span>{name}</span>
-        <small>Image unavailable</small>
-      </div>
-    );
-  }
-  return (
-    <img
-      src={source}
-      alt={name}
-      decoding="async"
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
-  );
-}
-
 export function TimelineImages({
   attachments,
 }: {
@@ -78,14 +52,20 @@ export function TimelineImages({
 }) {
   const images = attachments?.flatMap((attachment) => {
     if (attachment.kind !== "image") return [];
-    const source = directImageSource(attachment.url);
+    const source = directImageSource(attachment.url) ?? (
+      attachment.path &&
+      !attachment.path.startsWith("clipboard:") &&
+      isTauriHost()
+        ? convertFileSrc(attachment.path)
+        : null
+    );
     return source ? [{ attachment, source }] : [];
   }) ?? [];
   if (!images.length) return null;
   return (
     <div className="activity__image-attachments" aria-label="Image output">
       {images.map(({ attachment, source }) => (
-        <TimelineImage
+        <MessageImage
           key={attachment.id ?? attachment.path}
           name={attachment.name}
           source={source}
@@ -116,6 +96,7 @@ type ActivityItemProps = {
   canUndo?: boolean;
   undoing?: boolean;
   onUndo?: () => void;
+  onEditUserMessage?: (text: string) => void;
   attemptCount?: number;
   recovered?: boolean;
   isLive?: boolean;
@@ -252,6 +233,7 @@ export const ActivityItem = memo(function ActivityItem({
   canUndo = false,
   undoing = false,
   onUndo,
+  onEditUserMessage,
   attemptCount = 1,
   recovered = false,
   isLive = true,
@@ -287,9 +269,11 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__user-message-content">
-          <div className="activity__user-bubble">
-            {visiblePromptFromSelectedContext(entry.body ?? entry.title)}
-          </div>
+          {(entry.body ?? entry.title).trim() ? (
+            <div className="activity__user-bubble">
+              {visiblePromptFromSelectedContext(entry.body ?? entry.title)}
+            </div>
+          ) : null}
           {sentAttachments.length > 0 && (
             <div className="activity__user-attachments" aria-label="Sent attachments">
               {sentAttachments.map((attachment) => {
@@ -307,11 +291,15 @@ export const ActivityItem = memo(function ActivityItem({
                     title={attachment.path}
                   >
                     {imageSource ? (
-                      <img src={imageSource} alt={attachment.name} />
+                      <MessageImage
+                        source={imageSource}
+                        name={attachment.name}
+                        className="is-user-attachment"
+                      />
                     ) : (
                       <XiaoIcon name={attachment.kind === "directory" ? "folder" : "file"} size={14} />
                     )}
-                    <span>{attachment.name}</span>
+                    {!imageSource ? <span>{attachment.name}</span> : null}
                   </span>
                 );
               })}
@@ -356,6 +344,13 @@ export const ActivityItem = memo(function ActivityItem({
               </button>
             </div>
           ) : null}
+          <MessageActions
+            text={visiblePromptFromSelectedContext(entry.body ?? entry.title)}
+            createdAt={entry.createdAt}
+            editable
+            onEdit={onEditUserMessage}
+            copyLabel="Copy prompt"
+          />
         </div>
       </article>
     );
@@ -373,10 +368,7 @@ export const ActivityItem = memo(function ActivityItem({
           {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
           <TimelineImages attachments={entry.attachments} />
           {entry.body && !streaming ? (
-            <footer className="activity__assistant-meta">
-              <CopyButton text={entry.body} label="Copy response" />
-              <span>{entry.meta && entry.meta !== "Streaming" ? entry.meta : "Xiao"}</span>
-            </footer>
+            <MessageActions text={entry.body} createdAt={entry.createdAt} copyLabel="Copy response" />
           ) : null}
           {turnFiles.length > 0 && (
             <nav className="turn-change-actions" aria-label="Actions for edited files">

@@ -4,6 +4,7 @@ import {
   codexThreadActivityAt,
   isLegacyCodexImportPath,
   sameWorkspacePath,
+  userEntryFromItem,
   workspaceContainsPath,
 } from "./codexHistory";
 
@@ -38,5 +39,41 @@ describe("Codex history workspace matching", () => {
       ),
     ).toBe(true);
     expect(isLegacyCodexImportPath("D:\\Project Archive")).toBe(false);
+  });
+});
+
+describe("Codex history user media", () => {
+  it("preserves local and remote images while hiding the attachment manifest", () => {
+    const entry = userEntryFromItem({
+      id: "message-1",
+      content: [{
+        type: "text",
+        text: [
+          "# Files mentioned by the user:",
+          "## codex-clipboard-test.png: C:/Users/test/AppData/Local/Temp/codex-clipboard-test.png",
+          "## My request for Codex:",
+          "Fix this image.",
+        ].join("\n"),
+      }, {
+        type: "localImage",
+        path: "C:\\Users\\test\\AppData\\Local\\Temp\\codex-clipboard-test.png",
+      }, {
+        type: "image",
+        url: "https://example.com/reference.png",
+      }],
+    }, 1_000, "turn-1");
+
+    expect(entry?.title).toBe("Fix this image.");
+    expect(entry?.attachments).toEqual([
+      expect.objectContaining({
+        kind: "image",
+        path: "C:\\Users\\test\\AppData\\Local\\Temp\\codex-clipboard-test.png",
+        name: "codex-clipboard-test.png",
+      }),
+      expect.objectContaining({
+        kind: "image",
+        url: "https://example.com/reference.png",
+      }),
+    ]);
   });
 });

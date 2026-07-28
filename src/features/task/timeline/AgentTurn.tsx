@@ -22,6 +22,7 @@ type SharedProps = {
   onOpenResource: (target: string) => boolean;
   onReviewChanges: () => void;
   onUndo: () => void;
+  onEditUserMessage: (text: string) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
@@ -61,6 +62,7 @@ export function AgentTurn(props: SharedProps) {
       undoing={false}
       isLive={live}
       recovered={recovery.recoveredIds.has(entry.id)}
+      onEditUserMessage={entry === turn.user ? props.onEditUserMessage : undefined}
     />
   );
 
