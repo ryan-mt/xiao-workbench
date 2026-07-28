@@ -23,7 +23,13 @@ export default defineConfig({
         manualChunks: {
           "highlight-vendor": ["@shikijs/core", "@shikijs/engine-javascript"],
           "markdown-vendor": ["marked", "react-markdown", "remark-gfm", "remend"],
-          "react-vendor": ["react", "react-dom"],
+          "react-vendor": [
+            "react",
+            "react/jsx-runtime",
+            "react-dom",
+            "react-dom/client",
+            "scheduler",
+          ],
           "terminal-vendor": ["@xterm/addon-fit", "@xterm/xterm"],
         },
       },

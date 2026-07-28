@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CompanionProjectionUpdate } from "./companionClient";
@@ -232,7 +232,10 @@ beforeEach(() => {
   client.delete.mockResolvedValue(undefined);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("Companion application journey", () => {
   it("keeps two-device revocation under primary-host authority", async () => {
@@ -363,6 +366,49 @@ describe("Companion application journey", () => {
     await waitFor(() => {
       expect(client.pollNotifications).toHaveBeenCalledWith(secondSession, null);
     });
+  });
+
+  it("does not overlap notification polls while the previous request is still in flight", async () => {
+    localStorage.setItem("xiao.companion.session.v1", JSON.stringify(session));
+    let resolveFirstPoll: ((value: {
+      notifications: [];
+      nextCursor: null;
+      hasMore: false;
+    }) => void) | undefined;
+    client.pollNotifications
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirstPoll = resolve;
+      }))
+      .mockResolvedValue({
+        notifications: [],
+        nextCursor: null,
+        hasMore: false,
+      });
+    vi.useFakeTimers();
+
+    render(<CompanionPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connected device" }));
+    await act(async () => {
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+    expect(screen.getByText("Live")).toBeTruthy();
+    expect(client.pollNotifications).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(client.pollNotifications).toHaveBeenCalledTimes(1);
+
+    resolveFirstPoll?.({
+      notifications: [],
+      nextCursor: null,
+      hasMore: false,
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(client.pollNotifications).toHaveBeenCalledTimes(2);
   });
 
   it("reports a second action while the first still awaits the primary host", async () => {

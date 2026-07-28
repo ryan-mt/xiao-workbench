@@ -24,7 +24,12 @@ export const groupCompanionDevices = (
 ): CompanionDevice[] => {
   const grouped = new Map<string, CompanionSession[]>();
   for (const session of sessions) {
-    grouped.set(session.deviceId, [...(grouped.get(session.deviceId) ?? []), session]);
+    const deviceSessions = grouped.get(session.deviceId);
+    if (deviceSessions) {
+      deviceSessions.push(session);
+    } else {
+      grouped.set(session.deviceId, [session]);
+    }
   }
   return [...grouped.entries()].map(([deviceId, deviceSessions]) => {
     const activeSessions = deviceSessions.filter((session) => session.revokedAt === null);

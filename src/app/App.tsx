@@ -1760,14 +1760,17 @@ export function App() {
     taskWorkspacePath,
     activeTask.id,
   );
-  const dangerousRoutineIds = new Set(
-    routineController.routines
-      .filter((routine) =>
-        routine.sandboxMode === "danger-full-access" ||
-        tasks.find((task) => task.id === routine.taskId)?.sandboxMode === "danger-full-access",
-      )
-      .map((routine) => routine.id),
-  );
+  const dangerousRoutineIds = useMemo(() => {
+    const taskSandboxModes = new Map(tasks.map((task) => [task.id, task.sandboxMode]));
+    return new Set(
+      routineController.routines
+        .filter((routine) =>
+          routine.sandboxMode === "danger-full-access" ||
+          taskSandboxModes.get(routine.taskId) === "danger-full-access"
+        )
+        .map((routine) => routine.id),
+    );
+  }, [routineController.routines, tasks]);
   const focusedLaunch =
     taskStateReady &&
     taskWorkspacePath === workspace.path &&
@@ -2538,25 +2541,29 @@ export function App() {
   });
   const attentionItems = useMemo<AttentionItem[]>(() => {
     if (isTauriHost()) return attentionController.items;
-    return projectAttentionItems(tasks, agent.runs, agent.pendingInputs).map((item) => ({
-      id: item.id,
-      projectPath: workspace.path,
-      projectName: workspace.name,
-      taskId: item.taskId,
-      taskTitle: tasks.find((task) => task.id === item.taskId)?.title ?? item.detail,
-      taskStage: tasks.find((task) => task.id === item.taskId)?.stage ?? "in_progress",
-      taskStageVersion: tasks.find((task) => task.id === item.taskId)?.stageVersion ?? 0,
-      runId: item.runId,
-      kind: item.kind,
-      priority: item.kind === "decision" ? 0 : item.kind === "unread" ? 3 : 1,
-      title: item.title,
-      safeSummary: item.detail,
-      sourceOccurrenceKey: item.id,
-      surface: item.kind === "verification" ? "verification" : "timeline",
-      createdAt: item.timestamp,
-      resolvedAt: null,
-      acknowledgedAt: null,
-    }));
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    return projectAttentionItems(tasks, agent.runs, agent.pendingInputs).map((item) => {
+      const task = tasksById.get(item.taskId);
+      return {
+        id: item.id,
+        projectPath: workspace.path,
+        projectName: workspace.name,
+        taskId: item.taskId,
+        taskTitle: task?.title ?? item.detail,
+        taskStage: task?.stage ?? "in_progress",
+        taskStageVersion: task?.stageVersion ?? 0,
+        runId: item.runId,
+        kind: item.kind,
+        priority: item.kind === "decision" ? 0 : item.kind === "unread" ? 3 : 1,
+        title: item.title,
+        safeSummary: item.detail,
+        sourceOccurrenceKey: item.id,
+        surface: item.kind === "verification" ? "verification" : "timeline",
+        createdAt: item.timestamp,
+        resolvedAt: null,
+        acknowledgedAt: null,
+      };
+    });
   }, [
     agent.pendingInputs,
     agent.runs,

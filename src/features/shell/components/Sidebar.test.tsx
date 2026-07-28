@@ -40,7 +40,11 @@ const project: XiaoProjectSummary = {
   updatedAt: Date.now(),
 };
 
-const task = (id: string, updatedAt: number): WorkbenchTask => ({
+const task = (
+  id: string,
+  updatedAt: number,
+  patch: Partial<WorkbenchTask> = {},
+): WorkbenchTask => ({
   id,
   title: id,
   meta: "Now",
@@ -74,6 +78,7 @@ const task = (id: string, updatedAt: number): WorkbenchTask => ({
   executionEnvironmentId: null,
   workspaceMode: "local",
   managedWorktreeId: null,
+  ...patch,
 });
 
 type SidebarContent = {
@@ -81,6 +86,7 @@ type SidebarContent = {
   projectGroups?: ProjectGroup[];
   tasks?: WorkbenchTask[];
   activeTaskId?: string;
+  workingTaskIds?: string[];
 };
 
 const sidebarElement = (
@@ -99,7 +105,7 @@ const sidebarElement = (
       tasks={content.tasks ?? []}
       activeTaskId={content.activeTaskId ?? ""}
       workspace={workspace}
-      workingTaskIds={[]}
+      workingTaskIds={content.workingTaskIds ?? []}
       account={null}
       profile={{ name: "Xiao User", avatarDataUrl: null }}
       canOpenProjects={canOpenProjects}
@@ -197,8 +203,9 @@ describe("Sidebar attention trigger", () => {
     expect(markup).not.toContain('class="sidebar__rail"');
     expect(markup).not.toContain('class="sidebar__new-task"');
     expect(markup).toContain(">Find anything</span>");
-    expect(markup).toContain(">Projects</span>");
-    expect(markup).not.toContain(">Tasks</span>");
+    expect(markup).toContain(">Tasks</span>");
+    expect(markup).toContain('aria-label="Current project: Xiao"');
+    expect(markup).toContain('aria-label="New task"');
     expect(markup).toContain(">Attention</span>");
     expect(markup).toContain(">Settings</span>");
     expect(markup).toContain(">Xiao User</strong>");
@@ -207,18 +214,23 @@ describe("Sidebar attention trigger", () => {
   it("offers a new task action for an empty project", () => {
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project] });
 
-    expect(markup).toContain('class="sidebar app-sidebar"');
-    expect(markup).toContain(">No tasks yet</span>");
+    expect(markup).toContain('class="sidebar app-sidebar sidebar--');
+    expect(markup).toContain(">No tasks yet</strong>");
     expect(markup).toContain(">New task</span>");
   });
 
   it("labels project and group creation actions", () => {
-    const markup = renderSidebar(0, "tasks", "ready", { projects: [project] }, true);
+    render(sidebarElement(
+      0,
+      "tasks",
+      "ready",
+      { projects: [project] },
+      true,
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
 
-    expect(markup).toContain('aria-label="Create project group"');
-    expect(markup).toContain(">Group</span>");
-    expect(markup).toContain('aria-label="Add project"');
-    expect(markup).toContain(">Add</span>");
+    expect(screen.getByRole("button", { name: "Create project group" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add project" })).toBeTruthy();
   });
 
   it("creates project groups through an in-app dialog", () => {
@@ -232,6 +244,7 @@ describe("Sidebar attention trigger", () => {
       onCreateProjectGroup,
     ));
 
+    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
     fireEvent.click(screen.getByRole("button", { name: "Create project group" }));
     const dialog = screen.getByRole("dialog", { name: "New project group" });
     fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Client work" } });
@@ -249,17 +262,18 @@ describe("Sidebar attention trigger", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    const markup = renderSidebar(0, "tasks", "ready", {
+    render(sidebarElement(0, "tasks", "ready", {
       projects: [project],
       projectGroups: [emptyGroup],
-    });
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
 
-    expect(markup).toContain(">Empty Group</span>");
-    expect(markup).toContain('aria-label="Rename Empty Group"');
-    expect(markup).toContain('aria-label="Move Empty Group up"');
-    expect(markup).toContain('aria-label="Move Empty Group down"');
-    expect(markup).toContain('aria-label="Delete Empty Group"');
-    expect(markup).toContain(">Ungrouped</span>");
+    expect(screen.getByText("Empty Group")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Rename Empty Group" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Move Empty Group up" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Move Empty Group down" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete Empty Group" })).toBeTruthy();
+    expect(screen.getByText("Ungrouped")).toBeTruthy();
   });
 });
 
@@ -272,8 +286,8 @@ describe("Sidebar Companion trigger", () => {
   });
 });
 
-describe("Sidebar task group disclosure", () => {
-  it("keeps the active task in its recent time group", () => {
+describe("Sidebar V2 task queue", () => {
+  it("keeps the active task visible as a selected work card", () => {
     const now = Date.now();
     const activeTask = task("Active task", now);
     const markup = renderSidebar(0, "tasks", "ready", {
@@ -282,50 +296,92 @@ describe("Sidebar task group disclosure", () => {
       activeTaskId: activeTask.id,
     });
 
-    expect(markup).not.toContain(">Active</span>");
-    expect(markup).toContain(">Recent</span><small>2</small>");
-    expect(markup).toContain('class="task-list__item is-selected"');
+    expect(markup).toContain("Active task");
+    expect(markup).toContain("sidebar-v2-task--card");
+    expect(markup).toContain("is-selected");
   });
 
-  it("shows all tasks without a disclosure at the six-task limit", () => {
-    const now = Date.now();
-    const tasks = Array.from({ length: 6 }, (_, index) =>
-      task(`Recent task ${index + 1}`, now - index),
-    );
-    const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
-
-    expect(markup).toContain("Recent task 6");
-    expect(markup).not.toContain("task-group__toggle");
-  });
-
-  it("collapses task groups after six tasks and reports the hidden count", () => {
+  it("shows the full active queue without time-group disclosures", () => {
     const now = Date.now();
     const tasks = Array.from({ length: 8 }, (_, index) =>
       task(`Recent task ${index + 1}`, now - index),
     );
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
 
-    expect(markup).toContain("Recent task 6");
-    expect(markup).not.toContain("Recent task 7");
-    expect(markup).not.toContain("Recent task 8");
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain(">Show more</span><small>+2</small>");
+    expect(markup).toContain("Recent task 8");
+    expect(markup).not.toContain("task-group__toggle");
+    expect(markup).not.toContain(">Recent</span>");
   });
 
-  it("keeps an active task visible when it falls beyond a collapsed group's limit", () => {
+  it("moves completed tasks into a collapsible slim shelf", () => {
     const now = Date.now();
-    const tasks = Array.from({ length: 7 }, (_, index) =>
-      task(`Recent task ${index + 1}`, now - index),
-    );
-    const activeTask = tasks[6]!;
+    const completedTask = task("Completed task", now, { stage: "completed" });
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [task("Active task", now - 1), completedTask],
+      activeTaskId: completedTask.id,
+    }));
+
+    const toggle = screen.getByRole("button", { name: "Completed" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Completed task")).toBeTruthy();
+    expect(screen.getByText("Completed task").closest(".sidebar-v2-task--slim")).toBeTruthy();
+
+    fireEvent.click(toggle);
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Completed task")).toBeNull();
+  });
+
+  it("gives running work the strongest visual status", () => {
+    const running = task("Running task", Date.now(), { stage: "ready_for_review" });
     const markup = renderSidebar(0, "tasks", "ready", {
       projects: [project],
-      tasks,
-      activeTaskId: activeTask.id,
+      tasks: [running],
+      workingTaskIds: [running.id],
     });
 
-    expect(markup).toContain(activeTask.title);
-    expect(markup).toContain('class="task-list__item is-selected"');
-    expect(markup).toContain(">Show more</span><small>+1</small>");
+    expect(markup).toContain("is-running");
+    expect(markup).toContain(">Running</span>");
+  });
+
+  it("keeps clipboard failures recoverable instead of rejecting the click handler", async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn().mockRejectedValue(new Error("clipboard denied")),
+      },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+
+    try {
+      render(sidebarElement(0, "tasks", "ready", {
+        projects: [project],
+        tasks: [task("Copy target", Date.now())],
+      }));
+      fireEvent.contextMenu(screen.getByText("Copy target").closest("article")!);
+      fireEvent.click(screen.getByRole("menuitem", { name: "Copy working directory" }));
+
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "Could not copy to the clipboard",
+      );
+      expect(screen.getByRole("menu", { name: "Actions for Copy target" })).toBeTruthy();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+      if (execCommandDescriptor) {
+        Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+    }
   });
 });

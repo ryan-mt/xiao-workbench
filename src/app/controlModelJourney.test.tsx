@@ -515,7 +515,7 @@ const clickWorkspaceTool = async (name: string) => {
 };
 
 const taskButton = (title: string) => screen.getAllByText(title)
-  .map((element) => element.closest(".task-list__item"))
+  .map((element) => element.closest(".sidebar-v2-task__select"))
   .find((element): element is HTMLElement => element instanceof HTMLElement)!;
 
 describe("control-model application shell journey", () => {
