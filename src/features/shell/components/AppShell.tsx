@@ -79,6 +79,7 @@ export function AppShell({
   const [focusRailConstrained, setFocusRailConstrained] = useState(true);
   const [resizingFocusRail, setResizingFocusRail] = useState(false);
   const sidebarResizeStart = useRef({ pointerX: 0, sidebarWidth: defaultSidebarWidth });
+  const sidebarDragWidth = useRef(defaultSidebarWidth);
   const focusRailResizeStart = useRef({ pointerX: 0, focusRailWidth: defaultFocusRailWidth });
   const focusRailDragWidth = useRef(defaultFocusRailWidth);
   const appFrameRef = useRef<HTMLDivElement>(null);
@@ -141,21 +142,34 @@ export function AppShell({
   useEffect(() => {
     if (!resizingSidebar) return;
 
-    const resize = (event: PointerEvent) => {
-      setSidebarWidth(
-        clampSidebarWidth(
-          sidebarResizeStart.current.sidebarWidth +
-            event.clientX -
-            sidebarResizeStart.current.pointerX,
-        ),
+    let animationFrame: number | null = null;
+    const paintWidth = () => {
+      animationFrame = null;
+      appFrameRef.current?.style.setProperty(
+        "--sidebar-width",
+        `${sidebarDragWidth.current}px`,
       );
     };
-    const stopResizing = () => setResizingSidebar(false);
+    const resize = (event: PointerEvent) => {
+      sidebarDragWidth.current = clampSidebarWidth(
+        sidebarResizeStart.current.sidebarWidth +
+          event.clientX -
+          sidebarResizeStart.current.pointerX,
+      );
+      if (animationFrame === null) animationFrame = window.requestAnimationFrame(paintWidth);
+    };
+    const stopResizing = () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      paintWidth();
+      setSidebarWidth(sidebarDragWidth.current);
+      setResizingSidebar(false);
+    };
     window.addEventListener("pointermove", resize);
     window.addEventListener("pointerup", stopResizing);
     window.addEventListener("pointercancel", stopResizing);
     window.addEventListener("blur", stopResizing);
     return () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       window.removeEventListener("pointermove", resize);
       window.removeEventListener("pointerup", stopResizing);
       window.removeEventListener("pointercancel", stopResizing);
@@ -269,6 +283,7 @@ export function AppShell({
             onPointerDown={(event) => {
               event.preventDefault();
               sidebarResizeStart.current = { pointerX: event.clientX, sidebarWidth };
+              sidebarDragWidth.current = sidebarWidth;
               setResizingSidebar(true);
             }}
           />
