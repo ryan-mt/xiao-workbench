@@ -80,6 +80,7 @@ function TaskTimelineView({
               turn={row.turn}
               index={row.turn.startIndex}
               runtime={runtime}
+              liveEligible={rowIndex === lastTurnIndex}
               taskId={taskId}
               workspacePath={workspacePath}
               expandToolOutput={expandToolOutput}

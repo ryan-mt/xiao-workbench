@@ -11,6 +11,7 @@ type SharedProps = {
   turn: ConversationTurn;
   index: number;
   runtime: AgentRuntimeState;
+  liveEligible: boolean;
   taskId: string;
   workspacePath: string;
   expandToolOutput: boolean;
@@ -31,7 +32,8 @@ type SharedProps = {
 
 export function AgentTurn(props: SharedProps) {
   const { turn, runtime, taskId } = props;
-  const live = runtime.phase === "working" &&
+  const live = props.liveEligible &&
+    runtime.phase === "working" &&
     runtime.taskId === taskId &&
     (!turn.response || turn.response.status === "active");
   const [expanded, setExpanded] = useState(live);

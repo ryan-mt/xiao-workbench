@@ -43,6 +43,34 @@ const render = (
 );
 
 describe("TaskTimeline turn canvas", () => {
+  it("marks only the newest unfinished turn as live", () => {
+    const markup = render([{
+      id: "older-user",
+      kind: "user",
+      title: "Older completed work",
+      createdAt: 1_000,
+    }, {
+      id: "older-commentary",
+      kind: "result",
+      title: "Progress",
+      meta: "Commentary",
+      createdAt: 2_000,
+    }, {
+      id: "current-user",
+      kind: "user",
+      title: "Current work",
+      createdAt: 3_000,
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 3_000,
+    });
+
+    expect(markup.match(/Working for/g)).toHaveLength(1);
+    expect(markup).toContain("Worked for 1s");
+  });
+
   it("keeps image output visible outside a completed turn's collapsed execution list", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
     const markup = render([{
