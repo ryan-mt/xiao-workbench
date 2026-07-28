@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { AgentRuntimeState } from "../../../core/models/agent";
-import { ActivityItem, TimelineImages } from "./ActivityItem";
+import { ActivityItem } from "./ActivityItem";
 import type { ConversationTurn } from "./ConversationTurnProjector";
 import { EditedFilesSummary } from "./EditedFilesSummary";
 import { toolCallRecovery } from "./ToolCallGroup";
@@ -37,7 +37,7 @@ export function AgentTurn(props: SharedProps) {
     runtime.phase === "working" &&
     runtime.taskId === taskId &&
     (!turn.response || turn.response.status === "active");
-  const [expanded, setExpanded] = useState(live);
+  const [expanded, setExpanded] = useState(props.liveEligible);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
 
   useEffect(() => {
@@ -89,11 +89,6 @@ export function AgentTurn(props: SharedProps) {
           ))}
         </div>
       ) : null}
-      <TimelineImages
-        attachments={turn.work.flatMap((entry) =>
-          entry.attachments?.filter((attachment) => attachment.kind === "image") ?? []
-        )}
-      />
       {turn.response ? (
         <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
           {item(turn.response, turn.work.length + 1, true)}

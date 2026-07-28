@@ -400,11 +400,11 @@ export const ActivityItem = memo(function ActivityItem({
         <div className="activity__tool-disclosure activity__tool-disclosure--static">
           <div className="activity__tool-summary-row">
             <span className="activity__tool-icon" aria-hidden="true">
-              <XiaoIcon name="search" size={13} />
+              <XiaoIcon name="browser" size={13} />
             </span>
             <span className="activity__tool-summary">
               <strong>Web search</strong>
-              {query && query !== "Web search" ? <span title={query}>{query}</span> : null}
+              {query && query !== "Web search" ? <span className="activity__web-query" title={query}>{query}</span> : null}
             </span>
           </div>
         </div>
@@ -516,6 +516,7 @@ export const ActivityItem = memo(function ActivityItem({
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
     const active = entry.status === "active" && isLive;
+    const integration = entry.meta === "Plugin tool" || entry.meta === "Dynamic tool";
     const toolTitle = recovered
       ? "Shell retry"
       : environmentBlocked
@@ -524,9 +525,11 @@ export const ActivityItem = memo(function ActivityItem({
           ? "Shell failed"
           : noSearchMatches
             ? "No matches"
-            : entry.command
-              ? "Shell"
-              : entry.title;
+            : integration
+              ? active ? `Using ${entry.title}` : `Used ${entry.title}`
+              : entry.command
+                ? active ? "Running command" : "Ran command"
+                : entry.title;
     const terminalText = entry.command
       ? `$ ${entry.command}${entry.body ? `\n\n${entry.body}` : ""}`
       : entry.body ?? "";
@@ -535,7 +538,7 @@ export const ActivityItem = memo(function ActivityItem({
         <span className="activity__tool-icon" aria-hidden="true">
           <XiaoIcon
             className={active ? "spin" : undefined}
-            name={active ? "pending" : entry.meta === "Plugin tool" || entry.meta === "Dynamic tool" ? "cpu" : "command"}
+            name={active ? "pending" : integration ? "capability" : "command"}
             size={13}
           />
         </span>
@@ -580,7 +583,17 @@ export const ActivityItem = memo(function ActivityItem({
             <div className="activity__tool-summary-row">{summary}</div>
           </div>
         )}
-        <TimelineImages attachments={entry.attachments} />
+        {entry.attachments?.some((attachment) => attachment.kind === "image") ? (
+          <div className="activity__viewed-images">
+            <span className="activity__viewed-images-label">
+              <XiaoIcon name="files" size={13} />
+              Viewed {entry.attachments.filter((attachment) => attachment.kind === "image").length === 1
+                ? "an image"
+                : `${entry.attachments.filter((attachment) => attachment.kind === "image").length} images`}
+            </span>
+            <TimelineImages attachments={entry.attachments} />
+          </div>
+        ) : null}
       </article>
     );
   }

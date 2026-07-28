@@ -73,7 +73,7 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("Worked for 1s");
   });
 
-  it("keeps image output visible outside a completed turn's collapsed execution list", () => {
+  it("opens the latest completed execution and labels viewed image output", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
     const markup = render([{
       id: "user",
@@ -100,9 +100,10 @@ describe("TaskTimeline turn canvas", () => {
     }]);
 
     expect(markup).toContain(">Worked<");
-    expect(markup).toContain("aria-expanded=\"false\"");
+    expect(markup).toContain("aria-expanded=\"true\"");
+    expect(markup).toContain("Viewed an image");
     expect(markup.match(/src="data:image\/png;base64,iVBORw0KGgo="/g)).toHaveLength(1);
-    expect(markup).not.toContain("npm test");
+    expect(markup).toContain("npm test");
   });
 
   it("marks a failed shell call as recovered when a corrected call succeeds", () => {
