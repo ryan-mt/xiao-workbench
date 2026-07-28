@@ -249,6 +249,47 @@ describe("Companion application journey", () => {
     expect(client.command).not.toHaveBeenCalled();
   });
 
+  it("clears an expired pairing bundle instead of rendering its credential", async () => {
+    const bundle = {
+      endpoint: "https://192.0.2.10:4318",
+      serverName: "xiao-companion.local",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----",
+      certificateFingerprint: fingerprint,
+      pairingId: "pairing-expired",
+      ownerCredential: "owner-expired",
+      expiresAt: Date.now() - 1,
+    };
+    bridge.issueCompanionPairingBundle.mockResolvedValue(bundle);
+    render(<CompanionPage />);
+    await screen.findByText("Operator phone");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create pairing bundle" }));
+
+    expect(await screen.findByText(/pairing bundle expired/i)).toBeTruthy();
+    expect(screen.queryByDisplayValue(JSON.stringify(bundle))).toBeNull();
+  });
+
+  it("conceals a rotated credential until the operator reveals it", async () => {
+    const credential = {
+      sessionId: "phone-session",
+      deviceId: "phone",
+      generation: 2,
+      secret: "rotated-secret",
+    };
+    bridge.rotateCompanionSession.mockResolvedValue({ credential });
+    render(<CompanionPage />);
+    await screen.findByText("Operator phone");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rotate" })[0]);
+
+    expect(await screen.findByText("Rotation credential — transfer it once")).toBeTruthy();
+    expect(screen.queryByDisplayValue(JSON.stringify(credential))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reveal rotation credential" }));
+    expect(screen.getByDisplayValue(JSON.stringify(credential))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Rotation credential — transfer it once")).toBeNull();
+  });
+
   it("keeps the native credential reference when keyring deletion is not acknowledged", async () => {
     localStorage.setItem("xiao.companion.session.v1", JSON.stringify(session));
     client.delete.mockRejectedValueOnce(new Error("keyring unavailable"));

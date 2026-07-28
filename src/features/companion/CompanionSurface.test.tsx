@@ -142,6 +142,7 @@ const hostAuthorityProps = (): CompanionHostAuthorityPanelProps => ({
     error: null,
   },
   onCreatePairing: vi.fn(),
+  onDismissPairing: vi.fn(),
   onRotateSession: vi.fn(),
   onRevokeSession: vi.fn(),
   onRevokeDevice: vi.fn(),
@@ -188,6 +189,28 @@ describe("CompanionSurface", () => {
     expect(hostProps.onRotateSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeDevice).toHaveBeenCalledWith("device-2", 2);
+  });
+
+  it("keeps the pairing bundle concealed until the operator copies or reveals it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const hostProps = hostAuthorityProps();
+    render(<CompanionHostAuthorityPanel {...hostProps} />);
+
+    expect(screen.queryByDisplayValue("XIAO-PAIR-123")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy pairing bundle" }));
+    expect(writeText).toHaveBeenCalledWith("XIAO-PAIR-123");
+    expect(await screen.findByText("Copied")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reveal pairing bundle" }));
+    expect(screen.getByDisplayValue("XIAO-PAIR-123")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide pairing bundle" }));
+    expect(screen.queryByDisplayValue("XIAO-PAIR-123")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(hostProps.onDismissPairing).toHaveBeenCalledOnce();
   });
 
   it("disables every canonical action while stale and offers recovery", () => {

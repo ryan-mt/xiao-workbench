@@ -320,7 +320,10 @@ export function Composer({
     !interactiveRequestOpen &&
     (value.trim().length > 0 || attachments.length > 0 || reviewContext.length > 0 || Boolean(selectedContext?.trim())) &&
     (runtime.phase === "ready" || currentTaskWorking);
-  const planSteps = plan?.steps ?? [];
+  const planSteps =
+    currentTaskWorking && plan?.steps.some((step) => step.status !== "completed")
+      ? plan.steps
+      : [];
   const completedPlanSteps = planSteps.filter((step) => step.status === "completed").length;
   const activePlanStep = planSteps.find((step) => step.status === "inProgress")
     ?? planSteps.find((step) => step.status === "pending")

@@ -28,6 +28,7 @@ export type CompanionHostAuthorityPanelProps = {
   devices: CompanionDevice[];
   pairing: CompanionPairing;
   onCreatePairing: () => void;
+  onDismissPairing: () => void;
   onRotateSession: (deviceId: string, sessionId: string, expectedVersion: number) => void;
   onRevokeSession: (deviceId: string, sessionId: string, expectedVersion: number) => void;
   onRevokeDevice: (deviceId: string, expectedVersion: number) => void;
@@ -37,6 +38,99 @@ const dateTime = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
   timeStyle: "short",
 });
+
+const copyText = async (text: string) => {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through for WebViews where the Clipboard API exists but is permission-gated.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard write failed");
+};
+
+export function CompanionCredentialTransfer({
+  credential,
+  kind,
+  expiresAt = null,
+  onDismiss,
+}: {
+  credential: string;
+  kind: "pairing" | "rotation";
+  expiresAt?: number | null;
+  onDismiss: () => void;
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const title = kind === "pairing"
+    ? "Single-use pairing bundle"
+    : "Rotation credential — transfer it once";
+  const noun = kind === "pairing" ? "pairing bundle" : "rotation credential";
+
+  useEffect(() => {
+    setRevealed(false);
+    setCopyState("idle");
+  }, [credential]);
+
+  return (
+    <div className="companion__credential">
+      <div className="companion__credential-heading">
+        <div>
+          <strong>{title}</strong>
+          <small>
+            {kind === "pairing"
+              ? "Copy this bundle to the device you want to connect."
+              : "The connected device validates this credential against the pinned host."}
+          </small>
+          {expiresAt ? <small>Expires {dateTime.format(expiresAt)}</small> : null}
+        </div>
+        <span className="companion__row-actions">
+          <button
+            type="button"
+            onClick={() => {
+              setCopyState("idle");
+              void copyText(credential)
+                .then(() => setCopyState("copied"))
+                .catch(() => setCopyState("failed"));
+            }}
+          >
+            Copy {noun}
+          </button>
+          <button type="button" onClick={() => setRevealed((current) => !current)}>
+            {revealed ? "Hide" : "Reveal"} {noun}
+          </button>
+          <button type="button" onClick={onDismiss}>Dismiss</button>
+        </span>
+      </div>
+      <span className="companion__credential-status" aria-live="polite">
+        {copyState === "copied"
+          ? "Copied"
+          : copyState === "failed"
+            ? "Copy failed. Reveal the credential and copy it manually."
+            : ""}
+      </span>
+      {revealed ? (
+        <textarea
+          aria-label={title}
+          readOnly
+          rows={5}
+          value={credential}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 const statusLabel = (state: CompanionState) => {
   if (state.connection === "live") return "Live";
@@ -56,6 +150,7 @@ export function CompanionHostAuthorityPanel({
   devices,
   pairing,
   onCreatePairing,
+  onDismissPairing,
   onRotateSession,
   onRevokeSession,
   onRevokeDevice,
@@ -72,15 +167,21 @@ export function CompanionHostAuthorityPanel({
           <p>Primary-host administration. Owner pairing credentials are short-lived and single-use.</p>
         </div>
         <button type="button" onClick={onCreatePairing} disabled={pairing.status === "creating"}>
-          {pairing.status === "creating" ? "Creating…" : "Pair device"}
+          {pairing.status === "creating" ? "Creating…" : "Create pairing bundle"}
         </button>
       </div>
       {pairing.status === "ready" && pairing.ownerCredential && pairing.expiresAt ? (
-        <div className="companion__pairing" role="status">
-          <span>Single-use pairing bundle</span>
-          <strong>{pairing.ownerCredential}</strong>
-          <small>Expires {dateTime.format(pairing.expiresAt)}</small>
-        </div>
+        <CompanionCredentialTransfer
+          credential={pairing.ownerCredential}
+          kind="pairing"
+          expiresAt={pairing.expiresAt}
+          onDismiss={onDismissPairing}
+        />
+      ) : null}
+      {pairing.status === "expired" ? (
+        <p className="companion__empty" role="status">
+          The pairing bundle expired. Create a new one when the device is ready.
+        </p>
       ) : null}
       {pairing.status === "failed" ? (
         <p className="companion__inline-error" role="alert">

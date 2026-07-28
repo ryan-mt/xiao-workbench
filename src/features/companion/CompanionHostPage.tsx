@@ -9,7 +9,10 @@ import {
   RELEASE_ASSURANCE_MANIFEST,
 } from "../release-assurance/releaseAssurance";
 import type { CompanionDevice, CompanionPairing } from "./companionContract";
-import { CompanionHostAuthorityPanel } from "./CompanionSurface";
+import {
+  CompanionCredentialTransfer,
+  CompanionHostAuthorityPanel,
+} from "./CompanionSurface";
 
 const releaseReport = evaluateReleaseAssurance(RELEASE_ASSURANCE_MANIFEST);
 
@@ -80,6 +83,23 @@ export function CompanionHostPage() {
     headingRef.current?.focus();
   }, [sessions]);
 
+  useEffect(() => {
+    if (pairing.status !== "ready" || pairing.expiresAt === null) return;
+    const expire = () => setPairing({
+      status: "expired",
+      ownerCredential: null,
+      expiresAt: null,
+      error: null,
+    });
+    const remaining = pairing.expiresAt - Date.now();
+    if (remaining <= 0) {
+      expire();
+      return;
+    }
+    const timer = window.setTimeout(expire, remaining);
+    return () => window.clearTimeout(timer);
+  }, [pairing.expiresAt, pairing.status]);
+
   const currentSession = (sessionId: string, expectedVersion: number) => {
     const session = sessions.find((item) => item.sessionId === sessionId);
     if (!session || session.generation !== expectedVersion) {
@@ -112,14 +132,11 @@ export function CompanionHostPage() {
       ) : null}
 
       {rotationCode ? (
-        <section className="companion__notice" aria-label="Rotated Companion credential">
-          <div>
-            <strong>Rotation code — transfer it once</strong>
-            <span>{rotationCode}</span>
-            <small>The connected device validates this code against the pinned host before replacing its keyring credential.</small>
-          </div>
-          <button type="button" onClick={() => setRotationCode(null)}>Hide</button>
-        </section>
+        <CompanionCredentialTransfer
+          credential={rotationCode}
+          kind="rotation"
+          onDismiss={() => setRotationCode(null)}
+        />
       ) : null}
 
       <CompanionHostAuthorityPanel
@@ -144,6 +161,12 @@ export function CompanionHostPage() {
             });
           });
         }}
+        onDismissPairing={() => setPairing({
+          status: "idle",
+          ownerCredential: null,
+          expiresAt: null,
+          error: null,
+        })}
         onRotateSession={(deviceId, sessionId, expectedVersion) => {
           const session = currentSession(sessionId, expectedVersion);
           if (!session || session.deviceId !== deviceId) return;

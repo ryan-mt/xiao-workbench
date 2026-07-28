@@ -1561,7 +1561,9 @@ fn apply_runtime_message(
             );
         }
         if route.approval_policy == "never" {
-            auto_decline_pending(app, &route, &pending, kind)?;
+            if let Some(result) = auto_decline_result(kind) {
+                auto_decline_pending(app, &route, &pending, result)?;
+            }
         }
         return Ok(());
     }
@@ -1703,7 +1705,7 @@ fn auto_decline_pending(
     app: &AppHandle,
     run: &RunRecord,
     pending: &PendingInputSnapshot,
-    kind: PendingInputKind,
+    result: Value,
 ) -> Result<(), String> {
     let service = app.state::<RunService>();
     let _resolution = service
@@ -1718,7 +1720,6 @@ fn auto_decline_pending(
     }
     let request_id: Value = serde_json::from_str(&pending.request_id)
         .map_err(|_| "The pending Codex request id is invalid.".to_owned())?;
-    let result = auto_decline_result(kind);
     let registry = app.state::<EnvironmentRuntimeRegistry>();
     registry.reply(
         &run.execution_environment_id,
@@ -2010,12 +2011,13 @@ fn mcp_elicitation_decline_result() -> Value {
     json!({ "action": "decline", "content": null, "_meta": null })
 }
 
-fn auto_decline_result(kind: PendingInputKind) -> Value {
+fn auto_decline_result(kind: PendingInputKind) -> Option<Value> {
     match kind {
-        PendingInputKind::McpElicitation => mcp_elicitation_decline_result(),
-        PendingInputKind::Permissions => json!({ "permissions": {}, "scope": "turn" }),
-        PendingInputKind::Question => json!({ "answers": {} }),
-        _ => json!({ "decision": "decline" }),
+        PendingInputKind::CommandApproval | PendingInputKind::FileApproval => {
+            Some(json!({ "decision": "decline" }))
+        }
+        PendingInputKind::Permissions => Some(json!({ "permissions": {}, "scope": "turn" })),
+        PendingInputKind::Question | PendingInputKind::McpElicitation => None,
     }
 }
 
@@ -3002,11 +3004,12 @@ mod tests {
     }
 
     #[test]
-    fn question_auto_decline_uses_request_user_input_response_schema() {
-        assert_eq!(
-            auto_decline_result(PendingInputKind::Question),
-            json!({ "answers": {} })
-        );
+    fn never_ask_declines_only_approval_requests() {
+        assert!(auto_decline_result(PendingInputKind::CommandApproval).is_some());
+        assert!(auto_decline_result(PendingInputKind::FileApproval).is_some());
+        assert!(auto_decline_result(PendingInputKind::Permissions).is_some());
+        assert!(auto_decline_result(PendingInputKind::Question).is_none());
+        assert!(auto_decline_result(PendingInputKind::McpElicitation).is_none());
     }
 
     #[test]

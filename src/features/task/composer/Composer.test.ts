@@ -131,6 +131,58 @@ afterEach(() => {
   bridge.agentRequest.mockReset();
 });
 
+describe("composer task dock lifecycle", () => {
+  it("shows plan tasks only while their task is live", () => {
+    const plan = {
+      explanation: null,
+      steps: [
+        { step: "Inspect implementation", status: "completed" as const },
+        { step: "Align task dock", status: "inProgress" as const },
+      ],
+    };
+    const view = render(createElement(Composer, composerProps({ plan })));
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+
+    view.rerender(createElement(Composer, composerProps({
+      plan,
+      runtime: {
+        phase: "working",
+        profileId: null,
+        taskId: "task-a",
+        threadId: "thread-a",
+        turnId: "turn-a",
+        turnStartedAt: 1,
+        error: null,
+        eventsSeen: 1,
+      },
+    })));
+
+    expect(screen.getByLabelText("Task status")).not.toBeNull();
+    expect(screen.getByLabelText("Task summary").textContent).toBe("1/2 tasks");
+    expect(screen.getByLabelText("In progress: Align task dock")).not.toBeNull();
+
+    view.rerender(createElement(Composer, composerProps({
+      plan: {
+        ...plan,
+        steps: plan.steps.map((step) => ({ ...step, status: "completed" as const })),
+      },
+      runtime: {
+        phase: "working",
+        profileId: null,
+        taskId: "task-a",
+        threadId: "thread-a",
+        turnId: "turn-a",
+        turnStartedAt: 1,
+        error: null,
+        eventsSeen: 2,
+      },
+    })));
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+  });
+});
+
 describe("workspace file search", () => {
   it("ignores an in-flight result after the runtime becomes unavailable", async () => {
     const pending = deferred<{

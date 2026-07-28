@@ -302,7 +302,7 @@ export const settleAutoTitleAfterUndo = (
   if (resetTitle) autoTitledTaskIds.delete(taskId);
 };
 
-export const shouldClearAgentPlan = (outcome: AgentTurnOutcome) => outcome === "completed";
+export const shouldClearAgentPlan = (_outcome: AgentTurnOutcome) => true;
 
 export const loadAllXiaoRunEvents = async (
   runId: string,
@@ -451,6 +451,11 @@ const readQuestionRequest = (
     receivedAt: Date.now(),
   };
 };
+
+export const shouldReportInvalidInteractiveRequest = (
+  pendingInput: PendingInputSnapshot | null | undefined,
+  request: unknown,
+) => Boolean(pendingInput && !request);
 
 const messageFromPendingInput = (pending: PendingInputSnapshot): AgentMessage => {
   let requestId: number | string = pending.requestId;
@@ -1799,7 +1804,10 @@ export function useAgentRuntime(
             enqueueAgentQuestionRequest(current, request)
           );
           setQuestionRequest(request);
-        } else if (!request && taskId === activeTaskIdRef.current) {
+        } else if (
+          shouldReportInvalidInteractiveRequest(pendingInput, request) &&
+          taskId === activeTaskIdRef.current
+        ) {
           setRuntime((current) => ({
             ...current,
             error: "Codex sent an invalid question request.",
@@ -1817,7 +1825,10 @@ export function useAgentRuntime(
           updateMcpElicitationRequests((current) =>
             enqueueAgentMcpElicitationRequest(current, request)
           );
-        } else if (!request && taskId === activeTaskIdRef.current) {
+        } else if (
+          shouldReportInvalidInteractiveRequest(pendingInput, request) &&
+          taskId === activeTaskIdRef.current
+        ) {
           setRuntime((current) => ({
             ...current,
             error: "Codex sent an invalid MCP elicitation request.",

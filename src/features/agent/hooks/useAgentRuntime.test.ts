@@ -41,6 +41,7 @@ import {
   runtimeAfterListenerAttachSuccess,
   runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
+  shouldReportInvalidInteractiveRequest,
   shouldClearAgentPlan,
   timelineEntryFromItem,
   type AgentRuntimeTaskScope,
@@ -71,10 +72,21 @@ const deferred = <T>() => {
 };
 
 describe("shouldClearAgentPlan", () => {
-  it("clears immediately only after a successful turn", () => {
+  it("clears whenever a turn is no longer live", () => {
     expect(shouldClearAgentPlan("completed")).toBe(true);
-    expect(shouldClearAgentPlan("failed")).toBe(false);
-    expect(shouldClearAgentPlan("interrupted")).toBe(false);
+    expect(shouldClearAgentPlan("failed")).toBe(true);
+    expect(shouldClearAgentPlan("interrupted")).toBe(true);
+  });
+});
+
+describe("interactive request validation", () => {
+  it("reports malformed input only when a durable pending route exists", () => {
+    const pending = { id: "pending-question" } as PendingInputSnapshot;
+
+    expect(shouldReportInvalidInteractiveRequest(pending, null)).toBe(true);
+    expect(shouldReportInvalidInteractiveRequest(pending, {})).toBe(false);
+    expect(shouldReportInvalidInteractiveRequest(null, null)).toBe(false);
+    expect(shouldReportInvalidInteractiveRequest(undefined, null)).toBe(false);
   });
 });
 

@@ -362,6 +362,7 @@ export function TaskWorkspace({
   const timelineShell = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
   const previousTaskId = useRef(taskId);
+  const restoredTimelineScrollTaskId = useRef<string | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -461,12 +462,18 @@ export function TaskWorkspace({
     if (!node) return;
     if (previousTaskId.current !== taskId) {
       previousTaskId.current = taskId;
+      restoredTimelineScrollTaskId.current = timeline.length > 0 ? taskId : null;
       node.scrollTop = initialTimelineScrollTop;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
     }
-    if (initialTimelineScrollTop > 0 && timeline.length > 0) {
+    if (
+      restoredTimelineScrollTaskId.current !== taskId &&
+      initialTimelineScrollTop > 0 &&
+      timeline.length > 0
+    ) {
+      restoredTimelineScrollTaskId.current = taskId;
       node.scrollTop = initialTimelineScrollTop;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
