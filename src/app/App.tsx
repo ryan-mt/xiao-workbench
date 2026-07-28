@@ -5022,7 +5022,7 @@ export function App() {
               launchMode={focusedLaunch}
               taskStateError={taskStateError}
               taskStateLoading={taskWorkspaceStateLoading}
-              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? 0}
+              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? null}
               timeline={agent.timeline}
               runtime={taskDisplayRuntime}
               rateLimits={agent.rateLimits}

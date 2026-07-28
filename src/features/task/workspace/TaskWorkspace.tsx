@@ -141,7 +141,7 @@ type TaskWorkspaceProps = {
   launchMode: boolean;
   taskStateError: string | null;
   taskStateLoading: boolean;
-  initialTimelineScrollTop: number;
+  initialTimelineScrollTop: number | null;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
   rateLimits: AgentRateLimitSnapshot | null;
@@ -471,7 +471,7 @@ export function TaskWorkspace({
     if (!node) return;
     if (!initialScrollRestored.current && timeline.length > 0) {
       initialScrollRestored.current = true;
-      node.scrollTop = initialTimelineScrollTop;
+      node.scrollTop = initialTimelineScrollTop ?? node.scrollHeight;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
@@ -698,7 +698,9 @@ export function TaskWorkspace({
             }
             scrollPersistTimer.current = window.setTimeout(() => {
               scrollPersistTimer.current = null;
-              onTimelineScrollTopChange(pendingScrollTop.current);
+              if (pendingScrollTop.current !== null) {
+                onTimelineScrollTopChange(pendingScrollTop.current);
+              }
             }, 700);
           }}
         >
