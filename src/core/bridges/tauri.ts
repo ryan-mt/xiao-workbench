@@ -127,8 +127,11 @@ export const nativeBridge = {
     });
   },
 
-  readCodexRolloutCommands(rolloutPath: string) {
-    return invoke<CodexRolloutCommand[]>("read_codex_rollout_commands", { rolloutPath });
+  readCodexRolloutCommands(threadId: string, rolloutPath?: string) {
+    return invoke<CodexRolloutCommand[]>("read_codex_rollout_commands", {
+      threadId,
+      rolloutPath: rolloutPath ?? null,
+    });
   },
 
   readAgentAccount(projectPath: string, taskId: string | null) {

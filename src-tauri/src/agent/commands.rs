@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -16,7 +16,7 @@ use crate::xiao::repository::XiaoRepository;
 use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
 use super::{models, service};
 
-const MAX_ROLLOUT_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ROLLOUT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_CHARS: usize = 24_000;
 
 #[derive(Debug, Clone)]
@@ -56,7 +56,9 @@ fn validated_rollout_path(path: &str) -> Result<PathBuf, String> {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    if !name.starts_with("rollout-") || candidate.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+    if !name.starts_with("rollout-")
+        || candidate.extension().and_then(|value| value.to_str()) != Some("jsonl")
+    {
         return Err("Codex rollout path is not a rollout JSONL file.".to_owned());
     }
     let size = candidate
@@ -69,13 +71,68 @@ fn validated_rollout_path(path: &str) -> Result<PathBuf, String> {
     Ok(candidate)
 }
 
+fn valid_codex_thread_id(thread_id: &str) -> bool {
+    thread_id.len() == 36
+        && thread_id
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => byte == b'-',
+                _ => byte.is_ascii_hexdigit(),
+            })
+}
+
+fn rollout_path_for_thread(thread_id: &str) -> Result<PathBuf, String> {
+    if !valid_codex_thread_id(thread_id) {
+        return Err("Codex task id is not a valid UUID.".to_owned());
+    }
+    let sessions = default_codex_sessions_root()?;
+    let expected_suffix = format!("-{thread_id}.jsonl");
+    for year in fs::read_dir(&sessions)
+        .map_err(|error| format!("Could not read the local Codex sessions folder: {error}"))?
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+    {
+        for month in fs::read_dir(year.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        {
+            for day in fs::read_dir(month.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            {
+                for entry in fs::read_dir(day.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                {
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else { continue };
+                    if name.starts_with("rollout-") && name.ends_with(&expected_suffix) {
+                        return validated_rollout_path(entry.path().to_string_lossy().as_ref());
+                    }
+                }
+            }
+        }
+    }
+    Err("Could not find the local Codex rollout for this task.".to_owned())
+}
+
 fn parse_timestamp_ms(value: Option<&str>) -> Option<i64> {
-    value.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+    value
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
         .map(|timestamp| timestamp.timestamp_millis())
 }
 
 fn quoted_value_after(input: &str, marker: &str) -> Option<String> {
-    let mut tail = input.get(input.find(marker)? + marker.len()..)?.trim_start();
+    let mut tail = input
+        .get(input.find(marker)? + marker.len()..)?
+        .trim_start();
     if tail.starts_with(':') {
         tail = tail[1..].trim_start();
     }
@@ -120,7 +177,10 @@ fn command_from_tool_input(input: &str) -> Option<String> {
             return Some(command.to_owned());
         }
         if let Some(command) = value.get("command").and_then(Value::as_array) {
-            let parts = command.iter().map(Value::as_str).collect::<Option<Vec<_>>>()?;
+            let parts = command
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()?;
             return Some(parts.join(" "));
         }
     }
@@ -134,11 +194,18 @@ fn command_from_tool_input(input: &str) -> Option<String> {
 fn output_text(value: &Value) -> Option<String> {
     let text = match value {
         Value::String(text) => text.clone(),
-        Value::Array(parts) => parts.iter().filter_map(|part| {
-            part.get("text").and_then(Value::as_str)
-                .or_else(|| part.get("output_text").and_then(Value::as_str))
-        }).collect::<Vec<_>>().join("\n"),
-        Value::Object(object) => object.get("text").and_then(Value::as_str)
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("output_text").and_then(Value::as_str))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
             .or_else(|| object.get("output").and_then(Value::as_str))
             .unwrap_or_default()
             .to_owned(),
@@ -153,9 +220,14 @@ fn output_text(value: &Value) -> Option<String> {
 }
 
 fn output_exit_code(output: &str) -> Option<i64> {
-    for marker in ["\"exit_code\":", "\"exitCode\":", "Process exited with code "] {
+    for marker in [
+        "\"exit_code\":",
+        "\"exitCode\":",
+        "Process exited with code ",
+    ] {
         if let Some(tail) = output.split_once(marker).map(|(_, tail)| tail.trim_start()) {
-            let digits: String = tail.chars()
+            let digits: String = tail
+                .chars()
                 .take_while(|character| character.is_ascii_digit() || *character == '-')
                 .collect();
             if let Ok(code) = digits.parse() {
@@ -167,75 +239,127 @@ fn output_exit_code(output: &str) -> Option<i64> {
 }
 
 fn rollout_turn_id(record: &Value) -> Option<String> {
-    record.get("internal_chat_message_metadata_passthrough")
+    record
+        .get("internal_chat_message_metadata_passthrough")
         .and_then(|metadata| metadata.get("turn_id"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| record.get("turn_id").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| {
+            record
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
 }
 
 fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
     if record.get("type").and_then(Value::as_str) != Some("response_item") {
         return;
     }
-    let Some(payload) = record.get("payload") else { return };
-    let item_type = payload.get("type").and_then(Value::as_str).unwrap_or_default();
+    let Some(payload) = record.get("payload") else {
+        return;
+    };
+    let item_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if matches!(item_type, "custom_tool_call" | "function_call") {
-        let name = payload.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if !matches!(name, "exec" | "exec_command" | "functions.exec_command") {
             return;
         }
         let input = payload.get("input").or_else(|| payload.get("arguments"));
         let Some(input) = input.and_then(|value| {
-            value.as_str().map(str::to_owned).or_else(|| serde_json::to_string(value).ok())
-        }) else { return };
-        let Some(command) = command_from_tool_input(&input) else { return };
-        let Some(id) = payload.get("call_id").or_else(|| payload.get("id")).and_then(Value::as_str) else { return };
-        let created_at = record.get("timestamp").and_then(Value::as_str).map(str::to_owned);
-        cache.pending.insert(id.to_owned(), PendingRolloutCommand {
-            started_at_ms: parse_timestamp_ms(created_at.as_deref()),
-            command: models::CodexRolloutCommand {
-                id: id.to_owned(),
-                turn_id: rollout_turn_id(&record),
-                command,
-                output: None,
-                created_at,
-                duration_ms: None,
-                exit_code: None,
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| serde_json::to_string(value).ok())
+        }) else {
+            return;
+        };
+        let Some(command) = command_from_tool_input(&input) else {
+            return;
+        };
+        let Some(id) = payload
+            .get("call_id")
+            .or_else(|| payload.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let created_at = record
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        cache.pending.insert(
+            id.to_owned(),
+            PendingRolloutCommand {
+                started_at_ms: parse_timestamp_ms(created_at.as_deref()),
+                command: models::CodexRolloutCommand {
+                    id: id.to_owned(),
+                    turn_id: rollout_turn_id(&record),
+                    command,
+                    output: None,
+                    created_at,
+                    duration_ms: None,
+                    exit_code: None,
+                },
             },
-        });
-    } else if matches!(item_type, "custom_tool_call_output" | "function_call_output") {
-        let Some(id) = payload.get("call_id").or_else(|| payload.get("id")).and_then(Value::as_str) else { return };
-        let Some(mut item) = cache.pending.remove(id) else { return };
+        );
+    } else if matches!(
+        item_type,
+        "custom_tool_call_output" | "function_call_output"
+    ) {
+        let Some(id) = payload
+            .get("call_id")
+            .or_else(|| payload.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let Some(mut item) = cache.pending.remove(id) else {
+            return;
+        };
         let output = payload.get("output").and_then(output_text);
         item.command.exit_code = output.as_deref().and_then(output_exit_code);
         item.command.output = output;
         let ended_at = parse_timestamp_ms(record.get("timestamp").and_then(Value::as_str));
-        item.command.duration_ms = ended_at.zip(item.started_at_ms)
+        item.command.duration_ms = ended_at
+            .zip(item.started_at_ms)
             .map(|(end, start)| end.saturating_sub(start) as u64);
         cache.completed.push(item.command);
     }
 }
 
 fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand>, String> {
-    let file = File::open(path).map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
+    let file =
+        File::open(path).map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
     let cache_map = ROLLOUT_COMMAND_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache_map = cache_map.lock().map_err(|_| "Codex rollout cache is unavailable.")?;
+    let mut cache_map = cache_map
+        .lock()
+        .map_err(|_| "Codex rollout cache is unavailable.")?;
     let cache = cache_map.entry(path.to_owned()).or_default();
-    let file_length = file.metadata()
+    let file_length = file
+        .metadata()
         .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?
         .len();
     if cache.offset > file_length {
         *cache = RolloutCommandCache::default();
     }
     let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::Start(cache.offset))
+    reader
+        .seek(SeekFrom::Start(cache.offset))
         .map_err(|error| format!("Could not seek this Codex rollout: {error}"))?;
     loop {
-        let line_start = reader.stream_position()
+        let line_start = reader
+            .stream_position()
             .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
         let mut line = String::new();
-        let bytes = reader.read_line(&mut line)
+        let bytes = reader
+            .read_line(&mut line)
             .map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
         if bytes == 0 {
             cache.offset = line_start;
@@ -244,7 +368,8 @@ fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand
         match serde_json::from_str::<Value>(&line) {
             Ok(record) => {
                 apply_rollout_record(record, cache);
-                cache.offset = reader.stream_position()
+                cache.offset = reader
+                    .stream_position()
                     .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
             }
             Err(_) if !line.ends_with('\n') => {
@@ -252,7 +377,8 @@ fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand
                 break;
             }
             Err(_) => {
-                cache.offset = reader.stream_position()
+                cache.offset = reader
+                    .stream_position()
                     .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
             }
         }
@@ -265,9 +391,14 @@ fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand
 
 #[tauri::command]
 pub fn read_codex_rollout_commands(
-    rollout_path: String,
+    thread_id: String,
+    rollout_path: Option<String>,
 ) -> Result<Vec<models::CodexRolloutCommand>, String> {
-    parse_rollout_commands(&validated_rollout_path(&rollout_path)?)
+    let path = match rollout_path {
+        Some(path) if !path.trim().is_empty() => validated_rollout_path(&path)?,
+        _ => rollout_path_for_thread(&thread_id)?,
+    };
+    parse_rollout_commands(&path)
 }
 
 #[tauri::command]
@@ -574,9 +705,8 @@ mod tests {
 
     use super::{
         apply_execution_root, command_from_tool_input, contains_execution_path_fields,
-        native_run_method, output_text,
-        renderer_agent_method, strip_execution_path_fields, validate_direct_command,
-        validate_renderer_agent_request,
+        native_run_method, output_text, renderer_agent_method, strip_execution_path_fields,
+        valid_codex_thread_id, validate_direct_command, validate_renderer_agent_request,
     };
 
     #[test]
@@ -598,10 +728,20 @@ mod tests {
             Some("npm test -- --run")
         );
         assert_eq!(
-            command_from_tool_input(r#"{"cmd":"cargo check","yield_time_ms":30000}"#)
-                .as_deref(),
+            command_from_tool_input(r#"{"cmd":"cargo check","yield_time_ms":30000}"#).as_deref(),
             Some("cargo check")
         );
+    }
+
+    #[test]
+    fn rollout_discovery_only_accepts_codex_thread_uuids() {
+        assert!(valid_codex_thread_id(
+            "019f9afa-cb11-7873-b644-f57afbb81239"
+        ));
+        assert!(!valid_codex_thread_id("../sessions/rollout"));
+        assert!(!valid_codex_thread_id(
+            "019f9afa-cb11-7873-b644-f57afbb8123z"
+        ));
     }
 
     #[test]

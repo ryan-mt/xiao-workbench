@@ -295,13 +295,13 @@ export const readCodexThreadTimeline = async (
       },
       context,
     ),
-    rolloutPath
-      ? nativeBridge.readCodexRolloutCommands(rolloutPath).catch(() => [] as CodexRolloutCommand[])
-      : Promise.resolve([] as CodexRolloutCommand[]),
+    nativeBridge
+      .readCodexRolloutCommands(threadId, rolloutPath)
+      .catch(() => [] as CodexRolloutCommand[]),
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
-  const turnWindows = turns.flatMap((rawTurn) => {
+  const turnWindows = turns.flatMap((rawTurn, index) => {
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
     if (typeof turn.id !== "string") return [];
@@ -313,14 +313,23 @@ export const readCodexThreadTimeline = async (
       turn,
       ["completedAt", "completed_at", "updatedAt", "updated_at"],
     );
-    return startedAt === null ? [] : [{ id: turn.id, startedAt, completedAt }];
+    const nextTurn = turns[index + 1];
+    const nextStartedAt = nextTurn && typeof nextTurn === "object"
+      ? firstTimestamp(
+        nextTurn as Record<string, unknown>,
+        ["startedAt", "started_at", "createdAt", "created_at"],
+      )
+      : null;
+    return startedAt === null
+      ? []
+      : [{ id: turn.id, startedAt, completedAt, nextStartedAt }];
   });
   for (const command of rolloutCommands) {
     const commandAt = timestampMilliseconds(command.createdAt);
     const inferredTurn = commandAt === null ? null : [...turnWindows]
       .reverse()
       .find((turn) => turn.startedAt <= commandAt && (
-        turn.completedAt === null || commandAt <= turn.completedAt + 2_000
+        turn.nextStartedAt === null || commandAt < turn.nextStartedAt
       ));
     const owningTurnId = command.turnId ?? inferredTurn?.id;
     if (!owningTurnId) continue;
