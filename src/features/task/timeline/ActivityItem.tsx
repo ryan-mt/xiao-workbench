@@ -3,7 +3,11 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
-import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
+import {
+  visiblePromptFromSelectedContext,
+  type AgentAttachment,
+  type TimelineEntry,
+} from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 import { InlineMessageEditor, MessageActions } from "./MessageActions";
 import { MessageImage } from "./MessageImage";
@@ -132,7 +136,7 @@ type ActivityItemProps = {
   canUndo?: boolean;
   undoing?: boolean;
   onUndo?: () => void;
-  onEditUserMessage?: (text: string) => void;
+  onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void;
   showMessageActions?: boolean;
   attemptCount?: number;
   recovered?: boolean;
@@ -262,7 +266,7 @@ export const ActivityItem = memo(function ActivityItem({
               text={visiblePrompt}
               onCancel={() => setEditingPrompt(false)}
               onSubmit={(text) => {
-                onEditUserMessage(text);
+                onEditUserMessage(text, sentAttachments);
                 setEditingPrompt(false);
               }}
             />

@@ -298,21 +298,30 @@ export const readCodexThreadTimeline = async (
       }
       throw reason;
     });
-  const [response, rolloutCommands] = await Promise.all([
-    nativeBridge.agentRequest<{ data?: unknown }>(
+  const turnsNewestFirst: unknown[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const response: ThreadListResponse = await nativeBridge.agentRequest<ThreadListResponse>(
       "thread/turns/list",
       {
         threadId,
-        cursor: null,
+        cursor,
         limit: 100,
         sortDirection: "desc",
         itemsView: "full",
       },
       context,
-    ),
-    rolloutCommandsPromise,
-  ]);
-  const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
+    );
+    if (Array.isArray(response.data)) turnsNewestFirst.push(...response.data);
+    const next: string | null =
+      typeof response.nextCursor === "string" ? response.nextCursor : null;
+    if (!next || seenCursors.has(next)) break;
+    seenCursors.add(next);
+    cursor = next;
+  } while (cursor);
+  const rolloutCommands = await rolloutCommandsPromise;
+  const turns = turnsNewestFirst.reverse();
   const rolloutMarkersByTurn = new Map<string, CodexRolloutCommand[]>();
   for (const activity of rolloutCommands) {
     if (activity.activityKind !== "timelineMarker" || !activity.turnId) continue;

@@ -18,6 +18,54 @@ afterEach(() => {
 });
 
 describe("Codex history activity", () => {
+  it("paginates every turn and restores structured reasoning summaries", async () => {
+    vi.spyOn(nativeBridge, "agentRequest")
+      .mockResolvedValueOnce({
+        data: [{
+          id: "turn-new",
+          startedAt: 2,
+          items: [{
+            id: "user-new",
+            type: "userMessage",
+            content: [{ type: "text", text: "Newer" }],
+          }],
+        }],
+        nextCursor: "older",
+      })
+      .mockResolvedValueOnce({
+        data: [{
+          id: "turn-old",
+          startedAt: 1,
+          items: [{
+            id: "user-old",
+            type: "userMessage",
+            content: [{ type: "text", text: "Older" }],
+          }, {
+            id: "reasoning-old",
+            type: "reasoning",
+            summary: [{ text: "Recovered thought" }],
+          }],
+        }],
+        nextCursor: null,
+      });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      "user-old",
+      "reasoning-old",
+      "user-new",
+    ]);
+    expect(timeline[1]).toEqual(expect.objectContaining({
+      kind: "thought",
+      body: "Recovered thought",
+    }));
+  });
+
   it("preserves a stable timeline across identical live import polls", () => {
     const current = [{
       id: "command",

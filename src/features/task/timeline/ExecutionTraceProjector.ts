@@ -24,8 +24,9 @@ export class ExecutionTraceProjector {
     const isToolEntry = (entry: TimelineEntry) =>
       entry.kind === "command" && Boolean(
         entry.meta === "Plugin tool" ||
-        entry.meta === "Dynamic tool" ||
+        entry.meta?.startsWith("Dynamic tool") ||
         entry.meta === "Codex tool" ||
+        entry.meta === "Image tool" ||
         entry.meta?.startsWith("Skill"),
       );
     const shellCommands = entries.filter((entry) =>

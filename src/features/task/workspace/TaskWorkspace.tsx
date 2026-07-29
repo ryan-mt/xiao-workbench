@@ -371,6 +371,8 @@ export function TaskWorkspace({
   const restoredTimelineScrollTaskId = useRef<string | null>(null);
   const scrollPersistTimer = useRef<number | null>(null);
   const pendingScrollTop = useRef<number | null>(null);
+  const onTimelineScrollTopChangeRef = useRef(onTimelineScrollTopChange);
+  onTimelineScrollTopChangeRef.current = onTimelineScrollTopChange;
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -431,8 +433,13 @@ export function TaskWorkspace({
   useEffect(() => () => {
     if (scrollPersistTimer.current !== null) {
       window.clearTimeout(scrollPersistTimer.current);
+      scrollPersistTimer.current = null;
     }
-  }, []);
+    if (pendingScrollTop.current !== null) {
+      onTimelineScrollTopChangeRef.current(pendingScrollTop.current);
+      pendingScrollTop.current = null;
+    }
+  }, [taskId]);
 
   useEffect(() => {
     if (!timelineSelection) return;
@@ -719,6 +726,7 @@ export function TaskWorkspace({
               scrollPersistTimer.current = null;
               if (pendingScrollTop.current !== null) {
                 onTimelineScrollTopChange(pendingScrollTop.current);
+                pendingScrollTop.current = null;
               }
             }, 700);
           }}
@@ -742,7 +750,10 @@ export function TaskWorkspace({
             canUndo={canUndo}
             undoing={undoing}
             onUndo={undoTimelineTurn}
-            onEditUserMessage={onDraftChange}
+            onEditUserMessage={(text, sentAttachments) => {
+              onDraftChange(text);
+              onAttachmentsChange(sentAttachments);
+            }}
           />
         </div>
         {timelineSelection ? (

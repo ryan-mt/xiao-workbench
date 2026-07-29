@@ -114,6 +114,9 @@
   height: 30px;
   border: 1px solid var(--line);
   border-radius: 6px;
+}
+
+.stashed-prompts__list article > button:first-child img {
   object-fit: cover;
 }
 

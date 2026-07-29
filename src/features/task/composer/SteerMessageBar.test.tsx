@@ -22,6 +22,7 @@ const render = (items = followUps) => renderToStaticMarkup(
     sendingFollowUpId={null}
     failedFollowUpId={null}
     canSteer
+    interactiveRequestOpen={false}
     onEdit={vi.fn()}
     onRemove={vi.fn()}
     onRetry={vi.fn()}
@@ -41,6 +42,23 @@ describe("SteerMessageBar", () => {
 
   it("renders nothing when the queue is empty", () => {
     expect(render([])).toBe("");
+  });
+
+  it("disables steer while an interactive request is open", () => {
+    const markup = renderToStaticMarkup(
+      <SteerMessageBar
+        followUps={followUps}
+        sendingFollowUpId={null}
+        failedFollowUpId={null}
+        canSteer
+        interactiveRequestOpen
+        onEdit={vi.fn()}
+        onRemove={vi.fn()}
+        onRetry={vi.fn()}
+        onSendNow={vi.fn(async () => undefined)}
+      />,
+    );
+    expect(markup).toMatch(/class="steer-message__send"[^>]*disabled/);
   });
 
   it("does not expose selected context in the steer bar", () => {

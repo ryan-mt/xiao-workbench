@@ -22,7 +22,7 @@ export const turnDuration = (
   now = Date.now(),
 ) => {
   const protocolDuration = user.turnDurationMs ?? response?.turnDurationMs;
-  if (!live && typeof protocolDuration === "number" && protocolDuration > 0) {
+  if (!live && typeof protocolDuration === "number" && protocolDuration >= 0) {
     return protocolDuration;
   }
   const timestamps = [user, ...entries, ...(response ? [response] : [])]

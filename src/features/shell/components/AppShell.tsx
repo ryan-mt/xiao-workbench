@@ -80,6 +80,7 @@ export function AppShell({
   const [resizingFocusRail, setResizingFocusRail] = useState(false);
   const sidebarResizeStart = useRef({ pointerX: 0, sidebarWidth: defaultSidebarWidth });
   const sidebarDragWidth = useRef(defaultSidebarWidth);
+  const sidebarResizerRef = useRef<HTMLDivElement>(null);
   const focusRailResizeStart = useRef({ pointerX: 0, focusRailWidth: defaultFocusRailWidth });
   const focusRailDragWidth = useRef(defaultFocusRailWidth);
   const appFrameRef = useRef<HTMLDivElement>(null);
@@ -148,6 +149,10 @@ export function AppShell({
       appFrameRef.current?.style.setProperty(
         "--sidebar-width",
         `${sidebarDragWidth.current}px`,
+      );
+      sidebarResizerRef.current?.setAttribute(
+        "aria-valuenow",
+        String(sidebarDragWidth.current),
       );
     };
     const resize = (event: PointerEvent) => {
@@ -264,6 +269,7 @@ export function AppShell({
         ) : null}
         {sidebarOpen ? (
           <div
+            ref={sidebarResizerRef}
             className="sidebar-resizer"
             role="separator"
             aria-label="Resize sidebar"

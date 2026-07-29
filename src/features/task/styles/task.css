@@ -960,7 +960,7 @@
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-  margin-left: 0;
+  margin-left: auto;
   place-items: center;
   opacity: 0;
   transition: opacity 120ms ease, transform 160ms ease;
@@ -5007,6 +5007,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .composer-live-changes,
+  .steer-message,
+  .composer-primary-action__button,
+  .composer-primary-action__glyph,
+  .composer-primary-action__menu {
+    animation: none;
+    transition: none;
+  }
+
   .task-workspace__jump-latest {
     animation: none;
   }

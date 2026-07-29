@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
+import type {
+  AgentAttachment,
+  AgentRuntimeState,
+  TimelineEntry,
+} from "../../../core/models/agent";
 import { TaskTimeline } from "./TaskTimeline";
 
 const idleRuntime: AgentRuntimeState = {
@@ -19,7 +23,7 @@ const render = (
   timeline: TimelineEntry[],
   expandToolOutput = false,
   runtime: AgentRuntimeState = idleRuntime,
-  onEditUserMessage?: (text: string) => void,
+  onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void,
 ) => renderToStaticMarkup(
   <TaskTimeline
     timeline={timeline}

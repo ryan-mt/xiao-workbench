@@ -1072,6 +1072,7 @@ export function Composer({
         sendingFollowUpId={sendingFollowUpId}
         failedFollowUpId={failedFollowUpId}
         canSteer={canSteer}
+        interactiveRequestOpen={interactiveRequestOpen}
         onEdit={onEditFollowUp}
         onRemove={onRemoveFollowUp}
         onRetry={onRetryFollowUp}

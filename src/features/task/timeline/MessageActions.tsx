@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { CopyButton } from "./MarkdownBody";
@@ -34,12 +34,18 @@ export function MessageActions({
   onFork?: () => void;
   copyLabel?: string;
 }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!createdAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [createdAt]);
   const timestamp = useMemo(
     () => createdAt ? {
-      relative: relativeTime(createdAt),
+      relative: relativeTime(createdAt, now),
       exact: exactFormatter.format(createdAt),
     } : null,
-    [createdAt],
+    [createdAt, now],
   );
 
   return (

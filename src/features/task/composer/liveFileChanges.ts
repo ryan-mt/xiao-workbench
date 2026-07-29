@@ -16,9 +16,18 @@ export class LiveFileChangeProjector {
 
   project(): LiveFileChangeSummary | null {
     let turnStart = -1;
+    let activeTurnId: string | null = null;
     for (let index = this.timeline.length - 1; index >= 0; index -= 1) {
       if (isUserEntry(this.timeline[index])) {
         turnStart = index;
+        activeTurnId = this.timeline[index].turnId ?? null;
+        if (activeTurnId) {
+          for (let candidate = index - 1; candidate >= 0; candidate -= 1) {
+            if (!isUserEntry(this.timeline[candidate])) continue;
+            if (this.timeline[candidate].turnId !== activeTurnId) break;
+            turnStart = candidate;
+          }
+        }
         break;
       }
     }

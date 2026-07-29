@@ -12,6 +12,7 @@ export function SteerMessageBar({
   sendingFollowUpId,
   failedFollowUpId,
   canSteer,
+  interactiveRequestOpen,
   onEdit,
   onRemove,
   onRetry,
@@ -21,6 +22,7 @@ export function SteerMessageBar({
   sendingFollowUpId: string | null;
   failedFollowUpId: string | null;
   canSteer: boolean;
+  interactiveRequestOpen: boolean;
   onEdit: (followUpId: string, prompt: string) => void;
   onRemove: (followUpId: string) => void;
   onRetry: () => void;
@@ -32,6 +34,7 @@ export function SteerMessageBar({
   if (!followUp) return null;
 
   const sending = sendingFollowUpId === followUp.id;
+  const anotherSendInProgress = sendingFollowUpId !== null;
   const failed = failedFollowUpId === followUp.id;
   const prompt = visiblePromptFromSelectedContext(followUp.prompt);
   const submitEdit = () => {
@@ -89,7 +92,7 @@ export function SteerMessageBar({
             <button
               className="steer-message__send"
               type="button"
-              disabled={sending || (!canSteer && !failed)}
+              disabled={anotherSendInProgress || interactiveRequestOpen || (!canSteer && !failed)}
               title={failed ? "Retry this message" : "Steer the current task with this message"}
               onClick={() => {
                 if (failed && !canSteer) onRetry();

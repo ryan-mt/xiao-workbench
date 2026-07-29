@@ -16,7 +16,7 @@ export const workspaceRelativePath = (path: string, workspacePath: string) => {
 };
 
 const absolutePath = (path: string, workspacePath: string) =>
-  /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\")
+  /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("/")
     ? path
     : `${workspacePath.replace(/[\\/]+$/, "")}\\${path.replace(/\//g, "\\")}`;
 
@@ -90,4 +90,3 @@ export function EditedFilesSummary({
     </section>
   );
 }
-

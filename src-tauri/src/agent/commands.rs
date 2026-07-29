@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufRead, BufReader, Seek, SeekFrom},
+    io::{BufRead, BufReader, ErrorKind, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -89,8 +89,18 @@ fn rollout_path_for_thread(thread_id: &str) -> Result<PathBuf, String> {
     }
     let sessions = default_codex_sessions_root()?;
     let expected_suffix = format!("-{thread_id}.jsonl");
-    for year in fs::read_dir(&sessions)
-        .map_err(|error| format!("Could not read the local Codex sessions folder: {error}"))?
+    let years = match fs::read_dir(&sessions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err("Could not find the local Codex rollout for this task.".to_owned());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Could not read the local Codex sessions folder: {error}"
+            ));
+        }
+    };
+    for year in years
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
     {
@@ -611,10 +621,16 @@ pub fn read_codex_rollout_commands(
 ) -> Result<Vec<models::CodexRolloutCommand>, String> {
     // App-server snapshots can retain an old or non-rollout `thread.path`.
     // Treat it as a hint; the thread UUID remains the authoritative lookup.
+    let expected_suffix = format!("-{thread_id}.jsonl");
     let path = rollout_path
         .as_deref()
         .filter(|path| !path.trim().is_empty())
         .and_then(|path| validated_rollout_path(path).ok())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(&expected_suffix))
+        })
         .map(Ok)
         .unwrap_or_else(|| rollout_path_for_thread(&thread_id))?;
     parse_rollout_commands(&path)
@@ -662,10 +678,15 @@ pub async fn agent_request(
     let project_path = project_path
         .as_deref()
         .ok_or("This agent request requires a Xiao project context.")?;
-    let task_id = task_id
-        .as_deref()
-        .ok_or("This agent request requires a persisted Xiao task.")?;
-    let context = resolve_execution_context(&repository, project_path, Some(task_id))?;
+    let task_id = task_id.as_deref();
+    let history_method = matches!(
+        method.as_str(),
+        "thread/list" | "thread/turns/list" | "thread/archive" | "thread/unarchive"
+    );
+    if task_id.is_none() && !history_method {
+        return Err("This agent request requires a persisted Xiao task.".to_owned());
+    }
+    let context = resolve_execution_context(&repository, project_path, task_id)?;
     if method_uses_execution_root(&method) {
         if method == "command/exec" {
             validate_direct_command(&params)?;
@@ -682,7 +703,7 @@ pub async fn agent_request(
                 &context.environment.id,
                 thread_id,
                 &context.project_path,
-                task_id,
+                task_id.expect("non-history methods require a persisted task"),
                 &context.execution_root,
             )?;
         }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
@@ -16,14 +16,28 @@ export function MessageImage({
 }) {
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [source]);
 
   useEffect(() => {
     if (!open) return;
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
+      if (event.key === "Tab") {
+        event.preventDefault();
+        closeRef.current?.focus();
+      }
     };
+    closeRef.current?.focus();
     window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("keydown", close);
+      triggerRef.current?.focus();
+    };
   }, [open]);
 
   if (failed) {
@@ -38,6 +52,7 @@ export function MessageImage({
   return (
     <>
       <button
+        ref={triggerRef}
         className={`message-image${className ? ` ${className}` : ""}`}
         type="button"
         title={`Open ${name}`}
@@ -58,6 +73,7 @@ export function MessageImage({
           <button
             className="message-lightbox__backdrop"
             type="button"
+            tabIndex={-1}
             aria-label="Close image preview"
             onClick={() => setOpen(false)}
           />
@@ -66,6 +82,7 @@ export function MessageImage({
             <figcaption>{name}</figcaption>
           </figure>
           <button
+            ref={closeRef}
             className="message-lightbox__close"
             type="button"
             title="Close image preview"

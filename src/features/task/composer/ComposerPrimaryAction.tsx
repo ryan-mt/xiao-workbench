@@ -48,6 +48,12 @@ export function ComposerPrimaryAction({
         title={stopping ? "Stop current turn (Esc)" : working ? "Queue follow-up · hover for Steer" : "Send task"}
         disabled={stopping ? false : !canSubmit}
         onClick={() => stopping ? onInterrupt() : onDeliver(delivery)}
+        onKeyDown={(event) => {
+          if (stopping && event.key === "Escape") {
+            event.preventDefault();
+            onInterrupt();
+          }
+        }}
       >
         <span className="composer-primary-action__glyph" aria-hidden="true">
           {stopping ? <i /> : <XiaoIcon name="send" size={15} strokeWidth={2.2} />}

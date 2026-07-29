@@ -59,4 +59,18 @@ describe("execution trace projection", () => {
     expect(after[0].id).toBe(before[0].id);
     expect(after[0].title).toBe("Optimizing the canvas");
   });
+
+  it("keeps duration-bearing dynamic tools and image views out of shell counts", () => {
+    const dynamic = {
+      ...entry("dynamic", "command"),
+      meta: "Dynamic tool · 25 ms",
+    };
+    const image = {
+      ...entry("image", "command"),
+      meta: "Image tool",
+    };
+    const trace = projectExecutionTraces([dynamic, image])[0];
+    expect(trace.title).not.toContain("command");
+    expect(trace.entries).toEqual([dynamic, image]);
+  });
 });

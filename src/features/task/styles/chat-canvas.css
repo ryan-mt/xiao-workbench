@@ -262,7 +262,8 @@
   border-radius: 0;
   background: transparent;
   color: var(--text-soft);
-  font: 500 inherit var(--font-sans);
+  font-family: var(--font-sans);
+  font-weight: 500;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;

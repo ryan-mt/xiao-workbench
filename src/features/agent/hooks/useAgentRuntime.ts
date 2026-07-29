@@ -919,11 +919,18 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
   }
 
   if (item.type === "reasoning") {
+    const textFromPart = (part: unknown) =>
+      typeof part === "string"
+        ? part
+        : part && typeof part === "object" &&
+            typeof (part as Record<string, unknown>).text === "string"
+          ? String((part as Record<string, unknown>).text)
+          : null;
     const summary = Array.isArray(item.summary)
-      ? item.summary.filter((part): part is string => typeof part === "string").join("\n\n")
+      ? item.summary.map(textFromPart).filter((part): part is string => part !== null).join("\n\n")
       : "";
     const content = Array.isArray(item.content)
-      ? item.content.filter((part): part is string => typeof part === "string").join("\n\n")
+      ? item.content.map(textFromPart).filter((part): part is string => part !== null).join("\n\n")
       : "";
     return {
       id,
@@ -1084,7 +1091,9 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
       meta: "Codex activity",
       status: item.status === "inProgress"
         ? "active"
-        : item.status === "failed" ? "error" : "success",
+        : ["failed", "declined", "cancelled", "interrupted"].includes(String(item.status))
+          ? "error"
+          : "success",
     };
   }
 

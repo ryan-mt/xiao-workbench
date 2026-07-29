@@ -186,6 +186,7 @@ export function Sidebar({
   const [taskMenu, setTaskMenu] = useState<TaskMenuState | null>(null);
   const [codexThreadMenu, setCodexThreadMenu] = useState<CodexThreadMenuState | null>(null);
   const [renamingTask, setRenamingTask] = useState<RenamingTask | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [expandedTaskGroups, setExpandedTaskGroups] = useState<ReadonlySet<TaskGroup>>(
     () => new Set(),
   );
@@ -394,9 +395,37 @@ export function Sidebar({
     setRenamingTask(null);
   };
 
-  const copyText = (value: string) => {
-    closeTaskMenu();
-    void navigator.clipboard.writeText(value);
+  const copyText = async (value: string) => {
+    setCopyError(null);
+    try {
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(value);
+          copied = true;
+        } catch {
+          // Fall back for WebViews where Clipboard API permission is unavailable.
+        }
+      }
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.append(textarea);
+        try {
+          textarea.select();
+          copied = document.execCommand("copy");
+        } finally {
+          textarea.remove();
+        }
+      }
+      if (!copied) throw new Error("Clipboard write failed");
+      closeTaskMenu();
+      setCodexThreadMenu(null);
+    } catch {
+      setCopyError("Could not copy to the clipboard. Check Xiao's clipboard permission and retry.");
+    }
   };
 
   const beginProjectRename = (project: XiaoProjectSummary) => {
@@ -1234,6 +1263,9 @@ export function Sidebar({
                 <XiaoIcon name="copy" size={15} />
                 <span>Copy session ID</span>
               </button>
+              {copyError ? (
+                <p className="task-actions-menu__error" role="alert">{copyError}</p>
+              ) : null}
 
               <i className="context-menu-separator" />
 
@@ -1255,6 +1287,7 @@ export function Sidebar({
               className="project-actions-menu codex-thread-actions-menu"
               ref={codexThreadMenuRef}
               role="menu"
+              onKeyDown={handleMenuKeyDown}
               aria-label={`Actions for ${menuCodexThread.title}`}
               style={{ top: codexThreadMenu.top, left: codexThreadMenu.left }}
             >
@@ -1273,20 +1306,17 @@ export function Sidebar({
                 <span>Archive chat</span>
               </button>
               <i className="context-menu-separator" />
-              <button role="menuitem" onClick={() => {
-                setCodexThreadMenu(null);
-                void navigator.clipboard.writeText(menuCodexThread.title);
-              }}>
+              <button role="menuitem" onClick={() => void copyText(menuCodexThread.title)}>
                 <XiaoIcon name="copy" size={15} />
                 <span>Copy title</span>
               </button>
-              <button role="menuitem" onClick={() => {
-                setCodexThreadMenu(null);
-                void navigator.clipboard.writeText(menuCodexThread.cwd);
-              }}>
+              <button role="menuitem" onClick={() => void copyText(menuCodexThread.cwd)}>
                 <XiaoIcon name="folder" size={15} />
                 <span>Copy project path</span>
               </button>
+              {copyError ? (
+                <p className="task-actions-menu__error" role="alert">{copyError}</p>
+              ) : null}
             </div>,
             document.body,
           )

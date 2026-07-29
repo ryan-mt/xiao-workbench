@@ -2408,11 +2408,13 @@ export function App() {
         );
         taskWorkspacePathRef.current = workspace.path;
         setTasks(nextState.tasks);
-        setActiveTaskId(null);
+        const restoredActiveTaskId = openingNewTaskLauncher ? null : nextState.activeTaskId;
+        setActiveTaskId(restoredActiveTaskId);
         const nextDraft = createDraftTask(preferences.taskRunDefaults, newTaskWorkspaceMode);
         setDraftTask(nextDraft);
-        setOpenTaskIds([]);
-        setDraftTabOpen(true);
+        draftCreationRequestedRef.current = restoredActiveTaskId === null;
+        setOpenTaskIds(restoredActiveTaskId ? [restoredActiveTaskId] : []);
+        setDraftTabOpen(openingNewTaskLauncher || restoredActiveTaskId === null);
         setTaskWorkspacePath(workspace.path);
         setTaskHistoryLoadingId(null);
         setSendingFollowUpId(null);

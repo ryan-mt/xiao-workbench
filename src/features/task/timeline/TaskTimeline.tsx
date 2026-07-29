@@ -1,7 +1,11 @@
 import { memo, useMemo } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
-import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
+import type {
+  AgentAttachment,
+  AgentRuntimeState,
+  TimelineEntry,
+} from "../../../core/models/agent";
 import type { RunSnapshot } from "../../../core/models/run";
 import { VerificationEvidenceCard } from "../../verification/VerificationEvidenceCard";
 import { ActivityItem } from "./ActivityItem";
@@ -33,13 +37,14 @@ type TaskTimelineProps = {
   canUndo: boolean;
   undoing: boolean;
   onUndo: () => void;
-  onEditUserMessage?: (text: string) => void;
+  onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void;
 };
 
 function TaskTimelineView({
   timeline,
   runtime,
   latestRun,
+  showReasoningSummaries,
   expandToolOutput,
   workspacePath,
   onOpenResource,
@@ -54,7 +59,7 @@ function TaskTimelineView({
   canUndo,
   undoing,
   onUndo,
-  onEditUserMessage = () => undefined,
+  onEditUserMessage,
 }: TaskTimelineProps) {
   const rows = useMemo(() => projectConversation(timeline), [timeline]);
   const lastTurnIndex = rows.reduce(
@@ -86,6 +91,7 @@ function TaskTimelineView({
               taskId={taskId}
               workspacePath={workspacePath}
               expandToolOutput={expandToolOutput}
+              showReasoningSummaries={showReasoningSummaries}
               canFork={canFork}
               canUndo={canUndo && rowIndex === lastTurnIndex && Boolean(row.turn.response)}
               undoing={undoing && rowIndex === lastTurnIndex}
@@ -104,7 +110,7 @@ function TaskTimelineView({
             <ActivityItem
               entry={row.entry}
               index={row.index}
-              showReasoningSummaries={false}
+              showReasoningSummaries={showReasoningSummaries}
               expandToolOutput={expandToolOutput}
               workspacePath={workspacePath}
               onOpenResource={onOpenResource}

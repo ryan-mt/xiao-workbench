@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
-import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
+import type {
+  AgentAttachment,
+  AgentRuntimeState,
+  TimelineEntry,
+} from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
 import type { ConversationTurn } from "./ConversationTurnProjector";
 import { EditedFilesSummary } from "./EditedFilesSummary";
@@ -17,6 +21,7 @@ type SharedProps = {
   taskId: string;
   workspacePath: string;
   expandToolOutput: boolean;
+  showReasoningSummaries: boolean;
   canFork: boolean;
   canUndo: boolean;
   undoing: boolean;
@@ -24,7 +29,7 @@ type SharedProps = {
   onOpenResource: (target: string) => boolean;
   onReviewChanges: () => void;
   onUndo: () => void;
-  onEditUserMessage?: (text: string) => void;
+  onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void;
   onResolveApproval: (
     taskId: string,
     entryId: string,
@@ -108,7 +113,7 @@ export function AgentTurn(props: SharedProps) {
     <ActivityItem
       entry={entry}
       index={props.index + offset}
-      showReasoningSummaries={false}
+      showReasoningSummaries={props.showReasoningSummaries}
       expandToolOutput={props.expandToolOutput}
       workspacePath={props.workspacePath}
       onOpenResource={props.onOpenResource}
@@ -222,7 +227,7 @@ export function AgentTurn(props: SharedProps) {
       <div className="conversation-turn__body">{flow}</div>
       {turn.response ? (
         <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
-          {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
+          {item(turn.response, turn.flow.length + 1, true)}
         </span>
       ) : null}
       {turn.files.length && turn.response ? (

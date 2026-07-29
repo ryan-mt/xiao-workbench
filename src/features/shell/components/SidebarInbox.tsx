@@ -32,6 +32,7 @@ type InboxItem = {
   unread: boolean;
   additions: number;
   deletions: number;
+  unmatchedCodex: boolean;
   task?: WorkbenchTask;
   thread?: CodexThreadSummary;
 };
@@ -287,6 +288,7 @@ export function SidebarInbox({
           unread: task.unread,
           additions: diff.additions,
           deletions: diff.deletions,
+          unmatchedCodex: false,
           task,
         };
       });
@@ -311,6 +313,7 @@ export function SidebarInbox({
           unread: false,
           additions: thread.additions ?? 0,
           deletions: thread.deletions ?? 0,
+          unmatchedCodex: project === null,
           thread,
         };
       });
@@ -329,8 +332,8 @@ export function SidebarInbox({
   });
   const activeItems = visibleItems.filter((item) => !settled.has(item.key));
   const settledItems = visibleItems.filter((item) => settled.has(item.key));
-  const otherItems = activeItems.filter((item) => item.projectName === "Other Codex chats");
-  const inboxItems = activeItems.filter((item) => item.projectName !== "Other Codex chats");
+  const otherItems = activeItems.filter((item) => item.unmatchedCodex);
+  const inboxItems = activeItems.filter((item) => !item.unmatchedCodex);
   const collapsedInboxItems = inboxItems.slice(0, inboxPreviewLimit);
   const selectedHiddenInboxItem = inboxItems
     .slice(inboxPreviewLimit)

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StashedPrompts } from "./StashedPrompts";
 
@@ -20,6 +20,11 @@ describe("StashedPrompts", () => {
       });
     }
     window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
   });
 
   it("stashes a draft, persists it, and restores it without duplication", () => {
@@ -52,5 +57,76 @@ describe("StashedPrompts", () => {
     fireEvent.click(screen.getByRole("button", { name: /Finish the review panel/ }));
     expect(onRestore).toHaveBeenCalledWith("Finish the review panel", []);
     expect(window.localStorage.getItem("xiao.stashed-prompts.v1:task-1")).toBe("[]");
+  });
+
+  it("keeps the draft when storage persistence fails", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const onClear = vi.fn();
+    render(
+      <StashedPrompts
+        taskId="task-1"
+        prompt="Do not lose me"
+        attachments={[]}
+        onClear={onClear}
+        onRestore={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash current prompt" }));
+    expect(onClear).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("current draft was kept");
+  });
+
+  it("opens existing items without silently stashing the current draft", () => {
+    window.localStorage.setItem("xiao.stashed-prompts.v1:task-1", JSON.stringify([{
+      id: "saved",
+      prompt: "Saved prompt",
+      attachments: [],
+      createdAt: 1,
+    }]));
+    const onClear = vi.fn();
+    render(
+      <StashedPrompts
+        taskId="task-1"
+        prompt="Current draft"
+        attachments={[]}
+        onClear={onClear}
+        onRestore={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stashed prompts, 1" }));
+    expect(screen.getByRole("button", { name: "Stash current" })).not.toBeNull();
+    expect(onClear).not.toHaveBeenCalled();
+  });
+
+  it("drops malformed persisted attachments before restoring a stash", () => {
+    window.localStorage.setItem("xiao.stashed-prompts.v1:task-1", JSON.stringify([{
+      id: "saved",
+      prompt: "Saved prompt",
+      attachments: [{
+        kind: "review",
+        name: "review.ts",
+        path: "review.ts",
+        lineStart: "not-a-number",
+      }],
+      createdAt: 1,
+    }]));
+    const onRestore = vi.fn();
+    render(
+      <StashedPrompts
+        taskId="task-1"
+        prompt=""
+        attachments={[]}
+        onClear={vi.fn()}
+        onRestore={onRestore}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Stashed prompts, 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /Saved prompt/ }));
+    expect(onRestore).toHaveBeenCalledWith("Saved prompt", []);
   });
 });

@@ -303,6 +303,20 @@ describe("SidebarInbox Codex history", () => {
     expect(row.querySelector("svg")).toBeNull();
   });
 
+  it("does not confuse a registered project named Other Codex chats with the unmatched shelf", () => {
+    renderInbox({
+      projectList: [{
+        path: "D:/named-other",
+        name: "Other Codex chats",
+        updatedAt: now,
+      }],
+      threads: [thread("Registered chat", now, { cwd: "D:/named-other/repo" })],
+    });
+
+    expect(screen.getByRole("button", { name: "Open Registered chat" })).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /Other Codex chats, \d+ chats/ })).toBeNull();
+  });
+
   it("does not leak the chat preview or cwd through native title tooltips", () => {
     renderInbox({
       threads: [

@@ -53,4 +53,30 @@ describe("live file change projection", () => {
       files: [{ path: "src/App.tsx", additions: 3, deletions: 2 }],
     }])).toBeNull();
   });
+
+  it("keeps edits made before a same-turn steering message", () => {
+    expect(projectLiveFileChanges([{
+      id: "user",
+      kind: "user",
+      title: "Start",
+      turnId: "turn-1",
+    }, {
+      id: "change-before-steer",
+      kind: "change",
+      title: "First edit",
+      turnId: "turn-1",
+      files: [{ path: "src/App.tsx", additions: 3, deletions: 1 }],
+    }, {
+      id: "steer",
+      kind: "user",
+      title: "Also update tests",
+      turnId: "turn-1",
+    }, {
+      id: "change-after-steer",
+      kind: "change",
+      title: "Second edit",
+      turnId: "turn-1",
+      files: [{ path: "src/App.test.tsx", additions: 4, deletions: 0 }],
+    }])).toEqual({ fileCount: 2, additions: 7, deletions: 1 });
+  });
 });

@@ -1,8 +1,8 @@
 {
-  "status": "pending",
-  "verifiedAt": null,
+  "status": "passed",
+  "verifiedAt": "2026-07-29",
   "baselineCommit": "fda6486233e0b2f07ecfea166e1a94533cb923c4",
-  "sourceFingerprint": "sha256:370dea0cdb44b6a28bf2eead4e6d1282ec7c49706d93633e3c28d28f3384d1b3",
+  "sourceFingerprint": "sha256:e3a1cb9afa8d622441865b9a91f47d15a9dbae7ab0295a33894416bc525d3800",
   "evidence": "src/features/release-assurance/ticket03-verification.md",
   "rowIds": [
     "codex-runtime",
