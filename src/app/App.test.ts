@@ -123,6 +123,7 @@ describe("imported Codex workspace routing", () => {
         projectPath: "D:/Other",
         taskId: null,
       },
+      activeTaskId: null,
     });
   });
 });

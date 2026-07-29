@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
@@ -49,13 +49,19 @@ describe("ComposerPrimaryAction", () => {
     expect(primary.getAttribute("aria-expanded")).toBe("true");
     expect(primary.getAttribute("aria-controls")).toBe(menu.id);
 
-    fireEvent.click(screen.getByRole("menuitem", { name: /Queue/ }));
+    const queue = screen.getByRole("menuitem", { name: /Queue/ });
+    fireEvent.focus(queue);
+    fireEvent.click(queue);
+    expect(document.activeElement).toBe(primary);
     fireEvent.click(primary);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Steer/ }));
+    const steer = screen.getByRole("menuitem", { name: /Steer/ });
+    fireEvent.focus(steer);
+    fireEvent.click(steer);
     expect(onDeliver.mock.calls).toEqual([["queue"], ["steer"]]);
     expect(onInterrupt).not.toHaveBeenCalled();
     expect(primary.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(primary);
   });
 
   it("closes the delivery disclosure with Escape and returns focus to the primary action", () => {
@@ -112,5 +118,49 @@ describe("ComposerPrimaryAction", () => {
     expect(screen.getByRole("button", { name: "Choose message delivery" })
       .getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("dismisses the delivery menu on outside pointerdown but not inside pointerdown", () => {
+    render(
+      <>
+        <ComposerPrimaryAction working hasContent canSubmit canSteer
+          onDeliver={vi.fn()} onInterrupt={vi.fn()} />
+        <button type="button" onPointerDown={(event) => event.stopPropagation()}>Outside</button>
+      </>,
+    );
+    const primary = screen.getByRole("button", { name: "Choose message delivery" });
+    fireEvent.click(primary);
+    const queue = screen.getByRole("menuitem", { name: /Queue/ });
+
+    fireEvent.pointerDown(queue);
+    expect(screen.getByRole("menu")).not.toBeNull();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }));
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(primary.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("opens from either Arrow key and wraps focus through enabled menu items", async () => {
+    render(
+      <ComposerPrimaryAction working hasContent canSubmit canSteer
+        onDeliver={vi.fn()} onInterrupt={vi.fn()} />,
+    );
+    const primary = screen.getByRole("button", { name: "Choose message delivery" });
+
+    fireEvent.keyDown(primary, { key: "ArrowDown" });
+    const queue = await screen.findByRole("menuitem", { name: /Queue/ });
+    const steer = screen.getByRole("menuitem", { name: /Steer/ });
+    await waitFor(() => expect(document.activeElement).toBe(queue));
+
+    fireEvent.keyDown(queue, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(steer);
+    fireEvent.keyDown(steer, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(queue);
+    fireEvent.keyDown(queue, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(steer);
+
+    fireEvent.keyDown(steer, { key: "Escape" });
+    fireEvent.keyDown(primary, { key: "ArrowUp" });
+    await waitFor(() => expect(document.activeElement).toBe(steer));
   });
 });

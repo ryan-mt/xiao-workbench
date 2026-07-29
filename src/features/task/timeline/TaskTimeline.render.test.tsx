@@ -278,7 +278,7 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("Finished.");
   });
 
-  it("keeps a final response before later same-turn user entries", () => {
+  it("keeps a final response before later same-turn entries with equal timestamps", () => {
     const markup = render([{
       id: "user",
       kind: "user",
@@ -293,11 +293,18 @@ describe("TaskTimeline turn canvas", () => {
       turnId: "turn-1",
       createdAt: 2_000,
     }, {
+      id: "command",
+      kind: "command",
+      title: "Ran command",
+      command: "npm test",
+      turnId: "turn-1",
+      createdAt: 2_000,
+    }, {
       id: "steer",
       kind: "user",
       title: "Now verify tests",
       turnId: "turn-1",
-      createdAt: 3_000,
+      createdAt: 2_000,
     }]);
 
     expect(markup.indexOf("First result.")).toBeLessThan(markup.indexOf("Now verify tests"));

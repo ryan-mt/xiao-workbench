@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { CodexThreadSummary } from "../../../core/models/agent";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkbenchTask } from "../../task/task.types";
@@ -82,6 +83,7 @@ type SidebarContent = {
   tasks?: WorkbenchTask[];
   activeTaskId?: string;
   activeProjectPath?: string;
+  codexThreads?: CodexThreadSummary[];
 };
 
 const sidebarElement = (
@@ -99,6 +101,7 @@ const sidebarElement = (
       projectGroups={content.projectGroups ?? []}
       activeProjectPath={content.activeProjectPath ?? workspace.path}
       tasks={content.tasks ?? []}
+      codexThreads={content.codexThreads ?? []}
       activeTaskId={content.activeTaskId ?? ""}
       workspace={workspace}
       workingTaskIds={[]}
@@ -348,6 +351,25 @@ describe("Sidebar task group disclosure", () => {
     expect(markup).toContain('class="task-list__item is-selected"');
   });
 
+  it.each([
+    ["ready_for_review", "Ready for review"],
+    ["published", "Published"],
+    ["completed", "Completed"],
+  ] as const)("shows the durable %s stage in the legacy task list", (stage, label) => {
+    const stagedTask = {
+      ...task(`${label} task`, Date.now()),
+      stage,
+      threadId: `thread-${stage}`,
+      timelineEntryCount: 1,
+    };
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [stagedTask],
+    });
+
+    expect(markup).toContain(`<small>${label}</small>`);
+  });
+
   it("shows all tasks without a disclosure at the six-task limit", () => {
     const now = Date.now();
     const tasks = Array.from({ length: 6 }, (_, index) =>
@@ -388,5 +410,71 @@ describe("Sidebar task group disclosure", () => {
     expect(markup).toContain(activeTask.title);
     expect(markup).toContain('class="task-list__item is-selected"');
     expect(markup).toContain(">Show more</span><small>+1</small>");
+  });
+});
+
+describe("Sidebar Codex thread menu", () => {
+  it("reclamps against the rendered height when a copy error expands the menu", async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 300 });
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("codex-thread-actions-menu")) {
+          const height = this.querySelector('[role="alert"]') ? 240 : 180;
+          return {
+            bottom: 0,
+            height,
+            left: 0,
+            right: 0,
+            top: 0,
+            width: 218,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+          };
+        }
+        return {
+          bottom: 0,
+          height: 0,
+          left: 0,
+          right: 0,
+          top: 0,
+          width: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      });
+    const thread: CodexThreadSummary = {
+      id: "thread-1",
+      title: "Imported chat",
+      preview: "",
+      cwd: workspace.path,
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    };
+
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      codexThreads: [thread],
+    }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Imported chat/ }), {
+      clientX: 100,
+      clientY: 290,
+    });
+
+    const menu = await screen.findByRole("menu", { name: "Actions for Imported chat" });
+    expect(menu.style.top).toBe("112px");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy title" }));
+    await screen.findByRole("alert");
+    expect(menu.style.top).toBe("52px");
+
+    bounds.mockRestore();
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: originalInnerHeight,
+    });
   });
 });

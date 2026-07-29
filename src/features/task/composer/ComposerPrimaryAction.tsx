@@ -21,6 +21,7 @@ export function ComposerPrimaryAction({
   onInterrupt,
 }: ComposerPrimaryActionProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
   const primaryButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -29,15 +30,33 @@ export function ComposerPrimaryAction({
   const hasDeliveryOptions = working && hasContent;
   const deliver = (nextDelivery: ComposerDelivery) => {
     setMenuOpen(false);
+    primaryButton.current?.focus();
     onDeliver(nextDelivery);
+  };
+  const focusMenuEdge = (edge: "first" | "last") => {
+    setMenuOpen(true);
+    window.requestAnimationFrame(() => {
+      const items = menu.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
+      items?.[edge === "first" ? 0 : items.length - 1]?.focus();
+    });
   };
 
   useEffect(() => {
     if (!hasDeliveryOptions) setMenuOpen(false);
   }, [hasDeliveryOptions]);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", dismiss, true);
+    return () => window.removeEventListener("pointerdown", dismiss, true);
+  }, [menuOpen]);
+
   return (
     <div
+      ref={root}
       className={`composer-primary-action ${stopping ? "is-stop" : "is-send"} ${
         hasDeliveryOptions ? "has-delivery-options" : ""
       } ${menuOpen ? "is-menu-open" : ""}`}
@@ -60,6 +79,18 @@ export function ComposerPrimaryAction({
           role="menu"
           aria-label="Message delivery"
           hidden={!menuOpen}
+          onKeyDown={(event) => {
+            if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+            const items = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"),
+            );
+            if (!items.length) return;
+            event.preventDefault();
+            const activeIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+            const direction = event.key === "ArrowDown" ? 1 : -1;
+            const nextIndex = (activeIndex + direction + items.length) % items.length;
+            items[nextIndex]?.focus();
+          }}
         >
           <button type="button" role="menuitem" disabled={!canSubmit} onClick={() => deliver("queue")}>
             <span>Queue</span><kbd>Enter</kbd>
@@ -100,9 +131,7 @@ export function ComposerPrimaryAction({
             const nextOpen = !menuOpen;
             setMenuOpen(nextOpen);
             if (nextOpen && event.detail === 0) {
-              window.requestAnimationFrame(() =>
-                menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus()
-              );
+              focusMenuEdge("first");
             }
           } else {
             deliver(delivery);
@@ -125,12 +154,12 @@ export function ComposerPrimaryAction({
             deliver("steer");
             return;
           }
-          if (hasDeliveryOptions && event.key === "ArrowDown") {
+          if (
+            hasDeliveryOptions
+            && (event.key === "ArrowDown" || event.key === "ArrowUp")
+          ) {
             event.preventDefault();
-            setMenuOpen(true);
-            window.requestAnimationFrame(() =>
-              menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus()
-            );
+            focusMenuEdge(event.key === "ArrowDown" ? "first" : "last");
           }
         }}
       >

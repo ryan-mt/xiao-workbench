@@ -161,6 +161,7 @@ export const codexThreadSelectionTarget = (
   return {
     projectPath,
     context: { projectPath, taskId: null },
+    activeTaskId: null,
   };
 };
 
@@ -5059,14 +5060,12 @@ export function App() {
                   ? codexThreads.find((thread) => thread.id === importedTask.threadId)
                   : null;
                 if (importedThread) {
-                  const contextProjectPath = projectPathForCodexThread(projects, importedThread);
-                  setActiveProjectPath(contextProjectPath);
+                  const target = codexThreadSelectionTarget(projects, importedThread);
+                  setActiveTaskId(target.activeTaskId);
+                  setActiveProjectPath(target.projectPath);
                   setPendingCodexThread({
                     thread: importedThread,
-                    context: {
-                      projectPath: contextProjectPath,
-                      taskId: null,
-                    },
+                    context: target.context,
                   });
                   setActivePage("tasks");
                   return;
@@ -5076,14 +5075,12 @@ export function App() {
               }}
               onSelectCodexThread={(thread) => {
                 if (agent.hasActiveRuns) return;
-                const contextProjectPath = projectPathForCodexThread(projects, thread);
-                setActiveProjectPath(contextProjectPath);
+                const target = codexThreadSelectionTarget(projects, thread);
+                setActiveTaskId(target.activeTaskId);
+                setActiveProjectPath(target.projectPath);
                 setPendingCodexThread({
                   thread,
-                  context: {
-                    projectPath: contextProjectPath,
-                    taskId: null,
-                  },
+                  context: target.context,
                 });
                 setActivePage("tasks");
                 closeFocusPanel();
@@ -5512,6 +5509,7 @@ export function App() {
         onSelectCodexThread={(thread) => {
           if (agent.hasActiveRuns) return;
           const target = codexThreadSelectionTarget(projects, thread);
+          setActiveTaskId(target.activeTaskId);
           setActiveProjectPath(target.projectPath);
           setPendingCodexThread({
             thread,

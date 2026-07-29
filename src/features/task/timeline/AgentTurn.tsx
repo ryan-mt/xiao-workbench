@@ -101,23 +101,19 @@ export function AgentTurn(props: SharedProps) {
     (!turn.response || turn.response.status === "active");
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
-  const responseCreatedAt = turn.response?.createdAt;
-  const responseFlowIndex = (
-    typeof responseCreatedAt === "number"
-      ? turn.flow.findIndex((entry) =>
-        typeof entry.createdAt === "number" &&
-        entry.createdAt > responseCreatedAt
-      )
-      : -1
+  const responseFlowIndex = turn.responseFlowIndex ?? turn.flow.length;
+  const responseBeforeLaterFlow = Boolean(
+    turn.response &&
+    turn.responseFlowIndex !== null &&
+    responseFlowIndex < turn.flow.length
   );
-  const chronologicalFlow = turn.response && responseFlowIndex >= 0
+  const chronologicalFlow = turn.response && responseBeforeLaterFlow
     ? [
         ...turn.flow.slice(0, responseFlowIndex),
         turn.response,
         ...turn.flow.slice(responseFlowIndex),
       ]
     : turn.flow;
-  const responseInFlow = chronologicalFlow !== turn.flow;
   const flowGroups = groupTurnFlow(chronologicalFlow, turn.commentary, turn.response);
   let latestExecutionGroupIndex = -1;
   for (let index = flowGroups.length - 1; index >= 0; index -= 1) {
@@ -276,7 +272,7 @@ export function AgentTurn(props: SharedProps) {
         onToggle={() => setExpanded((value) => !value)}
       />
       <div className="conversation-turn__body">{flow}</div>
-      {turn.response && !responseInFlow ? (
+      {turn.response && !responseBeforeLaterFlow ? (
         <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
           {item(turn.response, turn.flow.length + 1, true)}
         </span>

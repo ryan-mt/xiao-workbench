@@ -21,6 +21,7 @@ import {
   type WorkbenchTask,
 } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
+import { sidebarTaskPresentation } from "../sidebarProjection";
 import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
 import { SidebarInbox } from "./SidebarInbox";
 
@@ -548,6 +549,18 @@ export function Sidebar({
     };
   }, [codexThreadMenu]);
 
+  useEffect(() => {
+    if (!codexThreadMenu || !codexThreadMenuRef.current) return;
+    const menuHeight = codexThreadMenuRef.current.getBoundingClientRect().height;
+    const top = Math.max(
+      8,
+      Math.min(codexThreadMenu.top, window.innerHeight - menuHeight - 8),
+    );
+    if (top !== codexThreadMenu.top) {
+      setCodexThreadMenu((current) => current ? { ...current, top } : current);
+    }
+  }, [codexThreadMenu?.threadId, copyError]);
+
   return (
     <>
       <aside className="sidebar app-sidebar" aria-label="Workspace navigation">
@@ -788,11 +801,7 @@ export function Sidebar({
                                 const selected = activePage === "tasks" && task.id === activeTaskId;
                                 const taskRunning = workingTasks.has(task.id);
                                 const taskMenuOpen = taskMenu?.taskId === task.id;
-                                const taskMeta = taskRunning
-                                  ? "Running"
-                                  : task.meta === "Draft" || (task.timelineEntryCount === 0 && !task.threadId)
-                                    ? "Draft"
-                                    : `Updated ${relativeTime(task.updatedAt, now)}`;
+                                const taskMeta = sidebarTaskPresentation(task, taskRunning).status;
                                 const stateLabel = taskRunning
                                   ? ", running"
                                   : task.unread

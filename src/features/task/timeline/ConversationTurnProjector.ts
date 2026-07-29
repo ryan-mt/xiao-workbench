@@ -7,6 +7,7 @@ export type ConversationTurn = {
   commentary: TimelineEntry[];
   work: TimelineEntry[];
   response: TimelineEntry | null;
+  responseFlowIndex: number | null;
   files: NonNullable<TimelineEntry["files"]>;
   startIndex: number;
   endIndex: number;
@@ -70,6 +71,7 @@ export class ConversationTurnProjector {
       const commentary: TimelineEntry[] = [];
       const work: TimelineEntry[] = [];
       let response: TimelineEntry | null = null;
+      let responseFlowIndex: number | null = null;
       index += 1;
 
       while (index < this.timeline.length) {
@@ -87,6 +89,7 @@ export class ConversationTurnProjector {
         }
         if (isResponse(candidate)) {
           response = candidate;
+          responseFlowIndex = flow.length;
         } else if (isCommentary(candidate)) {
           commentary.push(candidate);
           flow.push(candidate);
@@ -106,6 +109,7 @@ export class ConversationTurnProjector {
           commentary,
           work,
           response,
+          responseFlowIndex,
           files: mergeFiles(work),
           startIndex,
           endIndex: index - 1,

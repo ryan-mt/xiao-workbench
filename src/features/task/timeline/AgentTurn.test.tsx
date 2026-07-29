@@ -43,6 +43,7 @@ describe("AgentTurn completed reasoning", () => {
       commentary: [],
       work: [thought],
       response: null,
+      responseFlowIndex: null,
       files: [],
       startIndex: 0,
       endIndex: 1,
