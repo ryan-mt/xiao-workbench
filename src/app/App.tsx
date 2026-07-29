@@ -34,6 +34,8 @@ import type {
 import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/workspacePath";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
+  codexPlanFromTimeline,
+  codexTimelineIsWorking,
   listCodexThreads,
   isLegacyCodexImportPath,
   readCodexThreadChangeSummary,
@@ -1686,6 +1688,7 @@ export function App() {
   const [pendingCodexThread, setPendingCodexThread] = useState<{
     thread: CodexThreadSummary;
     context: { projectPath: string; taskId: string | null };
+    silent?: boolean;
   } | null>(null);
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
@@ -2002,56 +2005,69 @@ export function App() {
       !taskStateReady
     ) return;
     let cancelled = false;
-    const { thread, context } = pendingCodexThread;
-    setTaskHistoryLoadingId(`codex:${thread.id}`);
-    void readCodexThreadTimeline(thread.id, context)
+    const { thread, context, silent = false } = pendingCodexThread;
+    if (!silent) setTaskHistoryLoadingId(`codex:${thread.id}`);
+    void readCodexThreadTimeline(thread.id, context, thread.rolloutPath)
       .then((timeline) => {
         if (cancelled) return;
-        const importedTask: WorkbenchTask = {
-          id: `codex:${thread.id}`,
-          title: thread.title,
-          meta: taskMeta(thread.updatedAt),
-          group: taskGroup(thread.updatedAt, false),
-          archived: thread.archived,
-          pinned: false,
-          unread: false,
-          createdAt: thread.createdAt,
-          updatedAt: thread.updatedAt,
-          stage: "completed",
-          stageVersion: 0,
-          codexProfileId: null,
-          workbenchState: {},
-          draftText: "",
-          followUps: [],
-          model: null,
-          reasoningEffort: null,
-          threadId: thread.id,
-          threadBinding: null,
-          mode: "default",
-          approvalPolicy: "on-request",
-          sandboxMode: "workspace-write",
-          goal: null,
-          acceptanceContract: null,
-          timeline,
-          timelineLoaded: true,
-          timelineComplete: true,
-          timelineStart: 0,
-          timelineEntryCount: timeline.length,
-          plan: null,
-          executionEnvironmentId: null,
-          workspaceMode: "local",
-          managedWorktreeId: null,
-          origin: "codex",
-        };
-        setTasks((current) => [
-          ...current.filter((task) => task.id !== importedTask.id),
-          importedTask,
-        ]);
-        setActiveTaskId(importedTask.id);
-        setOpenTaskIds((current) =>
-          current.includes(importedTask.id) ? current : [...current, importedTask.id]);
-        setDraftTabOpen(false);
-        setActivePage("tasks");
+        const importedTaskId = `codex:${thread.id}`;
+        const importedWorking = codexTimelineIsWorking(timeline);
+        setCodexThreads((current) => current.map((candidate) =>
+          candidate.id === thread.id
+            ? { ...candidate, status: importedWorking ? "working" : candidate.status === "working" ? "done" : candidate.status }
+            : candidate
+        ));
+        setTasks((current) => {
+          const existing = current.find((task) => task.id === importedTaskId);
+          const importedTask: WorkbenchTask = {
+            ...(existing ?? {
+              id: importedTaskId,
+              pinned: false,
+              unread: false,
+              stageVersion: 0,
+              codexProfileId: null,
+              workbenchState: {},
+              draftText: "",
+              followUps: [],
+              model: null,
+              reasoningEffort: null,
+              threadBinding: null,
+              mode: "default",
+              approvalPolicy: "on-request",
+              sandboxMode: "workspace-write",
+              goal: null,
+              acceptanceContract: null,
+              plan: null,
+              executionEnvironmentId: null,
+              workspaceMode: "local",
+              managedWorktreeId: null,
+            }),
+            id: importedTaskId,
+            title: thread.title,
+            meta: taskMeta(thread.updatedAt),
+            group: taskGroup(thread.updatedAt, false),
+            archived: thread.archived,
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
+            stage: importedWorking ? "in_progress" : "completed",
+            threadId: thread.id,
+            timeline,
+            timelineLoaded: true,
+            timelineComplete: true,
+            timelineStart: 0,
+            timelineEntryCount: timeline.length,
+            plan: codexPlanFromTimeline(timeline) ?? existing?.plan ?? null,
+            origin: "codex",
+          };
+          return [...current.filter((task) => task.id !== importedTaskId), importedTask];
+        });
+        if (!silent) {
+          setActiveTaskId(importedTaskId);
+          setOpenTaskIds((current) =>
+            current.includes(importedTaskId) ? current : [...current, importedTaskId]);
+          setDraftTabOpen(false);
+          setActivePage("tasks");
+        }
         setPendingCodexThread(null);
       })
       .catch((reason) => {
@@ -2063,7 +2079,7 @@ export function App() {
         }
       })
       .finally(() => {
-        if (!cancelled) setTaskHistoryLoadingId(null);
+        if (!cancelled && !silent) setTaskHistoryLoadingId(null);
       });
     return () => {
       cancelled = true;
@@ -2707,14 +2723,14 @@ export function App() {
         const openImportedThread = openImportedThreadId
           ? threads.find((thread) => thread.id === openImportedThreadId)
           : null;
-        if (
-          openImportedThread &&
-          selectedTask &&
+        if (openImportedThread && selectedTask && (
+          openImportedThread.status === "working" ||
           openImportedThread.updatedAt > selectedTask.updatedAt
-        ) {
-          setPendingCodexThread({
+        )) {
+          setPendingCodexThread((current) => current ?? {
             thread: openImportedThread,
             context,
+            silent: true,
           });
         }
         setCodexHistoryError(null);
@@ -2907,7 +2923,10 @@ export function App() {
       return task ? [{
         id: task.id,
         title: task.title,
-        working: agent.isTaskWorking(task.id),
+        working: agent.isTaskWorking(task.id) || (
+          task.origin === "codex" &&
+          codexThreads.some((thread) => thread.id === task.threadId && thread.status === "working")
+        ),
       }] : [];
     }),
     ...(draftTabOpen ? [{ id: draftTask.id, title: "New task", draft: true, working: false }] : []),
@@ -4836,6 +4855,19 @@ export function App() {
               onSelectTask={(taskId) => {
                 focusedNewTaskRequestRef.current = false;
                 explicitlyOpenedTaskRef.current = workspaceTaskKey(workspace.path, taskId);
+                const importedTask = tasks.find((task) => task.id === taskId && task.origin === "codex");
+                const importedThread = importedTask?.threadId
+                  ? codexThreads.find((thread) => thread.id === importedTask.threadId)
+                  : null;
+                if (importedThread) {
+                  setPendingCodexThread({
+                    thread: importedThread,
+                    context: {
+                      projectPath: workspace.path,
+                      taskId: codexHistoryContextTaskId,
+                    },
+                  });
+                }
                 setActiveTaskId(taskId);
                 setActivePage("tasks");
               }}

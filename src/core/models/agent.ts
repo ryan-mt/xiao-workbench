@@ -150,6 +150,10 @@ export type TimelineEntry = {
   turnId?: string;
   /** App-server supplied wall-clock duration for the owning turn. */
   turnDurationMs?: number;
+  /** App-server supplied wall-clock duration for this execution item. */
+  durationMs?: number;
+  /** Shell exit code when this entry represents a command execution. */
+  exitCode?: number | null;
   turnDiff?: string;
   collaborators?: AgentCollaborator[];
   collaborationTool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";
@@ -186,12 +190,23 @@ export type CodexThreadSummary = {
   title: string;
   preview: string;
   cwd: string;
+  rolloutPath?: string;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
   status?: "working" | "waiting" | "failed" | "ready" | "done";
   additions?: number;
   deletions?: number;
+};
+
+export type CodexRolloutCommand = {
+  id: string;
+  turnId?: string | null;
+  command: string;
+  output?: string | null;
+  createdAt?: string | null;
+  durationMs?: number | null;
+  exitCode?: number | null;
 };
 
 export type AgentFollowUp = {

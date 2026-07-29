@@ -5,6 +5,7 @@ import type {
   AgentAccountUsage,
   AgentModelSummary,
   AgentRateLimitsResponse,
+  CodexRolloutCommand,
 } from "../models/agent";
 import type {
   CodexUpdateResult,
@@ -124,6 +125,10 @@ export const nativeBridge = {
       projectPath: context?.projectPath,
       taskId: context?.taskId,
     });
+  },
+
+  readCodexRolloutCommands(rolloutPath: string) {
+    return invoke<CodexRolloutCommand[]>("read_codex_rollout_commands", { rolloutPath });
   },
 
   readAgentAccount(projectPath: string, taskId: string | null) {

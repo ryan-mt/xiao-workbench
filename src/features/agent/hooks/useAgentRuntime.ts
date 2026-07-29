@@ -961,6 +961,8 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
           : typeof item.cwd === "string" ? item.cwd : "Workspace",
       status: commandStatus === "inProgress" ? "active" : failed ? "error" : "success",
       exploration: exploration ?? undefined,
+      durationMs: typeof item.durationMs === "number" ? Math.max(0, item.durationMs) : undefined,
+      exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
     };
   }
 

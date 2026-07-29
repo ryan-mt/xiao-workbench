@@ -1,7 +1,9 @@
 import { nativeBridge } from "../../../core/bridges/tauri";
 import type {
   AgentAttachment,
+  AgentPlan,
   CodexThreadSummary,
+  CodexRolloutCommand,
   TimelineEntry,
 } from "../../../core/models/agent";
 import { timelineEntryFromItem } from "../hooks/useAgentRuntime";
@@ -15,6 +17,7 @@ type RawThread = {
   updatedAt?: unknown;
   recencyAt?: unknown;
   status?: unknown;
+  path?: unknown;
 };
 
 type ThreadListResponse = {
@@ -102,6 +105,7 @@ const summaryFromThread = (
     title: titleForThread(thread.name, thread.preview),
     preview: typeof thread.preview === "string" ? thread.preview : "",
     cwd: thread.cwd,
+    ...(typeof thread.path === "string" ? { rolloutPath: thread.path } : {}),
     createdAt,
     updatedAt,
     archived,
@@ -277,19 +281,53 @@ export const userEntryFromItem = (
 export const readCodexThreadTimeline = async (
   threadId: string,
   context: AgentContext,
+  rolloutPath?: string,
 ): Promise<TimelineEntry[]> => {
-  const response = await nativeBridge.agentRequest<{ data?: unknown }>(
-    "thread/turns/list",
-    {
-      threadId,
-      cursor: null,
-      limit: 100,
-      sortDirection: "desc",
-      itemsView: "full",
-    },
-    context,
-  );
+  const [response, rolloutCommands] = await Promise.all([
+    nativeBridge.agentRequest<{ data?: unknown }>(
+      "thread/turns/list",
+      {
+        threadId,
+        cursor: null,
+        limit: 100,
+        sortDirection: "desc",
+        itemsView: "full",
+      },
+      context,
+    ),
+    rolloutPath
+      ? nativeBridge.readCodexRolloutCommands(rolloutPath).catch(() => [] as CodexRolloutCommand[])
+      : Promise.resolve([] as CodexRolloutCommand[]),
+  ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
+  const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
+  const turnWindows = turns.flatMap((rawTurn) => {
+    if (!rawTurn || typeof rawTurn !== "object") return [];
+    const turn = rawTurn as Record<string, unknown>;
+    if (typeof turn.id !== "string") return [];
+    const startedAt = firstTimestamp(
+      turn,
+      ["startedAt", "started_at", "createdAt", "created_at"],
+    );
+    const completedAt = firstTimestamp(
+      turn,
+      ["completedAt", "completed_at", "updatedAt", "updated_at"],
+    );
+    return startedAt === null ? [] : [{ id: turn.id, startedAt, completedAt }];
+  });
+  for (const command of rolloutCommands) {
+    const commandAt = timestampMilliseconds(command.createdAt);
+    const inferredTurn = commandAt === null ? null : [...turnWindows]
+      .reverse()
+      .find((turn) => turn.startedAt <= commandAt && (
+        turn.completedAt === null || commandAt <= turn.completedAt + 2_000
+      ));
+    const owningTurnId = command.turnId ?? inferredTurn?.id;
+    if (!owningTurnId) continue;
+    const current = commandsByTurn.get(owningTurnId) ?? [];
+    current.push(command);
+    commandsByTurn.set(owningTurnId, current);
+  }
   return turns.flatMap((rawTurn) => {
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
@@ -307,7 +345,7 @@ export const readCodexThreadTimeline = async (
         ? Math.max(0, turn.durationMs)
         : null;
     const items = Array.isArray(turn.items) ? turn.items : [];
-    return items.flatMap((rawItem) => {
+    const mapped = items.flatMap((rawItem) => {
       if (!rawItem || typeof rawItem !== "object") return [];
       const item = rawItem as Record<string, unknown>;
       if (item.type === "userMessage") {
@@ -331,7 +369,76 @@ export const readCodexThreadTimeline = async (
         ...(turnDurationMs !== null ? { turnDurationMs } : {}),
       }] : [];
     });
+    const existingCommands = new Set(mapped.flatMap((entry) =>
+      entry.kind === "command" && entry.command ? [entry.command] : []
+    ));
+    const recoveredCommands: TimelineEntry[] = (commandsByTurn.get(turnId) ?? [])
+      .filter((command) => !existingCommands.has(command.command))
+      .map((command) => {
+        const completed = command.output !== null && command.output !== undefined ||
+          command.durationMs !== null && command.durationMs !== undefined;
+        return {
+          id: `rollout-command:${command.id}`,
+          kind: "command" as const,
+          title: completed ? "Ran command" : "Running command",
+          command: command.command,
+          body: command.output ?? undefined,
+          createdAt: timestampMilliseconds(command.createdAt) ?? createdAt,
+          durationMs: command.durationMs ?? undefined,
+          exitCode: command.exitCode ?? undefined,
+          status: !completed
+            ? "active" as const
+            : command.exitCode !== undefined && command.exitCode !== null && command.exitCode !== 0
+              ? "error" as const
+              : "success" as const,
+          turnId,
+          ...(turnDurationMs !== null ? { turnDurationMs } : {}),
+        };
+      });
+    return [...mapped, ...recoveredCommands].sort(
+      (left, right) => (left.createdAt ?? createdAt) - (right.createdAt ?? createdAt),
+    );
   });
+};
+
+export const codexPlanFromTimeline = (timeline: TimelineEntry[]): AgentPlan | null => {
+  const plan = [...timeline].reverse().find((entry) =>
+    entry.kind === "thought" && entry.meta === "Plan" && entry.body?.trim()
+  );
+  if (!plan?.body) return null;
+  const steps = plan.body.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(
+      /^\s*(?:[-*]|\d+[.)])\s+(?:\[([ xX>~!-])\]\s*)?(.+?)\s*$/,
+    );
+    if (!match?.[2]) return [];
+    const marker = match[1]?.toLowerCase();
+    const status = marker === "x"
+      ? "completed" as const
+      : marker === ">" || marker === "~" || marker === "!"
+        ? "inProgress" as const
+        : "pending" as const;
+    return [{ step: match[2].trim(), status }];
+  });
+  return steps.length ? { explanation: null, steps } : null;
+};
+
+export const codexTimelineIsWorking = (timeline: TimelineEntry[]) => {
+  let latestUserIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (timeline[index].kind === "user" || timeline[index].kind === "brief") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  if (latestUserIndex < 0) return false;
+  const latestTurn = timeline.slice(latestUserIndex + 1);
+  const hasFinalResponse = latestTurn.some((entry) =>
+    entry.kind === "result" &&
+    entry.title === "Agent response" &&
+    entry.meta !== "Commentary" &&
+    entry.status !== "active"
+  );
+  return !hasFinalResponse && latestTurn.some((entry) => entry.status === "active");
 };
 
 export const sameWorkspacePath = (left: string, right: string) =>

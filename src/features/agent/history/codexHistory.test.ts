@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  codexPlanFromTimeline,
   codexThreadActivityAt,
   isLegacyCodexImportPath,
   sameWorkspacePath,
@@ -12,6 +13,23 @@ describe("Codex history activity", () => {
   it("prefers the live updated clock over stale recency", () => {
     expect(codexThreadActivityAt(1_000, 30, 20)).toBe(30_000);
     expect(codexThreadActivityAt(1_000, undefined, 20)).toBe(20_000);
+  });
+
+  it("restores persisted plan progress for the live composer pill", () => {
+    expect(codexPlanFromTimeline([{
+      id: "plan",
+      kind: "thought",
+      title: "Plan",
+      meta: "Plan",
+      body: "- [x] Inspect events\n- [>] Fix projection\n- [ ] Verify app",
+    }])).toEqual({
+      explanation: null,
+      steps: [
+        { step: "Inspect events", status: "completed" },
+        { step: "Fix projection", status: "inProgress" },
+        { step: "Verify app", status: "pending" },
+      ],
+    });
   });
 });
 

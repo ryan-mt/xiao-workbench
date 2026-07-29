@@ -1,3 +1,11 @@
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{BufRead, BufReader, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+};
+
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
@@ -7,6 +15,260 @@ use crate::xiao::repository::XiaoRepository;
 
 use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
 use super::{models, service};
+
+const MAX_ROLLOUT_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_CHARS: usize = 24_000;
+
+#[derive(Debug, Clone)]
+struct PendingRolloutCommand {
+    command: models::CodexRolloutCommand,
+    started_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct RolloutCommandCache {
+    offset: u64,
+    pending: HashMap<String, PendingRolloutCommand>,
+    completed: Vec<models::CodexRolloutCommand>,
+}
+
+static ROLLOUT_COMMAND_CACHE: OnceLock<Mutex<HashMap<PathBuf, RolloutCommandCache>>> =
+    OnceLock::new();
+
+fn default_codex_sessions_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or("Could not resolve the local user profile.")?;
+    Ok(PathBuf::from(home).join(".codex").join("sessions"))
+}
+
+fn validated_rollout_path(path: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path)
+        .canonicalize()
+        .map_err(|error| format!("Could not open this Codex rollout: {error}"))?;
+    let sessions = default_codex_sessions_root()?
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the local Codex sessions folder: {error}"))?;
+    if !candidate.starts_with(&sessions) {
+        return Err("Codex rollout is outside the local sessions folder.".to_owned());
+    }
+    let name = candidate
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !name.starts_with("rollout-") || candidate.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+        return Err("Codex rollout path is not a rollout JSONL file.".to_owned());
+    }
+    let size = candidate
+        .metadata()
+        .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?
+        .len();
+    if size > MAX_ROLLOUT_BYTES {
+        return Err("Codex rollout is too large to import safely.".to_owned());
+    }
+    Ok(candidate)
+}
+
+fn parse_timestamp_ms(value: Option<&str>) -> Option<i64> {
+    value.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn quoted_value_after(input: &str, marker: &str) -> Option<String> {
+    let mut tail = input.get(input.find(marker)? + marker.len()..)?.trim_start();
+    if tail.starts_with(':') {
+        tail = tail[1..].trim_start();
+    }
+    if tail.starts_with('"') {
+        let mut escaped = false;
+        for (index, character) in tail.char_indices().skip(1) {
+            if character == '"' && !escaped {
+                return serde_json::from_str::<String>(&tail[..=index]).ok();
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+        }
+    }
+    if let Some(rest) = tail.strip_prefix('\'') {
+        let mut result = String::new();
+        let mut escaped = false;
+        for character in rest.chars() {
+            if character == '\'' && !escaped {
+                return Some(result);
+            }
+            if escaped {
+                result.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else {
+                result.push(character);
+            }
+        }
+    }
+    None
+}
+
+fn command_from_tool_input(input: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(input) {
+        if let Some(command) = value.get("cmd").and_then(Value::as_str) {
+            return Some(command.to_owned());
+        }
+        if let Some(command) = value.get("command").and_then(Value::as_str) {
+            return Some(command.to_owned());
+        }
+        if let Some(command) = value.get("command").and_then(Value::as_array) {
+            let parts = command.iter().map(Value::as_str).collect::<Option<Vec<_>>>()?;
+            return Some(parts.join(" "));
+        }
+    }
+    ["\"cmd\"", "cmd:", "cmd", "\"command\"", "command:"]
+        .iter()
+        .find_map(|marker| quoted_value_after(input, marker))
+        .map(|command| command.trim().to_owned())
+        .filter(|command| !command.is_empty())
+}
+
+fn output_text(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts.iter().filter_map(|part| {
+            part.get("text").and_then(Value::as_str)
+                .or_else(|| part.get("output_text").and_then(Value::as_str))
+        }).collect::<Vec<_>>().join("\n"),
+        Value::Object(object) => object.get("text").and_then(Value::as_str)
+            .or_else(|| object.get("output").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned(),
+        _ => String::new(),
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect())
+    }
+}
+
+fn output_exit_code(output: &str) -> Option<i64> {
+    for marker in ["\"exit_code\":", "\"exitCode\":", "Process exited with code "] {
+        if let Some(tail) = output.split_once(marker).map(|(_, tail)| tail.trim_start()) {
+            let digits: String = tail.chars()
+                .take_while(|character| character.is_ascii_digit() || *character == '-')
+                .collect();
+            if let Ok(code) = digits.parse() {
+                return Some(code);
+            }
+        }
+    }
+    None
+}
+
+fn rollout_turn_id(record: &Value) -> Option<String> {
+    record.get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("turn_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| record.get("turn_id").and_then(Value::as_str).map(str::to_owned))
+}
+
+fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
+    if record.get("type").and_then(Value::as_str) != Some("response_item") {
+        return;
+    }
+    let Some(payload) = record.get("payload") else { return };
+    let item_type = payload.get("type").and_then(Value::as_str).unwrap_or_default();
+    if matches!(item_type, "custom_tool_call" | "function_call") {
+        let name = payload.get("name").and_then(Value::as_str).unwrap_or_default();
+        if !matches!(name, "exec" | "exec_command" | "functions.exec_command") {
+            return;
+        }
+        let input = payload.get("input").or_else(|| payload.get("arguments"));
+        let Some(input) = input.and_then(|value| {
+            value.as_str().map(str::to_owned).or_else(|| serde_json::to_string(value).ok())
+        }) else { return };
+        let Some(command) = command_from_tool_input(&input) else { return };
+        let Some(id) = payload.get("call_id").or_else(|| payload.get("id")).and_then(Value::as_str) else { return };
+        let created_at = record.get("timestamp").and_then(Value::as_str).map(str::to_owned);
+        cache.pending.insert(id.to_owned(), PendingRolloutCommand {
+            started_at_ms: parse_timestamp_ms(created_at.as_deref()),
+            command: models::CodexRolloutCommand {
+                id: id.to_owned(),
+                turn_id: rollout_turn_id(&record),
+                command,
+                output: None,
+                created_at,
+                duration_ms: None,
+                exit_code: None,
+            },
+        });
+    } else if matches!(item_type, "custom_tool_call_output" | "function_call_output") {
+        let Some(id) = payload.get("call_id").or_else(|| payload.get("id")).and_then(Value::as_str) else { return };
+        let Some(mut item) = cache.pending.remove(id) else { return };
+        let output = payload.get("output").and_then(output_text);
+        item.command.exit_code = output.as_deref().and_then(output_exit_code);
+        item.command.output = output;
+        let ended_at = parse_timestamp_ms(record.get("timestamp").and_then(Value::as_str));
+        item.command.duration_ms = ended_at.zip(item.started_at_ms)
+            .map(|(end, start)| end.saturating_sub(start) as u64);
+        cache.completed.push(item.command);
+    }
+}
+
+fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand>, String> {
+    let file = File::open(path).map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
+    let cache_map = ROLLOUT_COMMAND_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache_map = cache_map.lock().map_err(|_| "Codex rollout cache is unavailable.")?;
+    let cache = cache_map.entry(path.to_owned()).or_default();
+    let file_length = file.metadata()
+        .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?
+        .len();
+    if cache.offset > file_length {
+        *cache = RolloutCommandCache::default();
+    }
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(cache.offset))
+        .map_err(|error| format!("Could not seek this Codex rollout: {error}"))?;
+    loop {
+        let line_start = reader.stream_position()
+            .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+        let mut line = String::new();
+        let bytes = reader.read_line(&mut line)
+            .map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
+        if bytes == 0 {
+            cache.offset = line_start;
+            break;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            Ok(record) => {
+                apply_rollout_record(record, cache);
+                cache.offset = reader.stream_position()
+                    .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+            }
+            Err(_) if !line.ends_with('\n') => {
+                cache.offset = line_start;
+                break;
+            }
+            Err(_) => {
+                cache.offset = reader.stream_position()
+                    .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+            }
+        }
+    }
+    let mut completed = cache.completed.clone();
+    completed.extend(cache.pending.values().map(|item| item.command.clone()));
+    completed.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(completed)
+}
+
+#[tauri::command]
+pub fn read_codex_rollout_commands(
+    rollout_path: String,
+) -> Result<Vec<models::CodexRolloutCommand>, String> {
+    parse_rollout_commands(&validated_rollout_path(&rollout_path)?)
+}
 
 #[tauri::command]
 pub fn start_agent_runtime(
@@ -311,7 +573,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_execution_root, contains_execution_path_fields, native_run_method,
+        apply_execution_root, command_from_tool_input, contains_execution_path_fields,
+        native_run_method, output_text,
         renderer_agent_method, strip_execution_path_fields, validate_direct_command,
         validate_renderer_agent_request,
     };
@@ -325,6 +588,32 @@ mod tests {
         let mut search = json!({ "query": "x", "roots": ["C:/escape"] });
         apply_execution_root("fuzzyFileSearch", &mut search, "C:/owned/root").unwrap();
         assert_eq!(search["roots"], json!(["C:/owned/root"]));
+    }
+
+    #[test]
+    fn extracts_nested_exec_commands_from_rollout_tool_calls() {
+        let input = r#"const r = await tools.exec_command({cmd:"npm test -- --run","workdir":"D:\\Project Archive\\xiao-workbench"}); text(r.output);"#;
+        assert_eq!(
+            command_from_tool_input(input).as_deref(),
+            Some("npm test -- --run")
+        );
+        assert_eq!(
+            command_from_tool_input(r#"{"cmd":"cargo check","yield_time_ms":30000}"#)
+                .as_deref(),
+            Some("cargo check")
+        );
+    }
+
+    #[test]
+    fn reads_text_blocks_from_rollout_command_outputs() {
+        let output = json!([
+            { "type": "input_text", "text": "Script completed\n" },
+            { "type": "input_text", "text": "Output:\npassed" }
+        ]);
+        assert_eq!(
+            output_text(&output).as_deref(),
+            Some("Script completed\n\nOutput:\npassed")
+        );
     }
 
     #[test]
