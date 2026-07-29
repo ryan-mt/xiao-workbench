@@ -80,7 +80,7 @@ describe("AgentTurn completed reasoning", () => {
       work: [command],
       response,
       responseFlowIndex: 0,
-      files: [],
+      files: [{ path: "src/App.tsx", additions: 2, deletions: 0 }],
       startIndex: 0,
       endIndex: 2,
     };
@@ -97,6 +97,7 @@ describe("AgentTurn completed reasoning", () => {
     expect(screen.getByRole("button", { name: /Working for/ }).getAttribute("aria-expanded"))
       .toBe("true");
     expect(screen.getByText("npm test")).toBeTruthy();
+    expect(container.querySelector(".edited-files")).toBeNull();
   });
 
   it("does not revive historical active work from a different runtime turn", () => {
@@ -186,6 +187,43 @@ describe("AgentTurn completed reasoning", () => {
     expect(container.querySelector("#timeline-entry-thought-live")?.textContent).toContain(
       "Inspecting the active flow",
     );
+  });
+
+  it("preserves live behavior before entries acquire a runtime turn id", () => {
+    const user: TimelineEntry = {
+      id: "user-pending-id",
+      kind: "user",
+      title: "Start the task",
+    };
+    const command: TimelineEntry = {
+      id: "command-pending-id",
+      kind: "command",
+      title: "Run checks",
+      command: "npm test",
+      status: "active",
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [command],
+      commentary: [],
+      work: [command],
+      response: null,
+      responseFlowIndex: null,
+      files: [],
+      startIndex: 0,
+      endIndex: 1,
+    };
+
+    const { container } = renderTurn(turn, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnId: "runtime-turn-not-imported-yet",
+    });
+
+    expect(container.querySelector(".conversation-turn.is-live")).toBeTruthy();
+    expect(screen.getByText("npm test")).toBeTruthy();
   });
 
   it("keeps a completed thought-only group available after expansion", () => {

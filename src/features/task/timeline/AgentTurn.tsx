@@ -100,17 +100,14 @@ export function AgentTurn(props: SharedProps) {
     turn.response &&
     turn.responseFlowIndex !== null &&
     responseFlowIndex < turn.flow.length &&
-    turn.flow.slice(responseFlowIndex).some((entry) => entry.status === "active")
+    turn.flow.slice(responseFlowIndex).some((entry) =>
+      entry.status === "active" &&
+      (!runtime.turnId || entry.turnId === runtime.turnId)
+    )
   );
-  const turnIsLive = runtime.phase === "working" &&
-    runtime.taskId === taskId &&
-    (
-      !runtime.turnId ||
-      [turn.user, ...turn.flow, ...(turn.response ? [turn.response] : [])]
-        .some((entry) => entry.turnId === runtime.turnId)
-    );
   const live = props.liveEligible &&
-    turnIsLive &&
+    runtime.phase === "working" &&
+    runtime.taskId === taskId &&
     (!turn.response || turn.response.status === "active" || activeWorkAfterResponse);
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
@@ -293,7 +290,9 @@ export function AgentTurn(props: SharedProps) {
           {item(turn.response, turn.flow.length + 1, true)}
         </span>
       ) : null}
-      {turn.files.length && turn.response?.status === "success" ? (
+      {turn.files.length &&
+        turn.response?.status === "success" &&
+        !responseBeforeLaterFlow ? (
         <EditedFilesSummary
           files={turn.files}
           workspacePath={props.workspacePath}
