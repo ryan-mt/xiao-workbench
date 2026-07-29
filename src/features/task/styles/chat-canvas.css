@@ -50,13 +50,23 @@
   transform: rotate(90deg);
 }
 
-.conversation-turn__commentary {
-  display: block;
-  margin: 0 0 12px;
+.conversation-turn__body {
+  min-width: 0;
+  padding-top: 12px;
+  animation: turn-work-open 150ms ease-out both;
 }
 
-.conversation-turn__commentary .activity--assistant-message {
-  margin: 0;
+.conversation-turn__commentary {
+  display: block;
+  margin: 0 0 8px;
+}
+
+.timeline .conversation-turn__commentary .activity--assistant-message {
+  margin: 0 !important;
+}
+
+.timeline .conversation-turn__commentary .markdown-body p {
+  margin-bottom: 6px;
 }
 
 .turn-duration.is-live > span {
@@ -70,7 +80,7 @@
 .conversation-turn__execution {
   display: grid;
   gap: 2px;
-  margin: 6px 0 18px 5px;
+  margin: 8px 0 14px 5px;
   padding-left: 14px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   animation: turn-work-open 150ms ease-out both;

@@ -1332,8 +1332,8 @@
 }
 
 .timeline .markdown-body p {
-  max-width: 68ch;
-  margin: 0 0 12px;
+  max-width: 84ch;
+  margin: 0 0 9px;
 }
 
 .timeline .markdown-body strong,
@@ -1596,17 +1596,16 @@
 /* Centered jump control for long Xiao turns. */
 
 .task-workspace__jump-latest {
-  right: auto;
-  bottom: 24px;
-  left: 50%;
-  width: 32px;
-  height: 28px;
-  border: 0;
-  border-radius: 8px;
+  right: 24px;
+  bottom: 168px;
+  left: auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
   background: color-mix(in srgb, var(--canvas) 92%, transparent);
   color: var(--text-soft);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 12%, transparent);
-  transform: translateX(-50%);
   animation: timeline-jump-latest-in 160ms ease-out both;
   backdrop-filter: blur(2px);
 }
@@ -1614,16 +1613,16 @@
 .task-workspace__jump-latest:hover {
   border: 0;
   background: var(--surface-raised);
-  transform: translateX(-50%);
+  transform: translateY(-1px);
 }
 
 .task-workspace__jump-latest:active {
-  transform: translateX(-50%) scale(0.96);
+  transform: scale(0.96);
 }
 
 @keyframes timeline-jump-latest-in {
-  from { opacity: 0; transform: translate(-50%, 5px) scale(0.9); }
-  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  from { opacity: 0; transform: translateY(5px) scale(0.9); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @media (max-width: 760px) {
@@ -1641,6 +1640,11 @@
 
   .timeline .markdown-body p {
     max-width: none;
+  }
+
+  .task-workspace__jump-latest {
+    right: 14px;
+    bottom: 148px;
   }
 }
 

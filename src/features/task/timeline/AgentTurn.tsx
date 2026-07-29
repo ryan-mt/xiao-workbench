@@ -39,9 +39,19 @@ export function AgentTurn(props: SharedProps) {
     runtime.phase === "working" &&
     runtime.taskId === taskId &&
     (!turn.response || turn.response.status === "active");
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
   const executionGroups = projectExecutionTraces(turn.work, live);
+  const workIds = new Set(turn.work.map((entry) => entry.id));
+  const firstWorkIndex = turn.flow.findIndex((entry) => workIds.has(entry.id));
+  const commentaryBeforeWork = (firstWorkIndex < 0
+    ? turn.flow
+    : turn.flow.slice(0, firstWorkIndex)
+  ).filter((entry) => !workIds.has(entry.id));
+  const commentaryAfterWork = (firstWorkIndex < 0
+    ? []
+    : turn.flow.slice(firstWorkIndex + 1)
+  ).filter((entry) => !workIds.has(entry.id));
 
   useEffect(() => {
     if (live) setExpanded(true);
@@ -69,6 +79,37 @@ export function AgentTurn(props: SharedProps) {
     />
   );
 
+  const commentary = (entries: typeof turn.commentary, offset: number) =>
+    entries.map((entry, commentaryIndex) => (
+      <span
+        className="timeline-entry-anchor conversation-turn__commentary"
+        id={`timeline-entry-${entry.id}`}
+        key={entry.id}
+      >
+        {item(entry, offset + commentaryIndex)}
+      </span>
+    ));
+
+  const execution = turn.work.length ? (
+    <div className="conversation-turn__execution">
+      {executionGroups.map((group) => {
+        const content = group.entries.map((entry) => {
+          const offset = turn.work.indexOf(entry);
+          return (
+            <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
+              {item(entry, turn.commentary.length + offset + 1)}
+            </span>
+          );
+        });
+        return group.title ? (
+          <ExecutionTraceGroup key={group.id} title={group.title} live={live}>
+            {content}
+          </ExecutionTraceGroup>
+        ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
+      })}
+    </div>
+  ) : null;
+
   return (
     <section className={`conversation-turn${live ? " is-live" : ""}`}>
       <span className="timeline-entry-anchor" id={`timeline-entry-${turn.user.id}`}>
@@ -83,45 +124,28 @@ export function AgentTurn(props: SharedProps) {
         expanded={expanded}
         onToggle={() => setExpanded((value) => !value)}
       />
-      {turn.commentary.map((entry, commentaryIndex) => (
-        <span className="timeline-entry-anchor conversation-turn__commentary" id={`timeline-entry-${entry.id}`} key={entry.id}>
-          {item(entry, commentaryIndex + 1)}
-        </span>
-      ))}
-      {expanded && turn.work.length ? (
-        <div className="conversation-turn__execution">
-          {executionGroups.map((group) => {
-            const content = group.entries.map((entry) => {
-              const offset = turn.work.indexOf(entry);
-              return (
-                <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
-                  {item(entry, turn.commentary.length + offset + 1)}
-                </span>
-              );
-            });
-            return group.title ? (
-              <ExecutionTraceGroup key={group.id} title={group.title} live={live}>
-                {content}
-              </ExecutionTraceGroup>
-            ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
-          })}
+      {expanded ? (
+        <div className="conversation-turn__body">
+          {commentary(commentaryBeforeWork, 1)}
+          {execution}
+          {commentary(commentaryAfterWork, commentaryBeforeWork.length + 1)}
+          {turn.response ? (
+            <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
+              {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
+            </span>
+          ) : null}
+          {turn.files.length ? (
+            <EditedFilesSummary
+              files={turn.files}
+              workspacePath={props.workspacePath}
+              canUndo={props.canUndo}
+              undoing={props.undoing}
+              onUndo={props.onUndo}
+              onReview={props.onReviewChanges}
+              onOpenResource={props.onOpenResource}
+            />
+          ) : null}
         </div>
-      ) : null}
-      {turn.response ? (
-        <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
-          {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
-        </span>
-      ) : null}
-      {turn.files.length ? (
-        <EditedFilesSummary
-          files={turn.files}
-          workspacePath={props.workspacePath}
-          canUndo={props.canUndo}
-          undoing={props.undoing}
-          onUndo={props.onUndo}
-          onReview={props.onReviewChanges}
-          onOpenResource={props.onOpenResource}
-        />
       ) : null}
     </section>
   );

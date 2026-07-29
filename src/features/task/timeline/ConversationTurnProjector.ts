@@ -3,6 +3,7 @@ import type { TimelineEntry } from "../../../core/models/agent";
 export type ConversationTurn = {
   id: string;
   user: TimelineEntry;
+  flow: TimelineEntry[];
   commentary: TimelineEntry[];
   work: TimelineEntry[];
   response: TimelineEntry | null;
@@ -65,6 +66,7 @@ export class ConversationTurnProjector {
 
       const startIndex = index;
       const user = entry;
+      const flow: TimelineEntry[] = [];
       const commentary: TimelineEntry[] = [];
       const work: TimelineEntry[] = [];
       let response: TimelineEntry | null = null;
@@ -72,9 +74,15 @@ export class ConversationTurnProjector {
 
       while (index < this.timeline.length && !isUser(this.timeline[index])) {
         const candidate = this.timeline[index];
-        if (isResponse(candidate)) response = candidate;
-        else if (isCommentary(candidate)) commentary.push(candidate);
-        else work.push(candidate);
+        if (isResponse(candidate)) {
+          response = candidate;
+        } else if (isCommentary(candidate)) {
+          commentary.push(candidate);
+          flow.push(candidate);
+        } else {
+          work.push(candidate);
+          flow.push(candidate);
+        }
         index += 1;
       }
 
@@ -83,6 +91,7 @@ export class ConversationTurnProjector {
         turn: {
           id: user.id,
           user,
+          flow,
           commentary,
           work,
           response,
