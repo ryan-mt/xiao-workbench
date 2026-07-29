@@ -1,16 +1,20 @@
 .stashed-prompts {
-  position: relative;
+  position: absolute;
+  z-index: 18;
+  top: -15px;
+  right: 12px;
 }
 
 .stashed-prompts__trigger {
   display: inline-flex;
-  min-height: 28px;
+  min-height: 30px;
   align-items: center;
   gap: 5px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 97%, var(--canvas));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--backdrop) 18%, transparent);
   color: var(--muted);
   font-size: 11px;
 }
@@ -28,8 +32,8 @@
   height: 17px;
   place-items: center;
   border-radius: 999px;
-  background: var(--info);
-  color: var(--canvas);
+  background: var(--surface-deep);
+  color: var(--text-soft);
   font: 650 9px var(--font-mono);
 }
 
@@ -37,8 +41,8 @@
   position: absolute;
   z-index: 30;
   bottom: calc(100% + 9px);
-  left: 0;
-  width: min(390px, calc(100vw - 48px));
+  right: 0;
+  width: min(520px, calc(100vw - 48px));
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -49,7 +53,7 @@
 
 .stashed-prompts__popover > header {
   display: flex;
-  min-height: 41px;
+  min-height: 43px;
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
@@ -62,38 +66,11 @@
   gap: 7px;
 }
 
-.stashed-prompts__popover > header small {
+.stashed-prompts__popover > header strong {
   color: var(--muted);
-  font: 500 10px var(--font-mono);
-}
-
-.stashed-prompts__save {
-  display: flex;
-  width: calc(100% - 14px);
-  align-items: center;
-  gap: 9px;
-  margin: 7px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--text-soft);
-  text-align: left;
-}
-
-.stashed-prompts__save:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-hover);
-}
-
-.stashed-prompts__save span {
-  display: grid;
-  gap: 2px;
-}
-
-.stashed-prompts__save small {
-  color: var(--muted);
-  font-size: 10px;
+  font: 600 10px var(--font-sans);
+  letter-spacing: .075em;
+  text-transform: uppercase;
 }
 
 .stashed-prompts__list {
@@ -106,25 +83,44 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) 30px;
   align-items: center;
-  border-radius: 9px;
+  margin-top: 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
 }
 
 .stashed-prompts__list article:hover {
+  border-color: var(--line);
   background: var(--surface-hover);
 }
 
 .stashed-prompts__list article > button:first-child {
-  display: flex;
+  display: grid;
   min-width: 0;
   min-height: 42px;
   align-items: center;
-  justify-content: space-between;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   gap: 10px;
   padding: 7px 8px;
   border: 0;
   background: transparent;
   color: var(--text-soft);
   text-align: left;
+}
+
+.stashed-prompts__list article > button:first-child img,
+.stashed-prompts__empty {
+  width: 42px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.stashed-prompts__empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
 }
 
 .stashed-prompts__list article > button:first-child span {

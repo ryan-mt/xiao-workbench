@@ -3533,12 +3533,14 @@
 .composer.is-question-paused { display: none; }
 
 .composer-live-changes {
+  position: relative;
+  z-index: 5;
   display: flex;
   width: fit-content;
   min-height: 32px;
   align-items: center;
   gap: 7px;
-  margin: 0 auto 10px;
+  margin: 0 auto -16px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 999px;

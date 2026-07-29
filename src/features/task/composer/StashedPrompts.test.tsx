@@ -6,7 +6,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StashedPrompts } from "./StashedPrompts";
 
 describe("StashedPrompts", () => {
-  beforeEach(() => window.localStorage.clear());
+  beforeEach(() => {
+    if (!window.localStorage) {
+      const values = new Map<string, string>();
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: {
+          clear: () => values.clear(),
+          getItem: (key: string) => values.get(key) ?? null,
+          removeItem: (key: string) => values.delete(key),
+          setItem: (key: string, value: string) => values.set(key, value),
+        },
+      });
+    }
+    window.localStorage.clear();
+  });
 
   it("stashes a draft, persists it, and restores it without duplication", () => {
     const onClear = vi.fn();
@@ -34,6 +48,7 @@ describe("StashedPrompts", () => {
         onRestore={onRestore}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Stashed prompts, 1" }));
     fireEvent.click(screen.getByRole("button", { name: /Finish the review panel/ }));
     expect(onRestore).toHaveBeenCalledWith("Finish the review panel", []);
     expect(window.localStorage.getItem("xiao.stashed-prompts.v1:task-1")).toBe("[]");

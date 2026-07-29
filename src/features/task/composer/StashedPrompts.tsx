@@ -61,6 +61,22 @@ const promptPreview = (prompt: StashedPrompt) =>
   || prompt.attachments.map((attachment) => attachment.name).join(", ")
   || "Attached context";
 
+const relativeTime = (createdAt: number) => {
+  const elapsed = Math.max(0, Date.now() - createdAt);
+  if (elapsed < 60_000) return "just now";
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+};
+
+const imageSource = (item: StashedPrompt) => {
+  const attachment = item.attachments.find((candidate) => candidate.kind === "image");
+  if (!attachment) return null;
+  return attachment.url ?? null;
+};
+
 export function StashedPrompts({
   taskId,
   prompt,
@@ -99,7 +115,7 @@ export function StashedPrompts({
     setItems(next);
     writeStashedPrompts(taskId, next);
     onClear();
-    setOpen(true);
+    setOpen(false);
   };
 
   const remove = (id: string) => {
@@ -114,18 +130,16 @@ export function StashedPrompts({
     setOpen(false);
   };
 
-  if (!items.length && !canStash) return null;
-
   return (
     <div className="stashed-prompts" ref={root}>
       <button
         className="stashed-prompts__trigger"
         type="button"
-        disabled={disabled}
+        disabled={disabled || (!items.length && !canStash)}
         aria-label={items.length ? `Stashed prompts, ${items.length}` : "Stash current prompt"}
         aria-expanded={open}
         title={items.length ? "Open stashed prompts" : "Stash this prompt for later"}
-        onClick={() => canStash && !items.length ? stashCurrent() : setOpen((current) => !current)}
+        onClick={() => canStash ? stashCurrent() : setOpen((current) => !current)}
       >
         <XiaoIcon name="pin" size={13} />
         <span>Stash</span>
@@ -134,27 +148,23 @@ export function StashedPrompts({
       {open ? (
         <section className="stashed-prompts__popover" aria-label="Stashed prompts">
           <header>
-            <span><XiaoIcon name="pin" size={13} /><strong>Stashed prompts</strong></span>
-            <small>{items.length}</small>
+            <span><XiaoIcon name="pin" size={13} /><strong>Stashed prompts — Xiao</strong></span>
           </header>
-          {canStash ? (
-            <button className="stashed-prompts__save" type="button" onClick={stashCurrent}>
-              <XiaoIcon name="add" size={13} />
-              <span><strong>Stash current draft</strong><small>Keep it here and clear the composer</small></span>
-            </button>
-          ) : null}
           <div className="stashed-prompts__list">
-            {items.map((item) => (
+            {items.map((item) => {
+              const preview = imageSource(item);
+              return (
               <article key={item.id}>
                 <button type="button" title={item.prompt} onClick={() => restore(item)}>
+                  {preview ? <img src={preview} alt="" /> : <span className="stashed-prompts__empty"><XiaoIcon name="pin" size={13} /></span>}
                   <span>{promptPreview(item)}</span>
-                  <small>{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</small>
+                  <small>{relativeTime(item.createdAt)}</small>
                 </button>
                 <button type="button" aria-label="Delete stashed prompt" title="Delete stashed prompt" onClick={() => remove(item.id)}>
-                  <XiaoIcon name="trash" size={12} />
+                  <XiaoIcon name="close" size={12} />
                 </button>
               </article>
-            ))}
+            )})}
           </div>
         </section>
       ) : null}

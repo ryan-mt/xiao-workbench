@@ -1082,6 +1082,28 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
+        <StashedPrompts
+          taskId={taskId}
+          prompt={value}
+          attachments={attachments}
+          disabled={disabled || submitting || compacting || undoing}
+          onClear={() => {
+            updateValue("");
+            onAttachmentsChange([]);
+            if (textarea.current) textarea.current.style.height = "auto";
+          }}
+          onRestore={(prompt, restoredAttachments) => {
+            updateValue(prompt);
+            onAttachmentsChange(restoredAttachments);
+            window.requestAnimationFrame(() => {
+              textarea.current?.focus();
+              if (!textarea.current) return;
+              textarea.current.style.height = "auto";
+              textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
+              textarea.current.setSelectionRange(prompt.length, prompt.length);
+            });
+          }}
+        />
         <div className="composer__input">
           {selectedContext ? (
             <div className="composer__selected-context" aria-label="Selected conversation text">
@@ -1499,28 +1521,6 @@ export function Composer({
               />
             ) : null}
             {mode === "plan" && <span className="composer-mode">Plan</span>}
-            <StashedPrompts
-              taskId={taskId}
-              prompt={value}
-              attachments={attachments}
-              disabled={disabled || submitting || compacting || undoing}
-              onClear={() => {
-                updateValue("");
-                onAttachmentsChange([]);
-                if (textarea.current) textarea.current.style.height = "auto";
-              }}
-              onRestore={(prompt, restoredAttachments) => {
-                updateValue(prompt);
-                onAttachmentsChange(restoredAttachments);
-                window.requestAnimationFrame(() => {
-                  textarea.current?.focus();
-                  if (!textarea.current) return;
-                  textarea.current.style.height = "auto";
-                  textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
-                  textarea.current.setSelectionRange(prompt.length, prompt.length);
-                });
-              }}
-            />
             <ModelPicker
               models={models}
               selectedModel={selectedModel}
