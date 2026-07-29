@@ -3,21 +3,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, OptionalExtension, Transaction};
 use tauri::{AppHandle, Manager};
 
-use crate::runs::models::{PendingInputKind, RunStatus, SteerRunRequest};
+use crate::runs::models::RunEventPage;
+use crate::runs::models::{EnqueueRunRequest, PendingInputKind, RunStatus, SteerRunRequest};
 use crate::runs::service::RunService;
+use crate::xiao::models::{TaskStage, XiaoTaskDocument, XiaoWorkspaceMode, XiaoWorkspaceUpdate};
 use crate::xiao::repository::XiaoRepository;
 
 use super::models::{
-    CommandCapability, CommandEnvelope, CommandResult, CompanionSession, ExchangePairingRequest,
-    ExchangedSession, ExecutionAuthorization, HostCommandAck, HostCommandRefusal,
-    NotificationCursor, NotificationPage, ReconnectCursor, SessionCredential, SyncBatch,
-    SyncRequest, TargetKind,
+    CommandCapability, CommandEnvelope, CommandResult, CompanionGrant, CompanionSession,
+    ExchangePairingRequest, ExchangedSession, ExecutionAuthorization, HostCommandAck,
+    HostCommandRefusal, NotificationCursor, NotificationPage, ReconnectCursor, SessionCredential,
+    SyncBatch, SyncRequest, TargetKind,
 };
 use super::repository::CompanionRepository;
 use super::service::{CompanionCommandHost, CompanionService};
 use super::transport::router::CompanionApi;
 
 const MAX_FOLLOW_UP_MESSAGE_BYTES: usize = 8 * 1024;
+const MAX_TASK_PROMPT_BYTES: usize = 8 * 1024;
 
 #[derive(Default)]
 pub struct CompanionExecutionGate(pub tokio::sync::Mutex<()>);
@@ -103,6 +106,45 @@ impl CompanionApi for AppCompanionApi {
                 )
             })
     }
+
+    fn conversation(
+        &self,
+        credential: &SessionCredential,
+        run_id: &str,
+        after_sequence: Option<i64>,
+        limit: Option<usize>,
+    ) -> Result<RunEventPage, String> {
+        let repository = self.app.state::<XiaoRepository>();
+        repository.with_connection(|connection| {
+            let session =
+                CompanionRepository::authenticate(connection, credential, now_seconds()?)?;
+            if !session.grants.contains(&CompanionGrant::ReadConversation) {
+                return Err(
+                    "The current Companion session does not authorize full conversation reads."
+                        .to_owned(),
+                );
+            }
+            let belongs_to_run = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?1)",
+                    [run_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| {
+                    format!("Could not authorize the Companion conversation: {error}")
+                })?;
+            if !belongs_to_run {
+                return Err("The requested Xiao Run does not exist.".to_owned());
+            }
+            Ok(())
+        })?;
+        let events = repository.list_run_events(run_id, after_sequence, limit)?;
+        let next_sequence = events.last().map(|event| event.sequence);
+        Ok(RunEventPage {
+            events,
+            next_sequence,
+        })
+    }
 }
 
 struct AppCompanionCommandHost;
@@ -114,6 +156,23 @@ impl CompanionCommandHost for AppCompanionCommandHost {
         _session: &CompanionSession,
         command: &CommandEnvelope,
     ) -> Result<ExecutionAuthorization, HostCommandRefusal> {
+        if command.capability == CommandCapability::CreateTask {
+            validate_new_task_payload(command)
+                .map_err(|error| definitive_refusal("invalid_task", &error))?;
+            let current_version = transaction
+                .query_row(
+                    "SELECT updated_at FROM workspaces
+                     WHERE COALESCE(public_id, CAST(id AS TEXT)) = ?1",
+                    [&command.target.id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| definitive_refusal("authorization_failed", &error.to_string()))?
+                .ok_or_else(|| {
+                    definitive_refusal("target_missing", "The canonical Project does not exist.")
+                })?;
+            return Ok(ExecutionAuthorization { current_version });
+        }
         let task_project_id = if command.target.kind == TargetKind::Task {
             Some(command.target.project_id.as_deref().ok_or_else(|| {
                 definitive_refusal(
@@ -424,13 +483,23 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
         let result = match intent.envelope.capability {
             CommandCapability::StopRun => app
                 .state::<RunService>()
-                .cancel(app, &intent.envelope.target.id)
+                .cancel_at_version(
+                    app,
+                    &intent.envelope.target.id,
+                    intent.envelope.expected_version,
+                    &intent.command_id,
+                )
                 .await
-                .map(|run| run.version),
+                .and_then(|_| completed_runtime_effect_receipt_version(app, &intent)),
             CommandCapability::RetryRun => app
                 .state::<RunService>()
-                .retry(app, &intent.envelope.target.id, &intent.command_id)
-                .map(|run| run.version),
+                .retry_at_version(
+                    app,
+                    &intent.envelope.target.id,
+                    &intent.command_id,
+                    intent.envelope.expected_version,
+                )
+                .and_then(|_| completed_runtime_effect_receipt_version(app, &intent)),
             CommandCapability::ResolveApproval
             | CommandCapability::ResolveQuestion
             | CommandCapability::ResolveMcpElicitation => {
@@ -443,9 +512,15 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                     &intent.envelope,
                 )?;
                 app.state::<RunService>()
-                    .resolve_input(app, &intent.envelope.target.id, result)
+                    .resolve_input_at_version(
+                        app,
+                        &intent.envelope.target.id,
+                        result,
+                        intent.envelope.expected_version,
+                        &intent.command_id,
+                    )
                     .await
-                    .map(|run| run.version)
+                    .and_then(|_| completed_runtime_effect_receipt_version(app, &intent))
             }
             CommandCapability::SendFollowUp => {
                 let message = bounded_follow_up_message(&intent.envelope)?;
@@ -453,7 +528,7 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                     .state::<XiaoRepository>()
                     .get_run(&intent.envelope.target.id)?;
                 app.state::<RunService>()
-                    .steer(
+                    .steer_at_version(
                         app,
                         SteerRunRequest {
                             project_path: run.workspace_path,
@@ -466,6 +541,7 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                                 "text_elements": [],
                             })],
                         },
+                        intent.envelope.expected_version,
                     )
                     .await
                     .and_then(|_| {
@@ -474,6 +550,7 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                             .map(|run| run.version)
                     })
             }
+            CommandCapability::CreateTask => create_companion_task(app, &intent),
             _ => Ok(intent.envelope.expected_version),
         };
         app.state::<XiaoRepository>()
@@ -515,6 +592,15 @@ pub async fn reconcile_runtime_outbox(app: &AppHandle) -> Result<usize, String> 
                         now_millis()?,
                     )
                 }
+                Err(error) if intent.envelope.capability == CommandCapability::CreateTask => {
+                    CompanionRepository::refuse_runtime_effect(
+                        connection,
+                        &intent.command_id,
+                        "runtime_effect_failed",
+                        &error,
+                        now_millis()?,
+                    )
+                }
                 Err(error) => CompanionRepository::record_runtime_dispatch_failure(
                     connection,
                     &intent.command_id,
@@ -530,6 +616,12 @@ enum RuntimePreparation {
     Execute,
     Acknowledge(i64),
     Refuse { code: &'static str, message: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeEffectReceipt {
+    Started,
+    Completed(i64),
 }
 
 fn prepare_runtime_effect(
@@ -612,34 +704,45 @@ fn recover_interrupted_runtime_effect(
     match intent.envelope.capability {
         CommandCapability::ResolveApproval
         | CommandCapability::ResolveQuestion
-        | CommandCapability::ResolveMcpElicitation => Ok(Some(RuntimePreparation::Refuse {
-            code: "host_ack_unknown",
-            message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
-        })),
+        | CommandCapability::ResolveMcpElicitation => {
+            if let Some(RuntimeEffectReceipt::Completed(version)) =
+                runtime_effect_receipt(connection, intent)?
+            {
+                Ok(Some(RuntimePreparation::Acknowledge(version)))
+            } else {
+                Ok(Some(RuntimePreparation::Refuse {
+                    code: "host_ack_unknown",
+                    message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
+                }))
+            }
+        }
         CommandCapability::StopRun => {
+            let receipt = runtime_effect_receipt(connection, intent)?;
+            if let Some(RuntimeEffectReceipt::Completed(version)) = receipt {
+                return Ok(Some(RuntimePreparation::Acknowledge(version)));
+            }
             let state = connection
                 .query_row(
-                    "SELECT status, cancel_requested, version FROM runs WHERE id = ?1",
+                    "SELECT status, cancel_requested FROM runs WHERE id = ?1",
                     [&intent.envelope.target.id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, bool>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
                 )
                 .optional()
                 .map_err(|error| {
                     format!("Could not reconcile interrupted Companion stop: {error}")
                 })?;
             match state {
-                Some((status, cancel_requested, version))
-                    if cancel_requested || status == "cancelled" =>
-                {
-                    Ok(Some(RuntimePreparation::Acknowledge(version)))
+                Some((status, true)) if !RunStatus::from_database(&status)?.is_terminal() => {
+                    if receipt == Some(RuntimeEffectReceipt::Started) {
+                        Ok(Some(RuntimePreparation::Execute))
+                    } else {
+                        Ok(Some(RuntimePreparation::Refuse {
+                            code: "host_ack_unknown",
+                            message: "The Run was stopped without this command's durable receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
+                        }))
+                    }
                 }
-                Some((status, _, _)) if RunStatus::from_database(&status)?.is_terminal() => {
+                Some((status, _)) if RunStatus::from_database(&status)?.is_terminal() => {
                     Ok(Some(RuntimePreparation::Refuse {
                         code: "host_ack_unknown",
                         message: "The Run became terminal without a command-correlated stop receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
@@ -653,7 +756,36 @@ fn recover_interrupted_runtime_effect(
             }
         }
         CommandCapability::RetryRun => {
-            let retried_version = connection
+            if let Some(RuntimeEffectReceipt::Completed(version)) =
+                runtime_effect_receipt(connection, intent)?
+            {
+                return Ok(Some(RuntimePreparation::Acknowledge(version)));
+            }
+            let retry_exists = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE idempotency_key = ?1)",
+                    [&intent.command_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| {
+                    format!("Could not reconcile interrupted Companion retry: {error}")
+                })?;
+            if retry_exists {
+                Ok(Some(RuntimePreparation::Refuse {
+                    code: "host_ack_unknown",
+                    message: "The retry Run exists without this command's durable receipt, so Xiao will not infer acknowledgement from its current version.".to_owned(),
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+        CommandCapability::SendFollowUp => Ok(Some(RuntimePreparation::Refuse {
+            code: "host_ack_unknown",
+            message: "The host restarted after beginning the follow-up; no canonical receipt proves acknowledgement, so Xiao will not repeat it.".to_owned(),
+        })),
+        CommandCapability::CreateTask => {
+            let task_id = validate_new_task_payload(&intent.envelope)?.0;
+            let run_version = connection
                 .query_row(
                     "SELECT version FROM runs WHERE idempotency_key = ?1",
                     [&intent.command_id],
@@ -661,16 +793,100 @@ fn recover_interrupted_runtime_effect(
                 )
                 .optional()
                 .map_err(|error| {
-                    format!("Could not reconcile interrupted Companion retry: {error}")
+                    format!("Could not reconcile interrupted Companion task creation: {error}")
                 })?;
-            Ok(retried_version.map(RuntimePreparation::Acknowledge))
+            if let Some(version) = run_version {
+                return Ok(Some(RuntimePreparation::Acknowledge(version)));
+            }
+            let task_exists = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tasks WHERE task_id = ?1)",
+                    [&task_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| {
+                    format!("Could not inspect interrupted Companion task creation: {error}")
+                })?;
+            if task_exists {
+                Ok(Some(RuntimePreparation::Refuse {
+                    code: "host_ack_unknown",
+                    message: "The Task was created without a command-correlated Run acknowledgement, so Xiao will not repeat the assignment.".to_owned(),
+                }))
+            } else {
+                Ok(None)
+            }
         }
-        CommandCapability::SendFollowUp => Ok(Some(RuntimePreparation::Refuse {
-            code: "host_ack_unknown",
-            message: "The host restarted after beginning the follow-up; no canonical receipt proves acknowledgement, so Xiao will not repeat it.".to_owned(),
-        })),
         _ => Ok(None),
     }
+}
+
+fn runtime_effect_receipt(
+    connection: &rusqlite::Connection,
+    intent: &super::models::CompanionOutboxIntent,
+) -> Result<Option<RuntimeEffectReceipt>, String> {
+    let target_kind = match intent.envelope.target.kind {
+        TargetKind::Run => "run",
+        TargetKind::PendingInput => "pending_input",
+        _ => return Ok(None),
+    };
+    connection
+        .query_row(
+            "SELECT CASE
+                        WHEN json_type(
+                            safe_payload_json,
+                            '$.companionCommandReceipt.resultingVersion'
+                        ) = 'integer'
+                        THEN json_extract(
+                            safe_payload_json,
+                            '$.companionCommandReceipt.resultingVersion'
+                        )
+                        ELSE NULL
+                    END
+             FROM run_events
+             WHERE json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.commandId'
+                   ) = ?1
+               AND json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.targetKind'
+                   ) = ?2
+               AND json_extract(
+                       safe_payload_json,
+                       '$.companionCommandReceipt.targetId'
+                   ) = ?3
+             ORDER BY json_type(
+                        safe_payload_json,
+                        '$.companionCommandReceipt.resultingVersion'
+                      ) = 'integer' DESC,
+                      sequence DESC
+             LIMIT 1",
+            params![intent.command_id, target_kind, intent.envelope.target.id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(|receipt| {
+            receipt.map(|resulting_version| match resulting_version {
+                Some(version) => RuntimeEffectReceipt::Completed(version),
+                None => RuntimeEffectReceipt::Started,
+            })
+        })
+        .map_err(|error| format!("Could not inspect the Companion command receipt: {error}"))
+}
+
+fn completed_runtime_effect_receipt_version(
+    app: &AppHandle,
+    intent: &super::models::CompanionOutboxIntent,
+) -> Result<i64, String> {
+    app.state::<XiaoRepository>().with_connection(|connection| {
+        match runtime_effect_receipt(connection, intent)? {
+            Some(RuntimeEffectReceipt::Completed(version)) => Ok(version),
+            _ => Err(
+                "The canonical runtime mutation has no completed Companion command receipt."
+                    .to_owned(),
+            ),
+        }
+    })
 }
 
 fn requires_runtime_dispatch(capability: CommandCapability) -> bool {
@@ -682,7 +898,156 @@ fn requires_runtime_dispatch(capability: CommandCapability) -> bool {
             | CommandCapability::StopRun
             | CommandCapability::RetryRun
             | CommandCapability::SendFollowUp
+            | CommandCapability::CreateTask
     )
+}
+
+fn validate_new_task_payload(envelope: &CommandEnvelope) -> Result<(String, String), String> {
+    let task_id = envelope
+        .payload
+        .get("taskId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("A Companion task requires a taskId.")?;
+    if task_id.len() > 256 {
+        return Err("A Companion taskId cannot exceed 256 bytes.".to_owned());
+    }
+    let prompt = envelope
+        .payload
+        .get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("A Companion task requires a prompt.")?;
+    if prompt.len() > MAX_TASK_PROMPT_BYTES {
+        return Err(format!(
+            "Companion task prompts cannot exceed {MAX_TASK_PROMPT_BYTES} bytes."
+        ));
+    }
+    Ok((task_id.to_owned(), prompt.to_owned()))
+}
+
+fn create_companion_task(
+    app: &AppHandle,
+    intent: &super::models::CompanionOutboxIntent,
+) -> Result<i64, String> {
+    let (task_id, prompt) = validate_new_task_payload(&intent.envelope)?;
+    let repository = app.state::<XiaoRepository>();
+    let workspace_path = repository.with_connection(|connection| {
+        connection
+            .query_row(
+                "SELECT workspace_path FROM workspaces
+                 WHERE COALESCE(public_id, CAST(id AS TEXT)) = ?1",
+                [&intent.envelope.target.id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| format!("Could not resolve the Companion Project: {error}"))
+    })?;
+    let mut workspace = repository
+        .load_workspace(&workspace_path, false)?
+        .ok_or("The Companion Project is no longer available.")?;
+    if !workspace.tasks.iter().any(|task| task.id == task_id) {
+        let active_source = workspace
+            .active_task_id
+            .as_deref()
+            .and_then(|id| workspace.tasks.iter().find(|task| task.id == id));
+        let source = active_source
+            .filter(|task| task.model.is_some() && task.reasoning_effort.is_some())
+            .or_else(|| {
+                workspace
+                    .tasks
+                    .iter()
+                    .find(|task| task.model.is_some() && task.reasoning_effort.is_some())
+            });
+        let model = source.and_then(|task| task.model.clone());
+        let reasoning_effort = source.and_then(|task| task.reasoning_effort.clone());
+        if model.is_none() || reasoning_effort.is_none() {
+            return Err(
+                "Create one desktop Xiao task with a selected model before assigning from Companion."
+                    .to_owned(),
+            );
+        }
+        let now = now_millis()?;
+        let title = prompt
+            .lines()
+            .next()
+            .unwrap_or(&prompt)
+            .trim()
+            .chars()
+            .take(72)
+            .collect::<String>();
+        workspace.tasks.insert(
+            0,
+            XiaoTaskDocument {
+                id: task_id.clone(),
+                title,
+                created_at: now,
+                updated_at: now,
+                stage: TaskStage::Draft,
+                stage_version: 0,
+                codex_profile_id: source.and_then(|task| task.codex_profile_id.clone()),
+                workbench_state: serde_json::json!({}),
+                draft_text: prompt.clone(),
+                follow_ups: Vec::new(),
+                archived: false,
+                pinned: false,
+                unread: false,
+                model: model.clone(),
+                reasoning_effort: reasoning_effort.clone(),
+                thread_id: None,
+                thread_binding: None,
+                mode: source
+                    .map(|task| task.mode.clone())
+                    .unwrap_or_else(|| "default".to_owned()),
+                approval_policy: source
+                    .map(|task| task.approval_policy.clone())
+                    .unwrap_or_else(|| "on-request".to_owned()),
+                sandbox_mode: source
+                    .map(|task| task.sandbox_mode.clone())
+                    .unwrap_or_else(|| "workspace-write".to_owned()),
+                goal: None,
+                acceptance_contract: None,
+                timeline: Vec::new(),
+                timeline_loaded: true,
+                timeline_complete: true,
+                timeline_start: 0,
+                timeline_entry_count: 0,
+                plan: None,
+                execution_environment_id: None,
+                workspace_mode: XiaoWorkspaceMode::Local,
+                managed_worktree_id: None,
+            },
+        );
+        workspace.active_task_id = Some(task_id.clone());
+        repository.save_workspace(XiaoWorkspaceUpdate {
+            schema_version: workspace.schema_version,
+            workspace_path: workspace.workspace_path.clone(),
+            active_task_id: workspace.active_task_id.clone(),
+            show_archived: workspace.show_archived,
+            task_ids: workspace.tasks.iter().map(|task| task.id.clone()).collect(),
+            tasks: workspace.tasks,
+        })?;
+    }
+    let run = app.state::<RunService>().enqueue(
+        app,
+        EnqueueRunRequest {
+            project_path: workspace_path,
+            task_id,
+            idempotency_key: intent.command_id.clone(),
+            prompt: prompt.clone(),
+            input: vec![serde_json::json!({
+                "type": "text",
+                "text": prompt,
+                "text_elements": [],
+            })],
+            history: Vec::new(),
+            default_model: None,
+            default_reasoning_effort: None,
+            service_tier: None,
+        },
+    )?;
+    Ok(run.version)
 }
 
 fn definitive_refusal(code: &str, message: &str) -> HostCommandRefusal {
@@ -967,6 +1332,56 @@ mod tests {
     }
 
     #[test]
+    fn task_creation_requires_a_current_project_and_a_bounded_prompt() {
+        assert_eq!(
+            CommandCapability::CreateTask.expected_target(),
+            Some(TargetKind::Project)
+        );
+        assert!(!CommandCapability::CreateTask.is_forbidden());
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE workspaces (
+                    id INTEGER PRIMARY KEY,
+                    public_id TEXT,
+                    updated_at INTEGER NOT NULL
+                 );
+                 INSERT INTO workspaces VALUES (1, 'same-task', 7);",
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        let create = envelope(
+            CommandCapability::CreateTask,
+            TargetKind::Project,
+            None,
+            json!({
+                "taskId": "mobile-task",
+                "prompt": "Fix the mobile login flow."
+            }),
+        );
+        assert_eq!(
+            AppCompanionCommandHost
+                .reauthorize(&transaction, &session(), &create)
+                .unwrap()
+                .current_version,
+            7
+        );
+        let invalid = envelope(
+            CommandCapability::CreateTask,
+            TargetKind::Project,
+            None,
+            json!({ "taskId": "mobile-task", "prompt": " " }),
+        );
+        assert_eq!(
+            AppCompanionCommandHost
+                .reauthorize(&transaction, &session(), &invalid)
+                .unwrap_err()
+                .code,
+            "invalid_task"
+        );
+    }
+
+    #[test]
     fn pending_input_results_are_reconstructed_from_canonical_safe_state() {
         let permissions = envelope(
             CommandCapability::ResolveApproval,
@@ -1069,6 +1484,62 @@ mod tests {
     }
 
     #[test]
+    fn runtime_receipt_replay_keeps_the_original_run_resulting_version() {
+        let connection = interrupted_effect_connection();
+        let intent = interrupted_intent(CommandCapability::StopRun, TargetKind::Run);
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":8}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE runs
+                 SET status = 'cancelled', version = 12
+                 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Acknowledge(8))
+        );
+    }
+
+    #[test]
+    fn pending_input_runtime_receipt_uses_the_pending_input_resulting_version() {
+        let connection = interrupted_effect_connection();
+        let intent =
+            interrupted_intent(CommandCapability::ResolveApproval, TargetKind::PendingInput);
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"pending_input\",\"targetId\":\"same-task\",\"resultingVersion\":11}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE runs SET version = 42 WHERE id = 'same-task'", [])
+            .unwrap();
+
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Acknowledge(11))
+        );
+    }
+
+    #[test]
     fn interrupted_input_without_a_command_receipt_is_never_acknowledged_or_repeated() {
         let connection = interrupted_effect_connection();
         let mut intent =
@@ -1085,6 +1556,20 @@ mod tests {
         connection
             .execute(
                 "UPDATE pending_inputs SET resolved_at = 10 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &intent).unwrap(),
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The host restarted after beginning the input reply; canonical state has no command-correlated receipt, so Xiao will not repeat it or report success.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES ('same-task', 1, '{\"companionCommandId\":\"command\"}')",
                 [],
             )
             .unwrap();
@@ -1136,12 +1621,69 @@ mod tests {
                 [],
             )
             .unwrap();
+        assert!(matches!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                ..
+            })
+        ));
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES ('same-task', 1, '{\"companionCommandId\":\"command\"}')",
+                [],
+            )
+            .unwrap();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
-            Some(RuntimePreparation::Acknowledge(9))
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The Run was stopped without this command's durable receipt, so Xiao will not report the interrupted stop as successful.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    2,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\"}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Execute)
+        );
+        connection
+            .execute(
+                "UPDATE runs
+                 SET status = 'cancelled', cancel_requested = 0, version = 12
+                 WHERE id = 'same-task'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'same-task',
+                    3,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":11}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &stop).unwrap(),
+            Some(RuntimePreparation::Acknowledge(11))
         );
 
-        let retry = interrupted_intent(CommandCapability::RetryRun, TargetKind::Run);
+        let mut retry = interrupted_intent(CommandCapability::RetryRun, TargetKind::Run);
+        retry.command_id = "retry-command".to_owned();
+        retry.envelope.command_id = "retry-command".to_owned();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
             None
@@ -1149,13 +1691,34 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runs(id, status, cancel_requested, version, idempotency_key)
-                 VALUES ('retried-run', 'queued', 0, 1, 'command')",
+                 VALUES ('retried-run', 'queued', 0, 1, 'retry-command')",
                 [],
             )
             .unwrap();
         assert_eq!(
             recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
-            Some(RuntimePreparation::Acknowledge(1))
+            Some(RuntimePreparation::Refuse {
+                code: "host_ack_unknown",
+                message: "The retry Run exists without this command's durable receipt, so Xiao will not infer acknowledgement from its current version.".to_owned(),
+            })
+        );
+        connection
+            .execute(
+                "INSERT INTO run_events(run_id, sequence, safe_payload_json)
+                 VALUES (
+                    'retried-run',
+                    1,
+                    '{\"companionCommandReceipt\":{\"commandId\":\"retry-command\",\"targetKind\":\"run\",\"targetId\":\"same-task\",\"resultingVersion\":7}}'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE runs SET version = 4 WHERE id = 'retried-run'", [])
+            .unwrap();
+        assert_eq!(
+            recover_interrupted_runtime_effect(&connection, &retry).unwrap(),
+            Some(RuntimePreparation::Acknowledge(7))
         );
     }
 
@@ -1175,6 +1738,14 @@ mod tests {
                     run_id TEXT NOT NULL,
                     resolved_at INTEGER,
                     invalidated_at INTEGER
+                 );
+                 CREATE TABLE run_events (
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    safe_payload_json TEXT NOT NULL
+                 );
+                 CREATE TABLE tasks (
+                    task_id TEXT PRIMARY KEY
                  );
                  INSERT INTO runs(id, status, cancel_requested, version, idempotency_key)
                  VALUES ('same-task', 'running', 0, 7, NULL);

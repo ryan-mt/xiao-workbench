@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Notify;
 
 use crate::execution::service::{prepare_managed_task_environment, resolve_execution_context};
@@ -265,9 +265,9 @@ impl RoutineService {
         Ok(())
     }
 
-    pub fn handle_run_update(
+    pub fn handle_run_update<R: Runtime>(
         &self,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         run: &RunRecord,
         pending_input: Option<&PendingInputSnapshot>,
     ) {
@@ -522,8 +522,8 @@ fn summarize_routine(
     })
 }
 
-fn emit_routine_update(
-    app: &AppHandle,
+fn emit_routine_update<R: Runtime>(
+    app: &AppHandle<R>,
     routine: Option<RoutineSummary>,
     deleted_id: Option<String>,
 ) {
@@ -545,7 +545,11 @@ fn emit_service_error(app: &AppHandle, error: &str) {
     emit_service_error_for_workspace(app, None, error);
 }
 
-fn emit_service_error_for_workspace(app: &AppHandle, workspace_path: Option<&str>, error: &str) {
+fn emit_service_error_for_workspace<R: Runtime>(
+    app: &AppHandle<R>,
+    workspace_path: Option<&str>,
+    error: &str,
+) {
     let _ = app.emit(
         "xiao://routine-service-error",
         RoutineServiceErrorEnvelope {
@@ -555,7 +559,7 @@ fn emit_service_error_for_workspace(app: &AppHandle, workspace_path: Option<&str
     );
 }
 
-fn show_main_window(app: &AppHandle) {
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -563,13 +567,17 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn open_notification_target(app: &AppHandle, target: RoutineOpenRunTarget) {
+fn open_notification_target<R: Runtime>(app: &AppHandle<R>, target: RoutineOpenRunTarget) {
     show_main_window(app);
     let _ = app.emit("xiao://routine-open-run", target);
 }
 
 #[cfg(windows)]
-fn show_notification(app: &AppHandle, title: &str, target: RoutineNotificationTarget) {
+fn show_notification<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    target: RoutineNotificationTarget,
+) {
     use notify_rust::{Notification, NotificationResponse};
 
     let mut notification = Notification::new();
@@ -609,7 +617,11 @@ fn show_notification(app: &AppHandle, title: &str, target: RoutineNotificationTa
 }
 
 #[cfg(not(windows))]
-fn show_notification(app: &AppHandle, _title: &str, target: RoutineNotificationTarget) {
+fn show_notification<R: Runtime>(
+    app: &AppHandle<R>,
+    _title: &str,
+    target: RoutineNotificationTarget,
+) {
     let _ = app.emit("xiao://routine-notification", target.route);
 }
 

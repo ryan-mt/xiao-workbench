@@ -10,6 +10,9 @@ import {
   type CompanionSurfaceProps,
 } from "./CompanionSurface";
 import {
+  buildCompanionBrowserPairingUrl,
+} from "./companionClient";
+import {
   buildCompanionCommand,
   emptyCompanionProjection,
   type CompanionAction,
@@ -137,11 +140,20 @@ const hostAuthorityProps = (): CompanionHostAuthorityPanelProps => ({
   }],
   pairing: {
     status: "ready",
-    ownerCredential: "XIAO-PAIR-123",
+    ownerCredential: JSON.stringify({
+      endpoint: "https://192.0.2.10:4318",
+      serverName: "xiao-companion.local",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----",
+      certificateFingerprint: `sha256:${"ab".repeat(32)}`,
+      pairingId: "pairing-1",
+      ownerCredential: "owner-once",
+      expiresAt: 2_000_000_000_000,
+    }),
     expiresAt: 1_800_000_060_000,
     error: null,
   },
   onCreatePairing: vi.fn(),
+  onDismissPairing: vi.fn(),
   onRotateSession: vi.fn(),
   onRevokeSession: vi.fn(),
   onRevokeDevice: vi.fn(),
@@ -188,6 +200,29 @@ describe("CompanionSurface", () => {
     expect(hostProps.onRotateSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeDevice).toHaveBeenCalledWith("device-2", 2);
+  });
+
+  it("keeps the pairing bundle concealed until the operator copies or reveals it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const hostProps = hostAuthorityProps();
+    render(<CompanionHostAuthorityPanel {...hostProps} />);
+    const pairingBundle = hostProps.pairing.ownerCredential as string;
+
+    expect(screen.queryByDisplayValue(pairingBundle)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy phone link" }));
+    expect(writeText).toHaveBeenCalledWith(buildCompanionBrowserPairingUrl(pairingBundle));
+    expect(await screen.findByText("Copied")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reveal pairing bundle" }));
+    expect(screen.getByDisplayValue(pairingBundle)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide pairing bundle" }));
+    expect(screen.queryByDisplayValue(pairingBundle)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(hostProps.onDismissPairing).toHaveBeenCalledOnce();
   });
 
   it("disables every canonical action while stale and offers recovery", () => {

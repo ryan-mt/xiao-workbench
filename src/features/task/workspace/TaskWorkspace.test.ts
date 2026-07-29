@@ -188,7 +188,7 @@ describe("task workspace frame", () => {
 
   it("centers the live changes pill as a block-level flex control", () => {
     expect(taskWorkspaceStyles).toMatch(
-      /\.composer-live-changes\s*{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*margin:\s*0 auto 10px;/s,
+      /\.composer-live-changes\s*{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*margin:\s*0 auto -16px;/s,
     );
   });
 });

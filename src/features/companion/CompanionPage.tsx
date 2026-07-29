@@ -120,7 +120,10 @@ export function CompanionPage() {
   useEffect(() => {
     if (mode !== "client" || !session || state.connection !== "live") return;
     let cancelled = false;
+    let pollInFlight = false;
     const poll = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const page = await nativeCompanionClient.pollNotifications(
           session,
@@ -141,6 +144,8 @@ export function CompanionPage() {
         }
       } catch {
         // Reconciliation is the authoritative connection signal; notifications remain optional.
+      } finally {
+        pollInFlight = false;
       }
     };
     void poll();

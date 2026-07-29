@@ -48,6 +48,7 @@ const copyText = async (text: string) => {
 
 export function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   return (
     <button
@@ -55,14 +56,18 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
       type="button"
       aria-label={`${label} to clipboard`}
       onClick={() => {
+        setCopied(false);
+        setCopyFailed(false);
         void copyText(text).then(() => {
           setCopied(true);
           window.setTimeout(() => setCopied(false), 1_500);
+        }).catch(() => {
+          setCopyFailed(true);
         });
       }}
     >
       <XiaoIcon name={copied ? "check" : "copy"} size={13} />
-      <span>{copied ? "Copied" : label}</span>
+      <span aria-live="polite">{copied ? "Copied" : copyFailed ? "Copy failed" : label}</span>
     </button>
   );
 }

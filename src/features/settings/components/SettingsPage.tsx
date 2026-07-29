@@ -350,7 +350,10 @@ export function SettingsPage({
   const activeSection = controlledActiveSection ?? localActiveSection;
   const setActiveSection = onSectionChange ?? setLocalActiveSection;
   const [modelQuery, setModelQuery] = useState("");
-  const sortedArchivedTasks = [...archivedTasks].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sortedArchivedTasks = useMemo(
+    () => [...archivedTasks].sort((a, b) => b.updatedAt - a.updatedAt),
+    [archivedTasks],
+  );
   const visibleModels = useMemo(() => {
     const query = modelQuery.trim().toLowerCase();
     return models.filter((model) =>

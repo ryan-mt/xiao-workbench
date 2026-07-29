@@ -29,10 +29,14 @@ const item = (patch: Partial<AttentionItem> = {}): AttentionItem => ({
 const renderCenter = (
   items: AttentionItem[],
   hydrationStatus: AttentionHydrationStatus = "live",
+  actionError: { itemId: string; message: string } | null = null,
+  acknowledgingItemIds: ReadonlySet<string> = new Set(),
 ) => renderToStaticMarkup(
   <AttentionCenter
     items={items}
     hydrationStatus={hydrationStatus}
+    actionError={actionError}
+    acknowledgingItemIds={acknowledgingItemIds}
     onRetry={() => undefined}
     onOpenItem={() => undefined}
     onAcknowledge={() => undefined}
@@ -123,6 +127,32 @@ describe("AttentionCenter", () => {
     expect(markup).not.toContain("<img src=x");
     expect(markup).toContain(bounded.replace("<", "&lt;").replace(">", "&gt;"));
     expect(bounded.length).toBeLessThanOrEqual(160);
+  });
+
+  it("renders an acknowledgment error only on its retryable item", () => {
+    const markup = renderCenter(
+      [item(), item({ id: "run:run-b", title: "Other item" })],
+      "live",
+      { itemId: "run:run-a", message: "Acknowledgment unavailable" },
+    );
+
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Acknowledgment unavailable");
+    expect(markup.match(/Acknowledgment unavailable/g)).toHaveLength(1);
+    expect(markup.match(/>Acknowledge<\/span>/g)).toHaveLength(2);
+  });
+
+  it("disables only the item whose acknowledgment is in progress", () => {
+    const markup = renderCenter(
+      [item(), item({ id: "run:run-b", safeSummary: "Other summary" })],
+      "live",
+      null,
+      new Set(["run:run-a"]),
+    );
+
+    expect(markup).toContain('aria-label="Acknowledging: Review workspace changes"');
+    expect(markup.match(/disabled=""/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Acknowledge: Other summary"');
   });
 
   it.each([

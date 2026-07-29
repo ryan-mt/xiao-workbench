@@ -178,6 +178,7 @@ type TaskWorkspaceProps = {
   definitionOfDone: AcceptanceContractDraft | null;
   definitionOfDoneError: string | null;
   contextUsage: ThreadTokenUsage | null;
+  initialTimelineScrollTop: number;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
   launchBrand: "logo" | "wordmark";
@@ -318,6 +319,7 @@ export function TaskWorkspace({
   definitionOfDone,
   definitionOfDoneError,
   contextUsage,
+  initialTimelineScrollTop,
   showReasoningSummaries,
   expandToolOutput,
   launchBrand,
@@ -365,7 +367,8 @@ export function TaskWorkspace({
   const scrollArea = useRef<HTMLDivElement>(null);
   const timelineShell = useRef<HTMLDivElement>(null);
   const followLiveOutput = useRef(true);
-  const initialScrollRestored = useRef(false);
+  const previousTaskId = useRef(taskId);
+  const restoredTimelineScrollTaskId = useRef<string | null>(null);
   const scrollPersistTimer = useRef<number | null>(null);
   const pendingScrollTop = useRef<number | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -480,13 +483,25 @@ export function TaskWorkspace({
   useLayoutEffect(() => {
     const node = scrollArea.current;
     if (!node) return;
-    if (!initialScrollRestored.current && timeline.length > 0) {
-      initialScrollRestored.current = true;
-      node.scrollTop = latestTimelineScrollTop(node);
+    if (previousTaskId.current !== taskId) {
+      previousTaskId.current = taskId;
+      restoredTimelineScrollTaskId.current = timeline.length > 0 ? taskId : null;
+      node.scrollTop = initialTimelineScrollTop;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
+      return;
     }
-  }, [taskId, timeline]);
+    if (restoredTimelineScrollTaskId.current !== taskId && timeline.length > 0) {
+      restoredTimelineScrollTaskId.current = taskId;
+      node.scrollTop = initialTimelineScrollTop > 0
+        ? initialTimelineScrollTop
+        : latestTimelineScrollTop(node);
+      followLiveOutput.current = shouldFollowLiveOutput(node);
+      setShowJumpToLatest(!followLiveOutput.current);
+      return;
+    }
+    if (followLiveOutput.current) node.scrollTop = node.scrollHeight;
+  }, [initialTimelineScrollTop, taskId, timeline]);
 
   useLayoutEffect(() => {
     const node = scrollArea.current;

@@ -2,12 +2,14 @@ import { useEffect, useRef } from "react";
 
 import { XiaoIcon } from "../../components/icons/XiaoIcon";
 import type { AttentionItem } from "../../core/models/xiao";
-import type { AttentionHydrationStatus } from "./useAttentionCenter";
+import type { AttentionActionError, AttentionHydrationStatus } from "./useAttentionCenter";
 import "./attention.css";
 
 type AttentionCenterProps = {
   items: AttentionItem[];
   hydrationStatus: AttentionHydrationStatus;
+  actionError: AttentionActionError | null;
+  acknowledgingItemIds: ReadonlySet<string>;
   onRetry: () => void;
   onOpenItem: (item: AttentionItem) => void;
   onAcknowledge: (itemId: string) => void;
@@ -47,6 +49,8 @@ export const retryAttentionWithStableFocus = (
 export function AttentionCenter({
   items,
   hydrationStatus,
+  actionError,
+  acknowledgingItemIds,
   onRetry,
   onOpenItem,
   onAcknowledge,
@@ -116,6 +120,7 @@ export function AttentionCenter({
             <ol className="attention-center__list" aria-label="Workspace attention items">
               {items.map((item) => {
                 const detail = boundedDetail(item.safeSummary);
+                const acknowledging = acknowledgingItemIds.has(item.id);
                 return (
                   <li className={`attention-center__item is-${item.kind}`} key={item.id}>
                     <span className="attention-center__kind">{kindLabel(item.kind)}</span>
@@ -126,6 +131,11 @@ export function AttentionCenter({
                       <time dateTime={new Date(item.createdAt).toISOString()}>
                         {attentionTime.format(item.createdAt)}
                       </time>
+                      {actionError?.itemId === item.id ? (
+                        <p className="attention-center__action-error" role="alert">
+                          {actionError.message}
+                        </p>
+                      ) : null}
                     </div>
                     <div className="attention-center__actions">
                       <button
@@ -140,12 +150,13 @@ export function AttentionCenter({
                       <button
                         className="attention-center__dismiss"
                         type="button"
-                        aria-label={`Acknowledge: ${detail}`}
+                        aria-label={`${acknowledging ? "Acknowledging" : "Acknowledge"}: ${detail}`}
                         title="Acknowledge"
+                        disabled={acknowledging}
                         onClick={() => onAcknowledge(item.id)}
                       >
                         <XiaoIcon name="close" size={14} />
-                        <span>Acknowledge</span>
+                        <span>{acknowledging ? "Acknowledging" : "Acknowledge"}</span>
                       </button>
                     </div>
                   </li>

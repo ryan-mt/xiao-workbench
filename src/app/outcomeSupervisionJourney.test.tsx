@@ -853,6 +853,11 @@ const openAttention = async () => {
   return screen.findByRole("heading", { name: "Attention" });
 };
 
+const taskWorkspace = () => within(
+  screen.getByRole("heading", { name: "Supervise current outcome" })
+    .closest(".app-content") as HTMLElement,
+);
+
 const mcpSummary = (serverName: string, fieldName: string) => ({
   mode: "form",
   serverName,
@@ -963,7 +968,7 @@ describe("outcome and supervision application-shell journey", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close attention center" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Rerun gates" }));
-    await screen.findByText("Ready for review");
+    await taskWorkspace().findByText("Ready for review");
     expect(host.state.document!.tasks[0]).toMatchObject({
       stage: "ready_for_review",
       stageVersion: 3,
@@ -982,7 +987,7 @@ describe("outcome and supervision application-shell journey", () => {
       "checks",
     ]);
 
-    await screen.findByText("Published");
+    await taskWorkspace().findByText("Published");
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(async () => {
       const trigger = await screen.findByRole("button", { name: "Attention, 1 item" });
@@ -997,9 +1002,9 @@ describe("outcome and supervision application-shell journey", () => {
       .toContain("PR #42");
 
     fireEvent.click(await screen.findByRole("button", { name: "Accept outcome" }));
-    await screen.findByText("Completed");
+    await taskWorkspace().findByText("Completed");
     fireEvent.click(screen.getByRole("button", { name: "Reopen task" }));
-    await screen.findByText("In progress");
+    await taskWorkspace().findByText("In progress");
 
     expect(host.state.transitions.map((transition) => ({
       fromStage: transition.fromStage,

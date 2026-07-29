@@ -36,11 +36,13 @@ import {
   removeAgentQuestionRequest,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
+  replayTaskRestoreRuns,
   resetPendingInputReplayForTaskRestore,
   restoredRunProtocolEnvelope,
   runtimeAfterListenerAttachSuccess,
   runtimeForPublishedActiveRun,
   settleAutoTitleAfterUndo,
+  shouldReportInvalidInteractiveRequest,
   shouldClearAgentPlan,
   shouldRestoreTaskRunState,
   timelineEntryFromItem,
@@ -89,10 +91,21 @@ const deferred = <T>() => {
 };
 
 describe("shouldClearAgentPlan", () => {
-  it("clears immediately only after a successful turn", () => {
+  it("clears whenever a turn is no longer live", () => {
     expect(shouldClearAgentPlan("completed")).toBe(true);
-    expect(shouldClearAgentPlan("failed")).toBe(false);
-    expect(shouldClearAgentPlan("interrupted")).toBe(false);
+    expect(shouldClearAgentPlan("failed")).toBe(true);
+    expect(shouldClearAgentPlan("interrupted")).toBe(true);
+  });
+});
+
+describe("interactive request validation", () => {
+  it("reports malformed input only when a durable pending route exists", () => {
+    const pending = { id: "pending-question" } as PendingInputSnapshot;
+
+    expect(shouldReportInvalidInteractiveRequest(pending, null)).toBe(true);
+    expect(shouldReportInvalidInteractiveRequest(pending, {})).toBe(false);
+    expect(shouldReportInvalidInteractiveRequest(null, null)).toBe(false);
+    expect(shouldReportInvalidInteractiveRequest(undefined, null)).toBe(false);
   });
 });
 
@@ -574,6 +587,24 @@ const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapsh
 });
 
 describe("agent runtime workspace scope", () => {
+  it("continues later run restore work and reports isolated history failures", async () => {
+    const first = run("C:/A", { id: "run-a" });
+    const second = run("C:/A", { id: "run-b" });
+    const replayed: string[] = [];
+
+    const failures = await replayTaskRestoreRuns([first, second], async (snapshot) => {
+      replayed.push(snapshot.id);
+      if (snapshot.id === first.id) throw new Error("history unavailable");
+    });
+    replayed.push("pending-input");
+
+    expect(replayed).toEqual(["run-a", "run-b", "pending-input"]);
+    expect(failures).toEqual([{
+      runId: first.id,
+      reason: expect.objectContaining({ message: "history unavailable" }),
+    }]);
+  });
+
   it("restores every durable run event in sequence across pages", async () => {
     const events = Array.from({ length: 450 }, (_, sequence): RunEventRecord => ({
       runId: "run-a",

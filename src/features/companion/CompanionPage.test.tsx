@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CompanionProjectionUpdate } from "./companionClient";
@@ -232,7 +232,10 @@ beforeEach(() => {
   client.delete.mockResolvedValue(undefined);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("Companion application journey", () => {
   it("keeps two-device revocation under primary-host authority", async () => {
@@ -247,6 +250,47 @@ describe("Companion application journey", () => {
     fireEvent.click(revokeButtons[0]);
     await waitFor(() => expect(bridge.revokeCompanionDevice).toHaveBeenCalledWith("phone"));
     expect(client.command).not.toHaveBeenCalled();
+  });
+
+  it("clears an expired pairing bundle instead of rendering its credential", async () => {
+    const bundle = {
+      endpoint: "https://192.0.2.10:4318",
+      serverName: "xiao-companion.local",
+      certificatePem: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----",
+      certificateFingerprint: fingerprint,
+      pairingId: "pairing-expired",
+      ownerCredential: "owner-expired",
+      expiresAt: Date.now() - 1,
+    };
+    bridge.issueCompanionPairingBundle.mockResolvedValue(bundle);
+    render(<CompanionPage />);
+    await screen.findByText("Operator phone");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create pairing bundle" }));
+
+    expect(await screen.findByText(/pairing bundle expired/i)).toBeTruthy();
+    expect(screen.queryByDisplayValue(JSON.stringify(bundle))).toBeNull();
+  });
+
+  it("conceals a rotated credential until the operator reveals it", async () => {
+    const credential = {
+      sessionId: "phone-session",
+      deviceId: "phone",
+      generation: 2,
+      secret: "rotated-secret",
+    };
+    bridge.rotateCompanionSession.mockResolvedValue({ credential });
+    render(<CompanionPage />);
+    await screen.findByText("Operator phone");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rotate" })[0]);
+
+    expect(await screen.findByText("Rotation credential — transfer it once")).toBeTruthy();
+    expect(screen.queryByDisplayValue(JSON.stringify(credential))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reveal rotation credential" }));
+    expect(screen.getByDisplayValue(JSON.stringify(credential))).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Rotation credential — transfer it once")).toBeNull();
   });
 
   it("keeps the native credential reference when keyring deletion is not acknowledged", async () => {
@@ -322,6 +366,49 @@ describe("Companion application journey", () => {
     await waitFor(() => {
       expect(client.pollNotifications).toHaveBeenCalledWith(secondSession, null);
     });
+  });
+
+  it("does not overlap notification polls while the previous request is still in flight", async () => {
+    localStorage.setItem("xiao.companion.session.v1", JSON.stringify(session));
+    let resolveFirstPoll: ((value: {
+      notifications: [];
+      nextCursor: null;
+      hasMore: false;
+    }) => void) | undefined;
+    client.pollNotifications
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveFirstPoll = resolve;
+      }))
+      .mockResolvedValue({
+        notifications: [],
+        nextCursor: null,
+        hasMore: false,
+      });
+    vi.useFakeTimers();
+
+    render(<CompanionPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connected device" }));
+    await act(async () => {
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+    expect(screen.getByText("Live")).toBeTruthy();
+    expect(client.pollNotifications).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(client.pollNotifications).toHaveBeenCalledTimes(1);
+
+    resolveFirstPoll?.({
+      notifications: [],
+      nextCursor: null,
+      hasMore: false,
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(client.pollNotifications).toHaveBeenCalledTimes(2);
   });
 
   it("reports a second action while the first still awaits the primary host", async () => {

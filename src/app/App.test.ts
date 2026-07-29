@@ -480,6 +480,13 @@ const attachmentRecoveryStorage = () => {
   };
 };
 
+const attachmentRecoveryValue = (
+  result: ReturnType<typeof readComposerAttachmentRecoveries>,
+) => {
+  if (!result.ok) throw new Error(result.error.message);
+  return result.value;
+};
+
 const deferred = <T,>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -1880,7 +1887,7 @@ describe("task operation workspace identity", () => {
     });
 
     await expect(completion).resolves.toBe(true);
-    const reloaded = readComposerAttachmentRecoveries(storage);
+    const reloaded = attachmentRecoveryValue(readComposerAttachmentRecoveries(storage));
     expect(harness.current().visible).toEqual({ taskId: "task-b", draft: "B draft" });
     expect(harness.current().firstState.tasks[0]?.draftText).toBe("A restored prompt");
     expect(composerAttachmentRecovery(reloaded, firstPath, "task-a")).toEqual([
@@ -1933,7 +1940,7 @@ describe("task operation workspace identity", () => {
     await expect(completion).resolves.toBe(true);
     expect(composerAttachments).toEqual([attachment("newer.txt")]);
     expect(composerAttachmentRecovery(
-      readComposerAttachmentRecoveries(storage),
+      attachmentRecoveryValue(readComposerAttachmentRecoveries(storage)),
       firstPath,
       "task-a",
     )).toEqual([]);

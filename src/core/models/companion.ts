@@ -4,12 +4,14 @@ export type CompanionGrant =
   | "read_runs"
   | "read_attention"
   | "read_safe_timeline"
+  | "read_conversation"
   | "read_verification"
   | "read_observatory"
   | "resolve_pending_input"
   | "stop_run"
   | "retry_run"
   | "send_follow_up"
+  | "create_task"
   | "acknowledge_attention"
   | "accept_outcome";
 

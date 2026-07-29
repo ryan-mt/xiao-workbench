@@ -5806,7 +5806,7 @@ dependencies = [
 
 [[package]]
 name = "xiao-workbench"
-version = "0.0.0-day07242026"
+version = "0.0.0-day07292026"
 dependencies = [
  "axum",
  "axum-server",
@@ -5835,6 +5835,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tokio",
+ "tower",
  "ureq",
  "uuid",
  "webkit2gtk",

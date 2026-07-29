@@ -1072,6 +1072,11 @@ impl XiaoRepository {
                     event: None,
                 });
             }
+            let companion_command_id = if current.cancel_requested {
+                companion_cancel_started_command_id(&transaction, run_id)?
+            } else {
+                None
+            };
             let target = if current.cancel_requested {
                 RunStatus::Cancelled
             } else if runtime_status == RunStatus::Completed
@@ -1092,7 +1097,7 @@ impl XiaoRepository {
                 "{generation}/{thread_id}/{turn_id}/{}",
                 target.as_database()
             );
-            let mutation = transition(
+            let mut mutation = transition(
                 &transaction,
                 run_id,
                 Some(current.version),
@@ -1101,6 +1106,15 @@ impl XiaoRepository {
                 Some(&key),
                 payload,
             )?;
+            if let Some(command_id) = companion_command_id {
+                clear_settled_cancel_request(&transaction, &mut mutation)?;
+                append_completed_companion_receipt(
+                    &transaction,
+                    run_id,
+                    &command_id,
+                    mutation.run.version,
+                )?;
+            }
             transaction
                 .commit()
                 .map_err(|error| format!("Could not commit Xiao terminal settlement: {error}"))?;
@@ -1579,11 +1593,43 @@ impl XiaoRepository {
         &self,
         pending_input_id: &str,
     ) -> Result<(RunMutation, PendingInputSnapshot), String> {
+        self.resolve_pending_input_inner(pending_input_id, None)
+    }
+
+    pub(crate) fn resolve_pending_input_at_version(
+        &self,
+        pending_input_id: &str,
+        expected_version: i64,
+        command_id: &str,
+    ) -> Result<(RunMutation, PendingInputSnapshot), String> {
+        self.resolve_pending_input_inner(pending_input_id, Some((expected_version, command_id)))
+    }
+
+    fn resolve_pending_input_inner(
+        &self,
+        pending_input_id: &str,
+        companion_command: Option<(i64, &str)>,
+    ) -> Result<(RunMutation, PendingInputSnapshot), String> {
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| format!("Could not start Xiao input resolution: {error}"))?;
             let mut pending = load_pending_input(&transaction, pending_input_id)?;
+            let current_version = pending
+                .resolved_at
+                .into_iter()
+                .chain(pending.invalidated_at)
+                .fold(pending.opened_at, i64::max);
+            if companion_command.is_some_and(|(expected, _)| {
+                current_version != expected
+                    || pending.resolved_at.is_some()
+                    || pending.invalidated_at.is_some()
+            }) {
+                return Err(
+                    "The Xiao input request changed before the Companion command was applied."
+                        .to_owned(),
+                );
+            }
             if pending.invalidated_at.is_some() {
                 return Err(
                     "This Xiao input request is no longer attached to a live runtime.".to_owned(),
@@ -1624,6 +1670,18 @@ impl XiaoRepository {
                 )
                 .map_err(|error| format!("Could not count Xiao pending inputs: {error}"))?;
             let key = format!("pending-input:{pending_input_id}:resolved");
+            let payload = match companion_command {
+                Some((_, command_id)) => json!({
+                    "pendingInputId": pending_input_id,
+                    "companionCommandReceipt": companion_command_receipt(
+                        command_id,
+                        "pending_input",
+                        pending_input_id,
+                        Some(resolved_at),
+                    ),
+                }),
+                None => json!({ "pendingInputId": pending_input_id }),
+            };
             let mutation = if run.status == RunStatus::WaitingForInput && remaining == 0 {
                 transition(
                     &transaction,
@@ -1632,7 +1690,7 @@ impl XiaoRepository {
                     RunStatus::Running,
                     "run.input_resolved",
                     Some(&key),
-                    &json!({ "pendingInputId": pending_input_id }),
+                    &payload,
                 )?
             } else {
                 let event = append_event(
@@ -1640,7 +1698,7 @@ impl XiaoRepository {
                     &pending.run_id,
                     "run.input_resolved",
                     Some(&key),
-                    &json!({ "pendingInputId": pending_input_id }),
+                    &payload,
                 )?;
                 RunMutation {
                     run,
@@ -1655,11 +1713,65 @@ impl XiaoRepository {
     }
 
     pub(crate) fn request_run_cancel(&self, run_id: &str) -> Result<CancelDisposition, String> {
+        self.request_run_cancel_inner(run_id, None)
+    }
+
+    pub(crate) fn request_run_cancel_at_version(
+        &self,
+        run_id: &str,
+        expected_version: i64,
+        command_id: &str,
+    ) -> Result<CancelDisposition, String> {
+        self.request_run_cancel_inner(run_id, Some((expected_version, command_id)))
+    }
+
+    fn request_run_cancel_inner(
+        &self,
+        run_id: &str,
+        companion_command: Option<(i64, &str)>,
+    ) -> Result<CancelDisposition, String> {
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| format!("Could not start Xiao run cancellation: {error}"))?;
             let current = load_run(&transaction, run_id)?;
+            if let Some((expected, command_id)) = companion_command {
+                let command_receipt_exists = transaction
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM run_events
+                            WHERE run_id = ?1 AND event_type = 'run.cancel_requested'
+                              AND json_extract(
+                                    safe_payload_json,
+                                    '$.companionCommandReceipt.commandId'
+                                  ) = ?2
+                              AND json_extract(
+                                    safe_payload_json,
+                                    '$.companionCommandReceipt.targetKind'
+                                  ) = 'run'
+                              AND json_extract(
+                                    safe_payload_json,
+                                    '$.companionCommandReceipt.targetId'
+                                  ) = ?1
+                        )",
+                        params![run_id, command_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(|error| {
+                        format!("Could not inspect the Companion cancellation receipt: {error}")
+                    })?;
+                if current.version != expected && !command_receipt_exists {
+                    return Err(
+                        "The Xiao run changed before the Companion command was applied.".to_owned(),
+                    );
+                }
+                if current.cancel_requested && !command_receipt_exists {
+                    return Err(
+                        "The Xiao run already has a cancellation in progress from another command."
+                            .to_owned(),
+                    );
+                }
+            }
             if current.status.is_terminal() {
                 transaction.commit().map_err(|error| {
                     format!("Could not finish idempotent Xiao cancellation: {error}")
@@ -1692,7 +1804,18 @@ impl XiaoRepository {
                         run_id,
                         "run.cancel_requested",
                         Some("lifecycle:cancel-requested"),
-                        &json!({ "verification": true }),
+                        &match companion_command {
+                            Some((_, command_id)) => json!({
+                                "verification": true,
+                                "companionCommandReceipt": companion_command_receipt(
+                                    command_id,
+                                    "run",
+                                    run_id,
+                                    None,
+                                ),
+                            }),
+                            None => json!({ "verification": true }),
+                        },
                     )?)
                 };
                 let run = load_run(&transaction, run_id)?;
@@ -1709,7 +1832,18 @@ impl XiaoRepository {
                     RunStatus::Cancelled,
                     "run.cancelled",
                     Some("lifecycle:cancelled"),
-                    &json!({ "beforeTurnStart": true }),
+                    &match companion_command {
+                        Some((_, command_id)) => json!({
+                            "beforeTurnStart": true,
+                            "companionCommandReceipt": companion_command_receipt(
+                                command_id,
+                                "run",
+                                run_id,
+                                Some(current.version + 1),
+                            ),
+                        }),
+                        None => json!({ "beforeTurnStart": true }),
+                    },
                 )?;
                 transaction.commit().map_err(|error| {
                     format!("Could not commit queued Xiao cancellation: {error}")
@@ -1736,7 +1870,17 @@ impl XiaoRepository {
                     run_id,
                     "run.cancel_requested",
                     Some("lifecycle:cancel-requested"),
-                    &json!({}),
+                    &match companion_command {
+                        Some((_, command_id)) => json!({
+                            "companionCommandReceipt": companion_command_receipt(
+                                command_id,
+                                "run",
+                                run_id,
+                                None,
+                            ),
+                        }),
+                        None => json!({}),
+                    },
                 )?)
             };
             let run = load_run(&transaction, run_id)?;
@@ -1748,7 +1892,15 @@ impl XiaoRepository {
     }
 
     pub(crate) fn finish_run_cancel(&self, run_id: &str) -> Result<RunMutation, String> {
-        self.finish_run_cancel_inner(run_id, false)
+        self.finish_run_cancel_inner(run_id, false, None)
+    }
+
+    pub(crate) fn finish_run_cancel_for_companion(
+        &self,
+        run_id: &str,
+        command_id: &str,
+    ) -> Result<RunMutation, String> {
+        self.finish_run_cancel_inner(run_id, false, Some(command_id))
     }
 
     #[cfg(test)]
@@ -1756,18 +1908,30 @@ impl XiaoRepository {
         &self,
         run_id: &str,
     ) -> Result<RunMutation, String> {
-        self.finish_run_cancel_inner(run_id, true)
+        self.finish_run_cancel_inner(run_id, true, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finish_run_cancel_for_companion_with_failpoint(
+        &self,
+        run_id: &str,
+        command_id: &str,
+    ) -> Result<RunMutation, String> {
+        self.finish_run_cancel_inner(run_id, true, Some(command_id))
     }
 
     fn finish_run_cancel_inner(
         &self,
         run_id: &str,
         fail_before_commit: bool,
+        companion_command_id: Option<&str>,
     ) -> Result<RunMutation, String> {
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|error| format!("Could not start Xiao cancellation settlement: {error}"))?;
+                .map_err(|error| {
+                    format!("Could not start Xiao cancellation settlement: {error}")
+                })?;
             let current = load_run(&transaction, run_id)?;
             if current.status.is_terminal() {
                 transaction.commit().map_err(|error| {
@@ -1783,12 +1947,11 @@ impl XiaoRepository {
             }
             let mut mutation = if current.status == RunStatus::Verifying {
                 let timestamp = now_millis()?;
-                let cancellation_settlement =
-                    cancel_running_verification_attempt_in_transaction(
-                        &transaction,
-                        run_id,
-                        timestamp,
-                    )?;
+                let cancellation_settlement = cancel_running_verification_attempt_in_transaction(
+                    &transaction,
+                    run_id,
+                    timestamp,
+                )?;
                 let payload = json!({
                     "verification": true,
                     "attemptId": cancellation_settlement
@@ -1799,9 +1962,7 @@ impl XiaoRepository {
                         .map(|settlement| settlement.status),
                 });
                 match cancellation_settlement.as_ref() {
-                    Some(settlement)
-                        if settlement.status == VerificationAttemptStatus::Failed =>
-                    {
+                    Some(settlement) if settlement.status == VerificationAttemptStatus::Failed => {
                         transition_failed_verification(
                             &transaction,
                             &current,
@@ -1838,30 +1999,23 @@ impl XiaoRepository {
                     &json!({ "interruptedRuntime": true }),
                 )?
             };
-            if mutation.run.cancel_requested {
-                let cleared = transaction
-                    .execute(
-                        "UPDATE runs SET cancel_requested = 0, version = version + 1 WHERE id = ?1 AND version = ?2",
-                        params![run_id, mutation.run.version],
-                    )
-                    .map_err(|error| {
-                        format!("Could not clear settled Xiao cancellation intent: {error}")
-                    })?;
-                if cleared != 1 {
-                    return Err(
-                        "The Xiao run changed while cancellation settlement completed.".to_owned(),
-                    );
-                }
-                mutation.run = load_run(&transaction, run_id)?;
-            }
+            clear_settled_cancel_request(&transaction, &mut mutation)?;
             if fail_before_commit {
                 return Err(
                     "Injected failure before Xiao cancellation settlement commit.".to_owned(),
                 );
             }
-            transaction
-                .commit()
-                .map_err(|error| format!("Could not commit Xiao cancellation settlement: {error}"))?;
+            if let Some(command_id) = companion_command_id {
+                append_completed_companion_receipt(
+                    &transaction,
+                    run_id,
+                    command_id,
+                    mutation.run.version,
+                )?;
+            }
+            transaction.commit().map_err(|error| {
+                format!("Could not commit Xiao cancellation settlement: {error}")
+            })?;
             Ok(mutation)
         })
     }
@@ -1870,6 +2024,24 @@ impl XiaoRepository {
         &self,
         source_run_id: &str,
         idempotency_key: &str,
+    ) -> Result<RunMutation, String> {
+        self.retry_run_inner(source_run_id, idempotency_key, None)
+    }
+
+    pub(crate) fn retry_run_at_version(
+        &self,
+        source_run_id: &str,
+        idempotency_key: &str,
+        expected_version: i64,
+    ) -> Result<RunMutation, String> {
+        self.retry_run_inner(source_run_id, idempotency_key, Some(expected_version))
+    }
+
+    fn retry_run_inner(
+        &self,
+        source_run_id: &str,
+        idempotency_key: &str,
+        expected_version: Option<i64>,
     ) -> Result<RunMutation, String> {
         if idempotency_key.trim().is_empty() || idempotency_key.len() > MAX_RUN_IDENTITY_BYTES {
             return Err("A valid retry idempotency key is required.".to_owned());
@@ -1891,6 +2063,11 @@ impl XiaoRepository {
                 });
             }
             let source = load_run(&transaction, source_run_id)?;
+            if expected_version.is_some_and(|expected| source.version != expected) {
+                return Err(
+                    "The Xiao run changed before the Companion command was applied.".to_owned(),
+                );
+            }
             if !matches!(source.status, RunStatus::Failed | RunStatus::Interrupted) {
                 return Err("Only failed or interrupted Xiao runs can be retried.".to_owned());
             }
@@ -1946,7 +2123,19 @@ impl XiaoRepository {
                 &id,
                 "run.queued",
                 Some("lifecycle:queued"),
-                &json!({ "parentRunId": source_run_id, "retry": true }),
+                &match expected_version {
+                    Some(_) => json!({
+                        "parentRunId": source_run_id,
+                        "retry": true,
+                        "companionCommandReceipt": companion_command_receipt(
+                            idempotency_key,
+                            "run",
+                            source_run_id,
+                            Some(source.version),
+                        ),
+                    }),
+                    None => json!({ "parentRunId": source_run_id, "retry": true }),
+                },
             )?;
             let run = load_run(&transaction, &id)?;
             transaction
@@ -2393,6 +2582,102 @@ fn outcomes_for_transition(
         RunStatus::Verifying => (AgentOutcome::Completed, VerificationOutcome::Pending),
         _ => (current_agent, current_verification),
     }
+}
+
+fn companion_cancel_started_command_id(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+) -> Result<Option<String>, String> {
+    transaction
+        .query_row(
+            "SELECT json_extract(
+                        safe_payload_json,
+                        '$.companionCommandReceipt.commandId'
+                    )
+             FROM run_events
+             WHERE run_id = ?1
+               AND event_type = 'run.cancel_requested'
+               AND json_extract(
+                    safe_payload_json,
+                    '$.companionCommandReceipt.targetKind'
+                   ) = 'run'
+               AND json_extract(
+                    safe_payload_json,
+                    '$.companionCommandReceipt.targetId'
+                   ) = ?1
+               AND json_type(
+                    safe_payload_json,
+                    '$.companionCommandReceipt.resultingVersion'
+                   ) IS NULL
+             ORDER BY sequence DESC
+             LIMIT 1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| {
+            format!("Could not inspect the started Companion cancellation receipt: {error}")
+        })
+}
+
+fn clear_settled_cancel_request(
+    transaction: &Transaction<'_>,
+    mutation: &mut RunMutation,
+) -> Result<(), String> {
+    if !mutation.run.cancel_requested {
+        return Ok(());
+    }
+    let cleared = transaction
+        .execute(
+            "UPDATE runs SET cancel_requested = 0, version = version + 1 WHERE id = ?1 AND version = ?2",
+            params![mutation.run.id, mutation.run.version],
+        )
+        .map_err(|error| format!("Could not clear settled Xiao cancellation intent: {error}"))?;
+    if cleared != 1 {
+        return Err("The Xiao run changed while cancellation settlement completed.".to_owned());
+    }
+    mutation.run = load_run(transaction, &mutation.run.id)?;
+    Ok(())
+}
+
+fn append_completed_companion_receipt(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    command_id: &str,
+    resulting_version: i64,
+) -> Result<(), String> {
+    append_event(
+        transaction,
+        run_id,
+        "run.companion_command_receipt",
+        Some(&format!("companion-command:{command_id}")),
+        &json!({
+            "companionCommandReceipt": companion_command_receipt(
+                command_id,
+                "run",
+                run_id,
+                Some(resulting_version),
+            ),
+        }),
+    )?;
+    Ok(())
+}
+
+fn companion_command_receipt(
+    command_id: &str,
+    target_kind: &str,
+    target_id: &str,
+    resulting_version: Option<i64>,
+) -> Value {
+    let mut receipt = json!({
+        "commandId": command_id,
+        "targetKind": target_kind,
+        "targetId": target_id,
+    });
+    if let Some(resulting_version) = resulting_version {
+        receipt["resultingVersion"] = json!(resulting_version);
+    }
+    receipt
 }
 
 pub(crate) fn append_event(
@@ -3650,6 +3935,36 @@ mod tests {
         let (resumed, resolved) = repository.resolve_pending_input(&pending.id).unwrap();
         assert_eq!(resumed.run.status, RunStatus::Running);
         assert!(resolved.resolved_at.is_some());
+        assert!(repository
+            .resolve_pending_input_at_version(&pending.id, pending.opened_at, "companion-input")
+            .unwrap_err()
+            .contains("changed before the Companion command"));
+
+        let (_, companion_pending) = repository
+            .open_pending_input(NewPendingInput {
+                run_id: queued.id.clone(),
+                runtime_generation: 1,
+                request_id: "8".to_owned(),
+                thread_id: "thread-a".to_owned(),
+                turn_id: "turn-a".to_owned(),
+                item_id: "item-b".to_owned(),
+                kind: PendingInputKind::Question,
+                safe_summary: json!({ "question": "Continue again?" }),
+            })
+            .unwrap();
+        let (resumed, resolved) = repository
+            .resolve_pending_input_at_version(
+                &companion_pending.id,
+                companion_pending.opened_at,
+                "companion-input",
+            )
+            .unwrap();
+        let receipt = &resumed.event.unwrap().safe_payload["companionCommandReceipt"];
+        assert_eq!(receipt["commandId"], "companion-input");
+        assert_eq!(receipt["targetKind"], "pending_input");
+        assert_eq!(receipt["targetId"], companion_pending.id);
+        assert_eq!(receipt["resultingVersion"], resolved.resolved_at.unwrap());
+        assert_ne!(receipt["resultingVersion"], resumed.run.version);
 
         let completed = repository
             .transition_run(
@@ -4489,6 +4804,198 @@ mod tests {
     }
 
     #[test]
+    fn companion_cancel_receipt_replays_after_the_run_version_advances() {
+        let directory = TestDirectory::new("companion-cancel-replay");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let run = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "companion-cancel",
+            ))
+            .unwrap()
+            .run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 3,
+                    thread_id: "thread".to_owned(),
+                    thread_source: "xiao-workbench".to_owned(),
+                    cli_version: "fake".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 3, "thread", "turn")
+            .unwrap();
+        let expected_version = repository.get_run(&run.id).unwrap().version;
+
+        let first = repository
+            .request_run_cancel_at_version(&run.id, expected_version, "companion-stop")
+            .unwrap();
+        let CancelDisposition::Interrupt { event, .. } = first else {
+            panic!("running cancellation must persist its started receipt");
+        };
+        assert_eq!(
+            event.unwrap().safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-stop",
+                "targetKind": "run",
+                "targetId": run.id,
+            })
+        );
+        let replay = repository
+            .request_run_cancel_at_version(&run.id, expected_version, "companion-stop")
+            .unwrap();
+        let CancelDisposition::Interrupt { run, event } = replay else {
+            panic!("the command-correlated cancel receipt must remain retryable");
+        };
+        assert!(run.cancel_requested);
+        assert!(event.is_none());
+
+        assert!(repository
+            .finish_run_cancel_for_companion_with_failpoint(&run.id, "companion-stop")
+            .unwrap_err()
+            .contains("Injected failure"));
+        let still_started = repository.get_run(&run.id).unwrap();
+        assert_eq!(still_started.status, RunStatus::Running);
+        assert!(still_started.cancel_requested);
+        assert!(!repository
+            .list_run_events(&run.id, None, None)
+            .unwrap()
+            .into_iter()
+            .any(|event| event.event_type == "run.companion_command_receipt"));
+
+        let current = repository.get_run(&run.id).unwrap();
+        assert!(repository
+            .request_run_cancel_at_version(&run.id, current.version, "companion-stop-b")
+            .unwrap_err()
+            .contains("already has a cancellation in progress"));
+        let replay = repository
+            .request_run_cancel_at_version(&run.id, expected_version, "companion-stop")
+            .unwrap();
+        let CancelDisposition::Interrupt { run, event } = replay else {
+            panic!("the original command must remain retryable after a transient failure");
+        };
+        assert!(run.cancel_requested);
+        assert!(event.is_none());
+
+        let settled = repository
+            .finish_run_cancel_for_companion(&run.id, "companion-stop")
+            .unwrap();
+        let resulting_version = settled.run.version;
+        let receipt = repository
+            .list_run_events(&run.id, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "run.companion_command_receipt")
+            .unwrap();
+        assert_eq!(
+            receipt.safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-stop",
+                "targetKind": "run",
+                "targetId": run.id,
+                "resultingVersion": resulting_version,
+            })
+        );
+    }
+
+    #[test]
+    fn companion_queued_cancel_writes_its_completed_receipt_atomically() {
+        let directory = TestDirectory::new("companion-queued-cancel");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let queued = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "companion-queued-cancel",
+            ))
+            .unwrap()
+            .run;
+
+        let CancelDisposition::Settled(mutation) = repository
+            .request_run_cancel_at_version(&queued.id, queued.version, "companion-queued-stop")
+            .unwrap()
+        else {
+            panic!("queued cancellation must settle in its canonical transaction");
+        };
+        assert_eq!(mutation.run.status, RunStatus::Cancelled);
+        assert_eq!(
+            mutation.event.unwrap().safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-queued-stop",
+                "targetKind": "run",
+                "targetId": queued.id,
+                "resultingVersion": mutation.run.version,
+            })
+        );
+    }
+
+    #[test]
+    fn companion_verification_cancel_completes_with_an_exact_receipt() {
+        let directory = TestDirectory::new("companion-verification-cancel");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let verifying = verifying_run_with_gates(
+            &repository,
+            &workspace,
+            "task-a",
+            "companion-verification-cancel",
+            vec![AcceptanceGate::Cleanliness {
+                allow_staged: true,
+                allow_unstaged: true,
+                allow_untracked: true,
+            }],
+        );
+
+        let CancelDisposition::Verification { event, .. } = repository
+            .request_run_cancel_at_version(
+                &verifying.id,
+                verifying.version,
+                "companion-verification-stop",
+            )
+            .unwrap()
+        else {
+            panic!("verification cancellation must persist a started receipt");
+        };
+        assert_eq!(
+            event.unwrap().safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-verification-stop",
+                "targetKind": "run",
+                "targetId": verifying.id,
+            })
+        );
+
+        let settled = repository
+            .finish_run_cancel_for_companion(&verifying.id, "companion-verification-stop")
+            .unwrap();
+        let receipt = repository
+            .list_run_events(&verifying.id, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "run.companion_command_receipt")
+            .unwrap();
+        assert_eq!(
+            receipt.safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-verification-stop",
+                "targetKind": "run",
+                "targetId": verifying.id,
+                "resultingVersion": settled.run.version,
+            })
+        );
+    }
+
+    #[test]
     fn running_cancel_targets_only_the_exact_run_and_is_idempotent() {
         let directory = TestDirectory::new("running-cancel");
         let repository = repository_with_tasks(&directory.0, &["task-a", "task-b"]);
@@ -4523,12 +5030,17 @@ mod tests {
                 .unwrap();
         }
 
+        let companion_expected_version = repository.get_run(&run_a.id).unwrap().version;
         let requested = repository.request_run_cancel(&run_a.id).unwrap();
         let CancelDisposition::Interrupt { run, event } = requested else {
             panic!("running cancellation must request a runtime interrupt");
         };
         assert!(run.cancel_requested);
         assert!(event.is_some());
+        assert!(repository
+            .request_run_cancel_at_version(&run_a.id, companion_expected_version, "companion-stop",)
+            .unwrap_err()
+            .contains("changed before the Companion command"));
         for _failed_stage in ["task_lookup", "generation_lookup", "interrupt_request"] {
             let replay = repository.request_run_cancel(&run_a.id).unwrap();
             let CancelDisposition::Interrupt { run, event } = replay else {
@@ -4641,6 +5153,71 @@ mod tests {
     }
 
     #[test]
+    fn companion_cancel_settled_by_runtime_completion_writes_the_completed_receipt() {
+        let directory = TestDirectory::new("companion-cancel-completion-race");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let run = repository
+            .enqueue_run(new_run(
+                &repository,
+                &workspace,
+                "task-a",
+                "companion-cancel-completion-race",
+            ))
+            .unwrap()
+            .run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 4,
+                    thread_id: "thread".to_owned(),
+                    thread_source: "xiao-workbench".to_owned(),
+                    cli_version: "fake".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 4, "thread", "turn")
+            .unwrap();
+        let expected_version = repository.get_run(&run.id).unwrap().version;
+        repository
+            .request_run_cancel_at_version(&run.id, expected_version, "companion-stop-race")
+            .unwrap();
+
+        let settled = repository
+            .settle_runtime_turn(
+                &run.id,
+                4,
+                "thread",
+                "turn",
+                RunStatus::Completed,
+                &json!({ "protocol": { "method": "turn/completed" } }),
+            )
+            .unwrap();
+
+        assert_eq!(settled.run.status, RunStatus::Cancelled);
+        assert!(!settled.run.cancel_requested);
+        let receipt = repository
+            .list_run_events(&run.id, None, None)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "run.companion_command_receipt")
+            .unwrap();
+        assert_eq!(
+            receipt.safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-stop-race",
+                "targetKind": "run",
+                "targetId": run.id,
+                "resultingVersion": settled.run.version,
+            })
+        );
+    }
+
+    #[test]
     fn committed_cancel_intent_wins_over_runtime_completion() {
         let directory = TestDirectory::new("cancel-completion-race");
         let repository = repository_with_tasks(&directory.0, &["task-a"]);
@@ -4739,6 +5316,85 @@ mod tests {
             .unwrap()
             .resolved_at
             .is_none());
+    }
+
+    #[test]
+    fn companion_retry_applies_expected_version_in_the_insert_transaction() {
+        let directory = TestDirectory::new("companion-retry-cas");
+        let repository = repository_with_tasks(&directory.0, &["task-a"]);
+        let workspace = workspace_path(&directory.0);
+        let source = repository
+            .enqueue_run(new_run(&repository, &workspace, "task-a", "retry-source"))
+            .unwrap()
+            .run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        let failed = repository
+            .transition_run(
+                &source.id,
+                RunStatus::Failed,
+                "run.failed",
+                Some("retry-source-failed"),
+                &json!({}),
+            )
+            .unwrap()
+            .run;
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE runs SET version = version + 1 WHERE id = ?1",
+                        [&source.id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+
+        assert!(repository
+            .retry_run_at_version(&source.id, "companion-retry", failed.version)
+            .unwrap_err()
+            .contains("changed before the Companion command"));
+        assert!(repository
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT NOT EXISTS(SELECT 1 FROM runs WHERE idempotency_key = 'companion-retry')",
+                        [],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap());
+
+        let current_version = repository.get_run(&source.id).unwrap().version;
+        let first = repository
+            .retry_run_at_version(&source.id, "companion-retry-replay", current_version)
+            .unwrap();
+        assert_eq!(
+            first.event.as_ref().unwrap().safe_payload["companionCommandReceipt"],
+            json!({
+                "commandId": "companion-retry-replay",
+                "targetKind": "run",
+                "targetId": source.id,
+                "resultingVersion": current_version,
+            })
+        );
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE runs SET version = version + 1 WHERE id = ?1",
+                        [&source.id],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let replay = repository
+            .retry_run_at_version(&source.id, "companion-retry-replay", current_version)
+            .unwrap();
+        assert_eq!(replay.run.id, first.run.id);
+        assert!(replay.event.is_none());
     }
 
     #[test]

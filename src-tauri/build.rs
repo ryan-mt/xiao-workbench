@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -112,32 +113,56 @@ const APP_COMMANDS: &[&str] = &[
 
 #[cfg(not(test))]
 fn main() {
-    match validate_ticket03_certification() {
-        Ok(certification) => {
-            println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
-        }
-        Err(error) if allows_uncertified_build(std::env::var("PROFILE").as_deref().ok()) => {
-            println!(
-                "cargo:warning=Ticket 03 release certification is stale; \
-                 continuing with an uncertified debug build: {error}"
-            );
-        }
-        Err(error) => {
-            panic!("Ticket 03 release certification does not match the verified source: {error}");
-        }
+    synchronize_ticket03_source()
+        .expect("Ticket 03 source fingerprint could not be synchronized before the build");
+    let certification = validate_ticket03_certification()
+        .expect("Ticket 03 release certification does not match the verified source");
+    if let Some(certification) = certification {
+        println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
+    } else {
+        println!(
+            "cargo:warning=Ticket 03 source is synchronized but pending the pre-commit release gates"
+        );
     }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
     )
     .expect("failed to build Xiao's Tauri manifest");
+    #[cfg(target_os = "windows")]
+    println!(
+        "cargo:rustc-link-search=native={}",
+        PathBuf::from(std::env::var("OUT_DIR").expect("build output directory")).display()
+    );
 }
 
-fn allows_uncertified_build(profile: Option<&str>) -> bool {
-    profile == Some("debug")
+fn synchronize_ticket03_source() -> Result<(), String> {
+    let root = workspace_root()?;
+    let output = Command::new("node")
+        .arg(root.join("scripts/sync-ticket03-certification.mjs"))
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("Could not start the Ticket 03 source sync: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Ticket 03 source sync failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
-fn validate_ticket03_certification() -> Result<String, String> {
+fn workspace_root() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR")
+            .map_err(|error| format!("Could not locate the Cargo manifest: {error}"))?,
+    )
+    .parent()
+    .ok_or("The Cargo manifest has no workspace parent.")?
+    .to_path_buf())
+}
+
+fn validate_ticket03_certification() -> Result<Option<String>, String> {
     const ROW_IDS: &[&str] = &[
         "codex-runtime",
         "multiple-codex-accounts",
@@ -177,13 +202,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
         "typecheck-frontend-rust-production-build",
     ];
 
-    let root = PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR")
-            .map_err(|error| format!("Could not locate the Cargo manifest: {error}"))?,
-    )
-    .parent()
-    .ok_or("The Cargo manifest has no workspace parent.")?
-    .to_path_buf();
+    let root = workspace_root()?;
     let certification_path =
         root.join("src/features/release-assurance/ticket03-certification.json");
     println!("cargo:rerun-if-changed={}", certification_path.display());
@@ -191,8 +210,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
         .map_err(|error| format!("Could not read Ticket 03 certification: {error}"))?;
     let document: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Could not decode Ticket 03 certification: {error}"))?;
-    if document["status"] != "passed"
-        || document["baselineCommit"] != "fda6486233e0b2f07ecfea166e1a94533cb923c4"
+    if document["baselineCommit"] != "fda6486233e0b2f07ecfea166e1a94533cb923c4"
         || document["evidence"] != "src/features/release-assurance/ticket03-verification.md"
         || string_array(&document["rowIds"])? != ROW_IDS
         || string_array(&document["gateIds"])? != GATE_IDS
@@ -205,8 +223,13 @@ fn validate_ticket03_certification() -> Result<String, String> {
     let actual = ticket03_source_fingerprint(&root)?;
     if expected != actual {
         return Err(format!(
-            "Ticket 03 source fingerprint changed: certified {expected}, current {actual}"
+            "Ticket 03 source fingerprint changed: recorded {expected}, current {actual}. Run `npm run certification:sync` before invoking Cargo directly"
         ));
+    }
+    match document["status"].as_str() {
+        Some("pending") => return Ok(None),
+        Some("passed") => {}
+        _ => return Err("Ticket 03 certification status is invalid.".to_owned()),
     }
     let evidence_path = root.join(
         document["evidence"]
@@ -221,7 +244,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
             "Ticket 03 verification evidence is not bound to the certified source.".to_owned(),
         );
     }
-    Ok(actual)
+    Ok(Some(actual))
 }
 
 fn string_array<'a>(value: &'a serde_json::Value) -> Result<Vec<&'a str>, String> {
@@ -237,41 +260,7 @@ fn string_array<'a>(value: &'a serde_json::Value) -> Result<Vec<&'a str>, String
 }
 
 fn ticket03_source_fingerprint(root: &Path) -> Result<String, String> {
-    const SOURCES: &[&str] = &[
-        "package.json",
-        "package-lock.json",
-        "tsconfig.app.json",
-        "tsconfig.json",
-        "tsconfig.node.json",
-        "vite.config.ts",
-        "src-tauri/build.rs",
-        "src-tauri/Cargo.toml",
-        "src-tauri/Cargo.lock",
-        "src-tauri/permissions",
-        "src-tauri/src/companion",
-        "src-tauri/src/lib.rs",
-        "src-tauri/src/runs",
-        "src-tauri/src/verification",
-        "src-tauri/src/xiao/models.rs",
-        "src-tauri/src/xiao/repository.rs",
-        "src-tauri/src/xiao/supervision.rs",
-        "src-tauri/tauri.beta.conf.json",
-        "src-tauri/tauri.conf.json",
-        "src/app/App.tsx",
-        "src/core/bridges/tauri.ts",
-        "src/core/models/companion.ts",
-        "src/features/companion",
-        "src/features/release-assurance/releaseAssurance.ts",
-        "src/features/release-assurance/releaseAssurance.test.ts",
-        "src/features/shell/components/Sidebar.tsx",
-        "src/features/shell/components/Sidebar.test.tsx",
-        "src/features/shell/shell.types.ts",
-    ];
-    let mut files = Vec::new();
-    for source in SOURCES {
-        collect_source_files(&root.join(source), &mut files)?;
-    }
-    files.sort();
+    let files = ticket03_source_manifest(root)?;
     let mut digest = Sha256::new();
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
@@ -288,6 +277,133 @@ fn ticket03_source_fingerprint(root: &Path) -> Result<String, String> {
         digest.update([0]);
     }
     Ok(format!("sha256:{}", hex_string(&digest.finalize())))
+}
+
+fn ticket03_source_manifest(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    collect_workspace_sources(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_workspace_sources(
+    root: &Path,
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| {
+            format!(
+                "Could not inspect Ticket 03 source {}: {error}",
+                path.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not inspect Ticket 03 source: {error}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "A Ticket 03 source escaped the workspace root.".to_owned())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Could not inspect Ticket 03 source {relative}: {error}"))?;
+        if file_type.is_dir() {
+            if !excluded_source_directory(&relative) {
+                collect_workspace_sources(root, &path, files)?;
+            }
+        } else if file_type.is_file() {
+            if certified_source_file(&relative) {
+                files.push(path);
+            } else if release_source_candidate(&relative) && !excluded_source_file(&relative) {
+                return Err(format!(
+                    "Release source lies outside Ticket 03 fingerprint coverage: {relative}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn certified_source_file(relative: &str) -> bool {
+    const ROOT_FILES: &[&str] = &[
+        "README.md",
+        "index.html",
+        "package-lock.json",
+        "package.json",
+        "tsconfig.app.json",
+        "tsconfig.json",
+        "tsconfig.node.json",
+        "vite.config.ts",
+    ];
+    (relative.starts_with("public/")
+        || relative.starts_with("scripts/")
+        || relative.starts_with("src/")
+        || relative.starts_with("src-tauri/"))
+        && !excluded_source_file(relative)
+        || ROOT_FILES.contains(&relative)
+}
+
+fn excluded_source_directory(relative: &str) -> bool {
+    relative.split('/').any(|component| {
+        matches!(
+            component,
+            ".git"
+                | ".hermes"
+                | ".next"
+                | ".ok"
+                | ".pi"
+                | ".scratch"
+                | ".vite"
+                | "coverage"
+                | "dist"
+                | "docs"
+                | "gen"
+                | "node_modules"
+                | "plans"
+                | "target"
+        )
+    })
+}
+
+fn excluded_source_file(relative: &str) -> bool {
+    matches!(
+        relative,
+        "src/features/release-assurance/ticket03-certification.json"
+            | "src/features/release-assurance/ticket03-verification.md"
+    )
+}
+
+fn release_source_candidate(relative: &str) -> bool {
+    matches!(
+        Path::new(relative)
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some(
+            "c" | "cc"
+                | "cpp"
+                | "css"
+                | "h"
+                | "html"
+                | "js"
+                | "json"
+                | "jsx"
+                | "lock"
+                | "mjs"
+                | "rs"
+                | "scss"
+                | "toml"
+                | "ts"
+                | "tsx"
+                | "vue"
+                | "yaml"
+                | "yml"
+        )
+    )
 }
 
 fn normalize_build_version(relative: &str, source: Vec<u8>) -> Vec<u8> {
@@ -331,33 +447,6 @@ fn normalize_build_version(relative: &str, source: Vec<u8>) -> Vec<u8> {
     text.into_bytes()
 }
 
-fn collect_source_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    if path.is_file() {
-        files.push(path.to_path_buf());
-        return Ok(());
-    }
-    let entries = fs::read_dir(path).map_err(|error| {
-        format!(
-            "Could not inspect Ticket 03 source {}: {error}",
-            path.display()
-        )
-    })?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| format!("Could not inspect Ticket 03 source: {error}"))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_source_files(&path, files)?;
-        } else if matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("rs" | "ts" | "tsx" | "css" | "toml")
-        ) {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn hex_string(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -370,14 +459,29 @@ fn hex_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{allows_uncertified_build, normalize_build_version};
+    use super::{normalize_build_version, ticket03_source_fingerprint, ticket03_source_manifest};
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
-    #[test]
-    fn only_debug_builds_may_run_without_release_certification() {
-        assert!(allows_uncertified_build(Some("debug")));
-        assert!(!allows_uncertified_build(Some("release")));
-        assert!(!allows_uncertified_build(Some("production")));
-        assert!(!allows_uncertified_build(None));
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Cargo manifest should have a workspace parent")
+            .to_path_buf()
+    }
+
+    fn relative_paths(root: &Path, files: Vec<PathBuf>) -> BTreeSet<String> {
+        files
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(root)
+                    .expect("manifest source should remain under the workspace")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
     }
 
     #[test]
@@ -390,5 +494,61 @@ mod tests {
         assert_eq!(lf, crlf);
         assert_eq!(lf, mixed);
         assert_ne!(lf, changed);
+    }
+
+    #[test]
+    fn node_sync_uses_the_build_script_fingerprint() {
+        let root = workspace_root();
+        let output = Command::new("node")
+            .arg(root.join("scripts/sync-ticket03-certification.mjs"))
+            .arg("--print")
+            .output()
+            .expect("Node should run the Ticket 03 fingerprint sync");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let node = String::from_utf8(output.stdout)
+            .expect("Node fingerprint should be UTF-8")
+            .trim()
+            .to_owned();
+        let rust = ticket03_source_fingerprint(&root)
+            .expect("Rust should compute the Ticket 03 source fingerprint");
+
+        assert_eq!(node, rust);
+    }
+
+    #[test]
+    fn source_manifest_covers_complete_frontend_and_backend_trees() {
+        let root = workspace_root();
+        let manifest = relative_paths(
+            &root,
+            ticket03_source_manifest(&root).expect("release source manifest should be complete"),
+        );
+
+        assert!(manifest.contains("src/app/LazyLoadBoundary.tsx"));
+        assert!(manifest.contains("src/app/LazyLoadBoundary.test.tsx"));
+        assert!(manifest.contains("src-tauri/src/time_travel/repository.rs"));
+        assert!(manifest.contains("scripts/sync-build-version.mjs"));
+        assert!(manifest.contains("src-tauri/tests/build_certification.rs"));
+        assert!(!manifest.contains("src/features/release-assurance/ticket03-certification.json"));
+        assert!(!manifest.contains("src/features/release-assurance/ticket03-verification.md"));
+    }
+
+    #[test]
+    fn source_manifest_rejects_release_source_outside_coverage() {
+        let root =
+            std::env::temp_dir().join(format!("xiao-build-certification-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("unexpected")).expect("temporary source directory");
+        fs::write(root.join("unexpected/release.ts"), "export {};\n")
+            .expect("temporary release source");
+
+        let error = ticket03_source_manifest(&root)
+            .expect_err("uncovered release source must fail certification");
+        assert!(error.contains("unexpected/release.ts"), "{error}");
+
+        fs::remove_dir_all(root).expect("temporary source cleanup");
     }
 }

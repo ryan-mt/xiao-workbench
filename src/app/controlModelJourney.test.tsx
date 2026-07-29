@@ -92,6 +92,12 @@ vi.mock("@tauri-apps/api/dpi", () => ({
   LogicalSize: class { constructor(public width: number, public height: number) {} },
   PhysicalPosition: class { constructor(public x: number, public y: number) {} },
 }));
+const dialog = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: dialog.open,
+}));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     cols = 100;
@@ -504,17 +510,16 @@ const installHost = () => {
 };
 
 const clickWorkspaceTool = async (name: string) => {
-  fireEvent.click(screen.getByLabelText("Open workspace tools"));
+  fireEvent.click(await screen.findByLabelText("Open workspace tools"));
   fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(name) }));
 };
 
-const taskButton = (title: string) => screen.getAllByText(title)
-  .map((element) => element.closest(".task-list__item"))
-  .find((element): element is HTMLElement => element instanceof HTMLElement)!;
+const taskButton = (title: string) => screen.getByRole("button", { name: `Open ${title}` });
 
 describe("control-model application shell journey", () => {
   beforeEach(() => {
     installHost();
+    dialog.open.mockReset().mockResolvedValue(null);
     HTMLElement.prototype.scrollIntoView = vi.fn();
     window.localStorage.clear();
     window.localStorage.setItem("xiao.active-project.v1", workspacePath);
@@ -587,6 +592,60 @@ describe("control-model application shell journey", () => {
     expect(await screen.findByText("Ready")).toBeTruthy();
     expect(screen.queryByText("Select a Codex profile before starting this Task.")).toBeNull();
     expect(host.state.startedProfileIds).toContain("default");
+  });
+
+  it("restores unsent composer attachments after the workbench remounts", async () => {
+    dialog.open.mockResolvedValueOnce("C:/journey/context.txt");
+    const firstMount = render(<App />);
+    await screen.findByText("Ready");
+
+    fireEvent.click(screen.getByLabelText("Add context or task settings"));
+    fireEvent.click(screen.getByRole("button", { name: /FilesAttach files/ }));
+    expect(await screen.findByText("context.txt")).toBeTruthy();
+
+    firstMount.unmount();
+    render(<App />);
+
+    expect(await screen.findByText("context.txt")).toBeTruthy();
+  });
+
+  it("surfaces a durable recovery error when attachment storage exceeds quota", async () => {
+    const setItem = Storage.prototype.setItem;
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
+      if (key === "xiao.composer-attachment-recovery.v1") {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      }
+      return setItem.call(window.localStorage, key, value);
+    });
+    dialog.open.mockResolvedValueOnce("C:/journey/quota.txt");
+
+    render(<App />);
+    await screen.findByText("Ready");
+    fireEvent.click(screen.getByLabelText("Add context or task settings"));
+    fireEvent.click(screen.getByRole("button", { name: /FilesAttach files/ }));
+
+    expect(await screen.findByText("quota.txt")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Attachment recovery could not be saved to durable storage: quota exceeded",
+    );
+    storage.mockRestore();
+  });
+
+  it("moves keyboard focus through lazy review loading and restores its opener on close", async () => {
+    render(<App />);
+    await screen.findByText("Ready");
+    const opener = screen.getByTitle("Inspect session context");
+    opener.focus();
+
+    fireEvent.click(opener);
+
+    const loading = screen.getByRole("status", { name: "Loading review panel" });
+    expect(document.activeElement).toBe(loading);
+    const panelControl = await screen.findByRole("button", { name: "Hide review sidebar" });
+    await waitFor(() => expect(document.activeElement).toBe(panelControl));
+
+    fireEvent.click(screen.getByRole("button", { name: "Close review panel" }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
   });
 
   it("blocks New Task startup when profile discovery finds no profile", async () => {

@@ -1,6 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { isTauriHost, nativeBridge } from "../core/bridges/tauri";
 import {
@@ -57,7 +66,6 @@ import { projectAttentionItems } from "../features/attention/attentionProjection
 import { useAttentionCenter } from "../features/attention/useAttentionCenter";
 import { CommandMenu } from "../features/command-menu/components/CommandMenu";
 import { commandForKeyboardEvent } from "../features/command-menu/commandBindings";
-import { FocusRail } from "../features/focus-rail/components/FocusRail";
 import type { RoutineDraft } from "../features/focus-rail/components/SchedulePanel";
 import type { SavedAcceptanceContract } from "../features/focus-rail/components/VerificationPanel";
 import type {
@@ -90,6 +98,7 @@ import type { AppPage } from "../features/shell/shell.types";
 import {
   readComposerAttachmentRecoveries,
   storeComposerAttachmentRecovery,
+  type ComposerAttachmentRecoveryFailure,
 } from "../features/task/composer/attachmentRecovery";
 import {
   defaultTaskWorkspaceMode,
@@ -110,6 +119,17 @@ import {
 import { resolveTimelineResource } from "../features/task/timeline/resourceNavigation";
 import { TaskWorkspace } from "../features/task/workspace/TaskWorkspace";
 import { useWorkspace } from "../features/workspace/hooks/useWorkspace";
+import {
+  FocusOnMount,
+  LazyLoadBoundary,
+  LazyLoadFocusFallback,
+} from "./LazyLoadBoundary";
+
+const FocusRail = lazy(() =>
+  import("../features/focus-rail/components/FocusRail").then((module) => ({
+    default: module.FocusRail,
+  })),
+);
 
 export type StoredTaskState = {
   tasks: WorkbenchTask[];
@@ -192,11 +212,20 @@ const readFocusRailPreference = (): { view: FocusView; open: boolean } => {
     return { view: "changes", open: false };
   }
 };
-const focusAppContentNextFrame = () => {
+const focusAppContentNextFrame = (preferredTarget: HTMLElement | null = null) => {
   window.requestAnimationFrame(() => {
-    document.querySelector<HTMLElement>(".app-content")?.focus();
+    const target = preferredTarget?.isConnected
+      ? preferredTarget
+      : document.querySelector<HTMLElement>(".app-content");
+    target?.focus();
   });
 };
+
+const composerAttachmentRecoveryErrorMessage = (
+  failure: ComposerAttachmentRecoveryFailure,
+) => `Attachment recovery could not be ${
+  failure.operation === "get" ? "read from" : failure.operation === "set" ? "saved to" : "cleared from"
+} durable storage: ${failure.message}`;
 
 export type ReviewContextState = Record<string, AgentAttachment[]>;
 
@@ -1570,11 +1599,18 @@ export function App() {
   const focusResourceRequestId = useRef(0);
   const focusResourceContextRef = useRef("");
   const [focusPanelOpen, setFocusPanelOpen] = useState(initialFocusRailPreference.open);
+  const focusRailOpenerRef = useRef<HTMLElement | null>(null);
   const invalidateFocusResourceRequest = () => {
     focusResourceRequestId.current += 1;
     setFocusResourceRequest(null);
   };
   const closeFocusPanel = () => {
+    const restoreTarget = focusRailOpenerRef.current;
+    const focusedElement = document.activeElement;
+    const shouldRestoreFocus = focusPanelOpen && focusedElement instanceof HTMLElement && Boolean(
+      focusedElement.closest("#review-panel, .focus-rail-load-state"),
+    );
+    focusRailOpenerRef.current = null;
     invalidateFocusResourceRequest();
     setFocusPanelOpen(false);
     setTasks((current) => current.map((task) =>
@@ -1592,6 +1628,7 @@ export function App() {
         }
       : current
     );
+    if (shouldRestoreFocus) focusAppContentNextFrame(restoreTarget);
   };
   const [sidebarOpen, setSidebarOpen] = useState(
     () =>
@@ -1701,9 +1738,17 @@ export function App() {
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
   const [archivedTasksError, setArchivedTasksError] = useState<string | null>(null);
   const [reviewContextByTask, setReviewContextByTask] = useState<ReviewContextState>({});
+  const [initialComposerAttachmentRecovery] = useState(readComposerAttachmentRecoveries);
   const [restoredAttachmentsByTask, setRestoredAttachmentsByTask] = useState<
     Record<string, AgentAttachment[]>
-  >(readComposerAttachmentRecoveries);
+  >(() => initialComposerAttachmentRecovery.ok ? initialComposerAttachmentRecovery.value : {});
+  const [attachmentRecoveryError, setAttachmentRecoveryError] = useState<{
+    taskKey: string | null;
+    message: string;
+  } | null>(() => initialComposerAttachmentRecovery.ok ? null : {
+    taskKey: null,
+    message: composerAttachmentRecoveryErrorMessage(initialComposerAttachmentRecovery.error),
+  });
   const composerRevisionByTaskRef = useRef<Record<string, number>>({});
   const [routineOpenTarget, setRoutineOpenTarget] = useState<RoutineOpenRunTarget | null>(null);
   const [attentionOpenTarget, setAttentionOpenTarget] = useState<AttentionItem | null>(null);
@@ -1819,14 +1864,17 @@ export function App() {
     taskWorkspacePath,
     activeTask.id,
   );
-  const dangerousRoutineIds = new Set(
-    routineController.routines
-      .filter((routine) =>
-        routine.sandboxMode === "danger-full-access" ||
-        tasks.find((task) => task.id === routine.taskId)?.sandboxMode === "danger-full-access",
-      )
-      .map((routine) => routine.id),
-  );
+  const dangerousRoutineIds = useMemo(() => {
+    const taskSandboxModes = new Map(tasks.map((task) => [task.id, task.sandboxMode]));
+    return new Set(
+      routineController.routines
+        .filter((routine) =>
+          routine.sandboxMode === "danger-full-access" ||
+          taskSandboxModes.get(routine.taskId) === "danger-full-access"
+        )
+        .map((routine) => routine.id),
+    );
+  }, [routineController.routines, tasks]);
   const focusedLaunch =
     taskStateReady &&
     taskWorkspacePath === workspace.path &&
@@ -2162,6 +2210,7 @@ export function App() {
       !selectedImportedThread
     ) return;
     let disposed = false;
+    let timer: number | null = null;
     const queueRefresh = () => {
       if (disposed) return;
       setPendingCodexThread((current) => current ?? {
@@ -2172,12 +2221,12 @@ export function App() {
         },
         silent: true,
       });
+      timer = window.setTimeout(queueRefresh, codexLiveRefreshMs);
     };
     queueRefresh();
-    const timer = window.setInterval(queueRefresh, codexLiveRefreshMs);
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [
     codexHistoryContextTaskId,
@@ -2919,6 +2968,10 @@ export function App() {
   ]);
   const activeComposerAttachments =
     restoredAttachmentsByTask[workspaceTaskKey(taskWorkspacePath, activeTask.id)] ?? [];
+  const activeAttachmentRecoveryError = attachmentRecoveryError && (
+    attachmentRecoveryError.taskKey === null ||
+    attachmentRecoveryError.taskKey === workspaceTaskKey(taskWorkspacePath, activeTask.id)
+  ) ? attachmentRecoveryError.message : null;
   const canChangeLaunchProject = canChangeDraftLaunchProject({
     selectedTask: Boolean(selectedTask),
     hasActiveRuns: agent.hasActiveRuns,
@@ -2929,25 +2982,29 @@ export function App() {
   });
   const attentionItems = useMemo<AttentionItem[]>(() => {
     if (isTauriHost()) return attentionController.items;
-    return projectAttentionItems(tasks, agent.runs, agent.pendingInputs).map((item) => ({
-      id: item.id,
-      projectPath: workspace.path,
-      projectName: workspace.name,
-      taskId: item.taskId,
-      taskTitle: tasks.find((task) => task.id === item.taskId)?.title ?? item.detail,
-      taskStage: tasks.find((task) => task.id === item.taskId)?.stage ?? "in_progress",
-      taskStageVersion: tasks.find((task) => task.id === item.taskId)?.stageVersion ?? 0,
-      runId: item.runId,
-      kind: item.kind,
-      priority: item.kind === "decision" ? 0 : item.kind === "unread" ? 3 : 1,
-      title: item.title,
-      safeSummary: item.detail,
-      sourceOccurrenceKey: item.id,
-      surface: item.kind === "verification" ? "verification" : "timeline",
-      createdAt: item.timestamp,
-      resolvedAt: null,
-      acknowledgedAt: null,
-    }));
+    const tasksById = new Map(tasks.map((task) => [task.id, task]));
+    return projectAttentionItems(tasks, agent.runs, agent.pendingInputs).map((item) => {
+      const task = tasksById.get(item.taskId);
+      return {
+        id: item.id,
+        projectPath: workspace.path,
+        projectName: workspace.name,
+        taskId: item.taskId,
+        taskTitle: task?.title ?? item.detail,
+        taskStage: task?.stage ?? "in_progress",
+        taskStageVersion: task?.stageVersion ?? 0,
+        runId: item.runId,
+        kind: item.kind,
+        priority: item.kind === "decision" ? 0 : item.kind === "unread" ? 3 : 1,
+        title: item.title,
+        safeSummary: item.detail,
+        sourceOccurrenceKey: item.id,
+        surface: item.kind === "verification" ? "verification" : "timeline",
+        createdAt: item.timestamp,
+        resolvedAt: null,
+        acknowledgedAt: null,
+      };
+    });
   }, [
     agent.pendingInputs,
     agent.runs,
@@ -3641,7 +3698,17 @@ export function App() {
   ) => {
     const key = workspaceTaskKey(workspacePath, taskId);
     advanceComposerRevision(workspacePath, taskId);
-    storeComposerAttachmentRecovery(workspacePath, taskId, []);
+    const stored = storeComposerAttachmentRecovery(workspacePath, taskId, attachments);
+    if (stored.ok) {
+      setAttachmentRecoveryError((current) =>
+        current && (current.taskKey === null || current.taskKey === key) ? null : current
+      );
+    } else {
+      setAttachmentRecoveryError({
+        taskKey: key,
+        message: composerAttachmentRecoveryErrorMessage(stored.error),
+      });
+    }
     setRestoredAttachmentsByTask((current) => {
       if (attachments.length) return { ...current, [key]: attachments };
       if (!current[key]) return current;
@@ -3888,6 +3955,11 @@ export function App() {
 
   const openFocusView = (view: FocusView, preserveResourceRequest = false) => {
     if (!preserveResourceRequest) invalidateFocusResourceRequest();
+    if (!focusPanelOpen) {
+      focusRailOpenerRef.current = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    }
     setActivePage("tasks");
     setFocusView(view);
     setFocusPanelOpen(true);
@@ -5012,6 +5084,8 @@ export function App() {
             <AttentionCenter
               items={attentionItems}
               hydrationStatus={attentionHydrationStatus}
+              actionError={attentionController.actionError}
+              acknowledgingItemIds={attentionController.acknowledgingItemIds}
               onRetry={retryAttention}
               onOpenItem={(item) => {
                 setAttentionOpenTarget(item);
@@ -5159,7 +5233,7 @@ export function App() {
               )}
               hasActiveRuns={importedTaskWorking || agent.isTaskWorking(activeTask.id)}
               launchMode={focusedLaunch}
-              taskStateError={taskStateError}
+              taskStateError={taskStateError ?? activeAttachmentRecoveryError}
               taskStateLoading={taskWorkspaceStateLoading}
               timeline={agent.timeline}
               runtime={taskDisplayRuntime}
@@ -5194,6 +5268,7 @@ export function App() {
               definitionOfDone={definitionOfDone}
               definitionOfDoneError={activeDefinitionOfDoneError}
               contextUsage={agent.contextUsage}
+              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? 0}
               showReasoningSummaries={preferences.showReasoningSummaries}
               expandToolOutput={preferences.expandToolOutput}
               launchBrand={preferences.launchBrand}
@@ -5294,65 +5369,76 @@ export function App() {
         }
         focusRail={
           activePage === "tasks" && focusPanelOpen ? (
-            <FocusRail
-              activeView={focusView}
-              resourceRequest={focusResourceRequest}
-              onViewChange={(view) => openFocusView(view)}
-              onClose={closeFocusPanel}
-              onOpenBrowser={openTimelineResource}
-              onBrowserNavigationStart={invalidateFocusResourceRequest}
-              workspace={workspace}
-              system={system}
-              runtime={agent.runtime}
-              task={activeTask}
-              executionTaskId={executionTaskId}
-              executionTransitioning={activeEnvironmentBusy}
-              workspaceActionable={workspaceActionable}
-              timeline={agent.timeline}
-              models={agent.models}
-              contextUsage={agent.contextUsage}
-              plan={activeTask.plan}
-              runtimeLogs={agent.runtimeLogs}
-              runs={agent.runs}
-              pendingInputs={agent.pendingInputs}
-              onJumpToTimeline={jumpToTimelineEntry}
-              onImportHandoff={importTaskHandoff}
-              loading={loading || activeEnvironmentBusy}
-              error={workspaceError}
-              onRefresh={refresh}
-              onTaskOutcomeChange={() => void refreshActiveTaskOutcome()}
-              onLoadDirectory={loadDirectory}
-              routines={routineController.routines}
-              routinesLoading={routineController.loading}
-              routinesError={routineController.error}
-              routineCreating={routineController.creating}
-              routineBusyIds={routineController.busyIds}
-              routineOpenRunId={attentionOpenRunId ?? routineOpenTarget?.runId ?? null}
-              observatoryOpenRunId={attentionOpenRunId}
-              changesOpenPublicationTarget={attentionOpenPublicationTarget}
-              onOpenRunConsumed={consumeOpenRunTarget}
-              nativeRoutinesAvailable={isTauriHost()}
-              dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}
-              dangerousRoutineIds={dangerousRoutineIds}
-              onCreateRoutine={createRoutine}
-              onUpdateRoutine={updateRoutine}
-              onSetRoutineEnabled={async (routineId, enabled) => {
-                await routineController.setEnabled(routineId, enabled);
-              }}
-              onRunRoutineNow={async (routineId) => {
-                await routineController.runNow(routineId);
-              }}
-              onDeleteRoutine={routineController.remove}
-              onClearRoutineError={routineController.clearError}
-              onTaskAcceptanceContractSaved={updateTaskAcceptanceContract}
-              reviewContext={pendingReviewContext}
-              onStageReviewContext={stageReviewContext}
-              onRemoveReviewContext={removeReviewContext}
-              obscured={commandMenuOpen}
-              onWorkbenchStateChange={(workbenchState) => {
-                patchActiveTask({ workbenchState });
-              }}
-            />
+            <LazyLoadBoundary
+              label="review panel"
+              onReload={() => window.location.reload()}
+            >
+              <Suspense
+                fallback={<LazyLoadFocusFallback label="review panel" />}
+              >
+                <FocusOnMount targetSelector="#review-panel button:not(:disabled)">
+                  <FocusRail
+                    activeView={focusView}
+                    resourceRequest={focusResourceRequest}
+                    onViewChange={(view) => openFocusView(view)}
+                    onClose={closeFocusPanel}
+                    onOpenBrowser={openTimelineResource}
+                    onBrowserNavigationStart={invalidateFocusResourceRequest}
+                    workspace={workspace}
+                    system={system}
+                    runtime={agent.runtime}
+                    task={activeTask}
+                    executionTaskId={executionTaskId}
+                    executionTransitioning={activeEnvironmentBusy}
+                    workspaceActionable={workspaceActionable}
+                    timeline={agent.timeline}
+                    models={agent.models}
+                    contextUsage={agent.contextUsage}
+                    plan={activeTask.plan}
+                    runtimeLogs={agent.runtimeLogs}
+                    runs={agent.runs}
+                    pendingInputs={agent.pendingInputs}
+                    onJumpToTimeline={jumpToTimelineEntry}
+                    onImportHandoff={importTaskHandoff}
+                    loading={loading || activeEnvironmentBusy}
+                    error={workspaceError}
+                    onRefresh={refresh}
+                    onTaskOutcomeChange={() => void refreshActiveTaskOutcome()}
+                    onLoadDirectory={loadDirectory}
+                    routines={routineController.routines}
+                    routinesLoading={routineController.loading}
+                    routinesError={routineController.error}
+                    routineCreating={routineController.creating}
+                    routineBusyIds={routineController.busyIds}
+                    routineOpenRunId={attentionOpenRunId ?? routineOpenTarget?.runId ?? null}
+                    observatoryOpenRunId={attentionOpenRunId}
+                    changesOpenPublicationTarget={attentionOpenPublicationTarget}
+                    onOpenRunConsumed={consumeOpenRunTarget}
+                    nativeRoutinesAvailable={isTauriHost()}
+                    dangerousRoutineAccessDefault={preferences.taskRunDefaults.sandboxMode === "danger-full-access"}
+                    dangerousRoutineIds={dangerousRoutineIds}
+                    onCreateRoutine={createRoutine}
+                    onUpdateRoutine={updateRoutine}
+                    onSetRoutineEnabled={async (routineId, enabled) => {
+                      await routineController.setEnabled(routineId, enabled);
+                    }}
+                    onRunRoutineNow={async (routineId) => {
+                      await routineController.runNow(routineId);
+                    }}
+                    onDeleteRoutine={routineController.remove}
+                    onClearRoutineError={routineController.clearError}
+                    onTaskAcceptanceContractSaved={updateTaskAcceptanceContract}
+                    reviewContext={pendingReviewContext}
+                    onStageReviewContext={stageReviewContext}
+                    onRemoveReviewContext={removeReviewContext}
+                    obscured={commandMenuOpen}
+                    onWorkbenchStateChange={(workbenchState) => {
+                      patchActiveTask({ workbenchState });
+                    }}
+                  />
+                </FocusOnMount>
+              </Suspense>
+            </LazyLoadBoundary>
           ) : null
         }
       />

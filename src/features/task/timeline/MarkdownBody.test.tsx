@@ -1,14 +1,21 @@
+// @vitest-environment jsdom
+
 import { renderToStaticMarkup } from "react-dom/server";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CopyButton,
   localMarkdownImagePath,
   MarkdownBody,
   markdownUrlTransform,
 } from "./MarkdownBody";
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(document, "execCommand");
 });
 
 describe("MarkdownBody resource links", () => {
@@ -124,5 +131,22 @@ describe("MarkdownBody resource links", () => {
 
     expect(markup).toContain("markdown-body--huge");
     expect(markup).toContain("Large response · shown as plain text");
+  });
+});
+
+describe("CopyButton", () => {
+  it("surfaces clipboard failures without rejecting the click handler", async () => {
+    vi.stubGlobal("navigator", {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error("permission denied")) },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    render(<CopyButton text="stable output" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy to clipboard" }));
+
+    expect(await screen.findByText("Copy failed")).toBeTruthy();
   });
 });

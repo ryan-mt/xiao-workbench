@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildCompanionBrowserPairingUrl,
   executeCompanionCommand,
   normalizeCompanionEndpoint,
   parseCompanionPairingBundle,
@@ -101,6 +102,25 @@ const nativeClient = (
 });
 
 describe("Companion client connection", () => {
+  it("builds a browser pairing URL without putting credentials in the request target", () => {
+    const url = new URL(buildCompanionBrowserPairingUrl(pairingCode()));
+
+    expect(url.origin).toBe("https://xiao.local:4318");
+    expect(url.pathname).toBe("/");
+    expect(url.search).toBe("");
+    expect(url.hash).toMatch(/^#pair=[A-Za-z0-9_-]+$/);
+    expect(url.href).not.toContain("owner-once");
+
+    const encoded = url.hash.slice("#pair=".length).replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = decodeURIComponent(
+      atob(encoded)
+        .split("")
+        .map((character) => `%${character.charCodeAt(0).toString(16).padStart(2, "0")}`)
+        .join(""),
+    );
+    expect(decoded).toBe(pairingCode());
+  });
+
   it("accepts only credential-free HTTPS primary-host endpoints", () => {
     expect(normalizeCompanionEndpoint(" https://xiao.local:4318/ ")).toBe(
       "https://xiao.local:4318",

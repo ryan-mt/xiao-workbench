@@ -25,7 +25,7 @@ export type CompanionDevice = {
 };
 
 export type CompanionPairing = {
-  status: "idle" | "creating" | "ready" | "exchanging" | "failed";
+  status: "idle" | "creating" | "ready" | "exchanging" | "expired" | "failed";
   ownerCredential: string | null;
   expiresAt: number | null;
   error: string | null;

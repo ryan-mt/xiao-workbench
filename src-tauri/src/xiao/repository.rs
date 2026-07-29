@@ -2413,6 +2413,7 @@ fn open_connection(
         app_data_dir,
         options.fail_legacy_before_commit,
     )?;
+    crate::time_travel::repository::recover_pending_restore(&mut connection, app_data_dir)?;
     Ok(connection)
 }
 
@@ -4881,7 +4882,13 @@ mod tests {
                     assert_eq!(outcome_supervision_tables, 2);
                     assert_eq!(outcome_supervision_capability, (1, 1));
                     assert_eq!(companion_tables, 6);
-                    assert_eq!(companion_capability, (1, 1));
+                    assert_eq!(
+                        companion_capability,
+                        (
+                            1,
+                            i64::from(VALIDATED_COMPANION_RELEASE_CERTIFICATION.is_some()),
+                        )
+                    );
                     assert_eq!(task_control_columns, 4);
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);

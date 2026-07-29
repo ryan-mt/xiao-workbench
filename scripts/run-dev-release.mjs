@@ -40,6 +40,10 @@ buildArgs.push("--no-bundle");
 
 const build = spawnSync(process.execPath, buildArgs, {
   cwd: root,
+  env: {
+    ...process.env,
+    VITE_XIAO_APP_STAGE: isBeta ? "beta" : "release",
+  },
   stdio: "inherit",
 });
 if (build.error) throw build.error;

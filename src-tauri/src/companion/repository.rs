@@ -1206,6 +1206,24 @@ impl CompanionRepository {
         Ok(CommandReservation::Reserved)
     }
 
+    pub(crate) fn existing_command(
+        connection: &Connection,
+        envelope: &CommandEnvelope,
+        fingerprint: &str,
+    ) -> Result<Option<CommandResult>, String> {
+        let Some((stored_fingerprint, result)) =
+            load_command_by_identity(connection, &envelope.command_id, &envelope.idempotency_key)?
+        else {
+            return Ok(None);
+        };
+        if stored_fingerprint != fingerprint {
+            return Err(
+                "The Companion command identity was replayed with a different envelope.".to_owned(),
+            );
+        }
+        Ok(Some(result))
+    }
+
     pub(crate) fn complete_command(
         connection: &Connection,
         command_id: &str,
@@ -1404,7 +1422,11 @@ impl CompanionRepository {
         connection
             .execute(
                 "UPDATE companion_command_outbox
-                 SET status = 'pending', last_error = ?1
+                 SET status = CASE status
+                         WHEN 'executing' THEN 'executing'
+                         ELSE 'pending'
+                     END,
+                     last_error = ?1
                  WHERE command_id = ?2 AND status IN ('dispatching', 'executing')",
                 params![diagnostic, command_id],
             )
@@ -1850,7 +1872,8 @@ fn hydrate_projection(
                         (SELECT COUNT(*) FROM tasks t WHERE t.workspace_id = w.id),
                         (SELECT COUNT(*) FROM attention_occurrences a
                          WHERE a.workspace_id = w.id AND a.resolved_at IS NULL
-                           AND a.acknowledged_at IS NULL)
+                           AND a.acknowledged_at IS NULL),
+                        w.updated_at
                  FROM workspaces w
                  WHERE COALESCE(w.public_id, CAST(w.id AS TEXT)) = ?1",
                 [&journal.entity_id],
@@ -1860,6 +1883,7 @@ fn hydrate_projection(
                         "name": row.get::<_, String>(1)?,
                         "taskCount": row.get::<_, i64>(2)?,
                         "attentionCount": row.get::<_, i64>(3)?,
+                        "version": row.get::<_, i64>(4)?,
                     }))
                 },
             )
@@ -2252,7 +2276,7 @@ fn refuse_pending_for_session(
             "UPDATE companion_command_outbox
              SET status = 'cancelled',
                  last_error = 'The primary host revoked the Companion session.'
-             WHERE status IN ('pending', 'dispatching', 'executing')
+             WHERE status IN ('pending', 'dispatching')
                AND command_id IN (
                    SELECT command_id FROM companion_commands
                    WHERE session_id = ?1 AND status = 'pending'
@@ -2272,7 +2296,12 @@ fn refuse_pending_for_session(
                     capability, target_kind, target_id, 'refused',
                     'The primary host revoked the Companion session.', ?1
              FROM companion_commands
-             WHERE session_id = ?2 AND status = 'pending'",
+             WHERE session_id = ?2 AND status = 'pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM companion_command_outbox
+                   WHERE companion_command_outbox.command_id = companion_commands.command_id
+                     AND companion_command_outbox.status = 'executing'
+               )",
             params![now, session_id],
         )
         .map_err(|error| format!("Could not audit commands refused by revocation: {error}"))?;
@@ -2281,7 +2310,12 @@ fn refuse_pending_for_session(
             "UPDATE companion_commands
              SET status = 'refused', refusal_code = 'session_revoked',
                  message = 'The primary host revoked the Companion session.', updated_at = ?1
-             WHERE session_id = ?2 AND status = 'pending'",
+             WHERE session_id = ?2 AND status = 'pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM companion_command_outbox
+                   WHERE companion_command_outbox.command_id = companion_commands.command_id
+                     AND companion_command_outbox.status = 'executing'
+               )",
             params![now, session_id],
         )
         .map(|_| ())
@@ -2392,6 +2426,7 @@ fn command_capability_database(capability: CommandCapability) -> &'static str {
         CommandCapability::StopRun => "stop_run",
         CommandCapability::RetryRun => "retry_run",
         CommandCapability::SendFollowUp => "send_follow_up",
+        CommandCapability::CreateTask => "create_task",
         CommandCapability::AcknowledgeAttention => "acknowledge_attention",
         CommandCapability::AcceptOutcome => "accept_outcome",
         CommandCapability::OpenTerminal => "open_terminal",
@@ -2415,6 +2450,7 @@ fn command_capability_from_database(value: &str) -> Result<CommandCapability, St
         "stop_run" => Ok(CommandCapability::StopRun),
         "retry_run" => Ok(CommandCapability::RetryRun),
         "send_follow_up" => Ok(CommandCapability::SendFollowUp),
+        "create_task" => Ok(CommandCapability::CreateTask),
         "acknowledge_attention" => Ok(CommandCapability::AcknowledgeAttention),
         "accept_outcome" => Ok(CommandCapability::AcceptOutcome),
         "open_terminal" => Ok(CommandCapability::OpenTerminal),

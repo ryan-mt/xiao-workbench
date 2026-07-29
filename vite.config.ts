@@ -1,3 +1,5 @@
+/// <reference types="vitest/config" />
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -13,6 +15,9 @@ export default defineConfig({
     },
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],
+  test: {
+    setupFiles: ["./src/test/setup.ts"],
+  },
   build: {
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: process.env.TAURI_ENV_DEBUG ? false : "esbuild",
@@ -23,7 +28,13 @@ export default defineConfig({
         manualChunks: {
           "highlight-vendor": ["@shikijs/core", "@shikijs/engine-javascript"],
           "markdown-vendor": ["marked", "react-markdown", "remark-gfm", "remend"],
-          "react-vendor": ["react", "react-dom"],
+          "react-vendor": [
+            "react",
+            "react/jsx-runtime",
+            "react-dom",
+            "react-dom/client",
+            "scheduler",
+          ],
           "terminal-vendor": ["@xterm/addon-fit", "@xterm/xterm"],
         },
       },

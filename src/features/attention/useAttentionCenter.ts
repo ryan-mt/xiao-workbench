@@ -10,6 +10,11 @@ export type AttentionHydrationStatus =
   | "stale"
   | "unavailable";
 
+export type AttentionActionError = {
+  itemId: string;
+  message: string;
+};
+
 const REFRESH_INTERVAL_MS = 5_000;
 
 export const failedAttentionStatus = (
@@ -23,6 +28,10 @@ export function useAttentionCenter(enabled = true) {
     isTauriHost() ? "loading" : "live",
   );
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<AttentionActionError | null>(null);
+  const [acknowledgingItemIds, setAcknowledgingItemIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const itemsRef = useRef(items);
   const refreshGenerationRef = useRef(0);
   itemsRef.current = items;
@@ -62,14 +71,38 @@ export function useAttentionCenter(enabled = true) {
   }, [enabled, refresh]);
 
   const acknowledge = useCallback(async (itemId: string) => {
+    setActionError((current) => current?.itemId === itemId ? null : current);
     if (!isTauriHost()) {
       setItems((current) => current.filter((item) => item.id !== itemId));
       return;
     }
-    await nativeBridge.acknowledgeXiaoAttentionItem(itemId);
-    refreshGenerationRef.current += 1;
-    setItems((current) => current.filter((item) => item.id !== itemId));
+    setAcknowledgingItemIds((current) => new Set(current).add(itemId));
+    try {
+      await nativeBridge.acknowledgeXiaoAttentionItem(itemId);
+      refreshGenerationRef.current += 1;
+      setItems((current) => current.filter((item) => item.id !== itemId));
+    } catch (reason) {
+      setActionError({
+        itemId,
+        message: reason instanceof Error ? reason.message : String(reason),
+      });
+    } finally {
+      setAcknowledgingItemIds((current) => {
+        if (!current.has(itemId)) return current;
+        const next = new Set(current);
+        next.delete(itemId);
+        return next;
+      });
+    }
   }, []);
 
-  return { items, status, error, refresh, acknowledge };
+  return {
+    items,
+    status,
+    error,
+    actionError,
+    acknowledgingItemIds,
+    refresh,
+    acknowledge,
+  };
 }

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
 use crate::agent::models::AgentSession;
@@ -45,9 +45,28 @@ pub struct RunService {
     notify: Arc<Notify>,
     worker_started: AtomicBool,
     dispatch: AsyncMutex<()>,
+    runtime_actions: AsyncMutex<()>,
     input_resolutions: Mutex<()>,
     checkpoints: Mutex<HashMap<String, RunCheckpoint>>,
     preparation_cancellations: Mutex<HashMap<String, PreparationCancellation>>,
+    #[cfg(test)]
+    steer_test_hook: Mutex<Option<Arc<SteerTestHook>>>,
+    #[cfg(test)]
+    cancel_test_hook: Mutex<Option<Arc<CancelTestHook>>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct SteerTestHook {
+    entered: Notify,
+    release: Notify,
+    dispatched: AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CancelTestHook {
+    before_linearization: Notify,
 }
 
 #[derive(Clone)]
@@ -96,9 +115,14 @@ impl Default for RunService {
             notify: Arc::new(Notify::new()),
             worker_started: AtomicBool::new(false),
             dispatch: AsyncMutex::new(()),
+            runtime_actions: AsyncMutex::new(()),
             input_resolutions: Mutex::new(()),
             checkpoints: Mutex::new(HashMap::new()),
             preparation_cancellations: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            steer_test_hook: Mutex::new(None),
+            #[cfg(test)]
+            cancel_test_hook: Mutex::new(None),
         }
     }
 }
@@ -269,7 +293,29 @@ impl RunService {
         Ok(snapshot)
     }
 
-    pub async fn steer(&self, app: &AppHandle, request: SteerRunRequest) -> Result<String, String> {
+    pub async fn steer<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        request: SteerRunRequest,
+    ) -> Result<String, String> {
+        self.steer_inner(app, request, None).await
+    }
+
+    pub(crate) async fn steer_at_version<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        request: SteerRunRequest,
+        expected_version: i64,
+    ) -> Result<String, String> {
+        self.steer_inner(app, request, Some(expected_version)).await
+    }
+
+    async fn steer_inner<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        request: SteerRunRequest,
+        expected_version: Option<i64>,
+    ) -> Result<String, String> {
         if request.client_user_message_id.trim().is_empty() || request.input.is_empty() {
             return Err("A message is required to steer the active Xiao run.".to_owned());
         }
@@ -289,6 +335,32 @@ impl RunService {
             .turn_id
             .as_deref()
             .ok_or("The active Xiao run has no turn id.")?;
+        #[cfg(test)]
+        let steer_test_hook = self
+            .steer_test_hook
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone();
+        #[cfg(test)]
+        let runtime = if steer_test_hook.is_none() {
+            Some({
+                let registry = app.state::<EnvironmentRuntimeRegistry>();
+                registry.require_thread_task(
+                    &run.execution_environment_id,
+                    thread_id,
+                    &run.workspace_path,
+                    &run.task_id,
+                    &run.execution_root,
+                )?;
+                if registry.generation(&run.execution_environment_id)? != generation {
+                    return Err("The Xiao run belongs to a stale runtime generation.".to_owned());
+                }
+                registry.runtime(&run.execution_environment_id)?
+            })
+        } else {
+            None
+        };
+        #[cfg(not(test))]
         let runtime = {
             let registry = app.state::<EnvironmentRuntimeRegistry>();
             registry.require_thread_task(
@@ -303,6 +375,32 @@ impl RunService {
             }
             registry.runtime(&run.execution_environment_id)?
         };
+        let _runtime_action = self.runtime_actions.lock().await;
+        if let Some(expected_version) = expected_version {
+            let current = app.state::<XiaoRepository>().get_run(&request.run_id)?;
+            require_steer_route_at_version(&current, expected_version)?;
+        }
+        #[cfg(test)]
+        let result = if let Some(hook) = steer_test_hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+            hook.dispatched.store(true, Ordering::Release);
+            json!({ "turnId": turn_id })
+        } else {
+            runtime
+                .expect("production steer runtime should be present")
+                .request_turn_steer(
+                    generation,
+                    turn_steer_params(
+                        thread_id,
+                        turn_id,
+                        &request.client_user_message_id,
+                        request.input,
+                    ),
+                )
+                .await?
+        };
+        #[cfg(not(test))]
         let result = runtime
             .request_turn_steer(
                 generation,
@@ -336,11 +434,36 @@ impl RunService {
             .map(|runs| runs.iter().map(RunRecord::snapshot).collect())
     }
 
-    pub async fn cancel(&self, app: &AppHandle, run_id: &str) -> Result<RunSnapshot, String> {
-        let current_status = {
+    pub async fn cancel<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        run_id: &str,
+    ) -> Result<RunSnapshot, String> {
+        self.cancel_inner(app, run_id, None).await
+    }
+
+    pub(crate) async fn cancel_at_version<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        run_id: &str,
+        expected_version: i64,
+        command_id: &str,
+    ) -> Result<RunSnapshot, String> {
+        self.cancel_inner(app, run_id, Some((expected_version, command_id)))
+            .await
+    }
+
+    async fn cancel_inner<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        run_id: &str,
+        companion_command: Option<(i64, &str)>,
+    ) -> Result<RunSnapshot, String> {
+        let current = {
             let repository = app.state::<XiaoRepository>();
-            repository.get_run(run_id)?.status
+            repository.get_run(run_id)?
         };
+        let current_status = current.status;
         let needs_dispatch_lock =
             matches!(current_status, RunStatus::Queued | RunStatus::Preparing);
         let _dispatch = if needs_dispatch_lock {
@@ -362,14 +485,29 @@ impl RunService {
         if let Some(stopped) = preparation_stop {
             stopped.wait().await;
         }
-        let disposition = {
-            let _lifecycle = self
-                .input_resolutions
-                .lock()
-                .map_err(|error| error.to_string())?;
-            let repository = app.state::<XiaoRepository>();
-            repository.request_run_cancel(run_id)?
-        };
+        #[cfg(test)]
+        if let Some(hook) = self
+            .cancel_test_hook
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone()
+        {
+            hook.before_linearization.notify_one();
+        }
+        let _runtime_action = self.runtime_actions.lock().await;
+        let disposition =
+            {
+                let _lifecycle = self
+                    .input_resolutions
+                    .lock()
+                    .map_err(|error| error.to_string())?;
+                let repository = app.state::<XiaoRepository>();
+                match companion_command {
+                    Some((expected_version, command_id)) => repository
+                        .request_run_cancel_at_version(run_id, expected_version, command_id)?,
+                    None => repository.request_run_cancel(run_id)?,
+                }
+            };
         match disposition {
             CancelDisposition::Settled(mutation) => {
                 let snapshot = mutation.run.snapshot();
@@ -391,7 +529,13 @@ impl RunService {
                 if let Some(stop) = app.state::<VerificationService>().cancel(run_id)? {
                     stop.wait().await?;
                 }
-                let mutation = app.state::<XiaoRepository>().finish_run_cancel(run_id)?;
+                let repository = app.state::<XiaoRepository>();
+                let mutation = match companion_command {
+                    Some((_, command_id)) => {
+                        repository.finish_run_cancel_for_companion(run_id, command_id)?
+                    }
+                    None => repository.finish_run_cancel(run_id)?,
+                };
                 let snapshot = mutation.run.snapshot();
                 emit_update(app, &mutation, None);
                 self.wake();
@@ -464,7 +608,13 @@ impl RunService {
                         &format!("Could not finalize undo checkpoint: {error}"),
                     ),
                 }
-                let mutation = app.state::<XiaoRepository>().finish_run_cancel(run_id)?;
+                let repository = app.state::<XiaoRepository>();
+                let mutation = match companion_command {
+                    Some((_, command_id)) => {
+                        repository.finish_run_cancel_for_companion(run_id, command_id)?
+                    }
+                    None => repository.finish_run_cancel(run_id)?,
+                };
                 let snapshot = mutation.run.snapshot();
                 emit_update(app, &mutation, None);
                 self.wake();
@@ -493,8 +643,33 @@ impl RunService {
         run_id: &str,
         idempotency_key: &str,
     ) -> Result<RunSnapshot, String> {
+        self.retry_inner(app, run_id, idempotency_key, None)
+    }
+
+    pub(crate) fn retry_at_version(
+        &self,
+        app: &AppHandle,
+        run_id: &str,
+        idempotency_key: &str,
+        expected_version: i64,
+    ) -> Result<RunSnapshot, String> {
+        self.retry_inner(app, run_id, idempotency_key, Some(expected_version))
+    }
+
+    fn retry_inner(
+        &self,
+        app: &AppHandle,
+        run_id: &str,
+        idempotency_key: &str,
+        expected_version: Option<i64>,
+    ) -> Result<RunSnapshot, String> {
         let repository = app.state::<XiaoRepository>();
-        let mutation = repository.retry_run(run_id, idempotency_key)?;
+        let mutation = match expected_version {
+            Some(expected_version) => {
+                repository.retry_run_at_version(run_id, idempotency_key, expected_version)?
+            }
+            None => repository.retry_run(run_id, idempotency_key)?,
+        };
         let snapshot = mutation.run.snapshot();
         emit_update(app, &mutation, None);
         self.wake();
@@ -507,6 +682,34 @@ impl RunService {
         pending_input_id: &str,
         result: Value,
     ) -> Result<RunSnapshot, String> {
+        self.resolve_input_inner(app, pending_input_id, result, None)
+            .await
+    }
+
+    pub(crate) async fn resolve_input_at_version(
+        &self,
+        app: &AppHandle,
+        pending_input_id: &str,
+        result: Value,
+        expected_version: i64,
+        command_id: &str,
+    ) -> Result<RunSnapshot, String> {
+        self.resolve_input_inner(
+            app,
+            pending_input_id,
+            result,
+            Some((expected_version, command_id)),
+        )
+        .await
+    }
+
+    async fn resolve_input_inner(
+        &self,
+        app: &AppHandle,
+        pending_input_id: &str,
+        result: Value,
+        companion_command: Option<(i64, &str)>,
+    ) -> Result<RunSnapshot, String> {
         let _resolution = self
             .input_resolutions
             .lock()
@@ -515,6 +718,21 @@ impl RunService {
             let repository = app.state::<XiaoRepository>();
             repository.get_pending_input(pending_input_id)?
         };
+        let current_version = pending
+            .resolved_at
+            .into_iter()
+            .chain(pending.invalidated_at)
+            .fold(pending.opened_at, i64::max);
+        if companion_command.is_some_and(|(expected, _)| {
+            current_version != expected
+                || pending.resolved_at.is_some()
+                || pending.invalidated_at.is_some()
+        }) {
+            return Err(
+                "The Xiao input request changed before the Companion command was applied."
+                    .to_owned(),
+            );
+        }
         if pending.resolved_at.is_some() {
             let repository = app.state::<XiaoRepository>();
             return Ok(repository.get_run(&pending.run_id)?.snapshot());
@@ -538,7 +756,14 @@ impl RunService {
             result,
         )?;
         let repository = app.state::<XiaoRepository>();
-        let (mutation, pending) = repository.resolve_pending_input(pending_input_id)?;
+        let (mutation, pending) = match companion_command {
+            Some((expected_version, command_id)) => repository.resolve_pending_input_at_version(
+                pending_input_id,
+                expected_version,
+                command_id,
+            )?,
+            None => repository.resolve_pending_input(pending_input_id)?,
+        };
         let snapshot = mutation.run.snapshot();
         emit_update(app, &mutation, Some(pending));
         Ok(snapshot)
@@ -956,6 +1181,13 @@ fn turn_model_override<'a>(
     run_model.or(session_model)
 }
 
+fn require_steer_route_at_version(run: &RunRecord, expected_version: i64) -> Result<(), String> {
+    if run.version != expected_version {
+        return Err("The Xiao run changed before the Companion command was applied.".to_owned());
+    }
+    require_steer_route(run)
+}
+
 fn require_steer_route(run: &RunRecord) -> Result<(), String> {
     if !matches!(run.status, RunStatus::Running | RunStatus::WaitingForInput)
         || run.cancel_requested
@@ -1329,7 +1561,9 @@ fn apply_runtime_message(
             );
         }
         if route.approval_policy == "never" {
-            auto_decline_pending(app, &route, &pending, kind)?;
+            if let Some(result) = auto_decline_result(kind) {
+                auto_decline_pending(app, &route, &pending, result)?;
+            }
         }
         return Ok(());
     }
@@ -1471,7 +1705,7 @@ fn auto_decline_pending(
     app: &AppHandle,
     run: &RunRecord,
     pending: &PendingInputSnapshot,
-    kind: PendingInputKind,
+    result: Value,
 ) -> Result<(), String> {
     let service = app.state::<RunService>();
     let _resolution = service
@@ -1486,7 +1720,6 @@ fn auto_decline_pending(
     }
     let request_id: Value = serde_json::from_str(&pending.request_id)
         .map_err(|_| "The pending Codex request id is invalid.".to_owned())?;
-    let result = auto_decline_result(kind);
     let registry = app.state::<EnvironmentRuntimeRegistry>();
     registry.reply(
         &run.execution_environment_id,
@@ -1778,12 +2011,13 @@ fn mcp_elicitation_decline_result() -> Value {
     json!({ "action": "decline", "content": null, "_meta": null })
 }
 
-fn auto_decline_result(kind: PendingInputKind) -> Value {
+fn auto_decline_result(kind: PendingInputKind) -> Option<Value> {
     match kind {
-        PendingInputKind::McpElicitation => mcp_elicitation_decline_result(),
-        PendingInputKind::Permissions => json!({ "permissions": {}, "scope": "turn" }),
-        PendingInputKind::Question => json!({ "answers": {} }),
-        _ => json!({ "decision": "decline" }),
+        PendingInputKind::CommandApproval | PendingInputKind::FileApproval => {
+            Some(json!({ "decision": "decline" }))
+        }
+        PendingInputKind::Permissions => Some(json!({ "permissions": {}, "scope": "turn" })),
+        PendingInputKind::Question | PendingInputKind::McpElicitation => None,
     }
 }
 
@@ -2117,8 +2351,8 @@ fn relative_path(value: &str, root: &str) -> String {
     "[external path]".to_owned()
 }
 
-pub(crate) fn emit_update(
-    app: &AppHandle,
+pub(crate) fn emit_update<R: Runtime>(
+    app: &AppHandle<R>,
     mutation: &RunMutation,
     pending_input: Option<PendingInputSnapshot>,
 ) {
@@ -2195,8 +2429,8 @@ pub(crate) fn emit_service_error(app: &AppHandle, error: &str) {
     emit_service_error_for_workspace(app, None, error);
 }
 
-pub(crate) fn emit_service_error_for_workspace(
-    app: &AppHandle,
+pub(crate) fn emit_service_error_for_workspace<R: Runtime>(
+    app: &AppHandle<R>,
     workspace_path: Option<&str>,
     error: &str,
 ) {
@@ -2211,7 +2445,206 @@ pub(crate) fn emit_service_error_for_workspace(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
     use super::*;
+    use crate::xiao::models::{
+        XiaoTaskDocument, XiaoWorkspaceMode, XiaoWorkspaceUpdate, XIAO_SCHEMA_VERSION,
+    };
+
+    struct ServiceTestDirectory(PathBuf);
+
+    impl ServiceTestDirectory {
+        fn new(label: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("xiao-service-{label}-{}", super::new_uuid_v7()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for ServiceTestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn running_service_test_app() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        ServiceTestDirectory,
+        RunRecord,
+    ) {
+        let directory = ServiceTestDirectory::new("follow-up-cancel-linearization");
+        let repository = XiaoRepository::open(&directory.0).unwrap();
+        let workspace = directory.0.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        repository
+            .save_workspace(XiaoWorkspaceUpdate {
+                schema_version: XIAO_SCHEMA_VERSION,
+                workspace_path: workspace_path.clone(),
+                active_task_id: Some("task".to_owned()),
+                show_archived: false,
+                task_ids: vec!["task".to_owned()],
+                tasks: vec![XiaoTaskDocument {
+                    id: "task".to_owned(),
+                    title: "task".to_owned(),
+                    created_at: 1,
+                    updated_at: 1,
+                    stage: crate::xiao::models::TaskStage::Draft,
+                    stage_version: 0,
+                    codex_profile_id: None,
+                    workbench_state: json!({}),
+                    draft_text: String::new(),
+                    follow_ups: Vec::new(),
+                    archived: false,
+                    pinned: false,
+                    unread: false,
+                    model: Some("gpt-test".to_owned()),
+                    reasoning_effort: Some("medium".to_owned()),
+                    thread_id: None,
+                    thread_binding: None,
+                    mode: "default".to_owned(),
+                    approval_policy: "on-request".to_owned(),
+                    sandbox_mode: "workspace-write".to_owned(),
+                    goal: None,
+                    acceptance_contract: None,
+                    timeline: Vec::new(),
+                    timeline_loaded: true,
+                    timeline_complete: true,
+                    timeline_start: 0,
+                    timeline_entry_count: 0,
+                    plan: None,
+                    execution_environment_id: None,
+                    workspace_mode: XiaoWorkspaceMode::Local,
+                    managed_worktree_id: None,
+                }],
+            })
+            .unwrap();
+        let defaults = repository
+            .run_task_defaults(&workspace_path, "task")
+            .unwrap();
+        let binding = repository
+            .task_execution_binding(&workspace_path, "task")
+            .unwrap();
+        let run = repository
+            .enqueue_run(NewRun {
+                id: super::new_uuid_v7(),
+                workspace_id: defaults.workspace_id,
+                task_id: "task".to_owned(),
+                idempotency_key: "linearized-run".to_owned(),
+                parent_run_id: None,
+                candidate_group_id: None,
+                routine_occurrence_id: None,
+                execution_environment_id: binding.environment.id,
+                execution_root: workspace_path,
+                managed_worktree_id: None,
+                prompt: "prompt".to_owned(),
+                input: vec![json!({ "type": "text", "text": "prompt" })],
+                history: Vec::new(),
+                model: defaults.model,
+                reasoning_effort: defaults.reasoning_effort,
+                service_tier: None,
+                mode: defaults.mode,
+                approval_policy: defaults.approval_policy,
+                sandbox_mode: defaults.sandbox_mode,
+                goal: defaults.goal,
+                queued_at: super::now_millis().unwrap(),
+            })
+            .unwrap()
+            .run;
+        repository.claim_next_eligible_run(2).unwrap().unwrap();
+        repository
+            .attach_run_runtime(
+                &run.id,
+                &RuntimeAttachment {
+                    generation: 1,
+                    thread_id: "thread".to_owned(),
+                    thread_source: THREAD_SOURCE.to_owned(),
+                    cli_version: "test".to_owned(),
+                    materialized: true,
+                },
+            )
+            .unwrap();
+        repository
+            .mark_run_running(&run.id, 1, "thread", "turn")
+            .unwrap();
+        let running = repository.get_run(&run.id).unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(repository);
+        app.manage(EnvironmentRuntimeRegistry::default());
+        app.manage(RunService::default());
+        (app, directory, running)
+    }
+
+    #[test]
+    fn local_cancel_cannot_commit_between_follow_up_cas_and_dispatch() {
+        let (app, _directory, running) = running_service_test_app();
+        let app = app.handle().clone();
+        let steer_hook = Arc::new(SteerTestHook::default());
+        let cancel_hook = Arc::new(CancelTestHook::default());
+        {
+            let service = app.state::<RunService>();
+            *service.steer_test_hook.lock().unwrap() = Some(Arc::clone(&steer_hook));
+            *service.cancel_test_hook.lock().unwrap() = Some(Arc::clone(&cancel_hook));
+        }
+        let request = SteerRunRequest {
+            project_path: running.workspace_path.clone(),
+            task_id: running.task_id.clone(),
+            run_id: running.id.clone(),
+            client_user_message_id: "follow-up".to_owned(),
+            input: vec![json!({ "type": "text", "text": "continue" })],
+        };
+
+        tauri::async_runtime::block_on(async {
+            let steer_app = app.clone();
+            let steer = tauri::async_runtime::spawn(async move {
+                steer_app
+                    .state::<RunService>()
+                    .steer_at_version(&steer_app, request, running.version)
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(1), steer_hook.entered.notified())
+                .await
+                .expect("follow-up did not reach the post-CAS dispatch boundary");
+
+            let cancel_app = app.clone();
+            let run_id = running.id.clone();
+            let cancel = tauri::async_runtime::spawn(async move {
+                cancel_app
+                    .state::<RunService>()
+                    .cancel(&cancel_app, &run_id)
+                    .await
+            });
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                cancel_hook.before_linearization.notified(),
+            )
+            .await
+            .expect("local cancellation did not reach its production service boundary");
+
+            assert!(
+                !app.state::<XiaoRepository>()
+                    .get_run(&running.id)
+                    .unwrap()
+                    .cancel_requested
+            );
+            steer_hook.release.notify_one();
+            assert_eq!(steer.await.unwrap().unwrap(), "turn");
+            assert!(steer_hook.dispatched.load(Ordering::Acquire));
+            let _ = cancel.await.unwrap();
+            assert!(
+                app.state::<XiaoRepository>()
+                    .get_run(&running.id)
+                    .unwrap()
+                    .cancel_requested
+            );
+        });
+    }
 
     #[test]
     fn preparation_cancellation_requests_stop_and_waits_for_finish() {
@@ -2571,11 +3004,12 @@ mod tests {
     }
 
     #[test]
-    fn question_auto_decline_uses_request_user_input_response_schema() {
-        assert_eq!(
-            auto_decline_result(PendingInputKind::Question),
-            json!({ "answers": {} })
-        );
+    fn never_ask_declines_only_approval_requests() {
+        assert!(auto_decline_result(PendingInputKind::CommandApproval).is_some());
+        assert!(auto_decline_result(PendingInputKind::FileApproval).is_some());
+        assert!(auto_decline_result(PendingInputKind::Permissions).is_some());
+        assert!(auto_decline_result(PendingInputKind::Question).is_none());
+        assert!(auto_decline_result(PendingInputKind::McpElicitation).is_none());
     }
 
     #[test]
@@ -2632,9 +3066,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn turn_parameters_are_native_scoped_and_emit_explicit_collaboration_modes() {
-        let run = RunRecord {
+    fn test_run() -> RunRecord {
+        RunRecord {
             id: "run".to_owned(),
             workspace_id: 1,
             workspace_path: "C:/project".to_owned(),
@@ -2680,7 +3113,30 @@ mod tests {
             started_at: Some(1),
             finished_at: None,
             version: 1,
-        };
+        }
+    }
+
+    #[test]
+    fn stale_companion_follow_up_does_not_reach_runtime_steer() {
+        let mut running = test_run();
+        running.status = RunStatus::Running;
+        running.turn_id = Some("turn".to_owned());
+        let runtime_steered = std::cell::Cell::new(false);
+
+        let result = require_steer_route_at_version(&running, running.version - 1).and_then(|_| {
+            runtime_steered.set(true);
+            Ok(())
+        });
+
+        assert!(result
+            .unwrap_err()
+            .contains("changed before the Companion command"));
+        assert!(!runtime_steered.get());
+    }
+
+    #[test]
+    fn turn_parameters_are_native_scoped_and_emit_explicit_collaboration_modes() {
+        let run = test_run();
         let session = AgentSession {
             thread_id: "thread".to_owned(),
             model: Some("gpt-test".to_owned()),
@@ -2784,6 +3240,7 @@ mod tests {
         );
 
         let mut running = run;
+        running.status = RunStatus::Running;
         running.turn_id = Some("turn".to_owned());
         let dynamic_tool_call = json!({
             "id": 8,

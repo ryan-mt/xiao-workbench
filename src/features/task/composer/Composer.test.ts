@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+
+import { createElement, type ComponentProps } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   promptWithSelectedContext,
@@ -9,11 +13,105 @@ import {
 } from "../../../core/models/agent";
 import { workspaceTaskKey } from "../../../app/App";
 import {
+  Composer,
   deliverComposerSubmission,
   navigateComposerPromptHistory,
   runComposerSubmission,
   sandboxModeOptions,
 } from "./Composer";
+
+const bridge = vi.hoisted(() => ({
+  agentRequest: vi.fn(),
+}));
+
+vi.mock("../../../core/bridges/tauri", () => ({
+  isTauriHost: () => true,
+  nativeBridge: bridge,
+}));
+
+const composerProps = (
+  patch: Partial<ComponentProps<typeof Composer>> = {},
+): ComponentProps<typeof Composer> => ({
+  taskId: "task-a",
+  executionTaskId: "task-a",
+  workspacePath: "C:/projects/xiao",
+  runtime: {
+    phase: "ready",
+    profileId: null,
+    taskId: null,
+    threadId: null,
+    turnId: null,
+    turnStartedAt: null,
+    error: null,
+    eventsSeen: 0,
+  },
+  rateLimits: null,
+  models: [],
+  selectedModel: null,
+  selectedReasoningEffort: null,
+  fastMode: false,
+  mode: "default",
+  approvalPolicy: "on-request",
+  sandboxMode: "workspace-write",
+  workspaceMode: "local",
+  isolationAvailable: false,
+  isolationUnavailableReason: null,
+  environmentBusy: false,
+  environmentError: null,
+  managedWorktree: null,
+  goal: null,
+  plan: null,
+  collaborators: [],
+  reviewContext: [],
+  selectedContext: null,
+  questionRequest: null,
+  mcpElicitationRequest: null,
+  draftText: "",
+  followUps: [],
+  sendingFollowUpId: null,
+  failedFollowUpId: null,
+  attachments: [],
+  liveFileChanges: null,
+  canCompact: false,
+  compacting: false,
+  hasThread: false,
+  canUndo: false,
+  undoing: false,
+  definitionOfDoneAvailable: false,
+  definitionOfDone: null,
+  onModelChange: vi.fn(),
+  onReasoningEffortChange: vi.fn(),
+  onFastModeChange: vi.fn(),
+  onModeChange: vi.fn(),
+  onApprovalPolicyChange: vi.fn(),
+  onSandboxModeChange: vi.fn(),
+  onWorkspaceModeChange: vi.fn(),
+  onGoalSet: vi.fn(),
+  onGoalClear: vi.fn(),
+  onOpenView: vi.fn(),
+  onInterrupt: vi.fn(),
+  onSubmit: vi.fn(),
+  onSteer: vi.fn(),
+  onQueueFollowUp: vi.fn(),
+  onEditFollowUp: vi.fn(),
+  onRemoveFollowUp: vi.fn(),
+  onSendFollowUpNow: vi.fn(),
+  onRetryFollowUp: vi.fn(),
+  onAttachmentsChange: vi.fn(),
+  onCompact: vi.fn(),
+  onUndo: vi.fn(),
+  onDefinitionOfDoneChange: vi.fn(),
+  onRemoveReviewContext: vi.fn(),
+  onReviewContextSent: vi.fn(),
+  onClearSelectedContext: vi.fn(),
+  onSelectedContextSent: vi.fn(),
+  onDraftChange: vi.fn(),
+  onSubmissionStart: vi.fn(() => 1),
+  onSubmissionSucceeded: vi.fn(),
+  onResolveQuestion: vi.fn(),
+  onResolveMcpElicitation: vi.fn(),
+  ...patch,
+});
 
 const attachment = (path: string): AgentAttachment => ({
   name: path,
@@ -28,6 +126,108 @@ const deferred = <T,>() => {
   });
   return { promise, resolve };
 };
+
+afterEach(() => {
+  cleanup();
+  bridge.agentRequest.mockReset();
+});
+
+describe("composer task dock lifecycle", () => {
+  it("shows plan tasks only while their task is live", () => {
+    const plan = {
+      explanation: null,
+      steps: [
+        { step: "Inspect implementation", status: "completed" as const },
+        { step: "Align task dock", status: "inProgress" as const },
+      ],
+    };
+    const view = render(createElement(Composer, composerProps({ plan })));
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+
+    view.rerender(createElement(Composer, composerProps({
+      plan,
+      runtime: {
+        phase: "working",
+        profileId: null,
+        taskId: "task-a",
+        threadId: "thread-a",
+        turnId: "turn-a",
+        turnStartedAt: 1,
+        error: null,
+        eventsSeen: 1,
+      },
+    })));
+
+    expect(screen.getByLabelText("Task status")).not.toBeNull();
+    expect(screen.getByLabelText("Task summary").textContent).toBe("1/2 tasks");
+    expect(screen.getByLabelText("In progress: Align task dock")).not.toBeNull();
+
+    view.rerender(createElement(Composer, composerProps({
+      plan: {
+        ...plan,
+        steps: plan.steps.map((step) => ({ ...step, status: "completed" as const })),
+      },
+      runtime: {
+        phase: "working",
+        profileId: null,
+        taskId: "task-a",
+        threadId: "thread-a",
+        turnId: "turn-a",
+        turnStartedAt: 1,
+        error: null,
+        eventsSeen: 2,
+      },
+    })));
+
+    expect(screen.queryByLabelText("Task status")).toBeNull();
+  });
+});
+
+describe("workspace file search", () => {
+  it("ignores an in-flight result after the runtime becomes unavailable", async () => {
+    const pending = deferred<{
+      files: Array<{
+        root: string;
+        path: string;
+        match_type: "file";
+        file_name: string;
+        score: number;
+        indices: null;
+      }>;
+    }>();
+    bridge.agentRequest.mockReturnValueOnce(pending.promise);
+    const readyProps = composerProps();
+    const view = render(createElement(Composer, readyProps));
+    const textarea = screen.getByRole("textbox");
+
+    fireEvent.change(textarea, {
+      target: { value: "@src", selectionStart: 4 },
+    });
+    await waitFor(() => expect(bridge.agentRequest).toHaveBeenCalledOnce());
+
+    view.rerender(createElement(Composer, {
+      ...readyProps,
+      runtime: { ...readyProps.runtime, phase: "offline" },
+    }));
+    pending.resolve({
+      files: [{
+        root: "C:/projects/xiao",
+        path: "C:/projects/xiao/src/stale.ts",
+        match_type: "file",
+        file_name: "stale.ts",
+        score: 1,
+        indices: null,
+      }],
+    });
+    await act(async () => {
+      await pending.promise;
+    });
+
+    expect(screen.queryByRole("option", { name: /stale\.ts/i })).toBeNull();
+    expect(screen.getByText("File search needs the connected Xiao desktop runtime.")).toBeTruthy();
+  });
+});
 
 type Draft = {
   prompt: string;
@@ -245,6 +445,81 @@ describe("composer submission durability", () => {
       prompt: "Task A newer input",
       attachments: [attachment("a-new.txt")],
     });
+  });
+});
+
+describe("composer delivery failures", () => {
+  it("keeps the draft and attachments retryable when delivery rejects", async () => {
+    const onSubmit = vi.fn().mockRejectedValueOnce(new Error("delivery offline"));
+    const onSubmissionSucceeded = vi.fn();
+    render(createElement(Composer, composerProps({
+      draftText: "Keep this prompt",
+      attachments: [attachment("a.txt")],
+      onSubmit,
+      onSubmissionSucceeded,
+    })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("delivery offline");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Draft and attachments were kept so you can retry.",
+    );
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("Keep this prompt");
+    expect(screen.getByText("a.txt")).toBeTruthy();
+    expect(onSubmissionSucceeded).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.getByRole<HTMLButtonElement>("button", { name: "Send task" }).disabled)
+        .toBe(false);
+    });
+  });
+
+  it("warns that delivery completed when draft-clear persistence rejects", async () => {
+    const onReviewContextSent = vi.fn();
+    render(createElement(Composer, composerProps({
+      draftText: "Keep sent prompt for recovery",
+      attachments: [attachment("sent.txt")],
+      reviewContext: [attachment("review.txt")],
+      onSubmit: vi.fn().mockResolvedValue(true),
+      onSubmissionSucceeded: vi.fn().mockRejectedValue(new Error("workspace reload failed")),
+      onReviewContextSent,
+    })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("workspace reload failed");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "The task was sent, but its saved draft could not be cleared. Check the timeline before retrying.",
+    );
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value)
+      .toBe("Keep sent prompt for recovery");
+    expect(screen.getByText("sent.txt")).toBeTruthy();
+    expect(onReviewContextSent).not.toHaveBeenCalled();
+  });
+
+  it("keeps all composer context when draft-clear persistence returns false", async () => {
+    const onReviewContextSent = vi.fn();
+    const onSelectedContextSent = vi.fn();
+    render(createElement(Composer, composerProps({
+      draftText: "Persist this draft",
+      attachments: [attachment("persist.txt")],
+      reviewContext: [attachment("review.txt")],
+      selectedContext: "selected source",
+      onSubmit: vi.fn().mockResolvedValue(true),
+      onSubmissionSucceeded: vi.fn().mockResolvedValue(false),
+      onReviewContextSent,
+      onSelectedContextSent,
+    })));
+
+    fireEvent.click(screen.getByRole("button", { name: "Send task" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "The task was sent, but its saved draft could not be cleared. Check the timeline before retrying.",
+    );
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox").value).toBe("Persist this draft");
+    expect(screen.getByText("persist.txt")).toBeTruthy();
+    expect(onReviewContextSent).not.toHaveBeenCalled();
+    expect(onSelectedContextSent).not.toHaveBeenCalled();
   });
 });
 
