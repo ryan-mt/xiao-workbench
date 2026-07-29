@@ -292,7 +292,7 @@ export function AgentTurn(props: SharedProps) {
       ) : null}
       {turn.files.length &&
         turn.response?.status === "success" &&
-        !responseBeforeLaterFlow ? (
+        !activeWorkAfterResponse ? (
         <EditedFilesSummary
           files={turn.files}
           workspacePath={props.workspacePath}

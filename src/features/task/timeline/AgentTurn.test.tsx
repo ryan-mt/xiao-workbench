@@ -100,6 +100,48 @@ describe("AgentTurn completed reasoning", () => {
     expect(container.querySelector(".edited-files")).toBeNull();
   });
 
+  it("shows the edited-files summary once later post-response work completes", () => {
+    const user: TimelineEntry = {
+      id: "user-completed-flow",
+      kind: "user",
+      title: "Run the checks",
+      turnId: "turn-completed-flow",
+    };
+    const response: TimelineEntry = {
+      id: "response-completed-flow",
+      kind: "result",
+      title: "Agent response",
+      body: "Initial result.",
+      turnId: "turn-completed-flow",
+      status: "success",
+    };
+    const command: TimelineEntry = {
+      id: "command-completed-flow",
+      kind: "command",
+      title: "Run tests",
+      command: "npm test",
+      turnId: "turn-completed-flow",
+      status: "success",
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [command],
+      commentary: [],
+      work: [command],
+      response,
+      responseFlowIndex: 0,
+      files: [{ path: "src/App.tsx", additions: 2, deletions: 0 }],
+      startIndex: 0,
+      endIndex: 2,
+    };
+
+    const { container } = renderTurn(turn, idleRuntime);
+
+    expect(container.querySelector(".edited-files")).toBeTruthy();
+    expect(screen.getByTitle("Review all file changes")).toBeTruthy();
+  });
+
   it("does not revive historical active work from a different runtime turn", () => {
     const user: TimelineEntry = {
       id: "user-complete",
