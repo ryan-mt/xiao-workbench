@@ -103,7 +103,7 @@ const codexProfiles: CodexProfile[] = [
 
 const renderSettings = (
   theme: Theme,
-  activeSection: "general" | "runtime" | "shortcuts" = "general",
+  activeSection: "archived" | "general" | "runtime" | "shortcuts" = "general",
 ) => renderToStaticMarkup(
   <SettingsPage
     theme={theme}
@@ -120,11 +120,15 @@ const renderSettings = (
     archivedTasks={[]}
     archivedTasksLoading={false}
     archivedTasksError={null}
+    archiveAllChatsBusy={false}
+    archiveAllChatsDisabled={false}
+    archiveAllChatsError={null}
     codexProfiles={codexProfiles}
     selectedCodexProfileId="default"
     codexProfileSelectionDisabled={false}
     onThemeChange={noop}
     onPreferencesChange={noop}
+    onArchiveAllChats={noop}
     onRestoreArchivedTask={noop}
     onReloadArchivedTasks={noop}
     onReconnect={noop}
@@ -167,6 +171,14 @@ describe("SettingsPage", () => {
 
     expect(markup).toContain("Back to workspace");
     expect(markup).toContain('aria-label="Close settings"');
+  });
+
+  it("offers one bulk action to archive chats across projects", () => {
+    const markup = renderSettings("system", "archived");
+
+    expect(markup).toContain("Archive all chats");
+    expect(markup).toContain("Move every chat from every project into this archive.");
+    expect(markup).toContain(">Archive all</button>");
   });
 
   it("keeps Codex profile selection in Settings", () => {

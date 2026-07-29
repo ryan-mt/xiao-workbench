@@ -1678,6 +1678,8 @@ export function App() {
       typeof window.matchMedia !== "function" ||
       !window.matchMedia("(max-width: 760px)").matches,
   );
+  const sidebarOpenRef = useRef(sidebarOpen);
+  sidebarOpenRef.current = sidebarOpen;
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [historySearchTarget, setHistorySearchTarget] = useState<{
     workspacePath: string;
@@ -1742,6 +1744,7 @@ export function App() {
     [],
   );
   const focusedLaunchTaskRef = useRef<string | null>(null);
+  const focusedLaunchCollapsedSidebarRef = useRef(false);
   const focusedNewTaskRequestRef = useRef(false);
   const explicitlyOpenedTaskRef = useRef<string | null>(null);
   const notifiedRuntimeErrorRef = useRef<string | null>(null);
@@ -1786,6 +1789,8 @@ export function App() {
   const [archivedTasks, setArchivedTasks] = useState<ArchivedTaskItem[]>([]);
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
   const [archivedTasksError, setArchivedTasksError] = useState<string | null>(null);
+  const [archiveAllChatsBusy, setArchiveAllChatsBusy] = useState(false);
+  const [archiveAllChatsError, setArchiveAllChatsError] = useState<string | null>(null);
   const [reviewContextByTask, setReviewContextByTask] = useState<ReviewContextState>({});
   const [initialComposerAttachmentRecovery] = useState(readComposerAttachmentRecoveries);
   const [restoredAttachmentsByTask, setRestoredAttachmentsByTask] = useState<
@@ -1983,17 +1988,19 @@ export function App() {
       if (focusedLaunchTaskRef.current === taskKey) return;
       focusedLaunchTaskRef.current = taskKey;
       focusedNewTaskRequestRef.current = false;
+      focusedLaunchCollapsedSidebarRef.current = sidebarOpenRef.current;
       setSidebarOpen(false);
       closeFocusPanel();
       return;
     }
 
     const restoreSidebar = shouldRestoreSidebarAfterFocusedLaunch(
-      focusedLaunchTaskRef.current !== null,
+      focusedLaunchCollapsedSidebarRef.current,
       focusActive,
       window.matchMedia("(max-width: 760px)").matches,
     );
     focusedLaunchTaskRef.current = null;
+    focusedLaunchCollapsedSidebarRef.current = false;
     if (restoreSidebar) setSidebarOpen(true);
   }, [activeTask.id, focusedLaunch, preferences.focusNewTasks, workspace.path]);
 
@@ -4669,7 +4676,7 @@ export function App() {
     });
   };
 
-  const archiveProjectTasks = async (path: string) => {
+  const archiveProjectTasks = async (path: string): Promise<boolean> => {
     const updatedAt = Date.now();
     if (path === workspace.path) {
       const currentConfirmation = confirmedNativeTasksRef.current;
@@ -4684,7 +4691,7 @@ export function App() {
         !taskStateReady ||
         comparableWorkspacePath(taskWorkspacePath) !== comparableWorkspacePath(path) ||
         !archiveScope
-      ) return;
+      ) return false;
       const nextState = archivedProjectTaskState(tasks, updatedAt);
       try {
         if (isTauriHost()) {
@@ -4698,7 +4705,7 @@ export function App() {
           archiveScope,
           () => console.error("Could not archive project tasks.", reason),
         );
-        return;
+        return false;
       }
       applyCurrentWorkspaceArchiveCompletion(
         confirmedNativeTasksRef.current,
@@ -4715,13 +4722,13 @@ export function App() {
           project.path === path ? { ...project, updatedAt } : project,
         ),
       );
-      return;
+      return true;
     }
-    if (!isTauriHost()) return;
+    if (!isTauriHost()) return false;
 
     try {
       const document = await nativeBridge.loadXiaoWorkspace(path, false);
-      if (!document) return;
+      if (!document) return false;
       const nextTasks = document.tasks.map((task) =>
         task.archived ? task : { ...task, archived: true, pinned: false, updatedAt },
       );
@@ -4736,8 +4743,32 @@ export function App() {
           project.path === path ? { ...project, updatedAt } : project,
         ),
       );
+      return true;
     } catch (reason) {
       console.error("Could not archive project tasks.", reason);
+      return false;
+    }
+  };
+
+  const archiveAllChats = async () => {
+    if (archiveAllChatsBusy || agent.hasActiveRuns || !taskStateReady) return;
+    setArchiveAllChatsBusy(true);
+    setArchiveAllChatsError(null);
+    try {
+      const paths = [...new Set([workspace.path, ...projects.map((project) => project.path)])];
+      let failedProjects = 0;
+      for (const path of paths) {
+        if (!(await archiveProjectTasks(path))) failedProjects += 1;
+      }
+      if (failedProjects > 0) {
+        setArchiveAllChatsError(
+          `Could not archive chats in ${failedProjects} ${
+            failedProjects === 1 ? "project" : "projects"
+          }.`,
+        );
+      }
+    } finally {
+      setArchiveAllChatsBusy(false);
     }
   };
 
@@ -5311,6 +5342,9 @@ export function App() {
               archivedTasks={archivedTasks}
               archivedTasksLoading={archivedTasksLoading}
               archivedTasksError={archivedTasksError}
+              archiveAllChatsBusy={archiveAllChatsBusy}
+              archiveAllChatsDisabled={agent.hasActiveRuns || !taskStateReady}
+              archiveAllChatsError={archiveAllChatsError}
               codexProfiles={codexProfiles}
               selectedCodexProfileId={activeTask.codexProfileId}
               xaiDeviceAuthorization={xaiDeviceAuthorization}
@@ -5326,6 +5360,7 @@ export function App() {
               })}
               onThemeChange={setTheme}
               onPreferencesChange={updatePreferences}
+              onArchiveAllChats={() => archiveAllChats()}
               onRestoreArchivedTask={(item) => void restoreArchivedTask(item)}
               onReloadArchivedTasks={() => void refreshArchivedTasks()}
               onReconnect={() => void agent.connect()}

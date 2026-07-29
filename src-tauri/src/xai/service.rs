@@ -238,6 +238,7 @@ impl XaiOAuthService {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn status(&self, profile_id: &str) -> Result<XaiOAuthStatus, String> {
         let now = now_millis()?;
         match self.load_credential(profile_id)? {

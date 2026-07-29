@@ -1129,6 +1129,17 @@ export function Composer({
           onResolve={onResolveMcpElicitation}
         />
       ) : null}
+      <SteerMessageBar
+        followUps={followUps}
+        sendingFollowUpId={sendingFollowUpId}
+        failedFollowUpId={failedFollowUpId}
+        canSteer={canSteer}
+        interactiveRequestOpen={interactiveRequestOpen}
+        onEdit={onEditFollowUp}
+        onRemove={onRemoveFollowUp}
+        onRetry={onRetryFollowUp}
+        onSendNow={onSendFollowUpNow}
+      />
       <div
         className={`composer ${currentTaskWorking ? "is-working" : ""} ${
           dragging ? "is-dragging" : ""
@@ -1146,17 +1157,6 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
-        <SteerMessageBar
-          followUps={followUps}
-          sendingFollowUpId={sendingFollowUpId}
-          failedFollowUpId={failedFollowUpId}
-          canSteer={canSteer}
-          interactiveRequestOpen={interactiveRequestOpen}
-          onEdit={onEditFollowUp}
-          onRemove={onRemoveFollowUp}
-          onRetry={onRetryFollowUp}
-          onSendNow={onSendFollowUpNow}
-        />
         <StashedPrompts
           taskId={taskId}
           prompt={stashSubmission.prompt}

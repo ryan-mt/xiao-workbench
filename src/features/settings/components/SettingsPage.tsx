@@ -72,6 +72,9 @@ type SettingsPageProps = {
   archivedTasks: ArchivedTaskItem[];
   archivedTasksLoading: boolean;
   archivedTasksError: string | null;
+  archiveAllChatsBusy: boolean;
+  archiveAllChatsDisabled: boolean;
+  archiveAllChatsError: string | null;
   codexProfiles?: CodexProfile[];
   selectedCodexProfileId?: string | null;
   codexProfileSelectionDisabled?: boolean;
@@ -80,6 +83,7 @@ type SettingsPageProps = {
   xaiOAuthError?: string | null;
   onThemeChange: (theme: Theme) => void;
   onPreferencesChange: (patch: Partial<AppPreferences>) => void;
+  onArchiveAllChats: () => void;
   onRestoreArchivedTask: (item: ArchivedTaskItem) => void;
   onReloadArchivedTasks: () => void;
   onReconnect: () => void;
@@ -336,6 +340,9 @@ export function SettingsPage({
   archivedTasks,
   archivedTasksLoading,
   archivedTasksError,
+  archiveAllChatsBusy,
+  archiveAllChatsDisabled,
+  archiveAllChatsError,
   codexProfiles = [],
   selectedCodexProfileId = null,
   codexProfileSelectionDisabled = true,
@@ -344,6 +351,7 @@ export function SettingsPage({
   xaiOAuthError = null,
   onThemeChange,
   onPreferencesChange,
+  onArchiveAllChats,
   onRestoreArchivedTask,
   onReloadArchivedTasks,
   onReconnect,
@@ -908,44 +916,65 @@ export function SettingsPage({
             )}
 
             {activeSection === "archived" && (
-              archivedTasksLoading ? (
-                <div className="archived-tasks-state" role="status">
-                  <XiaoIcon className="is-spinning" name="refresh" size={18} />
-                  <p>Loading archived tasks…</p>
-                </div>
-              ) : archivedTasksError ? (
-                <div className="archived-tasks-state" role="alert">
-                  <strong>Couldn't load archived tasks</strong>
-                  <p>{archivedTasksError}</p>
-                  <button type="button" onClick={onReloadArchivedTasks}>
-                    <XiaoIcon name="refresh" size={14} />
-                    Retry
+              <div className="archived-tasks">
+                <div className="archived-tasks__actions">
+                  <div>
+                    <strong>Archive all chats</strong>
+                    <p>Move every chat from every project into this archive.</p>
+                    {archiveAllChatsError ? <small role="alert">{archiveAllChatsError}</small> : null}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={archiveAllChatsDisabled || archiveAllChatsBusy}
+                    onClick={onArchiveAllChats}
+                  >
+                    <XiaoIcon
+                      className={archiveAllChatsBusy ? "is-spinning" : undefined}
+                      name={archiveAllChatsBusy ? "refresh" : "archive"}
+                      size={14}
+                    />
+                    {archiveAllChatsBusy ? "Archiving…" : "Archive all"}
                   </button>
                 </div>
-              ) : sortedArchivedTasks.length === 0 ? (
-                <div className="archived-tasks-state">
-                  <strong>No archived tasks</strong>
-                  <p>Tasks you archive will appear here.</p>
-                </div>
-              ) : (
-                <ul className="archived-task-list">
-                  {sortedArchivedTasks.map((item) => (
-                    <li key={`${item.projectPath}:${item.taskId}`}>
-                      <div className="archived-task-list__copy">
-                        <h3>{item.title}</h3>
-                        <p>
-                          <span title={item.projectPath}>{item.projectName}</span>
-                          <span aria-hidden="true">·</span>
-                          <time dateTime={new Date(item.updatedAt).toISOString()}>
-                            {archivedTaskDate.format(item.updatedAt)}
-                          </time>
-                        </p>
-                      </div>
-                      <button type="button" onClick={() => onRestoreArchivedTask(item)}>Restore</button>
-                    </li>
-                  ))}
-                </ul>
-              )
+                {archivedTasksLoading ? (
+                  <div className="archived-tasks-state" role="status">
+                    <XiaoIcon className="is-spinning" name="refresh" size={18} />
+                    <p>Loading archived tasks…</p>
+                  </div>
+                ) : archivedTasksError ? (
+                  <div className="archived-tasks-state" role="alert">
+                    <strong>Couldn't load archived tasks</strong>
+                    <p>{archivedTasksError}</p>
+                    <button type="button" onClick={onReloadArchivedTasks}>
+                      <XiaoIcon name="refresh" size={14} />
+                      Retry
+                    </button>
+                  </div>
+                ) : sortedArchivedTasks.length === 0 ? (
+                  <div className="archived-tasks-state">
+                    <strong>No archived tasks</strong>
+                    <p>Tasks you archive will appear here.</p>
+                  </div>
+                ) : (
+                  <ul className="archived-task-list">
+                    {sortedArchivedTasks.map((item) => (
+                      <li key={`${item.projectPath}:${item.taskId}`}>
+                        <div className="archived-task-list__copy">
+                          <h3>{item.title}</h3>
+                          <p>
+                            <span title={item.projectPath}>{item.projectName}</span>
+                            <span aria-hidden="true">·</span>
+                            <time dateTime={new Date(item.updatedAt).toISOString()}>
+                              {archivedTaskDate.format(item.updatedAt)}
+                            </time>
+                          </p>
+                        </div>
+                        <button type="button" onClick={() => onRestoreArchivedTask(item)}>Restore</button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </section>
         </div>

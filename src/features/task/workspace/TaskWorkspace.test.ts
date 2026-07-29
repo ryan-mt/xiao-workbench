@@ -218,13 +218,11 @@ describe("task workspace frame", () => {
     }
   });
 
-  it("overlays queued follow-ups without moving or covering the composer controls", () => {
+  it("keeps queued follow-ups in layout without covering Todo content or composer controls", () => {
     expect(taskWorkspaceStyles).toMatch(
-      /\.steer-message\s*{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100% - 1px\);/s,
+      /\.steer-message\s*{[^}]*position:\s*relative;[^}]*width:\s*min\(100%,\s*var\(--task-content-width\)\);/s,
     );
-    expect(taskWorkspaceStyles).toMatch(
-      /\.composer\.has-steer-message \.stashed-prompts\s*{[^}]*bottom:\s*calc\(100% \+ 46px\);/s,
-    );
+    expect(taskWorkspaceStyles).not.toMatch(/\.steer-message\s*{[^}]*position:\s*absolute;/s);
   });
 
   it("assigns the flexible grid row to the timeline in conversation mode", () => {

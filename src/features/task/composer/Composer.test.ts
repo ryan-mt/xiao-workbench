@@ -153,7 +153,8 @@ describe("composer task dock lifecycle", () => {
     const queue = screen.getByLabelText("1 queued message");
     expect(view.container.querySelector(".composer")).toBe(composer);
     expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
-    expect(composer?.contains(queue)).toBe(true);
+    expect(view.container.querySelector(".composer-wrap")?.contains(queue)).toBe(true);
+    expect(composer?.contains(queue)).toBe(false);
   });
 
   it("shows plan tasks only while their task is live", () => {
