@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -111,9 +112,17 @@ const APP_COMMANDS: &[&str] = &[
 
 #[cfg(not(test))]
 fn main() {
+    synchronize_ticket03_source()
+        .expect("Ticket 03 source fingerprint could not be synchronized before the build");
     let certification = validate_ticket03_certification()
         .expect("Ticket 03 release certification does not match the verified source");
-    println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
+    if let Some(certification) = certification {
+        println!("cargo:rustc-env=XIAO_TICKET03_RELEASE_CERTIFIED={certification}");
+    } else {
+        println!(
+            "cargo:warning=Ticket 03 source is synchronized but pending the pre-commit release gates"
+        );
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
@@ -126,7 +135,33 @@ fn main() {
     );
 }
 
-fn validate_ticket03_certification() -> Result<String, String> {
+fn synchronize_ticket03_source() -> Result<(), String> {
+    let root = workspace_root()?;
+    let output = Command::new("node")
+        .arg(root.join("scripts/sync-ticket03-certification.mjs"))
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("Could not start the Ticket 03 source sync: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Ticket 03 source sync failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+fn workspace_root() -> Result<PathBuf, String> {
+    Ok(PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR")
+            .map_err(|error| format!("Could not locate the Cargo manifest: {error}"))?,
+    )
+    .parent()
+    .ok_or("The Cargo manifest has no workspace parent.")?
+    .to_path_buf())
+}
+
+fn validate_ticket03_certification() -> Result<Option<String>, String> {
     const ROW_IDS: &[&str] = &[
         "codex-runtime",
         "multiple-codex-accounts",
@@ -166,13 +201,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
         "typecheck-frontend-rust-production-build",
     ];
 
-    let root = PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR")
-            .map_err(|error| format!("Could not locate the Cargo manifest: {error}"))?,
-    )
-    .parent()
-    .ok_or("The Cargo manifest has no workspace parent.")?
-    .to_path_buf();
+    let root = workspace_root()?;
     let certification_path =
         root.join("src/features/release-assurance/ticket03-certification.json");
     println!("cargo:rerun-if-changed={}", certification_path.display());
@@ -180,8 +209,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
         .map_err(|error| format!("Could not read Ticket 03 certification: {error}"))?;
     let document: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Could not decode Ticket 03 certification: {error}"))?;
-    if document["status"] != "passed"
-        || document["baselineCommit"] != "fda6486233e0b2f07ecfea166e1a94533cb923c4"
+    if document["baselineCommit"] != "fda6486233e0b2f07ecfea166e1a94533cb923c4"
         || document["evidence"] != "src/features/release-assurance/ticket03-verification.md"
         || string_array(&document["rowIds"])? != ROW_IDS
         || string_array(&document["gateIds"])? != GATE_IDS
@@ -194,8 +222,13 @@ fn validate_ticket03_certification() -> Result<String, String> {
     let actual = ticket03_source_fingerprint(&root)?;
     if expected != actual {
         return Err(format!(
-            "Ticket 03 source fingerprint changed: certified {expected}, current {actual}"
+            "Ticket 03 source fingerprint changed: recorded {expected}, current {actual}. Run `npm run certification:sync` before invoking Cargo directly"
         ));
+    }
+    match document["status"].as_str() {
+        Some("pending") => return Ok(None),
+        Some("passed") => {}
+        _ => return Err("Ticket 03 certification status is invalid.".to_owned()),
     }
     let evidence_path = root.join(
         document["evidence"]
@@ -210,7 +243,7 @@ fn validate_ticket03_certification() -> Result<String, String> {
             "Ticket 03 verification evidence is not bound to the certified source.".to_owned(),
         );
     }
-    Ok(actual)
+    Ok(Some(actual))
 }
 
 fn string_array<'a>(value: &'a serde_json::Value) -> Result<Vec<&'a str>, String> {
@@ -424,11 +457,11 @@ fn hex_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{normalize_build_version, ticket03_source_fingerprint, ticket03_source_manifest};
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::{Path, PathBuf};
-
-    use super::{normalize_build_version, ticket03_source_manifest};
+    use std::process::Command;
 
     fn workspace_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -459,6 +492,29 @@ mod tests {
         assert_eq!(lf, crlf);
         assert_eq!(lf, mixed);
         assert_ne!(lf, changed);
+    }
+
+    #[test]
+    fn node_sync_uses_the_build_script_fingerprint() {
+        let root = workspace_root();
+        let output = Command::new("node")
+            .arg(root.join("scripts/sync-ticket03-certification.mjs"))
+            .arg("--print")
+            .output()
+            .expect("Node should run the Ticket 03 fingerprint sync");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let node = String::from_utf8(output.stdout)
+            .expect("Node fingerprint should be UTF-8")
+            .trim()
+            .to_owned();
+        let rust = ticket03_source_fingerprint(&root)
+            .expect("Rust should compute the Ticket 03 source fingerprint");
+
+        assert_eq!(node, rust);
     }
 
     #[test]

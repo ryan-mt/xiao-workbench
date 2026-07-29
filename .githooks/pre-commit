@@ -1,0 +1,2 @@
+#!/bin/sh
+node scripts/certify-ticket03-release.mjs

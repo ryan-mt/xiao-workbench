@@ -2,6 +2,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { syncTicket03Certification } from "./sync-ticket03-certification.mjs";
+
 const defaultRoot = new URL("../", import.meta.url);
 const versionPattern = /0\.0\.0-?day\d{8}/g;
 const files = [
@@ -77,6 +79,14 @@ export async function syncBuildVersions({
 const isMain = process.argv[1]
   && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (isMain) {
-  const result = await syncBuildVersions({ check: process.argv.includes("--check") });
-  process.stdout.write(`${result.version} (Official ${result.officialVersion})\n`);
+  const check = process.argv.includes("--check");
+  const result = await syncBuildVersions({ check });
+  if (check) {
+    process.stdout.write(`${result.version} (Official ${result.officialVersion})\n`);
+  } else {
+    const certification = await syncTicket03Certification();
+    process.stdout.write(
+      `${result.version} (Official ${result.officialVersion}); Ticket 03 ${certification.status}: ${certification.fingerprint}\n`,
+    );
+  }
 }

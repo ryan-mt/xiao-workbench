@@ -81,7 +81,7 @@ describe("Ticket 03 release assurance", () => {
     );
   });
 
-  it("retains source evidence and records passing runtime verification for every row", () => {
+  it("retains source evidence and reflects the current certification status", () => {
     expect(TICKET_03_CERTIFICATION.sourceFingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(TICKET_03_CERTIFICATION.rowIds).toEqual(FROZEN_BASELINE_ROWS.map(({ id }) => id));
     expect(TICKET_03_CERTIFICATION.gateIds).toEqual(REQUIRED_TICKET_03_GATES);
@@ -89,6 +89,16 @@ describe("Ticket 03 release assurance", () => {
     expect(RELEASE_ASSURANCE_MANIFEST.rows.every(
       ({ evidence }) => evidence.some(({ kind }) => kind === "baseline") && evidence.length >= 2,
     )).toBe(true);
+
+    if (TICKET_03_CERTIFICATION.status === "pending") {
+      expect(RELEASE_ASSURANCE_MANIFEST.rows.every(
+        ({ verification }) => verification.status === "failed",
+      )).toBe(true);
+      expect(evaluateReleaseAssurance(RELEASE_ASSURANCE_MANIFEST).passes).toBe(false);
+      return;
+    }
+
+    expect(TICKET_03_CERTIFICATION.status).toBe("passed");
     expect(RELEASE_ASSURANCE_MANIFEST.rows.every(
       ({ verification }) =>
         verification.status === "passed"
