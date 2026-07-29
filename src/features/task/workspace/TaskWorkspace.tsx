@@ -106,6 +106,10 @@ export const shouldFollowLiveOutput = (
   metrics: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
 ) => distanceFromScrollBottom(metrics) <= liveOutputFollowThreshold;
 
+export const latestTimelineScrollTop = (
+  metrics: Pick<HTMLElement, "scrollHeight">,
+) => metrics.scrollHeight;
+
 type TaskWorkspaceFrameProps = {
   launchMode: boolean;
   launchContent: ReactNode;
@@ -141,7 +145,6 @@ type TaskWorkspaceProps = {
   launchMode: boolean;
   taskStateError: string | null;
   taskStateLoading: boolean;
-  initialTimelineScrollTop: number | null;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
   rateLimits: AgentRateLimitSnapshot | null;
@@ -282,7 +285,6 @@ export function TaskWorkspace({
   launchMode,
   taskStateError,
   taskStateLoading,
-  initialTimelineScrollTop,
   timeline,
   runtime,
   rateLimits,
@@ -365,7 +367,7 @@ export function TaskWorkspace({
   const followLiveOutput = useRef(true);
   const initialScrollRestored = useRef(false);
   const scrollPersistTimer = useRef<number | null>(null);
-  const pendingScrollTop = useRef(initialTimelineScrollTop);
+  const pendingScrollTop = useRef<number | null>(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -480,13 +482,13 @@ export function TaskWorkspace({
     if (!node) return;
     if (!initialScrollRestored.current && timeline.length > 0) {
       initialScrollRestored.current = true;
-      node.scrollTop = initialTimelineScrollTop ?? node.scrollHeight;
+      node.scrollTop = latestTimelineScrollTop(node);
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
     }
     if (followLiveOutput.current) node.scrollTop = node.scrollHeight;
-  }, [initialTimelineScrollTop, taskId, timeline]);
+  }, [taskId, timeline]);
 
   useLayoutEffect(() => {
     const node = scrollArea.current;

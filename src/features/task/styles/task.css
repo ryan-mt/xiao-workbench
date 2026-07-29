@@ -960,7 +960,7 @@
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-  margin-left: auto;
+  margin-left: 0;
   place-items: center;
   opacity: 0;
   transition: opacity 120ms ease, transform 160ms ease;
@@ -3533,11 +3533,10 @@
 .composer.is-question-paused { display: none; }
 
 .composer-live-changes {
-  display: inline-flex;
+  display: flex;
   width: fit-content;
   min-height: 32px;
   align-items: center;
-  justify-self: center;
   gap: 7px;
   margin: 0 auto 10px;
   padding: 0 12px;
