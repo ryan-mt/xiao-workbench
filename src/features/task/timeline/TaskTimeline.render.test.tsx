@@ -73,7 +73,7 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("Worked for 1s");
   });
 
-  it("opens the latest completed execution and labels viewed image output", () => {
+  it("opens live execution and labels viewed image output", () => {
     const imageUrl = "data:image/png;base64,iVBORw0KGgo=";
     const markup = render([{
       id: "user",
@@ -97,13 +97,119 @@ describe("TaskTimeline turn canvas", () => {
       command: "npm test",
       body: "failed",
       status: "error",
-    }]);
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 2_000,
+    });
 
-    expect(markup).toContain(">Worked<");
+    expect(markup).toContain("Working for");
     expect(markup).toContain("aria-expanded=\"true\"");
     expect(markup).toContain("Viewed an image");
     expect(markup.match(/src="data:image\/png;base64,iVBORw0KGgo="/g)).toHaveLength(1);
     expect(markup).toContain("npm test");
+  });
+
+  it("keeps the final response visible when completed work is collapsed", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Fix the import",
+    }, {
+      id: "shell",
+      kind: "command",
+      title: "Ran command",
+      command: "npm test",
+      status: "success",
+    }, {
+      id: "response",
+      kind: "result",
+      title: "Agent response",
+      body: "The import is fixed.",
+      status: "success",
+    }]);
+
+    expect(markup).toContain("aria-expanded=\"false\"");
+    expect(markup).not.toContain("npm test");
+    expect(markup).toContain("The import is fixed.");
+  });
+
+  it("renders the latest live thought as an animated status without inventing execution", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Fix chronological rendering",
+    }, {
+      id: "thinking",
+      kind: "thought",
+      title: "Reasoning",
+      body: "Planning chronological flow rendering and grouping",
+      status: "active",
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 43_000,
+    });
+
+    expect(markup).toContain("Working for 43s");
+    expect(markup).toContain("conversation-turn__thinking");
+    expect(markup).toContain("Planning chronological flow rendering and grouping");
+    expect(markup).not.toContain("Execution details");
+  });
+
+  it("uses a live thought as the disclosure title when execution follows it", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Inspect the app",
+    }, {
+      id: "thinking",
+      kind: "thought",
+      title: "Reasoning",
+      body: "Designing selected task refresh",
+      status: "success",
+    }, {
+      id: "command",
+      kind: "command",
+      title: "Ran command",
+      command: "rg -n selectedTask src/app/App.tsx",
+      status: "success",
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 10_000,
+    });
+
+    expect(markup).toContain("Designing selected task refresh");
+    expect(markup).toContain("rg -n selectedTask src/app/App.tsx");
+    expect(markup).not.toMatch(
+      /execution-trace__icon[^>]*>[\s\S]*?Designing selected task refresh/,
+    );
+  });
+
+  it("does not render the edited-files summary card before a final response", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Edit the app",
+    }, {
+      id: "change",
+      kind: "change",
+      title: "Editing 1 file",
+      status: "active",
+      files: [{ path: "src/App.tsx", additions: 2, deletions: 1 }],
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 5_000,
+    });
+
+    expect(markup).toContain("Edited files");
+    expect(markup).not.toContain("edited-files__heading");
   });
 
   it("marks a failed shell call as recovered when a corrected call succeeds", () => {

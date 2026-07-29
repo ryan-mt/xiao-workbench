@@ -133,6 +133,7 @@ type ActivityItemProps = {
   undoing?: boolean;
   onUndo?: () => void;
   onEditUserMessage?: (text: string) => void;
+  showMessageActions?: boolean;
   attemptCount?: number;
   recovered?: boolean;
   isLive?: boolean;
@@ -218,6 +219,7 @@ export const ActivityItem = memo(function ActivityItem({
   undoing = false,
   onUndo,
   onEditUserMessage,
+  showMessageActions = true,
   attemptCount = 1,
   recovered = false,
   isLive = true,
@@ -353,7 +355,7 @@ export const ActivityItem = memo(function ActivityItem({
         <div className="activity__assistant-message">
           {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
           <TimelineImages attachments={entry.attachments} />
-          {entry.body && !streaming ? (
+          {entry.body && !streaming && showMessageActions ? (
             <MessageActions text={entry.body} createdAt={entry.createdAt} copyLabel="Copy response" />
           ) : null}
           {turnFiles.length > 0 && (
@@ -662,6 +664,7 @@ export const ActivityItem = memo(function ActivityItem({
             const displayPath = normalizedPath.toLowerCase().startsWith(`${normalizedWorkspace.toLowerCase()}/`)
               ? normalizedPath.slice(normalizedWorkspace.length + 1)
               : normalizedPath;
+            const displayName = displayPath.split("/").filter(Boolean).at(-1) ?? displayPath;
             return (
               <div className={`patch-activity__row is-${created ? "created" : deleted ? "deleted" : "edited"}`} key={file.path}>
                 <span className="activity__tool-icon" aria-hidden="true">
@@ -677,7 +680,7 @@ export const ActivityItem = memo(function ActivityItem({
                   title={`Open ${absolutePath}`}
                   onClick={() => onOpenResource(absolutePath)}
                 >
-                  {displayPath}
+                  {displayName}
                 </button>
                 <span className="patch-activity__stats">
                   <b>+{file.additions}</b>

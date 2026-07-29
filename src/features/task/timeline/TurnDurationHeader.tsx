@@ -52,6 +52,11 @@ export function TurnDurationHeader({
   onToggle: () => void;
 }) {
   const labelRef = useRef<HTMLSpanElement>(null);
+  const fallbackStartedAt = useRef(Date.now());
+  const liveStartedAt = runtimeStartedAt ?? user.createdAt ?? entries
+    .map((entry) => entry.createdAt)
+    .find((value): value is number => typeof value === "number" && Number.isFinite(value)) ??
+    fallbackStartedAt.current;
   const label = () => {
     const duration = turnDuration(user, entries, response, live, runtimeStartedAt);
     return duration === null
@@ -62,12 +67,14 @@ export function TurnDurationHeader({
   useEffect(() => {
     if (!live) return;
     const update = () => {
-      if (labelRef.current) labelRef.current.textContent = label();
+      if (labelRef.current) {
+        labelRef.current.textContent = `Working for ${formatElapsed(Date.now() - liveStartedAt)}`;
+      }
     };
     update();
     const timer = window.setInterval(update, 1_000);
     return () => window.clearInterval(timer);
-  });
+  }, [live, liveStartedAt]);
 
   return (
     <button

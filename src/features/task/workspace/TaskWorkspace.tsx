@@ -485,9 +485,7 @@ export function TaskWorkspace({
       node.scrollTop = latestTimelineScrollTop(node);
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
-      return;
     }
-    if (followLiveOutput.current) node.scrollTop = node.scrollHeight;
   }, [taskId, timeline]);
 
   useLayoutEffect(() => {

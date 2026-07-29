@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import type { AgentRuntimeState } from "../../../core/models/agent";
+import type { AgentRuntimeState, TimelineEntry } from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
 import type { ConversationTurn } from "./ConversationTurnProjector";
 import { EditedFilesSummary } from "./EditedFilesSummary";
@@ -33,6 +33,49 @@ type SharedProps = {
   ) => Promise<void>;
 };
 
+type TurnFlowGroup =
+  | { kind: "commentary"; entry: TimelineEntry }
+  | { kind: "user"; entry: TimelineEntry }
+  | { kind: "execution"; id: string; entries: TimelineEntry[] };
+
+const groupTurnFlow = (
+  flow: TimelineEntry[],
+  commentary: TimelineEntry[],
+): TurnFlowGroup[] => {
+  const commentaryIds = new Set(commentary.map((entry) => entry.id));
+  const groups: TurnFlowGroup[] = [];
+  let execution: TimelineEntry[] = [];
+  const flushExecution = () => {
+    if (!execution.length) return;
+    groups.push({
+      kind: "execution",
+      id: `execution-segment:${execution[0].id}`,
+      entries: execution,
+    });
+    execution = [];
+  };
+
+  for (const entry of flow) {
+    if (entry.kind === "user" || entry.kind === "brief") {
+      flushExecution();
+      groups.push({ kind: "user", entry });
+    } else if (commentaryIds.has(entry.id)) {
+      flushExecution();
+      groups.push({ kind: "commentary", entry });
+    } else {
+      execution.push(entry);
+    }
+  }
+  flushExecution();
+  return groups;
+};
+
+const liveThoughtLabel = (entry: TimelineEntry) =>
+  entry.body
+    ?.split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s+|^\s*[-*]\s+|\*\*|__/g, "").trim())
+    .find(Boolean) ?? entry.title;
+
 export function AgentTurn(props: SharedProps) {
   const { turn, runtime, taskId } = props;
   const live = props.liveEligible &&
@@ -41,17 +84,7 @@ export function AgentTurn(props: SharedProps) {
     (!turn.response || turn.response.status === "active");
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
-  const executionGroups = projectExecutionTraces(turn.work, live);
-  const workIds = new Set(turn.work.map((entry) => entry.id));
-  const firstWorkIndex = turn.flow.findIndex((entry) => workIds.has(entry.id));
-  const commentaryBeforeWork = (firstWorkIndex < 0
-    ? turn.flow
-    : turn.flow.slice(0, firstWorkIndex)
-  ).filter((entry) => !workIds.has(entry.id));
-  const commentaryAfterWork = (firstWorkIndex < 0
-    ? []
-    : turn.flow.slice(firstWorkIndex + 1)
-  ).filter((entry) => !workIds.has(entry.id));
+  const flowGroups = groupTurnFlow(turn.flow, turn.commentary);
 
   useEffect(() => {
     if (live) setExpanded(true);
@@ -76,39 +109,74 @@ export function AgentTurn(props: SharedProps) {
       isLive={live}
       recovered={recovery.recoveredIds.has(entry.id)}
       onEditUserMessage={entry === turn.user ? props.onEditUserMessage : undefined}
+      showMessageActions={entry.meta !== "Commentary"}
     />
   );
 
-  const commentary = (entries: typeof turn.commentary, offset: number) =>
-    entries.map((entry, commentaryIndex) => (
-      <span
-        className="timeline-entry-anchor conversation-turn__commentary"
-        id={`timeline-entry-${entry.id}`}
-        key={entry.id}
-      >
-        {item(entry, offset + commentaryIndex)}
-      </span>
-    ));
+  const flow = flowGroups.map((flowGroup, flowGroupIndex) => {
+    if (flowGroup.kind === "user") {
+      return (
+        <span
+          className="timeline-entry-anchor conversation-turn__follow-up"
+          id={`timeline-entry-${flowGroup.entry.id}`}
+          key={flowGroup.entry.id}
+        >
+          {item(flowGroup.entry, turn.flow.indexOf(flowGroup.entry) + 1)}
+        </span>
+      );
+    }
+    if (flowGroup.kind === "commentary") {
+      const offset = turn.flow.indexOf(flowGroup.entry) + 1;
+      return (
+        <span
+          className="timeline-entry-anchor conversation-turn__commentary"
+          id={`timeline-entry-${flowGroup.entry.id}`}
+          key={flowGroup.entry.id}
+        >
+          {item(flowGroup.entry, offset)}
+        </span>
+      );
+    }
 
-  const execution = turn.work.length ? (
-    <div className="conversation-turn__execution">
-      {executionGroups.map((group) => {
-        const content = group.entries.map((entry) => {
-          const offset = turn.work.indexOf(entry);
-          return (
+    let executionEnd = flowGroup.entries.length;
+    while (executionEnd > 0 && flowGroup.entries[executionEnd - 1].kind === "thought") {
+      executionEnd -= 1;
+    }
+    const latestThought = live && flowGroupIndex === flowGroups.length - 1
+      ? flowGroup.entries.slice(executionEnd).at(-1)
+      : null;
+    const executionGroups = projectExecutionTraces(
+      latestThought ? flowGroup.entries.slice(0, executionEnd) : flowGroup.entries,
+      latestThought ? false : live,
+    );
+    if (!executionGroups.length && !latestThought) return null;
+    return (
+      <div className="conversation-turn__execution" key={flowGroup.id}>
+        {executionGroups.map((group) => {
+          const content = group.entries.map((entry) => (
             <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
-              {item(entry, turn.commentary.length + offset + 1)}
+              {item(entry, turn.flow.indexOf(entry) + 1)}
             </span>
-          );
-        });
-        return group.title ? (
-          <ExecutionTraceGroup key={group.id} title={group.title} live={live}>
-            {content}
-          </ExecutionTraceGroup>
-        ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
-      })}
-    </div>
-  ) : null;
+          ));
+          return group.title ? (
+            <ExecutionTraceGroup
+              key={group.id}
+              title={group.title}
+              live={live}
+              thought={group.thoughtTitled}
+            >
+              {content}
+            </ExecutionTraceGroup>
+          ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
+        })}
+        {latestThought ? (
+          <div className="conversation-turn__thinking" role="status">
+            {liveThoughtLabel(latestThought)}
+          </div>
+        ) : null}
+      </div>
+    );
+  });
 
   return (
     <section className={`conversation-turn${live ? " is-live" : ""}`}>
@@ -125,27 +193,23 @@ export function AgentTurn(props: SharedProps) {
         onToggle={() => setExpanded((value) => !value)}
       />
       {expanded ? (
-        <div className="conversation-turn__body">
-          {commentary(commentaryBeforeWork, 1)}
-          {execution}
-          {commentary(commentaryAfterWork, commentaryBeforeWork.length + 1)}
-          {turn.response ? (
-            <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
-              {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
-            </span>
-          ) : null}
-          {turn.files.length ? (
-            <EditedFilesSummary
-              files={turn.files}
-              workspacePath={props.workspacePath}
-              canUndo={props.canUndo}
-              undoing={props.undoing}
-              onUndo={props.onUndo}
-              onReview={props.onReviewChanges}
-              onOpenResource={props.onOpenResource}
-            />
-          ) : null}
-        </div>
+        <div className="conversation-turn__body">{flow}</div>
+      ) : null}
+      {turn.response ? (
+        <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
+          {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
+        </span>
+      ) : null}
+      {turn.files.length && turn.response ? (
+        <EditedFilesSummary
+          files={turn.files}
+          workspacePath={props.workspacePath}
+          canUndo={props.canUndo}
+          undoing={props.undoing}
+          onUndo={props.onUndo}
+          onReview={props.onReviewChanges}
+          onOpenResource={props.onOpenResource}
+        />
       ) : null}
     </section>
   );

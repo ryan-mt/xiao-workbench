@@ -5,10 +5,12 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 export function ExecutionTraceGroup({
   title,
   live,
+  thought = false,
   children,
 }: {
   title: string;
   live: boolean;
+  thought?: boolean;
   children: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(live);
@@ -24,11 +26,13 @@ export function ExecutionTraceGroup({
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
       <summary>
-        <XiaoIcon
-          className="execution-trace__icon"
-          name={title.startsWith("Edited") ? "edit" : "command"}
-          size={13}
-        />
+        {thought ? null : (
+          <XiaoIcon
+            className="execution-trace__icon"
+            name={title.startsWith("Edited") ? "edit" : "command"}
+            size={13}
+          />
+        )}
         <span>{title}</span>
         <XiaoIcon className="execution-trace__caret" name="caret" size={12} />
       </summary>

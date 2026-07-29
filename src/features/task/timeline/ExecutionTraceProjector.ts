@@ -3,6 +3,7 @@ import type { TimelineEntry } from "../../../core/models/agent";
 export type ExecutionTrace = {
   id: string;
   title: string | null;
+  thoughtTitled: boolean;
   entries: TimelineEntry[];
 };
 
@@ -37,10 +38,11 @@ export class ExecutionTraceProjector {
         ? ["Ran commands", hasOtherTools ? "used tools" : ""].filter(Boolean).join(", ")
         : hasOtherTools ? "Used tools" : "";
     return [{
-      id: latestMarker?.id ?? `execution-${entries[0].id}`,
+      id: `execution-${entries[0].id}`,
       title: this.live && latestMarker
         ? traceTitle(latestMarker)
         : summary || "Execution details",
+      thoughtTitled: Boolean(this.live && latestMarker),
       entries,
     }];
   }

@@ -18,8 +18,9 @@ describe("execution trace projection", () => {
       entry("test", "command"),
     ])).toEqual([
       {
-        id: "trace",
+        id: "execution-setup",
         title: "Edited files, ran commands",
+        thoughtTitled: false,
         entries: [entry("setup", "command"), entry("edit", "change"), entry("test", "command")],
       },
     ]);
@@ -40,5 +41,22 @@ describe("execution trace projection", () => {
       entry("command", "command"),
     ], true);
     expect(traces[0].title).toBe("Investigating missing command entries");
+    expect(traces[0].thoughtTitled).toBe(true);
+  });
+
+  it("keeps the disclosure identity stable when a newer live thought arrives", () => {
+    const before = projectExecutionTraces([
+      entry("command", "command"),
+      entry("thought-one", "thought", "Inspecting the renderer"),
+    ], true);
+    const after = projectExecutionTraces([
+      entry("command", "command"),
+      entry("thought-one", "thought", "Inspecting the renderer"),
+      entry("thought-two", "thought", "Optimizing the canvas"),
+    ], true);
+
+    expect(before[0].id).toBe("execution-command");
+    expect(after[0].id).toBe(before[0].id);
+    expect(after[0].title).toBe("Optimizing the canvas");
   });
 });

@@ -63,6 +63,35 @@ describe("conversation projection", () => {
     });
   });
 
+  it("keeps steered user messages inside the same backend turn", () => {
+    const rows = projectConversation([{
+      ...entry("user", "user"),
+      turnId: "turn-1",
+    }, {
+      ...entry("commentary", "result"),
+      title: "Agent response",
+      meta: "Commentary",
+      turnId: "turn-1",
+    }, {
+      ...entry("steer", "user"),
+      turnId: "turn-1",
+    }, {
+      ...entry("change", "change"),
+      turnId: "turn-1",
+      files: [{ path: "src/App.tsx", additions: 1, deletions: 0 }],
+    }]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "turn",
+      turn: {
+        user: { id: "user" },
+        flow: [{ id: "commentary" }, { id: "steer" }, { id: "change" }],
+        work: [{ id: "change" }],
+      },
+    });
+  });
+
   it("derives completed duration from user and response timestamps", () => {
     expect(turnDuration(
       entry("user", "user", 10_000),

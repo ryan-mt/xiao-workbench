@@ -72,8 +72,19 @@ export class ConversationTurnProjector {
       let response: TimelineEntry | null = null;
       index += 1;
 
-      while (index < this.timeline.length && !isUser(this.timeline[index])) {
+      while (index < this.timeline.length) {
         const candidate = this.timeline[index];
+        if (isUser(candidate)) {
+          const sameBackendTurn = Boolean(
+            user.turnId &&
+            candidate.turnId &&
+            user.turnId === candidate.turnId,
+          );
+          if (!sameBackendTurn) break;
+          flow.push(candidate);
+          index += 1;
+          continue;
+        }
         if (isResponse(candidate)) {
           response = candidate;
         } else if (isCommentary(candidate)) {
