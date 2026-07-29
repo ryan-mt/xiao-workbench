@@ -181,7 +181,7 @@ export function ModelPicker({
           className="model-picker__trigger"
           type="button"
           ref={modelTrigger}
-          aria-label="Choose OpenAI model"
+          aria-label="Choose model"
           aria-haspopup="dialog"
           aria-expanded={openMenu === "model"}
           disabled={disabled || !models.length}

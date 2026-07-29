@@ -76,6 +76,11 @@ import type {
   CompanionSyncBatch,
   ExchangedCompanionSession,
 } from "../models/companion";
+import type {
+  XaiDeviceAuthorization,
+  XaiOAuthPollResult,
+  XaiOAuthStatus,
+} from "../models/xai";
 
 export const isTauriHost = () => "__TAURI_INTERNALS__" in window;
 
@@ -148,6 +153,26 @@ export const nativeBridge = {
 
   listAgentModels(projectPath: string, taskId: string | null) {
     return invoke<AgentModelSummary[]>("list_agent_models", { projectPath, taskId });
+  },
+
+  createXaiCodexProfile(clientId: string | null) {
+    return invoke<CodexProfile>("create_xai_codex_profile", { clientId });
+  },
+
+  beginXaiDeviceOAuth(profileId: string) {
+    return invoke<XaiDeviceAuthorization>("begin_xai_device_oauth", { profileId });
+  },
+
+  pollXaiDeviceOAuth(flowId: string) {
+    return invoke<XaiOAuthPollResult>("poll_xai_device_oauth", { flowId });
+  },
+
+  cancelXaiDeviceOAuth(flowId: string) {
+    return invoke<void>("cancel_xai_device_oauth", { flowId });
+  },
+
+  revokeXaiOAuth(profileId: string) {
+    return invoke<XaiOAuthStatus>("revoke_xai_oauth", { profileId });
   },
 
   enqueueXiaoRun(request: EnqueueRunRequest) {

@@ -165,6 +165,13 @@ fn first_windows_command_path(output: &str) -> Option<PathBuf> {
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .find(|path| {
+            let normalized = path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            if normalized.contains("/node_modules/.bin/") {
+                return false;
+            }
             path.extension()
                 .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| {
@@ -518,6 +525,19 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn skips_dependency_shims_from_npm_injected_path_on_windows() {
+        let output = "C:\\Users\\xiao\\node_modules\\.bin\\codex\r\nC:\\Users\\xiao\\node_modules\\.bin\\codex.cmd\r\nC:\\Users\\xiao\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe\r\n";
+
+        assert_eq!(
+            first_windows_command_path(output),
+            Some(PathBuf::from(
+                r"C:\Users\xiao\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"
+            ))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn finds_the_codex_desktop_bundled_cli() {
         let directory = std::env::temp_dir().join(format!(
             "xiao-codex-desktop-{}-{}",
@@ -533,6 +553,52 @@ mod tests {
 
         assert_eq!(codex_desktop_path_in(&directory), Some(executable));
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn desktop_installed_cli_resolves_when_path_is_missing() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-codex-desktop-resolution-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let executable = directory.join("OpenAI/Codex/bin/codex.exe");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, []).unwrap();
+        let system32 = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "system::service::tests::desktop_cli_resolution_fixture",
+                "--nocapture",
+            ])
+            .env("LOCALAPPDATA", &directory)
+            .env("PATH", system32)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn desktop_cli_resolution_fixture() {
+        let local_app_data = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap());
+        let expected = local_app_data.join("OpenAI/Codex/bin/codex.exe");
+
+        assert_eq!(resolve_codex_path(), Some(expected));
     }
 
     #[cfg(windows)]

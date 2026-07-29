@@ -40,6 +40,7 @@ import type {
   XiaoWorkspaceMode,
   XiaoWorkspaceUpdate,
 } from "../core/models/xiao";
+import type { XaiDeviceAuthorization } from "../core/models/xai";
 import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/workspacePath";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
@@ -1777,6 +1778,10 @@ export function App() {
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
+  const [xaiDeviceAuthorization, setXaiDeviceAuthorization] =
+    useState<XaiDeviceAuthorization | null>(null);
+  const [xaiOAuthBusy, setXaiOAuthBusy] = useState(false);
+  const [xaiOAuthError, setXaiOAuthError] = useState<string | null>(null);
   const codexProfileSyncRef = useRef<string>("");
   const [archivedTasks, setArchivedTasks] = useState<ArchivedTaskItem[]>([]);
   const [archivedTasksLoading, setArchivedTasksLoading] = useState(false);
@@ -2410,6 +2415,48 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!isTauriHost() || !xaiDeviceAuthorization) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      try {
+        const result = await nativeBridge.pollXaiDeviceOAuth(xaiDeviceAuthorization.flowId);
+        if (cancelled) return;
+        if (result.state === "authorized") {
+          const profiles = await nativeBridge.listXiaoCodexProfiles();
+          if (cancelled) return;
+          setCodexProfiles(profiles);
+          setXaiDeviceAuthorization(null);
+          setXaiOAuthError(null);
+          return;
+        }
+        if (result.state === "denied" || result.state === "expired") {
+          setXaiDeviceAuthorization(null);
+          setXaiOAuthError(
+            result.state === "denied"
+              ? "xAI sign-in was denied."
+              : "The xAI device code expired. Start sign-in again.",
+          );
+          return;
+        }
+        timer = window.setTimeout(
+          poll,
+          Math.max(1, result.retryAfterSeconds ?? xaiDeviceAuthorization.intervalSeconds) * 1_000,
+        );
+      } catch (reason) {
+        if (cancelled) return;
+        setXaiDeviceAuthorization(null);
+        setXaiOAuthError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    timer = window.setTimeout(poll, xaiDeviceAuthorization.intervalSeconds * 1_000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [xaiDeviceAuthorization]);
+
+  useEffect(() => {
     if (selectedTask?.origin === "codex") return;
     if (!shouldLoadTaskWorkspaceState(
       loading,
@@ -2996,14 +3043,17 @@ export function App() {
     const runtimeSnapshot = {
       availability: !system.codexVersion
         ? "unavailable" as const
-        : agent.account?.authenticated
+        : agent.account?.authenticated || agent.account?.requiresOpenaiAuth === false
           ? "available" as const
           : agent.runtime.error
             ? "unknown" as const
             : "unauthenticated" as const,
-      authenticatedIdentity: agent.account,
+      authenticatedIdentity: profile.environment.XIAO_MODEL_PROVIDER === "xai"
+        ? profile.authenticatedIdentity
+        : agent.account,
       models: agent.models,
       capabilities: {
+        providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
         codexVersion: system.codexVersion,
         reasoningLevels: agent.models.flatMap((model) => model.supportedReasoningEfforts),
         serviceTiers: agent.models.flatMap((model) => model.serviceTiers),
@@ -4916,6 +4966,70 @@ export function App() {
       });
   };
 
+  const connectXaiProfile = (profile: CodexProfile) => {
+    setXaiOAuthBusy(true);
+    setXaiOAuthError(null);
+    void nativeBridge.beginXaiDeviceOAuth(profile.id)
+      .then((authorization) => {
+        setXaiDeviceAuthorization(authorization);
+        return nativeBridge.openExternalUrl(
+          authorization.verificationUriComplete ?? authorization.verificationUri,
+        );
+      })
+      .catch((reason) => {
+        setXaiOAuthError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => setXaiOAuthBusy(false));
+  };
+
+  const createXaiProfile = () => {
+    const clientId = window.prompt(
+      "xAI OAuth client ID registered for Xiao (leave blank to use XAI_OAUTH_CLIENT_ID)",
+      "",
+    );
+    if (clientId === null) return;
+    setXaiOAuthBusy(true);
+    setXaiOAuthError(null);
+    void nativeBridge.createXaiCodexProfile(clientId.trim() || null)
+      .then((profile) => {
+        setCodexProfiles((current) => [...current, profile]);
+        return nativeBridge.beginXaiDeviceOAuth(profile.id);
+      })
+      .then((authorization) => {
+        setXaiDeviceAuthorization(authorization);
+        return nativeBridge.openExternalUrl(
+          authorization.verificationUriComplete ?? authorization.verificationUri,
+        );
+      })
+      .catch((reason) => {
+        setXaiOAuthError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => setXaiOAuthBusy(false));
+  };
+
+  const cancelXaiDeviceOAuth = () => {
+    const flowId = xaiDeviceAuthorization?.flowId;
+    setXaiDeviceAuthorization(null);
+    if (flowId) {
+      void nativeBridge.cancelXaiDeviceOAuth(flowId).catch(() => undefined);
+    }
+  };
+
+  const revokeXaiProfile = (profile: CodexProfile) => {
+    if (!window.confirm(`Disconnect "${profile.displayName}" from xAI and revoke its saved token?`)) {
+      return;
+    }
+    setXaiOAuthBusy(true);
+    setXaiOAuthError(null);
+    void nativeBridge.revokeXaiOAuth(profile.id)
+      .then(() => nativeBridge.listXiaoCodexProfiles())
+      .then(setCodexProfiles)
+      .catch((reason) => {
+        setXaiOAuthError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => setXaiOAuthBusy(false));
+  };
+
   const activeImportedThread = activeTask.origin === "codex"
     ? codexThreads.find((thread) => thread.id === activeTask.threadId) ?? null
     : null;
@@ -5199,6 +5313,9 @@ export function App() {
               archivedTasksError={archivedTasksError}
               codexProfiles={codexProfiles}
               selectedCodexProfileId={activeTask.codexProfileId}
+              xaiDeviceAuthorization={xaiDeviceAuthorization}
+              xaiOAuthBusy={xaiOAuthBusy}
+              xaiOAuthError={xaiOAuthError}
               codexProfileSelectionDisabled={!canSelectCodexProfile({
                 taskArchived: activeTask.archived,
                 taskStateLoading: taskWorkspaceStateLoading,
@@ -5219,6 +5336,17 @@ export function App() {
                 });
               }}
               onCodexProfileChange={changeCodexProfile}
+              onCreateXaiProfile={createXaiProfile}
+              onConnectXaiProfile={connectXaiProfile}
+              onRevokeXaiProfile={revokeXaiProfile}
+              onCancelXaiDeviceOAuth={cancelXaiDeviceOAuth}
+              onOpenXaiVerification={() => {
+                if (!xaiDeviceAuthorization) return;
+                void nativeBridge.openExternalUrl(
+                  xaiDeviceAuthorization.verificationUriComplete
+                    ?? xaiDeviceAuthorization.verificationUri,
+                );
+              }}
               onCreateCodexProfile={() => {
                 const displayName = window.prompt("Profile name")?.trim();
                 if (!displayName) return;

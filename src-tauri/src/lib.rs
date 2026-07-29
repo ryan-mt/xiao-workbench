@@ -13,6 +13,7 @@ mod terminal;
 mod time_travel;
 mod verification;
 mod workspace;
+mod xai;
 mod xiao;
 
 // Dialog code in Windows unit tests needs Tauri's embedded Common Controls v6 manifest.
@@ -79,6 +80,11 @@ use verification::service::VerificationService;
 use workspace::commands::{
     get_workspace_snapshot, list_workspace_files, open_workspace_preview, read_workspace_file,
 };
+use xai::commands::{
+    begin_xai_device_oauth, cancel_xai_device_oauth, create_xai_codex_profile,
+    poll_xai_device_oauth, revoke_xai_oauth,
+};
+use xai::service::XaiOAuthService;
 use xiao::commands::{
     acknowledge_xiao_attention_item, bind_xiao_task_codex_profile, delete_xiao_codex_profile,
     delete_xiao_project_group, list_xiao_attention_items, list_xiao_codex_profiles,
@@ -94,7 +100,7 @@ use std::sync::Arc;
 use tauri::Manager;
 
 pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
-    process::run_if_requested()
+    xai::service::run_auth_helper_if_requested().or_else(process::run_if_requested)
 }
 
 fn install_process_crypto_provider() -> Result<(), String> {
@@ -164,6 +170,7 @@ pub fn run() {
             app.manage(RunService::default());
             app.manage(VerificationService::default());
             app.manage(RoutineService::default());
+            app.manage(XaiOAuthService::new()?);
             app.manage(CompanionPinnedClient::new(Arc::new(KeyringCredentialStore)));
             app.manage(CompanionExecutionGate::default());
             let companion_runtime = match discover_lan_bind_address(4318).and_then(|bind| {
@@ -212,6 +219,11 @@ pub fn run() {
             read_agent_rate_limits,
             read_agent_usage,
             list_agent_models,
+            create_xai_codex_profile,
+            begin_xai_device_oauth,
+            poll_xai_device_oauth,
+            cancel_xai_device_oauth,
+            revoke_xai_oauth,
             enqueue_xiao_run,
             steer_xiao_run,
             list_xiao_runs,

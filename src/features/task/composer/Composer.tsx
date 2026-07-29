@@ -1116,17 +1116,6 @@ export function Composer({
         summary={currentTaskWorking ? liveFileChanges : null}
         onReview={() => onOpenView("changes")}
       />
-      <SteerMessageBar
-        followUps={followUps}
-        sendingFollowUpId={sendingFollowUpId}
-        failedFollowUpId={failedFollowUpId}
-        canSteer={canSteer}
-        interactiveRequestOpen={interactiveRequestOpen}
-        onEdit={onEditFollowUp}
-        onRemove={onRemoveFollowUp}
-        onRetry={onRetryFollowUp}
-        onSendNow={onSendFollowUpNow}
-      />
       {activeQuestionRequest ? (
         <QuestionDock
           key={activeQuestionRequest.pendingInputId}
@@ -1157,6 +1146,17 @@ export function Composer({
         }}
         onDrop={onDrop}
       >
+        <SteerMessageBar
+          followUps={followUps}
+          sendingFollowUpId={sendingFollowUpId}
+          failedFollowUpId={failedFollowUpId}
+          canSteer={canSteer}
+          interactiveRequestOpen={interactiveRequestOpen}
+          onEdit={onEditFollowUp}
+          onRemove={onRemoveFollowUp}
+          onRetry={onRetryFollowUp}
+          onSendNow={onSendFollowUpNow}
+        />
         <StashedPrompts
           taskId={taskId}
           prompt={stashSubmission.prompt}

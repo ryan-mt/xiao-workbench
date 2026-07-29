@@ -19,6 +19,16 @@ const taskWorkspaceStyles = readFileSync(
   "utf8",
 );
 
+const chatCanvasStyles = readFileSync(
+  new URL("../styles/chat-canvas.css", import.meta.url),
+  "utf8",
+);
+
+const themeTokenStyles = readFileSync(
+  new URL("../../../styles/tokens.css", import.meta.url),
+  "utf8",
+);
+
 const collaboratorEntry = (
   id: string,
   threadId: string,
@@ -153,6 +163,70 @@ describe("task outcome actions", () => {
 });
 
 describe("task workspace frame", () => {
+  it("keeps historical user bubbles theme-aware", () => {
+    expect(chatCanvasStyles).toMatch(
+      /\.timeline \.activity__user-bubble\s*{[^}]*background:\s*var\(--surface-deep\);/s,
+    );
+  });
+
+  it("keeps non-media chat chrome theme-aware", () => {
+    const mediaStart = chatCanvasStyles.indexOf(".message-image {");
+    const messageActionsStart = chatCanvasStyles.indexOf(".message-actions {");
+    const themeSensitiveStyles = [
+      chatCanvasStyles.slice(0, mediaStart),
+      chatCanvasStyles.slice(messageActionsStart),
+    ].join("\n");
+
+    expect(mediaStart).toBeGreaterThan(0);
+    expect(messageActionsStart).toBeGreaterThan(mediaStart);
+    expect(themeSensitiveStyles).not.toMatch(/#[0-9a-f]{3,8}|rgba?\(/i);
+    expect(chatCanvasStyles).toMatch(
+      /\.message-image\s*{[^}]*border:\s*1px solid var\(--line\);[^}]*background:\s*var\(--code-surface\);/s,
+    );
+  });
+
+  it("defines distinct light and dark values for every chat color token", () => {
+    const lightTokens = themeTokenStyles.match(/:root\s*{([^}]*)}/s)?.[1] ?? "";
+    const darkTokens = themeTokenStyles.match(
+      /:root\[data-theme="dark"\]\s*{([^}]*)}/s,
+    )?.[1] ?? "";
+    const valueOf = (block: string, token: string) =>
+      block.match(new RegExp(`--${token}:\\s*([^;]+);`))?.[1]?.trim();
+    const chatColorTokens = [
+      "surface-deep",
+      "surface-raised",
+      "surface-hover",
+      "code-surface",
+      "text",
+      "text-soft",
+      "muted",
+      "muted-strong",
+      "line",
+      "line-strong",
+      "info",
+      "danger",
+      "success",
+      "focus",
+    ];
+
+    for (const token of chatColorTokens) {
+      const lightValue = valueOf(lightTokens, token);
+      const darkValue = valueOf(darkTokens, token);
+      expect(lightValue, `${token} must exist in light mode`).toBeTruthy();
+      expect(darkValue, `${token} must exist in dark mode`).toBeTruthy();
+      expect(darkValue, `${token} must change with the theme`).not.toBe(lightValue);
+    }
+  });
+
+  it("overlays queued follow-ups without moving or covering the composer controls", () => {
+    expect(taskWorkspaceStyles).toMatch(
+      /\.steer-message\s*{[^}]*position:\s*absolute;[^}]*bottom:\s*calc\(100% - 1px\);/s,
+    );
+    expect(taskWorkspaceStyles).toMatch(
+      /\.composer\.has-steer-message \.stashed-prompts\s*{[^}]*bottom:\s*calc\(100% \+ 46px\);/s,
+    );
+  });
+
   it("assigns the flexible grid row to the timeline in conversation mode", () => {
     expect(taskWorkspaceStyles).toMatch(
       /\.task-workspace\s*{[^}]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto;/s,

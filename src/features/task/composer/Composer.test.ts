@@ -134,6 +134,28 @@ afterEach(() => {
 });
 
 describe("composer task dock lifecycle", () => {
+  it("keeps the prompt mounted when a follow-up enters the queue", () => {
+    const baseProps = composerProps({ hasThread: true });
+    const view = render(createElement(Composer, baseProps));
+    const composer = view.container.querySelector(".composer");
+    const prompt = screen.getByRole("textbox", { name: "Prompt" });
+
+    view.rerender(createElement(Composer, {
+      ...baseProps,
+      followUps: [{
+        id: "queued-1",
+        prompt: "Check the composer layout",
+        attachments: [],
+        createdAt: 1,
+      }],
+    }));
+
+    const queue = screen.getByLabelText("1 queued message");
+    expect(view.container.querySelector(".composer")).toBe(composer);
+    expect(screen.getByRole("textbox", { name: "Prompt" })).toBe(prompt);
+    expect(composer?.contains(queue)).toBe(true);
+  });
+
   it("shows plan tasks only while their task is live", () => {
     const plan = {
       explanation: null,

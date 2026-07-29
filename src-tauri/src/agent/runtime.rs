@@ -27,6 +27,9 @@ const RESERVED_PROFILE_ENVIRONMENT_KEYS: &[&str] = &[
     "CODEX_AUTH_HOME",
     "CODEX_SQLITE_HOME",
     "XIAO_RUN_ID",
+    "XIAO_MODEL_PROVIDER",
+    "XAI_OAUTH_CLIENT_ID",
+    "XAI_API_KEY",
     // Account identity belongs to the Codex account response. Machine-login
     // fallbacks must not become conversational user names.
     "USER",
@@ -884,6 +887,13 @@ mod tests {
             assert!(is_reserved_profile_environment_key(key));
         }
         assert!(!is_reserved_profile_environment_key("XIAO_THEME"));
+    }
+
+    #[test]
+    fn xai_runtime_credentials_cannot_come_from_profile_json() {
+        for key in ["XIAO_MODEL_PROVIDER", "xai_oauth_client_id", "XAI_API_KEY"] {
+            assert!(is_reserved_profile_environment_key(key));
+        }
     }
 
     #[test]

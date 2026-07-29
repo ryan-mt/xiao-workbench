@@ -125,7 +125,12 @@ pub fn list_xiao_codex_profiles(
 pub fn delete_xiao_codex_profile(
     profile_id: String,
     repository: State<'_, XiaoRepository>,
+    xai_oauth: State<'_, crate::xai::service::XaiOAuthService>,
 ) -> Result<(), String> {
+    let profile = repository.codex_profile(&profile_id)?;
+    if crate::xai::service::is_xai_profile(&profile) {
+        xai_oauth.forget(&profile_id)?;
+    }
     service::delete_codex_profile(&repository, &profile_id)
 }
 

@@ -79,6 +79,26 @@ const codexProfiles: CodexProfile[] = [
     createdAt: 1,
     updatedAt: 1,
   },
+  {
+    id: "grok",
+    displayName: "Grok 4.5 (xAI)",
+    codexHome: "C:\\Xiao\\grok",
+    authenticationHome: null,
+    environment: {
+      XIAO_MODEL_PROVIDER: "xai",
+      XAI_OAUTH_CLIENT_ID: "xiao-client",
+    },
+    availability: "unauthenticated",
+    authenticatedIdentity: null,
+    models: [],
+    capabilities: { providerId: "xai" },
+    usage: null,
+    rateLimits: null,
+    diagnostic: "Connect this profile to xAI with device sign-in.",
+    version: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  },
 ];
 
 const renderSettings = (
@@ -155,6 +175,15 @@ describe("SettingsPage", () => {
     expect(markup).toContain('aria-label="Codex profile for the current Task"');
     expect(markup).toContain("Default Codex");
     expect(markup).toContain("Review profile");
+  });
+
+  it("offers native xAI device sign-in without another runtime", () => {
+    const markup = renderSettings("system", "runtime");
+
+    expect(markup).toContain("Grok 4.5 (xAI)");
+    expect(markup).toContain("Connect xAI");
+    expect(markup).toContain("Add Grok");
+    expect(markup).toContain("not another agent runtime");
   });
 
   it("renders editable shortcuts as labeled keyboard controls", () => {

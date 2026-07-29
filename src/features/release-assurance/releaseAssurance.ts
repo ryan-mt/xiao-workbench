@@ -91,9 +91,9 @@ export const FROZEN_BASELINE_ROWS: readonly FrozenBaselineRow[] = [
   },
   {
     id: "non-codex-providers",
-    workflow: "Claude, Cursor, OpenCode, Grok, or provider plug-ins",
+    workflow: "Alternate agent runtimes or provider plug-ins",
     disposition: "intentionally_excludes",
-    workRequired: "Preserve ADR-0001 and remove provider-agnostic vocabulary from product contracts",
+    workRequired: "Keep Codex app-server authoritative and exclude alternate agent runtimes",
   },
   {
     id: "projects-and-task-history",
@@ -287,6 +287,7 @@ const evidenceById: Readonly<Record<string, readonly AssuranceEvidence[]>> = {
   ],
   "non-codex-providers": [
     t3Source("README.md"),
+    xiaoSource("src-tauri/src/xai/service.rs"),
     policy("out-of-scope"),
   ],
   "projects-and-task-history": [
@@ -384,7 +385,7 @@ const evidenceById: Readonly<Record<string, readonly AssuranceEvidence[]>> = {
 };
 
 const exclusionsById: Readonly<Record<string, ExclusionJustification>> = {
-  "non-codex-providers": exclusion("Xiao is Codex-native and promises no provider plug-in surface."),
+  "non-codex-providers": exclusion("Xiao excludes alternate agent runtimes and a provider plug-in surface; built-in model backends remain inside Codex."),
   "in-app-editor": exclusion("Xiao promises inspection and review context, not a general-purpose editor."),
   "non-github-forges": exclusion("Generic Git remains supported without managed non-GitHub forge APIs."),
   "project-script-launcher": exclusion("Task terminals, Routines, and Acceptance Contracts own command execution."),

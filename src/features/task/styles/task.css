@@ -3598,15 +3598,17 @@
 }
 
 .steer-message {
-  position: relative;
+  position: absolute;
   z-index: 3;
   display: grid;
-  width: min(100%, var(--task-content-width));
+  right: -1px;
+  bottom: calc(100% - 1px);
+  left: -1px;
   min-height: 45px;
   grid-template-columns: 22px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
-  margin: 0 auto -1px;
+  margin: 0;
   padding: 0 10px 0 12px;
   border: 1px solid var(--line);
   border-radius: 12px 12px 0 0;
@@ -3781,6 +3783,11 @@
 
 .composer.has-steer-message {
   border-radius: 0 0 12px 12px;
+}
+
+.composer.has-steer-message .stashed-prompts {
+  top: auto;
+  bottom: calc(100% + 46px);
 }
 
 @keyframes steer-message-enter {

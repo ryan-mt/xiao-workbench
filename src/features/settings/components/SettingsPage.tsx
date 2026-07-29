@@ -8,6 +8,7 @@ import type {
   AgentRuntimeState,
 } from "../../../core/models/agent";
 import type { CodexUpdateResult, CodexUpdateStatus, SystemInfo } from "../../../core/models/workspace";
+import type { XaiDeviceAuthorization } from "../../../core/models/xai";
 import type { CodexProfile } from "../../../core/models/xiao";
 import {
   DEFAULT_COMMAND_BINDINGS,
@@ -74,6 +75,9 @@ type SettingsPageProps = {
   codexProfiles?: CodexProfile[];
   selectedCodexProfileId?: string | null;
   codexProfileSelectionDisabled?: boolean;
+  xaiDeviceAuthorization?: XaiDeviceAuthorization | null;
+  xaiOAuthBusy?: boolean;
+  xaiOAuthError?: string | null;
   onThemeChange: (theme: Theme) => void;
   onPreferencesChange: (patch: Partial<AppPreferences>) => void;
   onRestoreArchivedTask: (item: ArchivedTaskItem) => void;
@@ -83,6 +87,11 @@ type SettingsPageProps = {
   onUpdateCodex: () => void;
   onCodexProfileChange?: (profileId: string) => void;
   onCreateCodexProfile?: () => void;
+  onCreateXaiProfile?: () => void;
+  onConnectXaiProfile?: (profile: CodexProfile) => void;
+  onRevokeXaiProfile?: (profile: CodexProfile) => void;
+  onCancelXaiDeviceOAuth?: () => void;
+  onOpenXaiVerification?: () => void;
   onRenameCodexProfile?: (profile: CodexProfile) => void;
   onDeleteCodexProfile?: (profile: CodexProfile) => void;
   onClose: () => void;
@@ -330,6 +339,9 @@ export function SettingsPage({
   codexProfiles = [],
   selectedCodexProfileId = null,
   codexProfileSelectionDisabled = true,
+  xaiDeviceAuthorization = null,
+  xaiOAuthBusy = false,
+  xaiOAuthError = null,
   onThemeChange,
   onPreferencesChange,
   onRestoreArchivedTask,
@@ -339,6 +351,11 @@ export function SettingsPage({
   onUpdateCodex,
   onCodexProfileChange = () => {},
   onCreateCodexProfile = () => {},
+  onCreateXaiProfile = () => {},
+  onConnectXaiProfile = () => {},
+  onRevokeXaiProfile = () => {},
+  onCancelXaiDeviceOAuth = () => {},
+  onOpenXaiVerification = () => {},
   onRenameCodexProfile = () => {},
   onDeleteCodexProfile = () => {},
   onClose,
@@ -364,6 +381,11 @@ export function SettingsPage({
   const notificationPermission = notificationsSupported ? Notification.permission : "unsupported";
   const activeSectionDefinition = sections.find((section) => section.id === activeSection) ?? sections[0];
   const selectedTheme = themePresets.find((preset) => preset.id === theme) ?? themePresets[0];
+  const selectedCodexProfile = codexProfiles.find(
+    (profile) => profile.id === (selectedCodexProfileId ?? codexProfiles[0]?.id),
+  );
+  const selectedProfileUsesXai =
+    selectedCodexProfile?.environment.XIAO_MODEL_PROVIDER === "xai";
 
   const updateNotification = (
     key: "notifyApprovals" | "notifyCompletions" | "notifyErrors",
@@ -652,9 +674,20 @@ export function SettingsPage({
 
                 <SettingsGroup title="Environment">
                   <div className="settings-list">
-                    <SettingRow title="Account" description={account?.planType ?? account?.authMode ?? "Codex CLI"}>
+                    <SettingRow
+                      title="Account"
+                      description={selectedProfileUsesXai
+                        ? "xAI device OAuth"
+                        : account?.planType ?? account?.authMode ?? "Codex CLI"}
+                    >
                       <span className="settings-value">
-                        {account?.authenticated ? account.email ?? "Authenticated" : "Not authenticated"}
+                        {selectedProfileUsesXai
+                          ? selectedCodexProfile?.availability === "available"
+                            ? "xAI connected"
+                            : "Not connected"
+                          : account?.authenticated
+                            ? account.email ?? "Authenticated"
+                            : "Not authenticated"}
                       </span>
                     </SettingRow>
                     <SettingRow title="Codex" description={`${runtime.eventsSeen.toLocaleString()} events observed`}>
@@ -687,6 +720,28 @@ export function SettingsPage({
                         onValueChange={onCodexProfileChange}
                       />
                     </SettingRow>
+                    {xaiDeviceAuthorization ? (
+                      <SettingRow
+                        title="Finish xAI sign-in"
+                        description={`Enter code ${xaiDeviceAuthorization.userCode} on xAI. Xiao will detect completion automatically.`}
+                      >
+                        <div className="codex-update-card__actions">
+                          <button
+                            type="button"
+                            className="button button--quiet"
+                            onClick={() => void navigator.clipboard.writeText(xaiDeviceAuthorization.userCode)}
+                          >
+                            Copy code
+                          </button>
+                          <button type="button" className="button button--primary" onClick={onOpenXaiVerification}>
+                            Open xAI
+                          </button>
+                          <button type="button" className="button button--quiet" onClick={onCancelXaiDeviceOAuth}>
+                            Cancel
+                          </button>
+                        </div>
+                      </SettingRow>
+                    ) : null}
                     {codexProfiles.map((profile) => (
                       <SettingRow
                         key={profile.id}
@@ -694,9 +749,32 @@ export function SettingsPage({
                         description={profile.diagnostic ?? `${profile.availability} · version ${profile.version}`}
                       >
                         <div className="codex-update-card__actions">
-                          <button type="button" className="button button--quiet" onClick={() => onRenameCodexProfile(profile)}>
-                            Configure
-                          </button>
+                          {profile.environment.XIAO_MODEL_PROVIDER === "xai" ? (
+                            profile.availability === "available" ? (
+                              <button
+                                type="button"
+                                className="button button--quiet"
+                                disabled={xaiOAuthBusy || xaiDeviceAuthorization !== null}
+                                onClick={() => onRevokeXaiProfile(profile)}
+                              >
+                                Disconnect xAI
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="button button--primary"
+                                disabled={xaiOAuthBusy || xaiDeviceAuthorization !== null}
+                                onClick={() => onConnectXaiProfile(profile)}
+                              >
+                                Connect xAI
+                              </button>
+                            )
+                          ) : null}
+                          {profile.environment.XIAO_MODEL_PROVIDER !== "xai" ? (
+                            <button type="button" className="button button--quiet" onClick={() => onRenameCodexProfile(profile)}>
+                              Configure
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="button button--quiet"
@@ -712,11 +790,22 @@ export function SettingsPage({
                       title="Add local profile"
                       description="Create another durable Codex identity and capability snapshot."
                     >
-                      <button type="button" className="button button--quiet" onClick={onCreateCodexProfile}>
-                        Add profile
-                      </button>
+                      <div className="codex-update-card__actions">
+                        <button type="button" className="button button--quiet" onClick={onCreateCodexProfile}>
+                          Add Codex
+                        </button>
+                        <button
+                          type="button"
+                          className="button button--primary"
+                          disabled={xaiOAuthBusy || xaiDeviceAuthorization !== null}
+                          onClick={onCreateXaiProfile}
+                        >
+                          Add Grok
+                        </button>
+                      </div>
                     </SettingRow>
                   </div>
+                  {xaiOAuthError ? <p className="settings-oauth-error">{xaiOAuthError}</p> : null}
                 </SettingsGroup>
 
                 <SettingsGroup
@@ -756,7 +845,7 @@ export function SettingsPage({
                 </SettingsGroup>
 
                 <p className="settings-note">
-                  Provider and server controls stay hidden because this build uses one real local Codex runtime.
+                  Every profile still runs through Xiao's local Codex runtime. Grok adds an xAI model backend and secure device sign-in, not another agent runtime.
                 </p>
               </div>
             )}

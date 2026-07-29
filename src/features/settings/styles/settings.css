@@ -580,6 +580,13 @@
   line-height: 1.5;
 }
 
+.settings-oauth-error {
+  margin: 10px 20px 0;
+  color: var(--danger);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+}
+
 .settings-note {
   margin: -8px 2px 0;
   color: var(--muted);
