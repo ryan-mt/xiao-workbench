@@ -21,7 +21,7 @@ const MAX_COMMAND_OUTPUT_CHARS: usize = 24_000;
 
 #[derive(Debug, Clone)]
 struct PendingRolloutCommand {
-    command: models::CodexRolloutCommand,
+    commands: Vec<models::CodexRolloutCommand>,
     started_at_ms: Option<i64>,
 }
 
@@ -192,6 +192,80 @@ fn command_from_tool_input(input: &str) -> Option<String> {
         .filter(|command| !command.is_empty())
 }
 
+fn commands_from_tool_input(name: &str, input: &str) -> Vec<String> {
+    if matches!(name, "exec_command" | "functions.exec_command") {
+        return command_from_tool_input(input).into_iter().collect();
+    }
+    let mut commands = Vec::new();
+    let mut tail = input;
+    while let Some(offset) = tail.find("tools.exec_command") {
+        tail = &tail[offset + "tools.exec_command".len()..];
+        if let Some(command) = command_from_tool_input(tail) {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+        }
+    }
+    commands
+}
+
+fn nested_tool_name(input: &str) -> Option<String> {
+    let tail = input.get(input.find("tools.")? + "tools.".len()..)?;
+    let name: String = tail
+        .chars()
+        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+fn tool_activities(name: &str, input: &str) -> Vec<(String, Option<String>, String)> {
+    let commands = commands_from_tool_input(name, input);
+    if !commands.is_empty() {
+        return commands
+            .into_iter()
+            .map(|command| ("command".to_owned(), None, command))
+            .collect();
+    }
+    let nested = nested_tool_name(input);
+    let tool = nested.as_deref().unwrap_or(name);
+    if matches!(tool, "apply_patch" | "functions.apply_patch") {
+        return Vec::new();
+    }
+
+    if tool.contains("web__") || tool.starts_with("web_") || tool.contains("search_query") {
+        let query = ["\"q\"", "q:", "\"query\"", "query:"]
+            .iter()
+            .find_map(|marker| quoted_value_after(input, marker));
+        return vec![(
+            "webSearch".to_owned(),
+            Some(query.as_deref().map_or_else(
+                || "Web search".to_owned(),
+                |query| format!("Web search · {query}"),
+            )),
+            query.unwrap_or_else(|| "Web search".to_owned()),
+        )];
+    }
+
+    if let Some(rest) = tool.strip_prefix("mcp__") {
+        let mut parts = rest.split("__");
+        let server = parts.next().unwrap_or("integration").replace('_', "-");
+        let action = parts.next().unwrap_or("tool").replace('_', " ");
+        let label = format!("{server} · {action}");
+        return vec![("integration".to_owned(), Some(label.clone()), label)];
+    }
+
+    if tool.contains("skill") {
+        let label = tool.replace("__", " · ").replace('_', " ");
+        return vec![("skill".to_owned(), Some(label.clone()), label)];
+    }
+
+    if nested.is_some() {
+        let label = tool.replace("__", " · ").replace('_', " ");
+        return vec![("tool".to_owned(), Some(label.clone()), label)];
+    }
+    Vec::new()
+}
+
 fn output_text(value: &Value) -> Option<String> {
     let text = match value {
         Value::String(text) => text.clone(),
@@ -239,12 +313,18 @@ fn output_exit_code(output: &str) -> Option<i64> {
     None
 }
 
-fn rollout_turn_id(record: &Value) -> Option<String> {
-    record
+fn rollout_turn_id(record: &Value, payload: &Value) -> Option<String> {
+    payload
         .get("internal_chat_message_metadata_passthrough")
         .and_then(|metadata| metadata.get("turn_id"))
         .and_then(Value::as_str)
         .map(str::to_owned)
+        .or_else(|| payload.get("turn_id").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| record
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("turn_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned))
         .or_else(|| {
             record
                 .get("turn_id")
@@ -276,9 +356,6 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !matches!(name, "exec" | "exec_command" | "functions.exec_command") {
-            return;
-        }
         let input = payload.get("input").or_else(|| payload.get("arguments"));
         let Some(input) = input.and_then(|value| {
             value
@@ -288,9 +365,10 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
         }) else {
             return;
         };
-        let Some(command) = command_from_tool_input(&input) else {
+        let activities = tool_activities(name, &input);
+        if activities.is_empty() {
             return;
-        };
+        }
         let Some(id) = payload
             .get("call_id")
             .or_else(|| payload.get("id"))
@@ -302,20 +380,32 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
             .get("timestamp")
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let turn_id = rollout_turn_id(&record, payload);
+        let commands = activities
+            .into_iter()
+            .enumerate()
+            .map(|(index, (activity_kind, label, command))| models::CodexRolloutCommand {
+                    id: if index == 0 {
+                        id.to_owned()
+                    } else {
+                        format!("{id}:{index}")
+                    },
+                    turn_id: turn_id.clone(),
+                    turn_index: cache.current_turn_index,
+                    activity_kind,
+                    label,
+                    command,
+                    output: None,
+                    created_at: created_at.clone(),
+                    duration_ms: None,
+                    exit_code: None,
+                })
+            .collect();
         cache.pending.insert(
             id.to_owned(),
             PendingRolloutCommand {
                 started_at_ms: parse_timestamp_ms(created_at.as_deref()),
-                command: models::CodexRolloutCommand {
-                    id: id.to_owned(),
-                    turn_id: rollout_turn_id(&record),
-                    turn_index: cache.current_turn_index,
-                    command,
-                    output: None,
-                    created_at,
-                    duration_ms: None,
-                    exit_code: None,
-                },
+                commands,
             },
         );
     } else if matches!(
@@ -333,13 +423,17 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
             return;
         };
         let output = payload.get("output").and_then(output_text);
-        item.command.exit_code = output.as_deref().and_then(output_exit_code);
-        item.command.output = output;
         let ended_at = parse_timestamp_ms(record.get("timestamp").and_then(Value::as_str));
-        item.command.duration_ms = ended_at
+        let duration_ms = ended_at
             .zip(item.started_at_ms)
             .map(|(end, start)| end.saturating_sub(start) as u64);
-        cache.completed.push(item.command);
+        let exit_code = output.as_deref().and_then(output_exit_code);
+        for command in &mut item.commands {
+            command.exit_code = exit_code;
+            command.output = output.clone();
+            command.duration_ms = duration_ms;
+        }
+        cache.completed.extend(item.commands);
     }
 }
 
@@ -393,7 +487,12 @@ fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand
         }
     }
     let mut completed = cache.completed.clone();
-    completed.extend(cache.pending.values().map(|item| item.command.clone()));
+    completed.extend(
+        cache
+            .pending
+            .values()
+            .flat_map(|item| item.commands.iter().cloned()),
+    );
     completed.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     Ok(completed)
 }

@@ -2724,6 +2724,7 @@ export function App() {
           ? threads.find((thread) => thread.id === openImportedThreadId)
           : null;
         if (openImportedThread && selectedTask && (
+          includeArchived ||
           openImportedThread.status === "working" ||
           openImportedThread.updatedAt > selectedTask.updatedAt
         )) {

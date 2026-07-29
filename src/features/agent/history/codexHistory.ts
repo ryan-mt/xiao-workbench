@@ -301,6 +301,7 @@ export const readCodexThreadTimeline = async (
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
+  const commandsByTurnIndex = new Map<number, CodexRolloutCommand[]>();
   const latestRolloutTurnIndex = rolloutCommands.reduce(
     (latest, command) =>
       typeof command.turnIndex === "number" && Number.isFinite(command.turnIndex)
@@ -339,20 +340,23 @@ export const readCodexThreadTimeline = async (
       .find((turn) => turn.startedAt <= commandAt && (
         turn.nextStartedAt === null || commandAt < turn.nextStartedAt
       ));
-    const ordinalTurn = typeof command.turnIndex === "number"
-      ? turns[command.turnIndex - rolloutTurnOffset]
-      : null;
-    const ordinalTurnId = ordinalTurn && typeof ordinalTurn === "object" &&
-      typeof (ordinalTurn as Record<string, unknown>).id === "string"
-      ? (ordinalTurn as Record<string, unknown>).id as string
-      : null;
-    const owningTurnId = command.turnId ?? inferredTurn?.id ?? ordinalTurnId;
-    if (!owningTurnId) continue;
-    const current = commandsByTurn.get(owningTurnId) ?? [];
-    current.push(command);
-    commandsByTurn.set(owningTurnId, current);
+    const owningTurnId = command.turnId ?? inferredTurn?.id;
+    if (owningTurnId) {
+      const current = commandsByTurn.get(owningTurnId) ?? [];
+      current.push(command);
+      commandsByTurn.set(owningTurnId, current);
+      continue;
+    }
+    if (typeof command.turnIndex === "number") {
+      const localTurnIndex = command.turnIndex - rolloutTurnOffset;
+      if (localTurnIndex >= 0 && localTurnIndex < turns.length) {
+        const current = commandsByTurnIndex.get(localTurnIndex) ?? [];
+        current.push(command);
+        commandsByTurnIndex.set(localTurnIndex, current);
+      }
+    }
   }
-  return turns.flatMap((rawTurn) => {
+  return turns.flatMap((rawTurn, rawTurnIndex) => {
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
     const turnId = typeof turn.id === "string" ? turn.id : crypto.randomUUID();
@@ -396,17 +400,35 @@ export const readCodexThreadTimeline = async (
     const existingCommands = new Set(mapped.flatMap((entry) =>
       entry.kind === "command" && entry.command ? [entry.command] : []
     ));
-    const recoveredCommands: TimelineEntry[] = (commandsByTurn.get(turnId) ?? [])
-      .filter((command) => !existingCommands.has(command.command))
+    const recoveredCommands: TimelineEntry[] = [
+      ...(commandsByTurn.get(turnId) ?? []),
+      ...(commandsByTurnIndex.get(rawTurnIndex) ?? []),
+    ]
+      .filter((command) =>
+        command.activityKind !== "command" || !existingCommands.has(command.command)
+      )
       .map((command) => {
         const completed = command.output !== null && command.output !== undefined ||
           command.durationMs !== null && command.durationMs !== undefined;
+        const shell = command.activityKind === "command";
+        const meta = command.activityKind === "webSearch"
+          ? "Web search"
+          : command.activityKind === "skill"
+            ? `Skill · ${command.label ?? "Codex skill"}`
+            : command.activityKind === "integration"
+              ? "Plugin tool"
+              : command.activityKind === "tool"
+                ? "Dynamic tool"
+                : "Workspace";
         return {
           id: `rollout-command:${command.id}`,
           kind: "command" as const,
-          title: completed ? "Ran command" : "Running command",
-          command: command.command,
+          title: shell
+            ? completed ? "Ran command" : "Running command"
+            : command.label ?? command.command,
+          command: shell ? command.command : undefined,
           body: command.output ?? undefined,
+          meta,
           createdAt: timestampMilliseconds(command.createdAt) ?? createdAt,
           durationMs: command.durationMs ?? undefined,
           exitCode: command.exitCode ?? undefined,

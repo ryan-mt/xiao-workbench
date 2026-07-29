@@ -527,6 +527,7 @@ export const ActivityItem = memo(function ActivityItem({
       entry.meta?.startsWith("Skill"),
     );
     const imageTool = entry.meta === "Image tool";
+    const webSearch = entry.meta === "Web search";
     const skillName = entry.meta?.startsWith("Skill")
       ? entry.meta.split(" · ").slice(1).filter(Boolean).join(" · ")
       : "";
@@ -553,7 +554,15 @@ export const ActivityItem = memo(function ActivityItem({
         <span className="activity__tool-icon" aria-hidden="true">
           <XiaoIcon
             className={active ? "spin" : undefined}
-            name={active ? "pending" : imageTool ? "files" : integration ? "capability" : "command"}
+            name={active
+              ? "pending"
+              : imageTool
+                ? "files"
+                : webSearch
+                  ? "browser"
+                  : integration
+                    ? "capability"
+                    : "command"}
             size={13}
           />
         </span>
