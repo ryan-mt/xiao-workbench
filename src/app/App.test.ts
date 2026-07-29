@@ -54,6 +54,7 @@ import {
   submitTaskFollowUpAfterPersistence,
   taskIsVisible,
   taskReviewContext,
+  workspacePathForSelectedTask,
   isAcceptanceContractVersionSummary,
   readBrowserTaskState,
   type ConfirmedNativeTaskScope,
@@ -66,6 +67,33 @@ describe("outcome readiness", () => {
   it("keeps the frozen Run contract actionable after the Task contract is cleared", () => {
     expect(outcomeHasAcceptanceContract(null, "contract-version-1")).toBe(true);
     expect(outcomeHasAcceptanceContract(null, null)).toBe(false);
+  });
+});
+
+describe("imported Codex workspace routing", () => {
+  it("uses the thread cwd so nested repositories expose their Git context", () => {
+    expect(workspacePathForSelectedTask(
+      "D:/Project Archive",
+      { origin: "codex", threadId: "thread-1" },
+      [{
+        id: "thread-1",
+        title: "Nested repository task",
+        preview: "",
+        cwd: "D:/Project Archive/xiao-workbench",
+        createdAt: 1,
+        updatedAt: 2,
+        archived: false,
+        status: "ready",
+      }],
+    )).toBe("D:/Project Archive/xiao-workbench");
+  });
+
+  it("keeps Xiao tasks on their selected project path", () => {
+    expect(workspacePathForSelectedTask(
+      "D:/Project Archive",
+      { origin: "xiao", threadId: "thread-1" },
+      [],
+    )).toBe("D:/Project Archive");
   });
 });
 

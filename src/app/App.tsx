@@ -113,6 +113,15 @@ export type StoredTaskState = {
   showArchived: boolean;
 };
 
+export const workspacePathForSelectedTask = (
+  projectPath: string | null | undefined,
+  task: Pick<WorkbenchTask, "origin" | "threadId"> | null | undefined,
+  codexThreads: readonly CodexThreadSummary[],
+) => {
+  if (task?.origin !== "codex" || !task.threadId) return projectPath;
+  return codexThreads.find((thread) => thread.id === task.threadId)?.cwd ?? projectPath;
+};
+
 type PersistedWorkspaceSnapshot = {
   tasks: Map<string, WorkbenchTask>;
   taskIds: string[];
@@ -1736,6 +1745,11 @@ export function App() {
     activeProjectPath ?? "",
     selectedTask?.id ?? null,
   );
+  const workspaceRequestPath = workspacePathForSelectedTask(
+    activeProjectPath,
+    selectedTask,
+    codexThreads,
+  );
   const {
     workspace,
     system,
@@ -1744,7 +1758,7 @@ export function App() {
     actionable: workspaceActionable,
     refresh,
     loadDirectory,
-  } = useWorkspace(activeProjectPath, executionTaskId);
+  } = useWorkspace(workspaceRequestPath ?? undefined, executionTaskId);
   const newTaskWorkspaceMode = defaultTaskWorkspaceMode(
     workspace.execution.isolationAvailable,
   );
@@ -1948,10 +1962,11 @@ export function App() {
   useEffect(() => {
     if (
       !isTauriHost() ||
+      selectedTask?.origin === "codex" ||
       !shouldAdoptResolvedWorkspacePath(loading, activeProjectPath, workspace.path)
     ) return;
     setActiveProjectPath(workspace.path);
-  }, [activeProjectPath, loading, workspace.path]);
+  }, [activeProjectPath, loading, selectedTask?.origin, workspace.path]);
 
   useEffect(() => {
     if (!activeProjectPath) return;
