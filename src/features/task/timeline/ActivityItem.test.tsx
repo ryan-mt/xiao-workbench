@@ -227,6 +227,21 @@ describe("ActivityItem browser tools", () => {
     expect(markup).not.toContain("activity__body");
     expect(markup).not.toContain("Browser tool");
   });
+
+  it("keeps the disclosure caret adjacent to the search query", () => {
+    const markup = renderCompaction({
+      id: "search-results",
+      kind: "result",
+      title: "Searched: app-server event schema",
+      body: "[{\"title\":\"Schema\"}]",
+      meta: "Browser tool",
+      status: "success",
+    });
+
+    expect(markup).toContain("<details class=\"activity__tool-disclosure\"");
+    expect(markup).toMatch(/activity__web-query[^>]*>app-server event schema<\/span><span class="activity__tool-caret">/);
+    expect(markup).toContain("aria-label=\"Search results\"");
+  });
 });
 
 describe("ActivityItem image security policy", () => {

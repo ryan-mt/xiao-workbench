@@ -392,22 +392,43 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (browserTool) {
     const query = entry.title.replace(/^Searched:\s*/i, "").trim();
+    const hasDetails = Boolean(entry.body);
+    const summary = (
+      <>
+        <span className="activity__tool-icon" aria-hidden="true">
+          <XiaoIcon name="browser" size={13} />
+        </span>
+        <span className="activity__tool-summary">
+          <strong>Web search</strong>
+          {query && query !== "Web search" ? <span className="activity__web-query" title={query}>{query}</span> : null}
+          {hasDetails ? (
+            <span className="activity__tool-caret">
+              <XiaoIcon name="caret" size={13} />
+            </span>
+          ) : null}
+        </span>
+      </>
+    );
     return (
       <article
         className={`activity activity--command activity--${entry.status ?? "success"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <div className="activity__tool-disclosure activity__tool-disclosure--static">
-          <div className="activity__tool-summary-row">
-            <span className="activity__tool-icon" aria-hidden="true">
-              <XiaoIcon name="browser" size={13} />
-            </span>
-            <span className="activity__tool-summary">
-              <strong>Web search</strong>
-              {query && query !== "Web search" ? <span className="activity__web-query" title={query}>{query}</span> : null}
-            </span>
+        {hasDetails ? (
+          <details className="activity__tool-disclosure" open={expandToolOutput}>
+            <summary>{summary}</summary>
+            <div className="activity__tool-details">
+              <div className="activity__terminal">
+                <span className="activity__terminal-copy"><CopyButton text={entry.body!} /></span>
+                <pre tabIndex={0} aria-label="Search results"><code>{entry.body}</code></pre>
+              </div>
+            </div>
+          </details>
+        ) : (
+          <div className="activity__tool-disclosure activity__tool-disclosure--static">
+            <div className="activity__tool-summary-row">{summary}</div>
           </div>
-        </div>
+        )}
       </article>
     );
   }
@@ -516,7 +537,15 @@ export const ActivityItem = memo(function ActivityItem({
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
     const active = entry.status === "active" && isLive;
-    const integration = entry.meta === "Plugin tool" || entry.meta === "Dynamic tool";
+    const integration = Boolean(
+      entry.meta === "Plugin tool" ||
+      entry.meta === "Dynamic tool" ||
+      entry.meta?.startsWith("Skill"),
+    );
+    const imageTool = entry.meta === "Image tool";
+    const skillName = entry.meta?.startsWith("Skill")
+      ? entry.meta.split(" · ").slice(1).filter(Boolean).join(" · ")
+      : "";
     const toolTitle = recovered
       ? "Shell retry"
       : environmentBlocked
@@ -526,7 +555,9 @@ export const ActivityItem = memo(function ActivityItem({
           : noSearchMatches
             ? "No matches"
             : integration
-              ? active ? `Using ${entry.title}` : `Used ${entry.title}`
+              ? active
+                ? `Using ${skillName || entry.title}`
+                : `Used ${skillName || entry.title}`
               : entry.command
                 ? active ? "Running command" : "Ran command"
                 : entry.title;
@@ -538,7 +569,7 @@ export const ActivityItem = memo(function ActivityItem({
         <span className="activity__tool-icon" aria-hidden="true">
           <XiaoIcon
             className={active ? "spin" : undefined}
-            name={active ? "pending" : integration ? "capability" : "command"}
+            name={active ? "pending" : imageTool ? "files" : integration ? "capability" : "command"}
             size={13}
           />
         </span>
@@ -551,12 +582,12 @@ export const ActivityItem = memo(function ActivityItem({
           {recovered && (
             <small className="activity__tool-recovered">recovered</small>
           )}
+          {hasDetails && (
+            <span className="activity__tool-caret">
+              <XiaoIcon name="caret" size={13} />
+            </span>
+          )}
         </span>
-        {hasDetails && (
-          <span className="activity__tool-caret">
-            <XiaoIcon name="caret" size={13} />
-          </span>
-        )}
       </>
     );
 

@@ -749,6 +749,11 @@
 .timeline .activity__tool-caret {
   display: inline-flex;
   flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-left: 0;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
   transform: rotate(-90deg);
   transition: transform 150ms ease;
@@ -770,7 +775,12 @@
 .timeline .activity__tool-details {
   width: 100%;
   min-width: 0;
-  padding-top: 8px;
+  max-width: calc(100% - 28px);
+  margin: 7px 0 12px 28px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 88%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--code-surface) 88%, transparent);
 }
 
 .timeline .activity__tool-meta {
@@ -784,9 +794,9 @@
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--line);
+  border: 0;
   border-radius: 6px;
-  background: var(--code-surface);
+  background: transparent;
 }
 
 .timeline .activity__terminal-copy {
@@ -811,7 +821,7 @@
 .timeline .activity__terminal pre {
   max-height: 240px;
   margin: 0;
-  padding: 12px;
+  padding: 10px 11px;
   overflow: auto;
   color: var(--text-soft);
   font-family: var(--font-mono);

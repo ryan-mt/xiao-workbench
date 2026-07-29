@@ -13,6 +13,7 @@ import type {
 import {
   accountRateLimitsRefreshIntervalMs,
   advanceAgentRuntimeWorkspaceScope,
+  agentMessageIsLiveDelta,
   agentMessageRequiresWorkspaceRefresh,
   agentRuntimeEnvelopeMatches,
   attentionHydrationStatusFromSettlements,
@@ -59,6 +60,23 @@ import {
   runSnapshotBaselineForIds,
   type RunProjection,
 } from "./runProjection";
+
+describe("live runtime transport", () => {
+  it("routes text and command deltas through the low-latency channel only", () => {
+    expect(agentMessageIsLiveDelta({
+      method: "item/agentMessage/delta",
+      params: { delta: "now" },
+    })).toBe(true);
+    expect(agentMessageIsLiveDelta({
+      method: "item/commandExecution/outputDelta",
+      params: { delta: "stdout" },
+    })).toBe(true);
+    expect(agentMessageIsLiveDelta({
+      method: "item/completed",
+      params: { delta: "final" },
+    })).toBe(false);
+  });
+});
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -250,6 +268,47 @@ describe("agent message projection", () => {
 });
 
 describe("command exit projection", () => {
+  it("keeps exploratory shell executions visible as command rows", () => {
+    expect(timelineEntryFromItem({
+      id: "search-command",
+      type: "commandExecution",
+      command: "rg -n timeline src",
+      cwd: "D:/project",
+      status: "completed",
+      commandActions: [{
+        type: "search",
+        query: "timeline",
+        path: "src",
+      }],
+      aggregatedOutput: "src/App.tsx:10:timeline",
+    })).toMatchObject({
+      id: "search-command",
+      kind: "command",
+      title: "Command completed",
+      command: "rg -n timeline src",
+      status: "success",
+      exploration: [{
+        kind: "search",
+        query: "timeline",
+        path: "src",
+      }],
+    });
+  });
+
+  it("labels plugin-backed shell executions as skills", () => {
+    expect(timelineEntryFromItem({
+      id: "skill-command",
+      type: "commandExecution",
+      command: "run skill",
+      pluginId: "open-knowledge",
+      scriptPath: "scripts/search.ps1",
+      status: "completed",
+    })).toMatchObject({
+      kind: "command",
+      meta: "Skill · open-knowledge · scripts/search.ps1",
+    });
+  });
+
   it("treats ripgrep exit 1 as an empty search instead of a failed tool call", () => {
     expect(timelineEntryFromItem({
       id: "rg-empty",
@@ -303,6 +362,26 @@ describe("streaming file changes", () => {
         additions: 1,
         deletions: 1,
         patch: "@@ -1 +1 @@\n-old\n+new",
+      }],
+    });
+  });
+
+  it("accepts current app-server string kinds and marks created files", () => {
+    expect(fileChangeTimelineEntry({
+      type: "fileChange",
+      id: "patch-created",
+      status: "completed",
+      changes: [{
+        path: "src/new.ts",
+        kind: "add",
+        diff: "export const ready = true;\n",
+      }],
+    })).toMatchObject({
+      files: [{
+        path: "src/new.ts",
+        additions: 1,
+        deletions: 0,
+        patch: expect.stringContaining("--- /dev/null"),
       }],
     });
   });
