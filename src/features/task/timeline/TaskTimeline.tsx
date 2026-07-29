@@ -121,7 +121,7 @@ function TaskTimelineView({
               onReviewChanges={onReviewChanges}
               canUndo={false}
               undoing={false}
-              isLive={runtime.phase === "working" && runtime.taskId === taskId}
+              isLive={false}
             />
           </span>
         );

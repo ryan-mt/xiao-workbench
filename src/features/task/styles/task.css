@@ -3613,7 +3613,7 @@
   background: color-mix(in srgb, var(--surface-raised) 96%, var(--canvas));
   box-shadow: 0 -4px 18px color-mix(in srgb, var(--backdrop) 10%, transparent);
   animation: steer-message-enter 160ms ease-out;
-  contain: layout paint;
+  contain: layout;
 }
 
 .steer-message.is-sending { opacity: .68; }
@@ -4605,7 +4605,7 @@
   position: absolute;
   z-index: 80;
   right: 0;
-  bottom: calc(100% + 10px);
+  bottom: 100%;
   display: grid;
   width: 154px;
   gap: 2px;
@@ -4621,8 +4621,11 @@
   transition: opacity 120ms ease, transform 150ms cubic-bezier(.2, .8, .2, 1);
 }
 
-.composer-primary-action.has-delivery-options:hover .composer-primary-action__menu,
-.composer-primary-action.has-delivery-options:focus-within .composer-primary-action__menu {
+.composer-primary-action__menu[hidden] {
+  display: none;
+}
+
+.composer-primary-action.is-menu-open .composer-primary-action__menu {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0) scale(1);

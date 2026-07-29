@@ -363,6 +363,16 @@ describe("SidebarInbox Codex history", () => {
         ?.classList.contains("is-working"),
     ).toBe(true);
   });
+
+  it("shows ready imported chats as done", () => {
+    renderInbox({ threads: [thread("Complete", now, { status: "ready" })] });
+
+    expect(
+      screen.getByRole("button", { name: "Open Complete" })
+        .closest("article")
+        ?.textContent,
+    ).toContain("Done");
+  });
 });
 
 describe("SidebarInbox change pills", () => {

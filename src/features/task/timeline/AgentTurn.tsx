@@ -118,7 +118,7 @@ export function AgentTurn(props: SharedProps) {
       workspacePath={props.workspacePath}
       onOpenResource={props.onOpenResource}
       taskId={taskId}
-      canFork={entry === turn.user && props.canFork}
+      canFork={(entry === turn.user || entry.kind === "user") && props.canFork}
       onForkTask={props.onForkTask}
       onResolveApproval={props.onResolveApproval}
       onReviewChanges={props.onReviewChanges}

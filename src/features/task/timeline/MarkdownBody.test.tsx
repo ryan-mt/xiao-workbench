@@ -93,6 +93,24 @@ describe("MarkdownBody resource links", () => {
     expect(localMarkdownImagePath("https://example.com/audit.png")).toBeNull();
   });
 
+  it("keeps linked images as links without nesting the lightbox button", () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content="[![Diagram](https://example.com/diagram.png)](https://example.com/full)" />,
+    );
+
+    expect(markup).toContain('class="message-image is-markdown"');
+    expect(markup).toContain('<a href="https://example.com/full"');
+    expect(markup).not.toContain("<button");
+  });
+
+  it("preserves Markdown image titles on the lightbox trigger", () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content={'![Diagram](https://example.com/diagram.png "Architecture overview")'} />,
+    );
+
+    expect(markup).toContain('title="Architecture overview"');
+  });
+
   it("renders an incomplete streaming fence as a code card", () => {
     const markup = renderToStaticMarkup(
       <MarkdownBody

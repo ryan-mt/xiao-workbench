@@ -307,7 +307,7 @@ export function SidebarInbox({
           updatedAt: thread.updatedAt,
           selected: activeTaskId === `codex:${thread.id}`,
           working: thread.status === "working",
-          done: thread.status === "done",
+          done: thread.status === "done" || thread.status === "ready",
           waiting: thread.status === "waiting",
           failed: thread.status === "failed",
           unread: false,

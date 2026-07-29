@@ -146,6 +146,16 @@ export const workspacePathForSelectedTask = (
   return codexThreads.find((thread) => thread.id === task.threadId)?.cwd ?? projectPath;
 };
 
+export const projectPathForCodexThread = (
+  projects: readonly XiaoProjectSummary[],
+  thread: Pick<CodexThreadSummary, "cwd">,
+) => projects
+  .filter((project) => workspaceContainsPath(project.path, thread.cwd))
+  .sort((left, right) => right.path.length - left.path.length)[0]?.path ?? thread.cwd;
+
+export const nativeTaskIdsFromState = (state: StoredTaskState) =>
+  state.tasks.filter((task) => task.origin !== "codex").map((task) => task.id);
+
 type PersistedWorkspaceSnapshot = {
   tasks: Map<string, WorkbenchTask>;
   taskIds: string[];
@@ -178,8 +188,8 @@ export const observedCodexThreadStatus = (
 ): CodexThreadSummary["status"] => {
   if (sourceStatus === "failed" || sourceStatus === "waiting") return sourceStatus;
   if (sourceStatus === "working" || inferredWorking) return "working";
+  if (sourceStatus === "ready" && wasWorking) return "done";
   if (wasDone) return "done";
-  if (wasWorking) return "working";
   return sourceStatus;
 };
 const focusViews = new Set<FocusView>([
@@ -591,12 +601,16 @@ export const shouldAutoConnectAgentRuntime = (
   taskWorkspacePath: string,
   workspacePath: string,
   workspaceRuntimeRequired = false,
+  separateRuntimeScope = false,
 ) => (
   !codexUpdating &&
   taskStateReady &&
   (Boolean(executionTaskId) || workspaceRuntimeRequired) &&
   workspaceActionable &&
-  comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath) &&
+  (
+    separateRuntimeScope ||
+    comparableWorkspacePath(taskWorkspacePath) === comparableWorkspacePath(workspacePath)
+  ) &&
   Boolean(workspacePath)
 );
 
@@ -1184,12 +1198,17 @@ const stateFromDocument = (document: XiaoWorkspaceDocument): StoredTaskState => 
   })),
 });
 
-const snapshotFromState = (state: StoredTaskState): PersistedWorkspaceSnapshot => ({
-  tasks: new Map(state.tasks.map((task) => [task.id, task])),
-  taskIds: state.tasks.map((task) => task.id),
-  activeTaskId: state.activeTaskId,
-  showArchived: state.showArchived,
-});
+const snapshotFromState = (state: StoredTaskState): PersistedWorkspaceSnapshot => {
+  const tasks = state.tasks.filter((task) => task.origin !== "codex");
+  return {
+    tasks: new Map(tasks.map((task) => [task.id, task])),
+    taskIds: tasks.map((task) => task.id),
+    activeTaskId: tasks.some((task) => task.id === state.activeTaskId)
+      ? state.activeTaskId
+      : null,
+    showArchived: state.showArchived,
+  };
+};
 
 const updateFromState = (
   workspacePath: string,
@@ -1966,18 +1985,20 @@ export function App() {
             generation: currentConfirmation.generation,
           }
         : null;
+      let persistedTaskIds = nativeTaskIdsFromState(state);
       let operation: Promise<void>;
       if (isTauriHost()) {
         const previous = persistedWorkspaceSnapshotsRef.current.get(path);
         const update = updateFromState(path, state, previous);
+        persistedTaskIds = update.taskIds;
         const taskIdsChanged =
           !previous ||
           previous.taskIds.length !== update.taskIds.length ||
           previous.taskIds.some((taskId, index) => taskId !== update.taskIds[index]);
         const workspaceChanged =
           !previous ||
-          previous.activeTaskId !== state.activeTaskId ||
-          previous.showArchived !== state.showArchived;
+          previous.activeTaskId !== update.activeTaskId ||
+          previous.showArchived !== update.showArchived;
         if (!update.tasks.length && !taskIdsChanged && !workspaceChanged) {
           operation = Promise.resolve();
         } else {
@@ -2004,7 +2025,7 @@ export function App() {
           () => {
             replaceConfirmedNativeTaskIds(
               confirmationScope!,
-              state.tasks.map((task) => task.id),
+              persistedTaskIds,
             );
             setTaskSaveError(null);
           },
@@ -2070,6 +2091,10 @@ export function App() {
     ) return;
     let cancelled = false;
     const { thread, context, silent = false } = pendingCodexThread;
+    if (
+      comparableWorkspacePath(workspace.path) !==
+      comparableWorkspacePath(context.projectPath)
+    ) return;
     if (!silent) setTaskHistoryLoadingId(`codex:${thread.id}`);
     void readCodexThreadTimeline(thread.id, context, thread.rolloutPath)
       .then((timeline) => {
@@ -2346,6 +2371,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (selectedTask?.origin === "codex") return;
     if (!shouldLoadTaskWorkspaceState(
       loading,
       taskStateReadyRef.current,
@@ -2490,6 +2516,7 @@ export function App() {
   }, [
     loading,
     replaceConfirmedNativeTaskIds,
+    selectedTask?.origin,
     taskLoadRetryRevision,
     taskSaveDebouncer,
     taskWorkspacePath,
@@ -2768,6 +2795,7 @@ export function App() {
       taskWorkspacePath,
       workspace.path,
       preferences.importCodexHistory,
+      selectedTask?.origin === "codex",
     ),
   );
   useEffect(() => {
@@ -5020,24 +5048,30 @@ export function App() {
                   ? codexThreads.find((thread) => thread.id === importedTask.threadId)
                   : null;
                 if (importedThread) {
+                  const contextProjectPath = projectPathForCodexThread(projects, importedThread);
+                  setActiveProjectPath(contextProjectPath);
                   setPendingCodexThread({
                     thread: importedThread,
                     context: {
-                      projectPath: workspace.path,
-                      taskId: codexHistoryContextTaskId,
+                      projectPath: contextProjectPath,
+                      taskId: null,
                     },
                   });
+                  setActivePage("tasks");
+                  return;
                 }
                 setActiveTaskId(taskId);
                 setActivePage("tasks");
               }}
               onSelectCodexThread={(thread) => {
                 if (agent.hasActiveRuns) return;
+                const contextProjectPath = projectPathForCodexThread(projects, thread);
+                setActiveProjectPath(contextProjectPath);
                 setPendingCodexThread({
                   thread,
                   context: {
-                    projectPath: workspace.path,
-                    taskId: codexHistoryContextTaskId,
+                    projectPath: contextProjectPath,
+                    taskId: null,
                   },
                 });
                 setActivePage("tasks");
@@ -5270,7 +5304,7 @@ export function App() {
               definitionOfDone={definitionOfDone}
               definitionOfDoneError={activeDefinitionOfDoneError}
               contextUsage={agent.contextUsage}
-              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? 0}
+              initialTimelineScrollTop={activeTask.workbenchState.timelineScrollTop ?? null}
               showReasoningSummaries={preferences.showReasoningSummaries}
               expandToolOutput={preferences.expandToolOutput}
               launchBrand={preferences.launchBrand}

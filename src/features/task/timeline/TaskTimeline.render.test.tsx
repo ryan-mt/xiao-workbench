@@ -24,6 +24,7 @@ const render = (
   expandToolOutput = false,
   runtime: AgentRuntimeState = idleRuntime,
   onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void,
+  canFork = false,
 ) => renderToStaticMarkup(
   <TaskTimeline
     timeline={timeline}
@@ -34,7 +35,7 @@ const render = (
     workspacePath="C:\\work\\xiao"
     onOpenResource={() => true}
     historyLoading={false}
-    canFork={false}
+    canFork={canFork}
     onForkTask={() => undefined}
     onResolveApproval={async () => undefined}
     taskId="task-1"
@@ -315,7 +316,7 @@ describe("TaskTimeline turn canvas", () => {
       id: "fixed-search",
       kind: "command",
       title: "Command completed",
-      command: "\"powershell.exe\" -Command \"rg -n -F 'valid' src\"",
+      command: "\"powershell.exe\" -Command \"rg -n '[invalid' src\"",
       status: "success",
     }], true, {
       ...idleRuntime,
@@ -346,5 +347,40 @@ describe("TaskTimeline turn canvas", () => {
     }], false, idleRuntime, () => undefined);
 
     expect(markup.match(/Edit this prompt in the composer/g)).toHaveLength(1);
+  });
+
+  it("offers Fork on every user entry in a backend turn", () => {
+    const markup = render([{
+      id: "initial",
+      kind: "user",
+      title: "Start",
+      turnId: "turn-1",
+    }, {
+      id: "steer",
+      kind: "user",
+      title: "Also check tests",
+      turnId: "turn-1",
+    }], false, idleRuntime, undefined, true);
+
+    expect(markup.match(/title="Fork from here"/g)).toHaveLength(2);
+  });
+
+  it("never marks standalone historical entries as live", () => {
+    const markup = render([{
+      id: "historical-command",
+      kind: "command",
+      title: "Historical command",
+      command: "npm test",
+      status: "active",
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 1_000,
+    });
+
+    expect(markup).toContain(">Ran command<");
+    expect(markup).not.toContain("Running command for");
+    expect(markup).not.toContain('class="lucide lucide-loader-circle spin"');
   });
 });

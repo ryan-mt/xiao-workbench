@@ -554,7 +554,12 @@ export function Sidebar({
         <div className="sidebar__panel">
           <header className="sidebar__header">
             <SidebarStageBackdrop variant={APP_STAGE} />
-            <div className="sidebar__brand is-on-stage" aria-label={APP_DISPLAY_NAME}>
+            <div
+              className={`sidebar__brand${APP_STAGE === "production" || APP_STAGE === "release"
+                ? ""
+                : " is-on-stage"}`}
+              aria-label={APP_DISPLAY_NAME}
+            >
               <strong>XIAO</strong>
               <span>Workbench</span>
             </div>
@@ -704,6 +709,7 @@ export function Sidebar({
                             setExpandedProjectPath((currentPath) =>
                               currentPath === project.path ? null : project.path,
                             );
+                            onOpenTasks();
                             return;
                           }
                           setExpandedProjectPath(project.path);

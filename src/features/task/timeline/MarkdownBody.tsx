@@ -1,7 +1,9 @@
 import {
   Children,
+  createContext,
   isValidElement,
   memo,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -27,6 +29,7 @@ const highlightCacheLimit = 64;
 const streamedTextPaceMs = 24;
 const streamedTextImmediateLimit = 512;
 const streamedTextBoundary = /[\s.,!?;:)\]]/;
+const LinkedMarkdownImageContext = createContext(false);
 
 const pacedStep = (remaining: number) => {
   if (remaining <= 12) return 2;
@@ -284,8 +287,10 @@ function MarkdownImage({
   node: _node,
   src,
   alt,
+  title,
   ...props
 }: ComponentProps<"img"> & { node?: unknown }) {
+  const linked = useContext(LinkedMarkdownImageContext);
   const localPath = localMarkdownImagePath(src);
   const tauriHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const resolvedSource = localPath
@@ -301,7 +306,7 @@ function MarkdownImage({
         className="markdown-image-fallback"
         role="img"
         aria-label={`${label}: image unavailable`}
-        title={localPath ?? src}
+        title={title ?? localPath ?? src}
       >
         <XiaoIcon name="file" size={14} />
         <span>{label}</span>
@@ -314,8 +319,10 @@ function MarkdownImage({
     <MessageImage
       source={resolvedSource}
       name={label}
+      title={title}
       className={props.className ? `is-markdown ${props.className}` : "is-markdown"}
       local={Boolean(localPath)}
+      linked={linked}
     />
   );
 }
@@ -431,9 +438,21 @@ const MarkdownChunk = memo(function MarkdownChunk({
       </div>
     ),
     img: (props: ComponentProps<"img"> & { node?: unknown }) => <MarkdownImage {...props} />,
-    a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
+    a: ({ children, node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
+      const nodeChildren = (
+        typeof node === "object" &&
+        node !== null &&
+        "children" in node &&
+        Array.isArray(node.children)
+      ) ? node.children : [];
+      const containsImage = nodeChildren.some((child) =>
+        typeof child === "object" &&
+        child !== null &&
+        "tagName" in child &&
+        child.tagName === "img"
+      );
       const internalResource = Boolean(href && workspacePathHref(href));
-      return (
+      const anchor = (
         <a
           {...props}
           href={internalResource ? "#" : href}
@@ -450,6 +469,11 @@ const MarkdownChunk = memo(function MarkdownChunk({
           }}
         >{children}</a>
       );
+      return containsImage ? (
+        <LinkedMarkdownImageContext.Provider value>
+          {anchor}
+        </LinkedMarkdownImageContext.Provider>
+      ) : anchor;
     },
   }), [onOpenResource, streaming]);
 

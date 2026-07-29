@@ -3,19 +3,9 @@ import type { ReactNode } from "react";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { TimelineEntry } from "../../../core/models/agent";
 
-const commandToolName = (command: string) => {
-  const payload = /(?:^|\s)(?:-Command|\/c)\s+(?:"|')?(.+)$/i.exec(command)?.[1] ?? command;
-  return payload
-    .match(/^\s*(?:&\s*)?["']?([^\s"';&|]+)/)?.[1]
-    ?.split(/[\\/]/)
-    .at(-1)
-    ?.replace(/\.(?:exe|cmd|bat|ps1)$/i, "")
-    .toLowerCase() ?? "shell";
-};
-
 const toolIdentity = (entry: TimelineEntry) =>
   entry.command
-    ? `shell:${commandToolName(entry.command)}`
+    ? `shell:${entry.command.replace(/\s+/g, " ").trim()}`
     : `${entry.meta ?? "tool"}:${entry.title}`.toLowerCase();
 
 export const toolCallRecovery = (entries: TimelineEntry[]) => {

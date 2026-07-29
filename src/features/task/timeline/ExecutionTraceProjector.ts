@@ -21,12 +21,15 @@ export class ExecutionTraceProjector {
     const entries = this.entries.filter((entry) => entry.kind !== "thought");
     if (!entries.length) return [];
     const latestMarker = traceMarkers.at(-1);
+    const isWebSearch = (entry: TimelineEntry) =>
+      entry.meta === "Browser tool" || entry.meta === "Web search";
     const isToolEntry = (entry: TimelineEntry) =>
       entry.kind === "command" && Boolean(
         entry.meta === "Plugin tool" ||
         entry.meta?.startsWith("Dynamic tool") ||
         entry.meta === "Codex tool" ||
         entry.meta === "Image tool" ||
+        isWebSearch(entry) ||
         entry.meta?.startsWith("Skill"),
       );
     const shellCommands = entries.filter((entry) =>
@@ -37,6 +40,7 @@ export class ExecutionTraceProjector {
       entry.kind === "explore" ||
       entry.kind === "approval" ||
       entry.kind === "agent" ||
+      isWebSearch(entry) ||
       isToolEntry(entry)
     );
     const actions = [

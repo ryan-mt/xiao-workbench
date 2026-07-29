@@ -280,6 +280,33 @@ describe("agent message projection", () => {
   });
 });
 
+describe("web search projection", () => {
+  it.each(["started", "inProgress"])(
+    "keeps a %s web search active until completion",
+    (status) => {
+      expect(timelineEntryFromItem({
+        id: "search-1",
+        type: "webSearch",
+        query: "Xiao",
+        status,
+      })).toMatchObject({
+        id: "search-1",
+        title: "Searched: Xiao",
+        status: "active",
+      });
+    },
+  );
+
+  it("marks a completed web search successful", () => {
+    expect(timelineEntryFromItem({
+      id: "search-1",
+      type: "webSearch",
+      query: "Xiao",
+      status: "completed",
+    })).toMatchObject({ status: "success" });
+  });
+});
+
 describe("command exit projection", () => {
   it("keeps exploratory shell executions visible as command rows", () => {
     expect(timelineEntryFromItem({

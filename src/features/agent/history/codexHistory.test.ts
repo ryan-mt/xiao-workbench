@@ -4,6 +4,7 @@ import { nativeBridge } from "../../../core/bridges/tauri";
 import {
   codexPlanFromTimeline,
   codexTimelineHasFinalResponse,
+  codexTimelineIsWorking,
   codexThreadActivityAt,
   isLegacyCodexImportPath,
   readCodexThreadTimeline,
@@ -90,7 +91,7 @@ describe("Codex history activity", () => {
     vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
       data: [{
         id: "turn-1",
-        status: "inProgress",
+        status: "in-progress",
         startedAt: 1_000,
         items: [{
           id: "user-1",
@@ -125,6 +126,107 @@ describe("Codex history activity", () => {
         turnId: "turn-1",
       }),
     ]));
+  });
+
+  it("ignores a stale rollout turn ID and infers the returned owning turn", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-current",
+        status: "completed",
+        startedAt: 1,
+        items: [{
+          id: "user-current",
+          type: "userMessage",
+          content: [{ type: "text", text: "Current turn" }],
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
+      id: "call-stale",
+      turnId: "turn-missing",
+      turnIndex: 0,
+      activityKind: "command",
+      command: "npm test",
+      output: "passed",
+      createdAt: "1970-01-01T00:00:01.100Z",
+      exitCode: 0,
+    }]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "rollout-command:call-stale",
+        turnId: "turn-current",
+      }),
+    ]));
+  });
+
+  it("falls back to rollout turn order when a stale turn ID has no timestamp", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-current",
+        status: "completed",
+        startedAt: 1,
+        items: [{
+          id: "user-current",
+          type: "userMessage",
+          content: [{ type: "text", text: "Current turn" }],
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
+      id: "call-stale",
+      turnId: "turn-missing",
+      turnIndex: 0,
+      activityKind: "command",
+      command: "npm test",
+      output: "passed",
+      exitCode: 0,
+    }]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "rollout-command:call-stale",
+        turnId: "turn-current",
+      }),
+    ]));
+  });
+
+  it("keeps an imported raw in-progress turn working", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-live",
+        status: "inProgress",
+        startedAt: 1,
+        items: [{
+          id: "user-live",
+          type: "userMessage",
+          content: [{ type: "text", text: "Keep going" }],
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(codexTimelineIsWorking(timeline)).toBe(true);
+    expect(timeline.at(-1)).toMatchObject({
+      id: "codex-turn:turn-live:active",
+      status: "active",
+      turnId: "turn-live",
+    });
   });
 
   it("restores imported image-view activity with its local thumbnail", async () => {
@@ -356,6 +458,19 @@ describe("Codex history workspace matching", () => {
   it("normalizes slash style, case, and trailing separators", () => {
     expect(
       sameWorkspacePath("D:\\Project Archive\\", "d:/project archive"),
+    ).toBe(true);
+  });
+
+  it("keeps POSIX path matching case-sensitive", () => {
+    expect(sameWorkspacePath("/work/Project", "/work/project")).toBe(false);
+    expect(workspaceContainsPath("/work/Project", "/work/project/src")).toBe(false);
+    expect(workspaceContainsPath("/work/Project", "/work/Project/src")).toBe(true);
+  });
+
+  it("keeps Windows drive and UNC path matching case-insensitive", () => {
+    expect(sameWorkspacePath("C:\\Work\\Project", "c:/work/project")).toBe(true);
+    expect(
+      workspaceContainsPath("\\\\Server\\Share\\Project", "//server/share/project/src"),
     ).toBe(true);
   });
 

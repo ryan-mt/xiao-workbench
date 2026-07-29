@@ -73,4 +73,22 @@ describe("execution trace projection", () => {
     expect(trace.title).not.toContain("command");
     expect(trace.entries).toEqual([dynamic, image]);
   });
+
+  it("classifies both Browser tool and Web search events as tools", () => {
+    const browser = {
+      ...entry("browser", "result"),
+      title: "Searched: browser event",
+      meta: "Browser tool",
+    };
+    const search = {
+      ...entry("search", "command"),
+      title: "Searched: command event",
+      meta: "Web search",
+    };
+
+    const trace = projectExecutionTraces([browser, search])[0];
+
+    expect(trace.title).not.toContain("Ran a command");
+    expect(trace.entries).toEqual([browser, search]);
+  });
 });

@@ -35,10 +35,12 @@ import {
   explicitlyOpenedTaskSuppressesFocusedLaunch,
   isTaskWorkspaceStateLoading,
   markTaskUnreadAfterCompletion,
+  nativeTaskIdsFromState,
   outcomeHasAcceptanceContract,
   pendingInputIdFromAttentionOccurrence,
   pendingAttentionTargetMatchesScope,
   pendingRequestMatchesAttentionTarget,
+  projectPathForCodexThread,
   queuedFollowUpIdForAutoSend,
   removeTaskOperationRevision,
   removeTaskReviewContext,
@@ -94,6 +96,17 @@ describe("imported Codex workspace routing", () => {
       { origin: "xiao", threadId: "thread-1" },
       [],
     )).toBe("D:/Project Archive");
+  });
+
+  it("uses the closest registered project as the history context", () => {
+    expect(projectPathForCodexThread(
+      [
+        { path: "D:/Project Archive", name: "Archive", updatedAt: 1 },
+        { path: "D:/Project Archive/xiao", name: "Xiao", updatedAt: 2 },
+      ],
+      { cwd: "D:/Project Archive/xiao/packages/app" },
+    )).toBe("D:/Project Archive/xiao");
+    expect(projectPathForCodexThread([], { cwd: "/srv/xiao" })).toBe("/srv/xiao");
   });
 });
 
@@ -1490,6 +1503,37 @@ describe("confirmed native task materialization", () => {
     ).toBe(true);
   });
 
+  it("connects imported history in its separate runtime workspace scope", () => {
+    expect(
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        null,
+        true,
+        "D:/projects/xiao",
+        "D:/projects/xiao/nested-repo",
+        true,
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it("never confirms imported Codex rows as native Xiao tasks", () => {
+    installStoredState(null);
+    const nativeTask = readBrowserTaskState(workspacePath).tasks[0]!;
+    const importedTask = {
+      ...nativeTask,
+      id: "codex:thread-1",
+      origin: "codex" as const,
+      threadId: "thread-1",
+    };
+    expect(nativeTaskIdsFromState({
+      tasks: [nativeTask, importedTask],
+      activeTaskId: importedTask.id,
+      showArchived: false,
+    })).toEqual([nativeTask.id]);
+  });
+
   it("keeps a fresh task unconfirmed while its bridge save is pending and after failure", async () => {
     let confirmation = confirmNativeTaskIds(
       beginNativeTaskConfirmation(
@@ -1653,8 +1697,8 @@ describe("confirmed native task materialization", () => {
 });
 
 describe("observed Codex thread status", () => {
-  it("keeps a working thread sticky across quiet polling gaps", () => {
-    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("working");
+  it("settles a previously working thread when the source is ready after its grace window", () => {
+    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("done");
     expect(observedCodexThreadStatus("ready", false, false, true)).toBe("done");
   });
 

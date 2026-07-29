@@ -6,7 +6,11 @@ import { FileTypeIcon } from "../../../components/icons/FileTypeIcon";
 import { SelectMenu } from "../../../components/SelectMenu";
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { isTauriHost, nativeBridge } from "../../../core/bridges/tauri";
-import { promptWithSelectedContext, visiblePromptFromSelectedContext } from "../../../core/models/agent";
+import {
+  promptWithSelectedContext,
+  selectedContextPromptParts,
+  visiblePromptFromSelectedContext,
+} from "../../../core/models/agent";
 import type {
   AgentApprovalPolicy,
   AgentAttachment,
@@ -187,6 +191,25 @@ export const deliverComposerSubmission = (
   handlers: Record<ComposerDelivery, (prompt: string, attachments: AgentAttachment[]) => Promise<boolean>>,
 ) => handlers[delivery](prompt, attachments);
 
+export const prepareComposerSubmission = (
+  prompt: string,
+  attachments: AgentAttachment[],
+  reviewContext: AgentAttachment[],
+  selectedContext: string | null,
+) => {
+  const plainPrompt = prompt.trim() || (reviewContext.length
+    ? "Address these review comments."
+    : attachments.length
+      ? "Review the attached context."
+      : selectedContext?.trim()
+        ? "Please respond to this selection."
+        : "");
+  return {
+    prompt: promptWithSelectedContext(plainPrompt, selectedContext),
+    attachments: [...attachments, ...reviewContext],
+  };
+};
+
 export const runComposerSubmission = async (
   submit: () => Promise<boolean>,
   onSucceeded: () => boolean | Promise<boolean>,
@@ -280,6 +303,8 @@ export function Composer({
   autoFocus = false,
 }: ComposerProps) {
   const [value, setValue] = useState(draftText);
+  const [restoredSelectedContext, setRestoredSelectedContext] = useState<string | null>(null);
+  const [restoredReviewContext, setRestoredReviewContext] = useState<AgentAttachment[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -317,11 +342,13 @@ export function Composer({
     mcpElicitationRequest?.taskId === taskId ? mcpElicitationRequest : null;
   const interactiveRequestOpen = Boolean(activeQuestionRequest || activeMcpElicitationRequest);
   const canSteer = currentTaskWorking && Boolean(runtime.threadId && runtime.turnId);
+  const activeSelectedContext = selectedContext ?? restoredSelectedContext;
+  const activeReviewContext = [...reviewContext, ...restoredReviewContext];
   const hasSubmissionContent =
     value.trim().length > 0
     || attachments.length > 0
-    || reviewContext.length > 0
-    || Boolean(selectedContext?.trim());
+    || activeReviewContext.length > 0
+    || Boolean(activeSelectedContext?.trim());
   const canSubmit =
     !submitting &&
     !disabled &&
@@ -378,6 +405,15 @@ export function Composer({
   useEffect(() => {
     setValue((current) => current === draftText ? current : draftText);
   }, [draftText]);
+
+  useEffect(() => {
+    setRestoredSelectedContext(null);
+    setRestoredReviewContext([]);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (selectedContext) setRestoredSelectedContext(null);
+  }, [selectedContext]);
 
   useEffect(() => {
     if (!selectedContext) return;
@@ -700,15 +736,16 @@ export function Composer({
   const submit = async (delivery: ComposerDelivery = currentTaskWorking ? "queue" : "send") => {
     if (!canSubmit || submittingRef.current) return;
     const historyValue = value.trim();
-    const plainValue = historyValue || (reviewContext.length
-      ? "Address these review comments."
-      : attachments.length
-        ? "Review the attached context."
-        : "Please respond to this selection.");
-    const submittedValue = promptWithSelectedContext(plainValue, selectedContext);
-    const submittedSelectedContext = selectedContext?.trim() ?? "";
-    const submittedReviewContext = [...reviewContext];
-    const submittedAttachments = [...attachments, ...submittedReviewContext];
+    const submission = prepareComposerSubmission(
+      value,
+      attachments,
+      activeReviewContext,
+      activeSelectedContext,
+    );
+    const submittedValue = submission.prompt;
+    const submittedSelectedContext = activeSelectedContext?.trim() ?? "";
+    const submittedReviewContext = [...activeReviewContext];
+    const submittedAttachments = submission.attachments;
     const submissionRevision = onSubmissionStart();
 
     submittingRef.current = true;
@@ -742,6 +779,12 @@ export function Composer({
       onReviewContextSent(submittedReviewContext);
       if (submittedSelectedContext) onSelectedContextSent(submittedSelectedContext);
       if (!mounted.current) return;
+      setRestoredReviewContext((current) =>
+        current.filter((attachment) => !submittedReviewContext.includes(attachment))
+      );
+      setRestoredSelectedContext((current) =>
+        current?.trim() === submittedSelectedContext ? null : current
+      );
 
       resetPromptHistoryNavigation();
       setValue("");
@@ -807,6 +850,12 @@ export function Composer({
     : goal?.status === "complete"
       ? "Restart"
       : "Resume";
+  const stashSubmission = prepareComposerSubmission(
+    value,
+    attachments,
+    activeReviewContext,
+    activeSelectedContext,
+  );
 
   return (
     <div className={`composer-wrap ${planSteps.length ? "has-plan" : ""}`}>
@@ -1110,36 +1159,55 @@ export function Composer({
       >
         <StashedPrompts
           taskId={taskId}
-          prompt={value}
-          attachments={attachments}
+          prompt={stashSubmission.prompt}
+          attachments={stashSubmission.attachments}
           disabled={disabled || submitting || compacting || undoing}
           onClear={() => {
             updateValue("");
             onAttachmentsChange([]);
+            onReviewContextSent(activeReviewContext);
+            onClearSelectedContext();
+            setRestoredReviewContext([]);
+            setRestoredSelectedContext(null);
             if (textarea.current) textarea.current.style.height = "auto";
           }}
           onRestore={(prompt, restoredAttachments) => {
-            updateValue(prompt);
-            onAttachmentsChange(restoredAttachments);
+            const selectedParts = selectedContextPromptParts(prompt);
+            const restoredReviews = restoredAttachments.filter(
+              (attachment) => attachment.kind === "review",
+            );
+            const restoredFiles = restoredAttachments.filter(
+              (attachment) => attachment.kind !== "review",
+            );
+            const visiblePrompt = selectedParts?.prompt ?? prompt;
+            updateValue(visiblePrompt);
+            setRestoredSelectedContext(selectedParts?.context ?? null);
+            setRestoredReviewContext(restoredReviews);
+            onAttachmentsChange(restoredFiles);
             window.requestAnimationFrame(() => {
               textarea.current?.focus();
               if (!textarea.current) return;
               textarea.current.style.height = "auto";
               textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
-              textarea.current.setSelectionRange(prompt.length, prompt.length);
+              textarea.current.setSelectionRange(visiblePrompt.length, visiblePrompt.length);
             });
           }}
         />
         <div className="composer__input">
-          {selectedContext ? (
+          {activeSelectedContext ? (
             <div className="composer__selected-context" aria-label="Selected conversation text">
               <XiaoIcon name="mention" size={12} />
               <strong>Quote</strong>
-              <span title={selectedContext}>{selectedContext.replace(/\s+/g, " ")}</span>
+              <span title={activeSelectedContext}>
+                {activeSelectedContext.replace(/\s+/g, " ")}
+              </span>
               <button
                 type="button"
                 aria-label="Remove selected conversation text"
-                onClick={onClearSelectedContext}
+                onClick={() => {
+                  if (selectedContext) onClearSelectedContext();
+                  setRestoredSelectedContext(null);
+                }}
               >
                 <XiaoIcon name="close" size={12} />
               </button>
@@ -1233,9 +1301,9 @@ export function Composer({
               <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>Enter</kbd> attach <kbd>Esc</kbd> close</span></footer>
             </div>
           ) : null}
-          {reviewContext.length > 0 && (
+          {activeReviewContext.length > 0 && (
             <div className="composer__review-context" aria-label="Review comments ready to send">
-              {reviewContext.map((attachment) => {
+              {activeReviewContext.map((attachment) => {
                 const start = attachment.lineStart;
                 const end = attachment.lineEnd ?? start;
                 const lines = start
@@ -1251,7 +1319,15 @@ export function Composer({
                     <button
                       type="button"
                       aria-label={`Remove review comment for ${attachment.path}${lines}`}
-                      onClick={() => attachment.id && onRemoveReviewContext(attachment.id)}
+                      onClick={() => {
+                        if (restoredReviewContext.includes(attachment)) {
+                          setRestoredReviewContext((current) =>
+                            current.filter((item) => item !== attachment)
+                          );
+                        } else if (attachment.id) {
+                          onRemoveReviewContext(attachment.id);
+                        }
+                      }}
                     >
                       <XiaoIcon name="close" size={12} />
                     </button>

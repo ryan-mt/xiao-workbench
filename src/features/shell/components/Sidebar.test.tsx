@@ -90,6 +90,7 @@ const sidebarElement = (
   content: SidebarContent = {},
   canOpenProjects = false,
   onCreateProjectGroup: (name: string) => void = noop,
+  onOpenTasks: () => void = noop,
 ) => (
   <Sidebar
       activePage={activePage}
@@ -109,7 +110,7 @@ const sidebarElement = (
       onOpenAttention={noop}
       onOpenProfile={noop}
       onOpenSettings={noop}
-      onOpenTasks={noop}
+      onOpenTasks={onOpenTasks}
       onAddProject={noop}
       onCreateProjectGroup={onCreateProjectGroup}
       onNewTask={noop}
@@ -204,12 +205,37 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain(">Xiao User</strong>");
   });
 
+  it("keeps production branding free of non-production stage styling", () => {
+    const markup = renderSidebar(0);
+
+    expect(markup).toContain('class="sidebar__brand"');
+    expect(markup).not.toContain('class="sidebar__brand is-on-stage"');
+  });
+
   it("offers a new task action for an empty project", () => {
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project] });
 
     expect(markup).toContain('class="sidebar app-sidebar"');
     expect(markup).toContain(">No tasks yet</span>");
     expect(markup).toContain(">New task</span>");
+  });
+
+  it("returns to Tasks when the active project is clicked", () => {
+    const onOpenTasks = vi.fn();
+    render(sidebarElement(
+      0,
+      "settings",
+      "ready",
+      { projects: [project] },
+      false,
+      noop,
+      onOpenTasks,
+    ));
+
+    const projectButton = document.querySelector<HTMLButtonElement>(".sidebar-project__select");
+    expect(projectButton).not.toBeNull();
+    fireEvent.click(projectButton!);
+    expect(onOpenTasks).toHaveBeenCalledOnce();
   });
 
   it("labels project and group creation actions", () => {

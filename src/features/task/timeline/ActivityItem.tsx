@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
 import {
+  replaceVisiblePromptInSelectedContext,
   visiblePromptFromSelectedContext,
   type AgentAttachment,
   type TimelineEntry,
@@ -233,7 +234,10 @@ export const ActivityItem = memo(function ActivityItem({
   const userMessage = entry.kind === "brief" || entry.kind === "user";
   const assistantMessage = entry.kind === "result" && entry.title === "Agent response";
   const contextCompaction = entry.kind === "result" && entry.meta === "Context";
-  const browserTool = entry.kind === "result" && entry.meta?.toLowerCase() === "browser tool";
+  const browserTool = (
+    entry.kind === "result" ||
+    entry.kind === "command"
+  ) && ["browser tool", "web search"].includes(entry.meta?.toLowerCase() ?? "");
 
   if (entry.kind === "thought" && entry.status !== "active" && !entry.body?.trim()) return null;
 
@@ -266,7 +270,10 @@ export const ActivityItem = memo(function ActivityItem({
               text={visiblePrompt}
               onCancel={() => setEditingPrompt(false)}
               onSubmit={(text) => {
-                onEditUserMessage(text, sentAttachments);
+                onEditUserMessage(
+                  replaceVisiblePromptInSelectedContext(entry.body ?? entry.title, text),
+                  sentAttachments,
+                );
                 setEditingPrompt(false);
               }}
             />

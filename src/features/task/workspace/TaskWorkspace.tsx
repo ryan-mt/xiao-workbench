@@ -178,7 +178,7 @@ type TaskWorkspaceProps = {
   definitionOfDone: AcceptanceContractDraft | null;
   definitionOfDoneError: string | null;
   contextUsage: ThreadTokenUsage | null;
-  initialTimelineScrollTop: number;
+  initialTimelineScrollTop: number | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
   launchBrand: "logo" | "wordmark";
@@ -370,9 +370,9 @@ export function TaskWorkspace({
   const previousTaskId = useRef(taskId);
   const restoredTimelineScrollTaskId = useRef<string | null>(null);
   const scrollPersistTimer = useRef<number | null>(null);
-  const pendingScrollTop = useRef<number | null>(null);
-  const onTimelineScrollTopChangeRef = useRef(onTimelineScrollTopChange);
-  onTimelineScrollTopChangeRef.current = onTimelineScrollTopChange;
+  const pendingScroll = useRef<{ taskId: string; scrollTop: number } | null>(null);
+  const scrollCallbacksByTask = useRef(new Map<string, (scrollTop: number) => void>());
+  scrollCallbacksByTask.current.set(taskId, onTimelineScrollTopChange);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -435,10 +435,12 @@ export function TaskWorkspace({
       window.clearTimeout(scrollPersistTimer.current);
       scrollPersistTimer.current = null;
     }
-    if (pendingScrollTop.current !== null) {
-      onTimelineScrollTopChangeRef.current(pendingScrollTop.current);
-      pendingScrollTop.current = null;
+    const pending = pendingScroll.current;
+    if (pending?.taskId === taskId) {
+      scrollCallbacksByTask.current.get(taskId)?.(pending.scrollTop);
+      pendingScroll.current = null;
     }
+    scrollCallbacksByTask.current.delete(taskId);
   }, [taskId]);
 
   useEffect(() => {
@@ -493,14 +495,18 @@ export function TaskWorkspace({
     if (previousTaskId.current !== taskId) {
       previousTaskId.current = taskId;
       restoredTimelineScrollTaskId.current = timeline.length > 0 ? taskId : null;
-      node.scrollTop = initialTimelineScrollTop;
+      node.scrollTop = initialTimelineScrollTop !== null
+        ? initialTimelineScrollTop
+        : timeline.length > 0
+          ? latestTimelineScrollTop(node)
+          : 0;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
     }
     if (restoredTimelineScrollTaskId.current !== taskId && timeline.length > 0) {
       restoredTimelineScrollTaskId.current = taskId;
-      node.scrollTop = initialTimelineScrollTop > 0
+      node.scrollTop = initialTimelineScrollTop !== null
         ? initialTimelineScrollTop
         : latestTimelineScrollTop(node);
       followLiveOutput.current = shouldFollowLiveOutput(node);
@@ -718,15 +724,19 @@ export function TaskWorkspace({
             followLiveOutput.current = following;
             setShowJumpToLatest((current) => current === !following ? current : !following);
             setTimelineSelection((current) => current === null ? current : null);
-            pendingScrollTop.current = event.currentTarget.scrollTop;
+            pendingScroll.current = {
+              taskId,
+              scrollTop: event.currentTarget.scrollTop,
+            };
             if (scrollPersistTimer.current !== null) {
               window.clearTimeout(scrollPersistTimer.current);
             }
             scrollPersistTimer.current = window.setTimeout(() => {
               scrollPersistTimer.current = null;
-              if (pendingScrollTop.current !== null) {
-                onTimelineScrollTopChange(pendingScrollTop.current);
-                pendingScrollTop.current = null;
+              const pending = pendingScroll.current;
+              if (pending) {
+                scrollCallbacksByTask.current.get(pending.taskId)?.(pending.scrollTop);
+                pendingScroll.current = null;
               }
             }, 700);
           }}

@@ -242,6 +242,20 @@ describe("ActivityItem browser tools", () => {
     expect(markup).toMatch(/activity__web-query[^>]*>app-server event schema<\/span><span class="activity__tool-caret">/);
     expect(markup).toContain("aria-label=\"Search results\"");
   });
+
+  it("uses the web-search presentation for command-form search events", () => {
+    const markup = renderCompaction({
+      id: "search-command",
+      kind: "command",
+      title: "Searched: Codex app-server protocol",
+      meta: "Web search",
+      status: "success",
+    });
+
+    expect(markup).toContain(">Web search<");
+    expect(markup).toContain("Codex app-server protocol");
+    expect(markup).not.toContain(">Ran command<");
+  });
 });
 
 describe("ActivityItem image security policy", () => {

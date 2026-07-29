@@ -36,12 +36,12 @@ export function MessageActions({
 }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    if (!createdAt) return;
+    if (typeof createdAt !== "number") return;
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [createdAt]);
   const timestamp = useMemo(
-    () => createdAt ? {
+    () => typeof createdAt === "number" ? {
       relative: relativeTime(createdAt, now),
       exact: exactFormatter.format(createdAt),
     } : null,

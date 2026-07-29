@@ -6,6 +6,10 @@ import type {
   CodexRolloutCommand,
   TimelineEntry,
 } from "../../../core/models/agent";
+import {
+  workspacePathComparisonKey,
+  workspacePathIsWithin,
+} from "../../../core/workspacePath";
 import { timelineEntryFromItem } from "../hooks/useAgentRuntime";
 
 type RawThread = {
@@ -66,7 +70,7 @@ const threadStatus = (
         )
       : "";
   const normalized = raw.toLocaleLowerCase();
-  if (/(active|working|running|inprogress)/.test(normalized)) return "working";
+  if (/(active|working|running|in[\s_-]?progress)/.test(normalized)) return "working";
   if (/(waiting|approval|input|blocked)/.test(normalized)) return "waiting";
   if (/(failed|error|cancelled|interrupted)/.test(normalized)) return "failed";
   return "ready";
@@ -322,9 +326,20 @@ export const readCodexThreadTimeline = async (
   } while (cursor);
   const rolloutCommands = await rolloutCommandsPromise;
   const turns = turnsNewestFirst.reverse();
+  const returnedTurnIds = new Set(turns.flatMap((rawTurn) =>
+    rawTurn &&
+    typeof rawTurn === "object" &&
+    typeof (rawTurn as Record<string, unknown>).id === "string"
+      ? [String((rawTurn as Record<string, unknown>).id)]
+      : []
+  ));
   const rolloutMarkersByTurn = new Map<string, CodexRolloutCommand[]>();
   for (const activity of rolloutCommands) {
-    if (activity.activityKind !== "timelineMarker" || !activity.turnId) continue;
+    if (
+      activity.activityKind !== "timelineMarker" ||
+      !activity.turnId ||
+      !returnedTurnIds.has(activity.turnId)
+    ) continue;
     const markers = rolloutMarkersByTurn.get(activity.turnId) ?? [];
     markers.push(activity);
     rolloutMarkersByTurn.set(activity.turnId, markers);
@@ -370,7 +385,10 @@ export const readCodexThreadTimeline = async (
       .find((turn) => turn.startedAt <= commandAt && (
         turn.nextStartedAt === null || commandAt < turn.nextStartedAt
       ));
-    const owningTurnId = command.turnId ?? inferredTurn?.id;
+    const owningTurnId =
+      command.turnId && returnedTurnIds.has(command.turnId)
+        ? command.turnId
+        : inferredTurn?.id;
     if (owningTurnId) {
       const current = commandsByTurn.get(owningTurnId) ?? [];
       current.push(command);
@@ -526,9 +544,35 @@ export const readCodexThreadTimeline = async (
           ...(turnDurationMs !== null ? { turnDurationMs } : {}),
         };
       });
-    return [...mapped, ...recoveredCommands].sort(
+    const entries = [...mapped, ...recoveredCommands].sort(
       (left, right) => (left.createdAt ?? createdAt) - (right.createdAt ?? createdAt),
     );
+    if (
+      threadStatus(turn.status) === "working" &&
+      !entries.some((entry) => entry.status === "active")
+    ) {
+      let lastWorkIndex = entries.length - 1;
+      while (
+        lastWorkIndex >= 0 &&
+        (entries[lastWorkIndex].kind === "user" || entries[lastWorkIndex].kind === "brief")
+      ) {
+        lastWorkIndex -= 1;
+      }
+      if (lastWorkIndex >= 0) {
+        entries[lastWorkIndex] = { ...entries[lastWorkIndex], status: "active" };
+      } else {
+        entries.push({
+          id: `codex-turn:${turnId}:active`,
+          kind: "thought",
+          title: "Codex is working",
+          createdAt,
+          status: "active",
+          turnId,
+          ...(turnDurationMs !== null ? { turnDurationMs } : {}),
+        });
+      }
+    }
+    return entries;
   });
 };
 
@@ -609,14 +653,10 @@ export const sameCodexTimeline = (
 });
 
 export const sameWorkspacePath = (left: string, right: string) =>
-  left.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase() ===
-  right.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
+  workspacePathComparisonKey(left) === workspacePathComparisonKey(right);
 
-export const workspaceContainsPath = (workspace: string, candidate: string) => {
-  const parent = workspace.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
-  const child = candidate.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase();
-  return child === parent || child.startsWith(`${parent}/`);
-};
+export const workspaceContainsPath = (workspace: string, candidate: string) =>
+  workspacePathIsWithin(workspace, candidate);
 
 export const isLegacyCodexImportPath = (path: string) =>
   /\/documents\/codex\/\d{4}-\d{2}-\d{2}\//i.test(

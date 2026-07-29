@@ -640,16 +640,23 @@
   min-height: 92px;
   resize: vertical;
   padding: 10px 12px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 7px;
-  outline: none;
   background: transparent;
   color: #ededeb;
   font: inherit;
 }
 
-.message-edit textarea:focus {
+.message-edit textarea:focus-visible {
   border-color: rgba(255, 255, 255, .24);
+  outline: 2px solid color-mix(in srgb, var(--focus) 72%, transparent);
+  outline-offset: 1px;
+}
+
+@media (hover: none) {
+  .message-actions {
+    opacity: 1;
+  }
 }
 
 .message-edit > span {

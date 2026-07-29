@@ -6,13 +6,17 @@ import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 export function MessageImage({
   source,
   name,
+  title,
   className,
   local = false,
+  linked = false,
 }: {
   source: string;
   name: string;
+  title?: string;
   className?: string;
   local?: boolean;
+  linked?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
@@ -49,13 +53,31 @@ export function MessageImage({
     );
   }
 
+  if (linked) {
+    return (
+      <span
+        className={`message-image${className ? ` ${className}` : ""}`}
+        title={title}
+      >
+        <img
+          src={source}
+          alt={name}
+          data-local-image={local ? "true" : undefined}
+          decoding="async"
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    );
+  }
+
   return (
     <>
       <button
         ref={triggerRef}
         className={`message-image${className ? ` ${className}` : ""}`}
         type="button"
-        title={`Open ${name}`}
+        title={title ?? `Open ${name}`}
         onClick={() => setOpen(true)}
       >
         <img
@@ -78,7 +100,14 @@ export function MessageImage({
             onClick={() => setOpen(false)}
           />
           <figure>
-            <img src={source} alt={name} />
+            <img
+              src={source}
+              alt={name}
+              onError={() => {
+                setOpen(false);
+                setFailed(true);
+              }}
+            />
             <figcaption>{name}</figcaption>
           </figure>
           <button
