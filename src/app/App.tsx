@@ -135,6 +135,7 @@ const focusRailPreferenceStorageKey = "xiao.focus-rail.v1";
 // quiet gaps while a command is still running. Keep the observed working state
 // across those gaps so the sidebar cannot flash Done between live events.
 export const codexActivityGraceMs = 8_000;
+export const codexLiveRefreshMs = 750;
 
 export const observedCodexThreadStatus = (
   sourceStatus: CodexThreadSummary["status"],
@@ -2715,12 +2716,17 @@ export function App() {
       }
     };
     void refreshThreads(true);
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshThreads(false);
-    }, 2_500);
+    let refreshTimer: number | null = null;
+    const scheduleRefresh = () => {
+      refreshTimer = window.setTimeout(() => {
+        if (document.visibilityState === "visible") void refreshThreads(false);
+        scheduleRefresh();
+      }, codexLiveRefreshMs);
+    };
+    scheduleRefresh();
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
     };
   }, [
     agent.runtime.phase,

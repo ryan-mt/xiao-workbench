@@ -175,77 +175,6 @@ const rememberHighlightedCode = (key: string, value: HighlightedCode) => {
   }
 };
 
-const streamedTextPaceMs = 24;
-const streamedTextImmediateLimit = 512;
-const streamedTextBoundary = /[\s.,!?;:)\]]/;
-
-const pacedStep = (remaining: number) => {
-  if (remaining <= 12) return 2;
-  if (remaining <= 48) return 4;
-  if (remaining <= 96) return 8;
-  return Math.min(256, Math.ceil(remaining / 4));
-};
-
-const nextPacedEnd = (text: string, start: number) => {
-  const end = Math.min(text.length, start + pacedStep(text.length - start));
-  const boundary = Math.min(text.length, end + 8);
-  for (let index = end; index < boundary; index += 1) {
-    if (streamedTextBoundary.test(text[index] ?? "")) return index + 1;
-  }
-  return end;
-};
-
-const usePacedStreamingText = (content: string, streaming: boolean) => {
-  const [visible, setVisible] = useState(content);
-  const visibleRef = useRef(content);
-  const contentRef = useRef(content);
-  const streamingRef = useRef(streaming);
-  const timerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    contentRef.current = content;
-    streamingRef.current = streaming;
-
-    const clear = () => {
-      if (timerRef.current === null) return;
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    };
-    const sync = (value: string) => {
-      visibleRef.current = value;
-      setVisible(value);
-    };
-    const advance = () => {
-      timerRef.current = null;
-      const latest = contentRef.current;
-      const shown = visibleRef.current;
-      if (!streamingRef.current || !latest.startsWith(shown) || latest.length <= shown.length) {
-        sync(latest);
-        return;
-      }
-      const end = nextPacedEnd(latest, shown.length);
-      sync(latest.slice(0, end));
-      if (end < latest.length) timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
-    };
-
-    clear();
-    const shown = visibleRef.current;
-    if (
-      !streaming ||
-      !content.startsWith(shown) ||
-      content.length <= shown.length ||
-      content.length - shown.length <= streamedTextImmediateLimit
-    ) {
-      sync(content);
-      return clear;
-    }
-    timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
-    return clear;
-  }, [content, streaming]);
-
-  return streaming ? visible : content;
-};
-
 function InlineCode({
   children,
   className,
@@ -472,11 +401,10 @@ const ProjectedMarkdownBody = memo(function ProjectedMarkdownBody({
   streaming: boolean;
   onOpenResource?: (target: string) => boolean;
 }) {
-  const pacedContent = usePacedStreamingText(content, streaming);
   const projectionRef = useRef<MarkdownStreamProjection | undefined>(undefined);
   const projection = useMemo(
-    () => projectStreamingMarkdown(projectionRef.current, pacedContent, streaming),
-    [pacedContent, streaming],
+    () => projectStreamingMarkdown(projectionRef.current, content, streaming),
+    [content, streaming],
   );
   projectionRef.current = projection;
 

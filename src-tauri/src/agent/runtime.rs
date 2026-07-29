@@ -259,6 +259,16 @@ impl AgentRuntime {
                             Ok(mut message) => {
                                 sanitize_response_error(&mut message);
                                 resolve_pending_response(&pending, &message);
+                                // Live protocol traffic reaches the renderer before run
+                                // bookkeeping so SQLite route lookups cannot delay text.
+                                let _ = stdout_app.emit(
+                                    "agent://runtime-message",
+                                    RuntimeMessageEnvelope {
+                                        environment_id: stdout_environment_id.clone(),
+                                        generation,
+                                        message: message.clone(),
+                                    },
+                                );
                                 if let Some(service) = stdout_app.try_state::<RunService>() {
                                     service.handle_runtime_message(
                                         &stdout_app,
@@ -267,14 +277,6 @@ impl AgentRuntime {
                                         message.clone(),
                                     );
                                 }
-                                let _ = stdout_app.emit(
-                                    "agent://runtime-message",
-                                    RuntimeMessageEnvelope {
-                                        environment_id: stdout_environment_id.clone(),
-                                        generation,
-                                        message,
-                                    },
-                                );
                             }
                             Err(error) => {
                                 let diagnostic =

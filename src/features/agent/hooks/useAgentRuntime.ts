@@ -84,9 +84,19 @@ import {
 } from "./mcpElicitation";
 
 const MAX_RUNTIME_LOGS = 240;
-const LIVE_DELTA_FLUSH_MS = 33;
+const LIVE_DELTA_FLUSH_MS = 16;
 const WORKSPACE_REFRESH_DEBOUNCE_MS = 180;
 const RUN_EVENT_PAGE_SIZE = 200;
+const LIVE_DELTA_METHODS = new Set([
+  "item/agentMessage/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+  "item/commandExecution/outputDelta",
+]);
+
+export const agentMessageIsLiveDelta = (message: AgentMessage) =>
+  typeof message.params?.delta === "string" &&
+  LIVE_DELTA_METHODS.has(message.method ?? "");
 type LiveDeltaBatch = {
   deltas: LiveTimelineDelta[];
   eventCount: number;
@@ -1375,15 +1385,7 @@ export function useAgentRuntime(
   const queueLiveDelta = useCallback((taskId: string, message: AgentMessage) => {
     const method = message.method;
     const delta = message.params?.delta;
-    if (
-      typeof delta !== "string" ||
-      ![
-        "item/agentMessage/delta",
-        "item/reasoning/summaryTextDelta",
-        "item/reasoning/textDelta",
-        "item/commandExecution/outputDelta",
-      ].includes(method ?? "")
-    ) return false;
+    if (typeof delta !== "string" || !agentMessageIsLiveDelta(message)) return false;
 
     let batch = liveDeltaBatches.current.get(taskId);
     if (!batch) {
@@ -2475,7 +2477,8 @@ export function useAgentRuntime(
             if (
               !listenerIsCurrent() ||
               event.payload.taskId !== activeTaskIdRef.current ||
-              !activeTimelineReadyRef.current
+              !activeTimelineReadyRef.current ||
+              agentMessageIsLiveDelta(event.payload.message)
             ) return;
             const accepted = acceptRunProtocol(runProjectionRef.current, event.payload);
             if (!accepted.accepted) return;
@@ -2498,7 +2501,11 @@ export function useAgentRuntime(
                 activeGeneration,
                 event.payload,
               ) &&
-              (event.payload.message.id === 0 || compactingTasks.current.size > 0)
+              (
+                event.payload.message.id === 0 ||
+                compactingTasks.current.size > 0 ||
+                agentMessageIsLiveDelta(event.payload.message)
+              )
             ) {
               void handleMessage(event.payload.message);
             }
