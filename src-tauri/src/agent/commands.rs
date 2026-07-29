@@ -502,10 +502,14 @@ pub fn read_codex_rollout_commands(
     thread_id: String,
     rollout_path: Option<String>,
 ) -> Result<Vec<models::CodexRolloutCommand>, String> {
-    let path = match rollout_path {
-        Some(path) if !path.trim().is_empty() => validated_rollout_path(&path)?,
-        _ => rollout_path_for_thread(&thread_id)?,
-    };
+    // App-server snapshots can retain an old or non-rollout `thread.path`.
+    // Treat it as a hint; the thread UUID remains the authoritative lookup.
+    let path = rollout_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .and_then(|path| validated_rollout_path(path).ok())
+        .map(Ok)
+        .unwrap_or_else(|| rollout_path_for_thread(&thread_id))?;
     parse_rollout_commands(&path)
 }
 

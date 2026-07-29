@@ -35,7 +35,9 @@ import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/w
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
   codexPlanFromTimeline,
+  codexTimelineHasFinalResponse,
   codexTimelineIsWorking,
+  sameCodexTimeline,
   listCodexThreads,
   isLegacyCodexImportPath,
   readCodexThreadChangeSummary,
@@ -156,7 +158,8 @@ export const observedCodexThreadStatus = (
 ): CodexThreadSummary["status"] => {
   if (sourceStatus === "failed" || sourceStatus === "waiting") return sourceStatus;
   if (sourceStatus === "working" || inferredWorking) return "working";
-  if (wasWorking || wasDone) return "done";
+  if (wasDone) return "done";
+  if (wasWorking) return "working";
   return sourceStatus;
 };
 const focusViews = new Set<FocusView>([
@@ -1762,6 +1765,19 @@ export function App() {
     refresh,
     loadDirectory,
   } = useWorkspace(workspaceRequestPath ?? undefined, executionTaskId);
+  const selectedImportedThread: CodexThreadSummary | null =
+    selectedTask?.origin === "codex" && selectedTask.threadId
+      ? codexThreads.find((thread) => thread.id === selectedTask.threadId) ?? {
+          id: selectedTask.threadId,
+          title: selectedTask.title,
+          preview: "",
+          cwd: workspace.path,
+          createdAt: selectedTask.createdAt,
+          updatedAt: selectedTask.updatedAt,
+          archived: selectedTask.archived,
+          status: selectedTask.stage === "in_progress" ? "working" : "ready",
+        }
+      : null;
   const newTaskWorkspaceMode = defaultTaskWorkspaceMode(
     workspace.execution.isolationAvailable,
   );
@@ -2012,13 +2028,42 @@ export function App() {
         if (cancelled) return;
         const importedTaskId = `codex:${thread.id}`;
         const importedWorking = codexTimelineIsWorking(timeline);
-        setCodexThreads((current) => current.map((candidate) =>
-          candidate.id === thread.id
-            ? { ...candidate, status: importedWorking ? "working" : candidate.status === "working" ? "done" : candidate.status }
-            : candidate
-        ));
+        const importedComplete = codexTimelineHasFinalResponse(timeline);
+        if (importedComplete) {
+          codexThreadWorkingRef.current.delete(thread.id);
+          codexThreadDoneRef.current.add(thread.id);
+        } else if (importedWorking || codexThreadWorkingRef.current.has(thread.id)) {
+          codexThreadWorkingRef.current.add(thread.id);
+          codexThreadDoneRef.current.delete(thread.id);
+        }
+        setCodexThreads((current) => {
+          let changed = false;
+          const next = current.map((candidate) => {
+            if (candidate.id !== thread.id) return candidate;
+            const status: CodexThreadSummary["status"] = importedComplete
+              ? "done"
+              : importedWorking || candidate.status === "working"
+                ? "working"
+                : candidate.status;
+            if (candidate.status === status) return candidate;
+            changed = true;
+            return { ...candidate, status };
+          });
+          return changed ? next : current;
+        });
         setTasks((current) => {
-          const existing = current.find((task) => task.id === importedTaskId);
+          const existingIndex = current.findIndex((task) => task.id === importedTaskId);
+          const existing = existingIndex >= 0 ? current[existingIndex] : undefined;
+          const stableTimeline = existing && sameCodexTimeline(existing.timeline, timeline)
+            ? existing.timeline
+            : timeline;
+          const nextStage = importedComplete
+            ? "completed" as const
+            : importedWorking || existing?.stage === "in_progress"
+              ? "in_progress" as const
+              : "completed" as const;
+          const nextMeta = taskMeta(thread.updatedAt);
+          const nextGroup = taskGroup(thread.updatedAt, false);
           const importedTask: WorkbenchTask = {
             ...(existing ?? {
               id: importedTaskId,
@@ -2044,22 +2089,45 @@ export function App() {
             }),
             id: importedTaskId,
             title: thread.title,
-            meta: taskMeta(thread.updatedAt),
-            group: taskGroup(thread.updatedAt, false),
+            meta: nextMeta,
+            group: nextGroup,
             archived: thread.archived,
             createdAt: thread.createdAt,
             updatedAt: thread.updatedAt,
-            stage: importedWorking ? "in_progress" : "completed",
+            stage: nextStage,
             threadId: thread.id,
-            timeline,
+            timeline: stableTimeline,
             timelineLoaded: true,
             timelineComplete: true,
             timelineStart: 0,
-            timelineEntryCount: timeline.length,
-            plan: codexPlanFromTimeline(timeline) ?? existing?.plan ?? null,
+            timelineEntryCount: stableTimeline.length,
+            plan: stableTimeline === existing?.timeline
+              ? existing.plan
+              : codexPlanFromTimeline(stableTimeline) ?? existing?.plan ?? null,
             origin: "codex",
           };
-          return [...current.filter((task) => task.id !== importedTaskId), importedTask];
+          if (
+            existing &&
+            stableTimeline === existing.timeline &&
+            existing.title === importedTask.title &&
+            existing.meta === nextMeta &&
+            existing.group === nextGroup &&
+            existing.archived === thread.archived &&
+            existing.createdAt === thread.createdAt &&
+            existing.updatedAt === thread.updatedAt &&
+            existing.stage === nextStage &&
+            existing.threadId === thread.id &&
+            existing.timelineLoaded &&
+            existing.timelineComplete &&
+            existing.timelineStart === 0 &&
+            existing.timelineEntryCount === stableTimeline.length
+          ) {
+            return current;
+          }
+          if (existingIndex < 0) return [...current, importedTask];
+          const next = [...current];
+          next[existingIndex] = importedTask;
+          return next;
         });
         if (!silent) {
           setActiveTaskId(importedTaskId);
@@ -2085,6 +2153,40 @@ export function App() {
       cancelled = true;
     };
   }, [pendingCodexThread, taskStateReady, workspace.path]);
+
+  useEffect(() => {
+    if (
+      !isTauriHost() ||
+      !preferences.importCodexHistory ||
+      !taskStateReady ||
+      !selectedImportedThread
+    ) return;
+    let disposed = false;
+    const queueRefresh = () => {
+      if (disposed) return;
+      setPendingCodexThread((current) => current ?? {
+        thread: selectedImportedThread,
+        context: {
+          projectPath: workspace.path,
+          taskId: codexHistoryContextTaskId,
+        },
+        silent: true,
+      });
+    };
+    queueRefresh();
+    const timer = window.setInterval(queueRefresh, codexLiveRefreshMs);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    codexHistoryContextTaskId,
+    preferences.importCodexHistory,
+    selectedImportedThread?.id,
+    selectedImportedThread?.rolloutPath,
+    taskStateReady,
+    workspace.path,
+  ]);
 
   useEffect(() => {
     if (
@@ -2718,22 +2820,6 @@ export function App() {
           writeCodexThreadSnapshot(merged);
           return merged;
         });
-        const openImportedThreadId =
-          selectedTask?.origin === "codex" ? selectedTask.threadId : null;
-        const openImportedThread = openImportedThreadId
-          ? threads.find((thread) => thread.id === openImportedThreadId)
-          : null;
-        if (openImportedThread && selectedTask && (
-          includeArchived ||
-          openImportedThread.status === "working" ||
-          openImportedThread.updatedAt > selectedTask.updatedAt
-        )) {
-          setPendingCodexThread((current) => current ?? {
-            thread: openImportedThread,
-            context,
-            silent: true,
-          });
-        }
         setCodexHistoryError(null);
         if (includeArchived) void hydrateChangePills(threads);
       } catch (reason) {
@@ -2765,7 +2851,6 @@ export function App() {
     codexHistoryContextTaskId,
     preferences.importCodexHistory,
     selectedTask?.id,
-    selectedTask?.updatedAt,
     workspace.path,
   ]);
   const attentionQuestionRequest = attentionSelectedPendingTarget

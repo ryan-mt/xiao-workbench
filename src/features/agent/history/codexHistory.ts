@@ -28,6 +28,11 @@ type ThreadListResponse = {
 const sourceKinds = ["cli", "vscode", "appServer"];
 type AgentContext = { projectPath: string; taskId: string | null };
 const snapshotKey = "xiao.codex-thread-snapshot.v2";
+const codexRolloutPath = (value: unknown, threadId: string) => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\\/g, "/");
+  return normalized.endsWith(`-${threadId}.jsonl`) ? value : undefined;
+};
 
 const timestampMilliseconds = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -100,12 +105,13 @@ const summaryFromThread = (
     thread.updatedAt,
     thread.recencyAt,
   );
+  const rolloutPath = codexRolloutPath(thread.path, thread.id);
   return {
     id: thread.id,
     title: titleForThread(thread.name, thread.preview),
     preview: typeof thread.preview === "string" ? thread.preview : "",
     cwd: thread.cwd,
-    ...(typeof thread.path === "string" ? { rolloutPath: thread.path } : {}),
+    ...(rolloutPath ? { rolloutPath } : {}),
     createdAt,
     updatedAt,
     archived,
@@ -283,6 +289,15 @@ export const readCodexThreadTimeline = async (
   context: AgentContext,
   rolloutPath?: string,
 ): Promise<TimelineEntry[]> => {
+  const rolloutCommandsPromise = nativeBridge
+    .readCodexRolloutCommands(threadId, rolloutPath)
+    .catch((reason): CodexRolloutCommand[] => {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      if (message.includes("Could not find the local Codex rollout for this task.")) {
+        return [];
+      }
+      throw reason;
+    });
   const [response, rolloutCommands] = await Promise.all([
     nativeBridge.agentRequest<{ data?: unknown }>(
       "thread/turns/list",
@@ -295,9 +310,7 @@ export const readCodexThreadTimeline = async (
       },
       context,
     ),
-    nativeBridge
-      .readCodexRolloutCommands(threadId, rolloutPath)
-      .catch(() => [] as CodexRolloutCommand[]),
+    rolloutCommandsPromise,
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
@@ -468,24 +481,60 @@ export const codexPlanFromTimeline = (timeline: TimelineEntry[]): AgentPlan | nu
   return steps.length ? { explanation: null, steps } : null;
 };
 
-export const codexTimelineIsWorking = (timeline: TimelineEntry[]) => {
-  let latestUserIndex = -1;
+const latestCodexTurn = (timeline: TimelineEntry[]) => {
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     if (timeline[index].kind === "user" || timeline[index].kind === "brief") {
-      latestUserIndex = index;
-      break;
+      return timeline.slice(index + 1);
     }
   }
-  if (latestUserIndex < 0) return false;
-  const latestTurn = timeline.slice(latestUserIndex + 1);
-  const hasFinalResponse = latestTurn.some((entry) =>
+  return [] as TimelineEntry[];
+};
+
+export const codexTimelineHasFinalResponse = (timeline: TimelineEntry[]) =>
+  latestCodexTurn(timeline).some((entry) =>
     entry.kind === "result" &&
     entry.title === "Agent response" &&
     entry.meta !== "Commentary" &&
     entry.status !== "active"
   );
-  return !hasFinalResponse && latestTurn.some((entry) => entry.status === "active");
+
+export const codexTimelineIsWorking = (timeline: TimelineEntry[]) => {
+  const latestTurn = latestCodexTurn(timeline);
+  return latestTurn.length > 0 &&
+    !codexTimelineHasFinalResponse(timeline) &&
+    latestTurn.some((entry) => entry.status === "active");
 };
+
+const sameJsonValue = (left: unknown, right: unknown) =>
+  left === right || JSON.stringify(left) === JSON.stringify(right);
+
+export const sameCodexTimeline = (
+  left: readonly TimelineEntry[],
+  right: readonly TimelineEntry[],
+) => left.length === right.length && left.every((entry, index) => {
+  const candidate = right[index];
+  return Boolean(candidate) &&
+    entry.id === candidate.id &&
+    entry.kind === candidate.kind &&
+    entry.title === candidate.title &&
+    entry.createdAt === candidate.createdAt &&
+    entry.body === candidate.body &&
+    entry.meta === candidate.meta &&
+    entry.status === candidate.status &&
+    entry.command === candidate.command &&
+    entry.requestId === candidate.requestId &&
+    entry.pendingInputId === candidate.pendingInputId &&
+    entry.runId === candidate.runId &&
+    entry.turnId === candidate.turnId &&
+    entry.turnDurationMs === candidate.turnDurationMs &&
+    entry.durationMs === candidate.durationMs &&
+    entry.exitCode === candidate.exitCode &&
+    entry.turnDiff === candidate.turnDiff &&
+    sameJsonValue(entry.files, candidate.files) &&
+    sameJsonValue(entry.attachments, candidate.attachments) &&
+    sameJsonValue(entry.exploration, candidate.exploration) &&
+    sameJsonValue(entry.collaborators, candidate.collaborators);
+});
 
 export const sameWorkspacePath = (left: string, right: string) =>
   left.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLocaleLowerCase() ===

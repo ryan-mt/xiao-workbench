@@ -472,6 +472,16 @@ export function SidebarInbox({
             </div>
           ) : null}
         </section>
+        {!inboxExpanded && inboxItems.length > inboxPreviewLimit ? (
+          <button
+            className="sidebar-inbox__more"
+            type="button"
+            onClick={() => setInboxExpanded(true)}
+          >
+            <span>Show {inboxItems.length - inboxPreviewLimit} more chats</span>
+            <XiaoIcon name="caret" size={11} />
+          </button>
+        ) : null}
 
         {otherItems.length ? (
           <section className="sidebar-inbox__shelf">
@@ -574,25 +584,6 @@ export function SidebarInbox({
           <div className="sidebar-inbox__error" role="status">{codexHistoryError}</div>
         ) : null}
       </div>
-      {inboxItems.length > inboxPreviewLimit ? (
-        <button
-          className="sidebar-inbox__more is-floating"
-          type="button"
-          aria-expanded={inboxExpanded}
-          onClick={() => setInboxExpanded((expanded) => !expanded)}
-        >
-          <span>
-            {inboxExpanded
-              ? "Show fewer"
-              : `Show ${inboxItems.length - inboxPreviewLimit} more`}
-          </span>
-          <XiaoIcon
-            className={inboxExpanded ? "is-expanded" : ""}
-            name="caret"
-            size={11}
-          />
-        </button>
-      ) : null}
     </div>
   );
 }

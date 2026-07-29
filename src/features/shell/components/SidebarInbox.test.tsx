@@ -407,11 +407,9 @@ describe("SidebarInbox controls", () => {
     });
 
     expect(screen.getAllByRole("button", { name: /^Open Thread/ })).toHaveLength(6);
-    fireEvent.click(screen.getByRole("button", { name: "Show 3 more" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 3 more chats" }));
     expect(screen.getAllByRole("button", { name: /^Open Thread/ })).toHaveLength(9);
-
-    fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
-    expect(screen.getAllByRole("button", { name: /^Open Thread/ })).toHaveLength(6);
+    expect(screen.queryByRole("button", { name: /Show .* more chats/ })).toBeNull();
   });
 
   it("opens tasks and Codex threads through separate handlers", () => {

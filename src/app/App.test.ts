@@ -1646,8 +1646,8 @@ describe("confirmed native task materialization", () => {
 });
 
 describe("observed Codex thread status", () => {
-  it("marks a previously working thread done after its activity grace ends", () => {
-    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("done");
+  it("keeps a working thread sticky across quiet polling gaps", () => {
+    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("working");
     expect(observedCodexThreadStatus("ready", false, false, true)).toBe("done");
   });
 
