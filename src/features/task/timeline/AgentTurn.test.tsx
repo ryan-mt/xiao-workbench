@@ -148,6 +148,46 @@ describe("AgentTurn completed reasoning", () => {
       .toBe("false");
   });
 
+  it("keeps the timeline anchor on a live thought disclosure", () => {
+    const user: TimelineEntry = {
+      id: "user-thought-live",
+      kind: "user",
+      title: "Inspect the flow",
+      turnId: "turn-thought-live",
+    };
+    const thought: TimelineEntry = {
+      id: "thought-live",
+      kind: "thought",
+      title: "Reasoning",
+      body: "Inspecting the active flow",
+      turnId: "turn-thought-live",
+      status: "active",
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [thought],
+      commentary: [],
+      work: [thought],
+      response: null,
+      responseFlowIndex: null,
+      files: [],
+      startIndex: 0,
+      endIndex: 1,
+    };
+
+    const { container } = renderTurn(turn, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnId: "turn-thought-live",
+    });
+
+    expect(container.querySelector("#timeline-entry-thought-live")?.textContent).toContain(
+      "Inspecting the active flow",
+    );
+  });
+
   it("keeps a completed thought-only group available after expansion", () => {
     const user: TimelineEntry = {
       id: "user",

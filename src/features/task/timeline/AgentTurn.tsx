@@ -261,7 +261,11 @@ export function AgentTurn(props: SharedProps) {
           </ExecutionTraceGroup>
         ) : null}
         {latestThought ? (
-          <div className="conversation-turn__thinking" role="status">
+          <div
+            className="conversation-turn__thinking"
+            id={`timeline-entry-${latestThought.id}`}
+            role="status"
+          >
             {liveThoughtLabel(latestThought)}
           </div>
         ) : null}
