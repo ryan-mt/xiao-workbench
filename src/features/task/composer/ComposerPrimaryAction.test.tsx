@@ -120,6 +120,39 @@ describe("ComposerPrimaryAction", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it("restores focus only when an open delivery menu becomes unavailable", () => {
+    const props = {
+      canSubmit: true,
+      canSteer: true,
+      onDeliver: vi.fn(),
+      onInterrupt: vi.fn(),
+    };
+    const state = (working: boolean, hasContent: boolean) => (
+      <>
+        <button type="button">Outside</button>
+        <ComposerPrimaryAction {...props} working={working} hasContent={hasContent} />
+      </>
+    );
+    const view = render(state(true, true));
+    const outside = screen.getByRole("button", { name: "Outside" });
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+
+    view.rerender(state(false, true));
+    expect(document.activeElement).toBe(outside);
+
+    view.rerender(state(true, true));
+    fireEvent.click(screen.getByRole("button", { name: "Choose message delivery" }));
+    const steer = screen.getByRole("menuitem", { name: /Steer/ });
+    fireEvent.focus(steer);
+    view.rerender(state(true, false));
+
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Stop current turn" }),
+    );
+  });
+
   it("dismisses the delivery menu on outside pointerdown but not inside pointerdown", () => {
     render(
       <>

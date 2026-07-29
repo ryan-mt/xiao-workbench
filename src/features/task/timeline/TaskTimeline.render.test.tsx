@@ -332,6 +332,55 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).not.toContain("edited-files__heading");
   });
 
+  it.each(["active", "error"] as const)(
+    "does not render the edited-files summary for a %s final response",
+    (status) => {
+      const markup = render([{
+        id: "user",
+        kind: "user",
+        title: "Edit the app",
+      }, {
+        id: "change",
+        kind: "change",
+        title: "Editing 1 file",
+        status: "success",
+        files: [{ path: "src/App.tsx", additions: 2, deletions: 1 }],
+      }, {
+        id: "response",
+        kind: "result",
+        title: "Agent response",
+        body: status === "active" ? "Still working." : "The edit failed.",
+        status,
+      }]);
+
+      expect(markup).not.toContain("edited-files__heading");
+      expect(markup).not.toContain("Review all file changes");
+    },
+  );
+
+  it("renders the edited-files summary after a successful final response", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Edit the app",
+    }, {
+      id: "change",
+      kind: "change",
+      title: "Editing 1 file",
+      status: "success",
+      files: [{ path: "src/App.tsx", additions: 2, deletions: 1 }],
+    }, {
+      id: "response",
+      kind: "result",
+      title: "Agent response",
+      body: "The edit is complete.",
+      status: "success",
+    }]);
+
+    expect(markup).toContain("edited-files__heading");
+    expect(markup).toContain("Review all file changes");
+  });
+
   it("marks a failed shell call as recovered when a corrected call succeeds", () => {
     const markup = render([{
       id: "user",

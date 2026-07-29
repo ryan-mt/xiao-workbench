@@ -42,8 +42,10 @@ export function ComposerPrimaryAction({
   };
 
   useEffect(() => {
-    if (!hasDeliveryOptions) setMenuOpen(false);
-  }, [hasDeliveryOptions]);
+    if (hasDeliveryOptions || !menuOpen) return;
+    setMenuOpen(false);
+    primaryButton.current?.focus();
+  }, [hasDeliveryOptions, menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;

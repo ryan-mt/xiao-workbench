@@ -28,6 +28,7 @@ import {
   clearProjectGroup,
   clearVisibleTaskUnread,
   codexThreadSelectionTarget,
+  codexTimelineImportRequestIsCurrent,
   completeUndoRecovery,
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
@@ -56,6 +57,7 @@ import {
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
   taskIsVisible,
+  taskSupportsNativeComposerActions,
   taskReviewContext,
   workspacePathForSelectedTask,
   isAcceptanceContractVersionSummary,
@@ -74,6 +76,18 @@ describe("outcome readiness", () => {
 });
 
 describe("imported Codex workspace routing", () => {
+  it("invalidates timeline import completion when history is disabled or superseded", () => {
+    expect(codexTimelineImportRequestIsCurrent(true, 4, 4)).toBe(true);
+    expect(codexTimelineImportRequestIsCurrent(false, 4, 4)).toBe(false);
+    expect(codexTimelineImportRequestIsCurrent(true, 5, 4)).toBe(false);
+  });
+
+  it("keeps native composer actions disabled for imported Codex tasks", () => {
+    expect(taskSupportsNativeComposerActions({ origin: "codex" })).toBe(false);
+    expect(taskSupportsNativeComposerActions({ origin: "xiao" })).toBe(true);
+    expect(taskSupportsNativeComposerActions({})).toBe(true);
+  });
+
   it("uses the thread cwd so nested repositories expose their Git context", () => {
     expect(workspacePathForSelectedTask(
       "D:/Project Archive",

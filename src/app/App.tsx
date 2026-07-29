@@ -168,6 +168,16 @@ export const codexThreadSelectionTarget = (
 export const nativeTaskIdsFromState = (state: StoredTaskState) =>
   state.tasks.filter((task) => task.origin !== "codex").map((task) => task.id);
 
+export const codexTimelineImportRequestIsCurrent = (
+  importEnabled: boolean,
+  currentRequestId: number,
+  requestId: number,
+) => importEnabled && currentRequestId === requestId;
+
+export const taskSupportsNativeComposerActions = (
+  task: Pick<WorkbenchTask, "origin">,
+) => task.origin !== "codex";
+
 type PersistedWorkspaceSnapshot = {
   tasks: Map<string, WorkbenchTask>;
   taskIds: string[];
@@ -1761,6 +1771,9 @@ export function App() {
     context: { projectPath: string; taskId: string | null };
     silent?: boolean;
   } | null>(null);
+  const codexTimelineImportRequestRef = useRef(0);
+  const importCodexHistoryEnabledRef = useRef(preferences.importCodexHistory);
+  importCodexHistoryEnabledRef.current = preferences.importCodexHistory;
   const [hiddenProjects, setHiddenProjects] = useState<XiaoProjectSummary[]>([]);
   const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
@@ -2099,9 +2112,18 @@ export function App() {
   useEffect(() => {
     if (
       !pendingCodexThread ||
+      !preferences.importCodexHistory ||
       !taskStateReady
     ) return;
     let cancelled = false;
+    const requestId = ++codexTimelineImportRequestRef.current;
+    const requestIsCurrent = () =>
+      !cancelled &&
+      codexTimelineImportRequestIsCurrent(
+        importCodexHistoryEnabledRef.current,
+        codexTimelineImportRequestRef.current,
+        requestId,
+      );
     const { thread, context, silent = false } = pendingCodexThread;
     if (
       comparableWorkspacePath(workspace.path) !==
@@ -2110,7 +2132,7 @@ export function App() {
     if (!silent) setTaskHistoryLoadingId(`codex:${thread.id}`);
     void readCodexThreadTimeline(thread.id, context, thread.rolloutPath)
       .then((timeline) => {
-        if (cancelled) return;
+        if (!requestIsCurrent()) return;
         const importedTaskId = `codex:${thread.id}`;
         const importedWorking = codexTimelineIsWorking(timeline);
         const importedComplete = codexTimelineHasFinalResponse(timeline);
@@ -2224,7 +2246,7 @@ export function App() {
         setPendingCodexThread(null);
       })
       .catch((reason) => {
-        if (!cancelled) {
+        if (requestIsCurrent()) {
           setCodexHistoryError(
             reason instanceof Error ? reason.message : String(reason),
           );
@@ -2232,12 +2254,17 @@ export function App() {
         }
       })
       .finally(() => {
-        if (!cancelled && !silent) setTaskHistoryLoadingId(null);
+        if (requestIsCurrent() && !silent) setTaskHistoryLoadingId(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [pendingCodexThread, taskStateReady, workspace.path]);
+  }, [
+    pendingCodexThread,
+    preferences.importCodexHistory,
+    taskStateReady,
+    workspace.path,
+  ]);
 
   useEffect(() => {
     if (
@@ -2815,6 +2842,8 @@ export function App() {
       setCodexThreads([]);
       setCodexHistoryError(null);
       setCodexHistoryLoading(false);
+      setPendingCodexThread(null);
+      setTaskHistoryLoadingId(null);
       setTasks((current) => current.filter((task) => task.origin !== "codex"));
       setActiveTaskId((current) => current?.startsWith("codex:") ? null : current);
       return;
@@ -3310,6 +3339,7 @@ export function App() {
 
   const submitTask = async (prompt: string, attachments: Parameters<typeof agent.submit>[1]) => {
     if (
+      !taskSupportsNativeComposerActions(activeTask) ||
       !taskStateReady ||
       activeTaskHistoryLoading ||
       activeEnvironmentBusy ||
@@ -3550,6 +3580,7 @@ export function App() {
   const steerTask = async (prompt: string, attachments: AgentAttachment[]) => {
     const cleanPrompt = prompt.trim();
     if (
+      !taskSupportsNativeComposerActions(activeTask) ||
       !taskStateReady ||
       activeTaskHistoryLoading ||
       activeEnvironmentBusy ||
@@ -4899,14 +4930,17 @@ export function App() {
     ? {
         ...agent.runtime,
         phase: "working" as const,
-        taskId: activeTask.id,
+        // Imported activity is display-only and must not expose native turn controls.
+        taskId: null,
         threadId: activeImportedThread.id,
+        turnId: null,
         turnStartedAt: importedTurnStartedAt,
         eventsSeen: activeTask.timeline.length,
         error: null,
       }
     : agent.runtime;
   const taskDisplayStage = importedTaskWorking ? "in_progress" as const : activeTask.stage;
+  const nativeComposerActionsEnabled = taskSupportsNativeComposerActions(activeTask);
 
   return (
     <>
@@ -5291,7 +5325,7 @@ export function App() {
               approvalPolicy={activeTask.approvalPolicy}
               sandboxMode={activeTask.sandboxMode}
               workspaceMode={activeTask.workspaceMode}
-              environmentBusy={activeEnvironmentBusy}
+              environmentBusy={activeEnvironmentBusy || !nativeComposerActionsEnabled}
               environmentError={environmentError ?? workspaceError}
               goal={activeTask.goal}
               plan={activeTask.plan}
@@ -5360,8 +5394,8 @@ export function App() {
                 if (taskWorkspaceStateLoading || taskStateError) return;
                 void agent.retryRun(runId);
               }}
-              onSubmit={submitTask}
-              onSteer={steerTask}
+              onSubmit={nativeComposerActionsEnabled ? submitTask : async () => false}
+              onSteer={nativeComposerActionsEnabled ? steerTask : async () => false}
               onQueueFollowUp={queueTaskFollowUp}
               onEditFollowUp={editTaskFollowUp}
               onRemoveFollowUp={removeTaskFollowUp}
