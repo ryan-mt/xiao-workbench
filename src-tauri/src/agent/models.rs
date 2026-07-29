@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct CodexRolloutCommand {
     pub id: String,
     pub turn_id: Option<String>,
+    pub turn_index: Option<u64>,
     pub command: String,
     pub output: Option<String>,
     pub created_at: Option<String>,

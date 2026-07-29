@@ -202,6 +202,7 @@ export type CodexThreadSummary = {
 export type CodexRolloutCommand = {
   id: string;
   turnId?: string | null;
+  turnIndex?: number | null;
   command: string;
   output?: string | null;
   createdAt?: string | null;

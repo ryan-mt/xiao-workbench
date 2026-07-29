@@ -8,12 +8,12 @@
 
 .conversation-turn {
   min-width: 0;
-  margin-bottom: 44px;
+  margin-bottom: 32px;
 }
 
 .conversation-turn > .timeline-entry-anchor:first-child {
   display: block;
-  margin-bottom: 38px;
+  margin-bottom: 26px;
 }
 
 .turn-duration {
@@ -52,7 +52,11 @@
 
 .conversation-turn__commentary {
   display: block;
-  margin: 0 0 18px;
+  margin: 0 0 12px;
+}
+
+.conversation-turn__commentary .activity--assistant-message {
+  margin: 0;
 }
 
 .turn-duration.is-live > span {

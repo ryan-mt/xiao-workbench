@@ -28,6 +28,7 @@ struct PendingRolloutCommand {
 #[derive(Debug, Default)]
 struct RolloutCommandCache {
     offset: u64,
+    current_turn_index: Option<u64>,
     pending: HashMap<String, PendingRolloutCommand>,
     completed: Vec<models::CodexRolloutCommand>,
 }
@@ -263,6 +264,13 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if item_type == "message" && payload.get("role").and_then(Value::as_str) == Some("user") {
+        cache.current_turn_index = Some(
+            cache.current_turn_index
+                .map_or(0, |index| index.saturating_add(1)),
+        );
+        return;
+    }
     if matches!(item_type, "custom_tool_call" | "function_call") {
         let name = payload
             .get("name")
@@ -301,6 +309,7 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
                 command: models::CodexRolloutCommand {
                     id: id.to_owned(),
                     turn_id: rollout_turn_id(&record),
+                    turn_index: cache.current_turn_index,
                     command,
                     output: None,
                     created_at,

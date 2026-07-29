@@ -301,6 +301,14 @@ export const readCodexThreadTimeline = async (
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
+  const latestRolloutTurnIndex = rolloutCommands.reduce(
+    (latest, command) =>
+      typeof command.turnIndex === "number" && Number.isFinite(command.turnIndex)
+        ? Math.max(latest, command.turnIndex)
+        : latest,
+    -1,
+  );
+  const rolloutTurnOffset = Math.max(0, latestRolloutTurnIndex + 1 - turns.length);
   const turnWindows = turns.flatMap((rawTurn, index) => {
     if (!rawTurn || typeof rawTurn !== "object") return [];
     const turn = rawTurn as Record<string, unknown>;
@@ -331,7 +339,14 @@ export const readCodexThreadTimeline = async (
       .find((turn) => turn.startedAt <= commandAt && (
         turn.nextStartedAt === null || commandAt < turn.nextStartedAt
       ));
-    const owningTurnId = command.turnId ?? inferredTurn?.id;
+    const ordinalTurn = typeof command.turnIndex === "number"
+      ? turns[command.turnIndex - rolloutTurnOffset]
+      : null;
+    const ordinalTurnId = ordinalTurn && typeof ordinalTurn === "object" &&
+      typeof (ordinalTurn as Record<string, unknown>).id === "string"
+      ? (ordinalTurn as Record<string, unknown>).id as string
+      : null;
+    const owningTurnId = command.turnId ?? inferredTurn?.id ?? ordinalTurnId;
     if (!owningTurnId) continue;
     const current = commandsByTurn.get(owningTurnId) ?? [];
     current.push(command);
