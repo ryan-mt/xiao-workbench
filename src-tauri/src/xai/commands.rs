@@ -11,10 +11,9 @@ use super::service::{
 
 #[tauri::command]
 pub fn create_xai_codex_profile(
-    client_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<CodexProfile, String> {
-    create_codex_profile(&repository, client_id)
+    create_codex_profile(&repository)
 }
 
 #[tauri::command]

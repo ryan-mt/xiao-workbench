@@ -808,7 +808,7 @@ export function SettingsPage({
                           disabled={xaiOAuthBusy || xaiDeviceAuthorization !== null}
                           onClick={onCreateXaiProfile}
                         >
-                          Add Grok
+                          Sign in with Grok
                         </button>
                       </div>
                     </SettingRow>

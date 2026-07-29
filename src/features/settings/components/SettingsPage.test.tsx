@@ -86,7 +86,6 @@ const codexProfiles: CodexProfile[] = [
     authenticationHome: null,
     environment: {
       XIAO_MODEL_PROVIDER: "xai",
-      XAI_OAUTH_CLIENT_ID: "xiao-client",
     },
     availability: "unauthenticated",
     authenticatedIdentity: null,
@@ -194,7 +193,7 @@ describe("SettingsPage", () => {
 
     expect(markup).toContain("Grok 4.5 (xAI)");
     expect(markup).toContain("Connect xAI");
-    expect(markup).toContain("Add Grok");
+    expect(markup).toContain("Sign in with Grok");
     expect(markup).toContain("not another agent runtime");
   });
 

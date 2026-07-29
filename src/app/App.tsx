@@ -5014,14 +5014,9 @@ export function App() {
   };
 
   const createXaiProfile = () => {
-    const clientId = window.prompt(
-      "xAI OAuth client ID registered for Xiao (leave blank to use XAI_OAUTH_CLIENT_ID)",
-      "",
-    );
-    if (clientId === null) return;
     setXaiOAuthBusy(true);
     setXaiOAuthError(null);
-    void nativeBridge.createXaiCodexProfile(clientId.trim() || null)
+    void nativeBridge.createXaiCodexProfile()
       .then((profile) => {
         setCodexProfiles((current) => [...current, profile]);
         return nativeBridge.beginXaiDeviceOAuth(profile.id);

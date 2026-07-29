@@ -155,8 +155,8 @@ export const nativeBridge = {
     return invoke<AgentModelSummary[]>("list_agent_models", { projectPath, taskId });
   },
 
-  createXaiCodexProfile(clientId: string | null) {
-    return invoke<CodexProfile>("create_xai_codex_profile", { clientId });
+  createXaiCodexProfile() {
+    return invoke<CodexProfile>("create_xai_codex_profile");
   },
 
   beginXaiDeviceOAuth(profileId: string) {

@@ -14,15 +14,17 @@ use crate::xiao::repository::XiaoRepository;
 use super::models::{XaiDeviceAuthorization, XaiOAuthPollResult, XaiOAuthStatus};
 
 pub const PROVIDER_MARKER_KEY: &str = "XIAO_MODEL_PROVIDER";
-pub const XAI_CLIENT_ID_KEY: &str = "XAI_OAUTH_CLIENT_ID";
 
 const PROVIDER_ID: &str = "xai";
 const KEYRING_SERVICE: &str = "xiao-xai-oauth";
 const OIDC_DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
-const OAUTH_SCOPES: &str = "openid profile email offline_access api:access";
+const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const OAUTH_SCOPES: &str = "openid profile email offline_access grok-cli:access api:access";
+const OAUTH_REFERRER: &str = "pi";
 const DEVICE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const MODEL_ID: &str = "grok-4.5";
-const REFRESH_SKEW_MILLIS: i64 = 60_000;
+const REFRESH_SKEW_MILLIS: i64 = 5 * 60 * 1_000;
+const DEFAULT_TOKEN_LIFETIME_SECONDS: u64 = 3_600;
 const AUTH_HELPER_FLAG: &str = "--xiao-xai-auth";
 
 pub trait XaiCredentialStore: Send + Sync + 'static {
@@ -98,12 +100,15 @@ impl XaiOAuthService {
 
     pub fn begin(&self, profile: &CodexProfile) -> Result<XaiDeviceAuthorization, String> {
         require_xai_profile(profile)?;
-        let client_id = client_id_for_profile(profile)?;
         let discovery = self.discovery()?;
         let response = self
             .client
             .post(&discovery.device_authorization_endpoint)
-            .form(&[("client_id", client_id.as_str()), ("scope", OAUTH_SCOPES)])
+            .form(&[
+                ("client_id", XAI_CLIENT_ID),
+                ("scope", OAUTH_SCOPES),
+                ("referrer", OAUTH_REFERRER),
+            ])
             .send()
             .map_err(|error| format!("Could not start xAI device sign-in: {error}"))?;
         if !response.status().is_success() {
@@ -118,7 +123,11 @@ impl XaiOAuthService {
         validate_device_authorization(&authorization)?;
 
         let now = now_millis()?;
-        let interval_seconds = authorization.interval.unwrap_or(5).clamp(1, 60);
+        let interval_seconds = authorization
+            .interval
+            .filter(|interval| *interval > 0)
+            .unwrap_or(5)
+            .min(60);
         let expires_at = now.saturating_add(
             i64::try_from(authorization.expires_in)
                 .unwrap_or(i64::MAX)
@@ -127,7 +136,6 @@ impl XaiOAuthService {
         let flow_id = Uuid::now_v7().to_string();
         let pending = PendingDeviceFlow {
             profile_id: profile.id.clone(),
-            client_id,
             device_code: authorization.device_code,
             expires_at,
             interval_seconds,
@@ -183,14 +191,13 @@ impl XaiOAuthService {
         match self.exchange_token(
             &discovery.token_endpoint,
             &[
-                ("client_id", pending.client_id.as_str()),
+                ("client_id", XAI_CLIENT_ID),
                 ("device_code", pending.device_code.as_str()),
                 ("grant_type", DEVICE_GRANT_TYPE),
             ],
         )? {
             TokenExchange::Granted(token) => {
-                let credential =
-                    StoredXaiCredential::from_token(token, pending.client_id, None, now)?;
+                let credential = StoredXaiCredential::from_token(token, None, now)?;
                 self.save_credential(&pending.profile_id, &credential)?;
                 self.pending
                     .lock()
@@ -202,8 +209,11 @@ impl XaiOAuthService {
             TokenExchange::Pending => {
                 Ok(poll_result("pending", Some(pending.interval_seconds), None))
             }
-            TokenExchange::SlowDown => {
-                let next_interval = pending.interval_seconds.saturating_add(5).min(60);
+            TokenExchange::SlowDown(server_interval) => {
+                let next_interval = server_interval
+                    .filter(|interval| *interval > 0)
+                    .unwrap_or_else(|| pending.interval_seconds.saturating_add(5))
+                    .min(60);
                 if let Some(flow) = self
                     .pending
                     .lock()
@@ -275,7 +285,7 @@ impl XaiOAuthService {
             .client
             .post(&discovery.revocation_endpoint)
             .form(&[
-                ("client_id", credential.client_id.as_str()),
+                ("client_id", XAI_CLIENT_ID),
                 ("token", token),
                 ("token_type_hint", hint),
             ])
@@ -308,7 +318,7 @@ impl XaiOAuthService {
         let token = match self.exchange_token(
             &discovery.token_endpoint,
             &[
-                ("client_id", credential.client_id.as_str()),
+                ("client_id", XAI_CLIENT_ID),
                 ("refresh_token", refresh_token),
                 ("grant_type", "refresh_token"),
             ],
@@ -320,16 +330,11 @@ impl XaiOAuthService {
                         .to_owned(),
                 )
             }
-            TokenExchange::Pending | TokenExchange::SlowDown => {
+            TokenExchange::Pending | TokenExchange::SlowDown(_) => {
                 return Err("xAI returned an invalid refresh response.".to_owned())
             }
         };
-        let refreshed = StoredXaiCredential::from_token(
-            token,
-            credential.client_id,
-            credential.refresh_token,
-            now,
-        )?;
+        let refreshed = StoredXaiCredential::from_token(token, credential.refresh_token, now)?;
         let access_token = refreshed.access_token.clone();
         self.save_credential(profile_id, &refreshed)?;
         Ok(access_token)
@@ -360,7 +365,7 @@ impl XaiOAuthService {
             .map_err(|_| "xAI OAuth returned an unreadable error response.".to_owned())?;
         match error.error.as_str() {
             "authorization_pending" => Ok(TokenExchange::Pending),
-            "slow_down" => Ok(TokenExchange::SlowDown),
+            "slow_down" => Ok(TokenExchange::SlowDown(error.interval)),
             "access_denied" | "invalid_grant" => Ok(TokenExchange::Denied),
             "expired_token" => Ok(TokenExchange::Expired),
             _ => Err(format_oauth_error(
@@ -422,11 +427,7 @@ pub fn is_xai_profile(profile: &CodexProfile) -> bool {
         == Some(PROVIDER_ID)
 }
 
-pub fn create_codex_profile(
-    repository: &XiaoRepository,
-    client_id: Option<String>,
-) -> Result<CodexProfile, String> {
-    let client_id = configured_client_id(client_id.as_deref())?;
+pub fn create_codex_profile(repository: &XiaoRepository) -> Result<CodexProfile, String> {
     let profile_id = format!("grok-{}", Uuid::now_v7());
     let codex_home = repository
         .app_data_dir()
@@ -460,7 +461,6 @@ pub fn create_codex_profile(
         authentication_home: None,
         environment: json!({
             (PROVIDER_MARKER_KEY): PROVIDER_ID,
-            (XAI_CLIENT_ID_KEY): client_id,
         }),
         availability: "unauthenticated".to_owned(),
         authenticated_identity: None,
@@ -564,36 +564,6 @@ fn require_xai_profile(profile: &CodexProfile) -> Result<(), String> {
     } else {
         Err("The selected Codex profile is not an xAI profile.".to_owned())
     }
-}
-
-fn configured_client_id(explicit: Option<&str>) -> Result<String, String> {
-    let candidate = explicit
-        .map(str::to_owned)
-        .or_else(|| std::env::var(XAI_CLIENT_ID_KEY).ok())
-        .unwrap_or_default();
-    validate_client_id(&candidate)
-}
-
-fn client_id_for_profile(profile: &CodexProfile) -> Result<String, String> {
-    let explicit = profile
-        .environment
-        .get(XAI_CLIENT_ID_KEY)
-        .and_then(Value::as_str);
-    configured_client_id(explicit)
-}
-
-fn validate_client_id(client_id: &str) -> Result<String, String> {
-    let client_id = client_id.trim();
-    if client_id.is_empty() {
-        return Err(
-            "Set XAI_OAUTH_CLIENT_ID to a client registered for Xiao, or enter that client ID when adding Grok."
-                .to_owned(),
-        );
-    }
-    if client_id.len() > 512 || client_id.chars().any(char::is_control) {
-        return Err("The xAI OAuth client ID is invalid.".to_owned());
-    }
-    Ok(client_id.to_owned())
 }
 
 fn build_codex_config(
@@ -831,12 +801,14 @@ struct OAuthErrorResponse {
     error: String,
     #[serde(default)]
     error_description: Option<String>,
+    #[serde(default)]
+    interval: Option<u64>,
 }
 
 enum TokenExchange {
     Granted(TokenResponse),
     Pending,
-    SlowDown,
+    SlowDown(Option<u64>),
     Denied,
     Expired,
 }
@@ -844,7 +816,6 @@ enum TokenExchange {
 #[derive(Clone)]
 struct PendingDeviceFlow {
     profile_id: String,
-    client_id: String,
     device_code: String,
     expires_at: i64,
     interval_seconds: u64,
@@ -858,33 +829,31 @@ struct StoredXaiCredential {
     token_type: String,
     scope: Option<String>,
     expires_at: Option<i64>,
-    client_id: String,
 }
 
 impl StoredXaiCredential {
     fn from_token(
         token: TokenResponse,
-        client_id: String,
         previous_refresh_token: Option<String>,
         now: i64,
     ) -> Result<Self, String> {
         if token.access_token.trim().is_empty() {
             return Err("xAI returned an empty access token.".to_owned());
         }
-        let expires_at = token.expires_in.map(|seconds| {
+        let expires_in = token.expires_in.unwrap_or(DEFAULT_TOKEN_LIFETIME_SECONDS);
+        let expires_at = Some(
             now.saturating_add(
-                i64::try_from(seconds)
+                i64::try_from(expires_in)
                     .unwrap_or(i64::MAX)
                     .saturating_mul(1_000),
-            )
-        });
+            ),
+        );
         Ok(Self {
             access_token: token.access_token,
             refresh_token: token.refresh_token.or(previous_refresh_token),
             token_type: token.token_type.unwrap_or_else(|| "Bearer".to_owned()),
             scope: token.scope,
             expires_at,
-            client_id,
         })
     }
 }
@@ -897,8 +866,9 @@ mod tests {
 
     use super::{
         build_codex_config, build_model_catalog, create_codex_profile, credential_status,
-        validate_discovery, OAuthDiscovery, StoredXaiCredential, XaiCredentialStore,
-        XaiOAuthService,
+        validate_discovery, OAuthDiscovery, StoredXaiCredential, TokenResponse, XaiCredentialStore,
+        XaiOAuthService, DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER, OAUTH_SCOPES,
+        XAI_CLIENT_ID,
     };
     use crate::xiao::repository::XiaoRepository;
 
@@ -979,7 +949,6 @@ mod tests {
             token_type: "Bearer".to_owned(),
             scope: None,
             expires_at: Some(99),
-            client_id: "client".to_owned(),
         };
         assert_eq!(credential_status("grok", &credential, 100).state, "expired");
         credential.refresh_token = Some("refresh".to_owned());
@@ -997,23 +966,52 @@ mod tests {
     }
 
     #[test]
-    fn managed_grok_profile_contains_only_non_secret_oauth_configuration() {
+    fn managed_grok_profile_does_not_require_user_oauth_configuration() {
         let directory =
             std::env::temp_dir().join(format!("xiao-grok-profile-{}", uuid::Uuid::now_v7()));
         {
             let repository = XiaoRepository::open(&directory).unwrap();
-            let profile =
-                create_codex_profile(&repository, Some("xiao-client-id".to_owned())).unwrap();
+            let profile = create_codex_profile(&repository).unwrap();
             assert_eq!(profile.environment["XIAO_MODEL_PROVIDER"], "xai");
-            assert_eq!(profile.environment["XAI_OAUTH_CLIENT_ID"], "xiao-client-id");
+            assert!(profile.environment.get("XAI_OAUTH_CLIENT_ID").is_none());
             assert!(profile.environment.get("XAI_API_KEY").is_none());
             let config = std::fs::read_to_string(
                 Path::new(profile.codex_home.as_deref().unwrap()).join("config.toml"),
             )
             .unwrap();
             assert!(config.contains("base_url = \"https://api.x.ai/v1\""));
-            assert!(!config.contains("xiao-client-id"));
+            assert!(!config.contains(XAI_CLIENT_ID));
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn xai_device_login_uses_the_bundled_subscription_client() {
+        assert_eq!(XAI_CLIENT_ID, "b1a00492-073a-47ea-816f-4c329264a828");
+        assert_eq!(
+            OAUTH_SCOPES,
+            "openid profile email offline_access grok-cli:access api:access"
+        );
+        assert_eq!(OAUTH_REFERRER, "pi");
+    }
+
+    #[test]
+    fn missing_token_lifetime_defaults_to_one_hour() {
+        let credential = StoredXaiCredential::from_token(
+            TokenResponse {
+                access_token: "access".to_owned(),
+                refresh_token: Some("refresh".to_owned()),
+                expires_in: None,
+                token_type: None,
+                scope: None,
+            },
+            None,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            credential.expires_at,
+            Some(1_000 + DEFAULT_TOKEN_LIFETIME_SECONDS as i64 * 1_000)
+        );
     }
 }
