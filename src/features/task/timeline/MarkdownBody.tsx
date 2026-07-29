@@ -31,6 +31,13 @@ const streamedTextImmediateLimit = 512;
 const streamedTextBoundary = /[\s.,!?;:)\]]/;
 const LinkedMarkdownImageContext = createContext(false);
 
+const containsMarkdownImage = (node: unknown): boolean => {
+  if (typeof node !== "object" || node === null) return false;
+  if ("tagName" in node && node.tagName === "img") return true;
+  if (!("children" in node) || !Array.isArray(node.children)) return false;
+  return node.children.some(containsMarkdownImage);
+};
+
 const pacedStep = (remaining: number) => {
   if (remaining <= 12) return 2;
   if (remaining <= 48) return 4;
@@ -439,18 +446,7 @@ const MarkdownChunk = memo(function MarkdownChunk({
     ),
     img: (props: ComponentProps<"img"> & { node?: unknown }) => <MarkdownImage {...props} />,
     a: ({ children, node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
-      const nodeChildren = (
-        typeof node === "object" &&
-        node !== null &&
-        "children" in node &&
-        Array.isArray(node.children)
-      ) ? node.children : [];
-      const containsImage = nodeChildren.some((child) =>
-        typeof child === "object" &&
-        child !== null &&
-        "tagName" in child &&
-        child.tagName === "img"
-      );
+      const containsImage = containsMarkdownImage(node);
       const internalResource = Boolean(href && workspacePathHref(href));
       const anchor = (
         <a

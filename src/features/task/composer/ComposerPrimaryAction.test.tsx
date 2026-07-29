@@ -87,4 +87,30 @@ describe("ComposerPrimaryAction", () => {
 
     expect(onDeliver).toHaveBeenCalledWith("steer");
   });
+
+  it("does not reopen a stale disclosure after delivery options disappear and return", () => {
+    const props = {
+      canSubmit: true,
+      canSteer: true,
+      onDeliver: vi.fn(),
+      onInterrupt: vi.fn(),
+    };
+    const view = render(
+      <ComposerPrimaryAction {...props} working hasContent />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose message delivery" }));
+    expect(screen.getByRole("menu")).not.toBeNull();
+
+    view.rerender(
+      <ComposerPrimaryAction {...props} working={false} hasContent />,
+    );
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    view.rerender(
+      <ComposerPrimaryAction {...props} working hasContent />,
+    );
+    expect(screen.getByRole("button", { name: "Choose message delivery" })
+      .getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
 });

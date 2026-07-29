@@ -121,6 +121,21 @@ describe("ActivityItem approval actions", () => {
 });
 
 describe("ActivityItem command retries", () => {
+  it("keeps active integrations labeled as Using instead of shell timing", () => {
+    const markup = renderCompaction({
+      id: "dynamic-tool",
+      kind: "command",
+      title: "node_repl · js",
+      command: "const result = await inspect();",
+      meta: "Dynamic tool",
+      createdAt: Date.now() - 2_000,
+      status: "active",
+    });
+
+    expect(markup).toContain(">Using node_repl · js<");
+    expect(markup).not.toContain("Running command for");
+  });
+
   it("shows one warning row with its attempt count for an environment block", () => {
     const markup = renderCompaction({
       id: "command-1",

@@ -305,6 +305,18 @@ describe("web search projection", () => {
       status: "completed",
     })).toMatchObject({ status: "success" });
   });
+
+  it.each(["failed", "cancelled"])(
+    "keeps a %s web search as a terminal error",
+    (status) => {
+      expect(timelineEntryFromItem({
+        id: "search-1",
+        type: "webSearch",
+        query: "Xiao",
+        status,
+      })).toMatchObject({ status: "error" });
+    },
+  );
 });
 
 describe("command exit projection", () => {

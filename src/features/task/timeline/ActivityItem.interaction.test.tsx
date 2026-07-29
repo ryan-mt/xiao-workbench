@@ -9,10 +9,29 @@ import {
   type TimelineEntry,
 } from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
+import { InlineMessageEditor } from "./MessageActions";
 
 afterEach(cleanup);
 
 describe("ActivityItem prompt editing", () => {
+  it("uses trimming only to validate and preserves the submitted draft", () => {
+    const onSubmit = vi.fn();
+    render(
+      <InlineMessageEditor
+        text="Original"
+        onCancel={() => undefined}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit prompt" }), {
+      target: { value: "  Keep intentional spacing  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use in composer" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("  Keep intentional spacing  ");
+  });
+
   it("preserves selected context when the visible prompt is edited", () => {
     const original = promptWithSelectedContext("Explain this", "const ready = false;");
     const onEditUserMessage = vi.fn();

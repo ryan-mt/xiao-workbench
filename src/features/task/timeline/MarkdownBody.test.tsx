@@ -103,6 +103,16 @@ describe("MarkdownBody resource links", () => {
     expect(markup).not.toContain("<button");
   });
 
+  it("detects linked images nested under inline formatting", () => {
+    const markup = renderToStaticMarkup(
+      <MarkdownBody content="[**![Diagram](https://example.com/diagram.png)**](https://example.com/full)" />,
+    );
+
+    expect(markup).toContain('<a href="https://example.com/full"');
+    expect(markup).toContain("<strong>");
+    expect(markup).not.toContain("<button");
+  });
+
   it("preserves Markdown image titles on the lightbox trigger", () => {
     const markup = renderToStaticMarkup(
       <MarkdownBody content={'![Diagram](https://example.com/diagram.png "Architecture overview")'} />,

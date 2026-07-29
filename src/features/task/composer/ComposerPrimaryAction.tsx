@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type { ComposerDelivery } from "./Composer";
@@ -31,6 +31,10 @@ export function ComposerPrimaryAction({
     setMenuOpen(false);
     onDeliver(nextDelivery);
   };
+
+  useEffect(() => {
+    if (!hasDeliveryOptions) setMenuOpen(false);
+  }, [hasDeliveryOptions]);
 
   return (
     <div

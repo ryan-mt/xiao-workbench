@@ -259,7 +259,7 @@ describe("SidebarInbox settlement", () => {
     ]);
   });
 
-  it("persists settlement independently of task archive state", () => {
+  it("persists settlement across unmount and remount", () => {
     const { unmount } = renderInbox({ tasks: [task("Persistent", now)] });
     fireEvent.click(screen.getByRole("button", { name: "Settle Persistent" }));
     expect(window.localStorage.getItem("xiao.sidebar-settled.v1")).toContain(

@@ -153,6 +153,17 @@ export const projectPathForCodexThread = (
   .filter((project) => workspaceContainsPath(project.path, thread.cwd))
   .sort((left, right) => right.path.length - left.path.length)[0]?.path ?? thread.cwd;
 
+export const codexThreadSelectionTarget = (
+  projects: readonly XiaoProjectSummary[],
+  thread: Pick<CodexThreadSummary, "cwd">,
+) => {
+  const projectPath = projectPathForCodexThread(projects, thread);
+  return {
+    projectPath,
+    context: { projectPath, taskId: null },
+  };
+};
+
 export const nativeTaskIdsFromState = (state: StoredTaskState) =>
   state.tasks.filter((task) => task.origin !== "codex").map((task) => task.id);
 
@@ -5500,12 +5511,11 @@ export function App() {
         }}
         onSelectCodexThread={(thread) => {
           if (agent.hasActiveRuns) return;
+          const target = codexThreadSelectionTarget(projects, thread);
+          setActiveProjectPath(target.projectPath);
           setPendingCodexThread({
             thread,
-            context: {
-              projectPath: workspace.path,
-              taskId: codexHistoryContextTaskId,
-            },
+            context: target.context,
           });
           setActivePage("tasks");
           setCommandMenuOpen(false);

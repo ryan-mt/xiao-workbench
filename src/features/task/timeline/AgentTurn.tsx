@@ -40,6 +40,7 @@ type SharedProps = {
 
 type TurnFlowGroup =
   | { kind: "commentary"; entry: TimelineEntry }
+  | { kind: "response"; entry: TimelineEntry }
   | { kind: "user"; entry: TimelineEntry }
   | { kind: "status"; entry: TimelineEntry }
   | { kind: "execution"; id: string; entries: TimelineEntry[] };
@@ -47,6 +48,7 @@ type TurnFlowGroup =
 const groupTurnFlow = (
   flow: TimelineEntry[],
   commentary: TimelineEntry[],
+  response: TimelineEntry | null,
 ): TurnFlowGroup[] => {
   const commentaryIds = new Set(commentary.map((entry) => entry.id));
   const groups: TurnFlowGroup[] = [];
@@ -62,7 +64,10 @@ const groupTurnFlow = (
   };
 
   for (const entry of flow) {
-    if (entry.kind === "user" || entry.kind === "brief") {
+    if (entry === response) {
+      flushExecution();
+      groups.push({ kind: "response", entry });
+    } else if (entry.kind === "user" || entry.kind === "brief") {
       flushExecution();
       groups.push({ kind: "user", entry });
     } else if (entry.kind === "result" && entry.meta === "Context") {
@@ -96,7 +101,24 @@ export function AgentTurn(props: SharedProps) {
     (!turn.response || turn.response.status === "active");
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
-  const flowGroups = groupTurnFlow(turn.flow, turn.commentary);
+  const responseCreatedAt = turn.response?.createdAt;
+  const responseFlowIndex = (
+    typeof responseCreatedAt === "number"
+      ? turn.flow.findIndex((entry) =>
+        typeof entry.createdAt === "number" &&
+        entry.createdAt > responseCreatedAt
+      )
+      : -1
+  );
+  const chronologicalFlow = turn.response && responseFlowIndex >= 0
+    ? [
+        ...turn.flow.slice(0, responseFlowIndex),
+        turn.response,
+        ...turn.flow.slice(responseFlowIndex),
+      ]
+    : turn.flow;
+  const responseInFlow = chronologicalFlow !== turn.flow;
+  const flowGroups = groupTurnFlow(chronologicalFlow, turn.commentary, turn.response);
   let latestExecutionGroupIndex = -1;
   for (let index = flowGroups.length - 1; index >= 0; index -= 1) {
     if (flowGroups[index].kind === "execution") {
@@ -144,6 +166,17 @@ export function AgentTurn(props: SharedProps) {
         </span>
       );
     }
+    if (flowGroup.kind === "response") {
+      return (
+        <span
+          className="timeline-entry-anchor"
+          id={`timeline-entry-${flowGroup.entry.id}`}
+          key={flowGroup.entry.id}
+        >
+          {item(flowGroup.entry, responseFlowIndex + 1, true)}
+        </span>
+      );
+    }
     if (!expanded) return null;
     if (flowGroup.kind === "status") {
       return (
@@ -181,7 +214,12 @@ export function AgentTurn(props: SharedProps) {
       latestThought ? flowGroup.entries.slice(0, executionEnd) : flowGroup.entries,
       latestThought ? false : groupLive,
     );
-    if (!executionGroups.length && !latestThought) return null;
+    const completedThought = !groupLive &&
+      !executionGroups.length &&
+      flowGroup.entries.every((entry) => entry.kind === "thought")
+        ? flowGroup.entries.at(-1)
+        : null;
+    if (!executionGroups.length && !latestThought && !completedThought) return null;
     return (
       <div className="conversation-turn__execution" key={flowGroup.id}>
         {executionGroups.map((group) => {
@@ -201,6 +239,19 @@ export function AgentTurn(props: SharedProps) {
             </ExecutionTraceGroup>
           ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
         })}
+        {completedThought ? (
+          <ExecutionTraceGroup
+            title={liveThoughtLabel(completedThought)}
+            live={false}
+            thought
+          >
+            {flowGroup.entries.map((entry) => (
+              <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
+                {item(entry, turn.flow.indexOf(entry) + 1)}
+              </span>
+            ))}
+          </ExecutionTraceGroup>
+        ) : null}
         {latestThought ? (
           <div className="conversation-turn__thinking" role="status">
             {liveThoughtLabel(latestThought)}
@@ -225,7 +276,7 @@ export function AgentTurn(props: SharedProps) {
         onToggle={() => setExpanded((value) => !value)}
       />
       <div className="conversation-turn__body">{flow}</div>
-      {turn.response ? (
+      {turn.response && !responseInFlow ? (
         <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
           {item(turn.response, turn.flow.length + 1, true)}
         </span>

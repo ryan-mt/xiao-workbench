@@ -538,6 +538,7 @@ export const ActivityItem = memo(function ActivityItem({
       entry.meta === "Plugin tool" ||
       entry.meta === "Dynamic tool" ||
       entry.meta === "Codex tool" ||
+      entry.meta === "Image tool" ||
       entry.meta?.startsWith("Skill"),
     );
     const codexTool = entry.meta === "Codex tool";
@@ -587,7 +588,7 @@ export const ActivityItem = memo(function ActivityItem({
         </span>
         <span className="activity__tool-summary">
           <strong className={active ? "is-active" : undefined}>
-            {entry.command ? (
+            {entry.command && !integration ? (
               <CommandExecutionTitle
                 active={active}
                 startedAt={entry.createdAt}

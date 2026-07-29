@@ -647,7 +647,9 @@ export function Sidebar({
             }
             const project = item.project;
             const active = workspaceContainsPath(project.path, activeProjectPath);
-            const expanded = active && expandedProjectPath === project.path;
+            const expanded = active && (
+              expandedProjectPath === project.path || expandedProjectPath === activeProjectPath
+            );
             const menuOpen = projectMenu?.projectPath === project.path;
             const renaming = renamingProject?.path === project.path;
             const running = active && workingTasks.size > 0;
@@ -707,7 +709,9 @@ export function Sidebar({
                         onClick={() => {
                           if (active) {
                             setExpandedProjectPath((currentPath) =>
-                              currentPath === project.path ? null : project.path,
+                              currentPath === project.path || currentPath === activeProjectPath
+                                ? null
+                                : project.path,
                             );
                             onOpenTasks();
                             return;

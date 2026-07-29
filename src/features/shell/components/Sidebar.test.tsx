@@ -81,6 +81,7 @@ type SidebarContent = {
   projectGroups?: ProjectGroup[];
   tasks?: WorkbenchTask[];
   activeTaskId?: string;
+  activeProjectPath?: string;
 };
 
 const sidebarElement = (
@@ -96,7 +97,7 @@ const sidebarElement = (
       activePage={activePage}
       projects={content.projects ?? []}
       projectGroups={content.projectGroups ?? []}
-      activeProjectPath={workspace.path}
+      activeProjectPath={content.activeProjectPath ?? workspace.path}
       tasks={content.tasks ?? []}
       activeTaskId={content.activeTaskId ?? ""}
       workspace={workspace}
@@ -236,6 +237,24 @@ describe("Sidebar attention trigger", () => {
     expect(projectButton).not.toBeNull();
     fireEvent.click(projectButton!);
     expect(onOpenTasks).toHaveBeenCalledOnce();
+  });
+
+  it("expands the containing project when the active workspace is nested beneath it", () => {
+    const nestedTask = task("Nested workspace task", Date.now());
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [nestedTask],
+      activeTaskId: nestedTask.id,
+      activeProjectPath: `${project.path}/.xiao/worktrees/pr-12`,
+    }));
+
+    const projectButton = document.querySelector<HTMLButtonElement>(".sidebar-project__select");
+    expect(projectButton?.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: nestedTask.title })).not.toBeNull();
+
+    fireEvent.click(projectButton!);
+    expect(projectButton?.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: nestedTask.title })).toBeNull();
   });
 
   it("labels project and group creation actions", () => {

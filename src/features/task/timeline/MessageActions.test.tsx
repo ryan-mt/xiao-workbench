@@ -8,6 +8,6 @@ describe("MessageActions", () => {
     const markup = renderToStaticMarkup(<MessageActions text="Hello" createdAt={0} />);
 
     expect(markup).toContain("<time");
-    expect(markup).toContain('dateTime="1970-01-01T00:00:00.000Z"');
+    expect(markup.toLowerCase()).toContain('datetime="1970-01-01t00:00:00.000z"');
   });
 });

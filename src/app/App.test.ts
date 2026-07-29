@@ -27,6 +27,7 @@ import {
   captureTaskOperationScope,
   clearProjectGroup,
   clearVisibleTaskUnread,
+  codexThreadSelectionTarget,
   completeUndoRecovery,
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
@@ -107,6 +108,22 @@ describe("imported Codex workspace routing", () => {
       { cwd: "D:/Project Archive/xiao/packages/app" },
     )).toBe("D:/Project Archive/xiao");
     expect(projectPathForCodexThread([], { cwd: "/srv/xiao" })).toBe("/srv/xiao");
+  });
+
+  it("builds CommandMenu selection context from the thread's containing project", () => {
+    expect(codexThreadSelectionTarget(
+      [
+        { path: "D:/Current", name: "Current", updatedAt: 1 },
+        { path: "D:/Other", name: "Other", updatedAt: 2 },
+      ],
+      { cwd: "D:/Other/packages/app" },
+    )).toEqual({
+      projectPath: "D:/Other",
+      context: {
+        projectPath: "D:/Other",
+        taskId: null,
+      },
+    });
   });
 });
 

@@ -83,7 +83,7 @@ export function InlineMessageEditor({
       className="message-edit"
       onSubmit={(event) => {
         event.preventDefault();
-        if (draft.trim()) onSubmit(draft.trim());
+        if (draft.trim()) onSubmit(draft);
       }}
     >
       <textarea

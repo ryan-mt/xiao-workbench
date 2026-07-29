@@ -278,6 +278,31 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("Finished.");
   });
 
+  it("keeps a final response before later same-turn user entries", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Start the task",
+      turnId: "turn-1",
+      createdAt: 1_000,
+    }, {
+      id: "response",
+      kind: "result",
+      title: "Agent response",
+      body: "First result.",
+      turnId: "turn-1",
+      createdAt: 2_000,
+    }, {
+      id: "steer",
+      kind: "user",
+      title: "Now verify tests",
+      turnId: "turn-1",
+      createdAt: 3_000,
+    }]);
+
+    expect(markup.indexOf("First result.")).toBeLessThan(markup.indexOf("Now verify tests"));
+  });
+
   it("does not render the edited-files summary card before a final response", () => {
     const markup = render([{
       id: "user",

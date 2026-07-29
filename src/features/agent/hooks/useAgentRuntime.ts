@@ -1042,6 +1042,7 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
     const results = Array.isArray(item.results) ? item.results : [];
     const body = results.length ? JSON.stringify(results, null, 2).slice(0, 24_000) : undefined;
     const active = item.status === "started" || item.status === "inProgress";
+    const failed = item.status === "failed" || item.status === "cancelled";
     return {
       id,
       kind: "result",
@@ -1049,7 +1050,7 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
       title: typeof item.query === "string" ? `Searched: ${item.query}` : "Web search",
       body,
       meta: "Browser tool",
-      status: active ? "active" : "success",
+      status: active ? "active" : failed ? "error" : "success",
     };
   }
 

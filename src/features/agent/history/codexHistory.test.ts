@@ -300,8 +300,8 @@ describe("Codex history activity", () => {
     });
     vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
       id: "msg-commentary-1",
-      turnId: "turn-1",
-      turnIndex: 0,
+      turnId: "turn-stale",
+      turnIndex: null,
       activityKind: "timelineMarker",
       label: "commentary",
       command: "",
@@ -317,8 +317,8 @@ describe("Codex history activity", () => {
       exitCode: 0,
     }, {
       id: "rs-reasoning-1",
-      turnId: "turn-1",
-      turnIndex: 0,
+      turnId: "turn-stale",
+      turnIndex: null,
       activityKind: "timelineMarker",
       label: "reasoning",
       command: "",
@@ -326,8 +326,8 @@ describe("Codex history activity", () => {
       markerSpan: 1,
     }, {
       id: "rs-reasoning-2",
-      turnId: "turn-1",
-      turnIndex: 0,
+      turnId: "turn-stale",
+      turnIndex: null,
       activityKind: "timelineMarker",
       label: "reasoning",
       command: "",
@@ -335,8 +335,8 @@ describe("Codex history activity", () => {
       markerSpan: 2,
     }, {
       id: "msg-commentary-2",
-      turnId: "turn-1",
-      turnIndex: 0,
+      turnId: "turn-stale",
+      turnIndex: null,
       activityKind: "timelineMarker",
       label: "commentary",
       command: "",
@@ -365,6 +365,57 @@ describe("Codex history activity", () => {
       "item-commentary-2",
       "rollout-command:call-2",
     ]);
+  });
+
+  it("falls back to rollout turn order for stale markers without turn clocks", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-current",
+        status: "completed",
+        items: [{
+          id: "commentary-current",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "Still here.",
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
+      id: "marker-stale",
+      turnId: "turn-stale",
+      turnIndex: 0,
+      activityKind: "timelineMarker",
+      label: "commentary",
+      command: "",
+      createdAt: "1970-01-01T00:00:01.100Z",
+    }]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline).toEqual([
+      expect.objectContaining({
+        id: "commentary-current",
+        createdAt: 1_100,
+        turnId: "turn-current",
+      }),
+    ]);
+  });
+
+  it("contains rollout rejection when listing turns fails first", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockRejectedValue(
+      new Error("turns unavailable"),
+    );
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockRejectedValue(
+      new Error("rollout unavailable"),
+    );
+
+    await expect(readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    )).rejects.toThrow("turns unavailable");
   });
 
   it("opens app-server history when an optional local rollout no longer exists", async () => {

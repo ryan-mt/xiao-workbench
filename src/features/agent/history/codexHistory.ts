@@ -295,13 +295,16 @@ export const readCodexThreadTimeline = async (
 ): Promise<TimelineEntry[]> => {
   const rolloutCommandsPromise = nativeBridge
     .readCodexRolloutCommands(threadId, rolloutPath)
-    .catch((reason): CodexRolloutCommand[] => {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      if (message.includes("Could not find the local Codex rollout for this task.")) {
-        return [];
-      }
-      throw reason;
-    });
+    .then(
+      (commands) => ({ commands }),
+      (reason): { commands: CodexRolloutCommand[] } | { error: unknown } => {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        if (message.includes("Could not find the local Codex rollout for this task.")) {
+          return { commands: [] };
+        }
+        return { error: reason };
+      },
+    );
   const turnsNewestFirst: unknown[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | null = null;
@@ -324,7 +327,9 @@ export const readCodexThreadTimeline = async (
     seenCursors.add(next);
     cursor = next;
   } while (cursor);
-  const rolloutCommands = await rolloutCommandsPromise;
+  const rolloutResult = await rolloutCommandsPromise;
+  if ("error" in rolloutResult) throw rolloutResult.error;
+  const rolloutCommands = rolloutResult.commands;
   const turns = turnsNewestFirst.reverse();
   const returnedTurnIds = new Set(turns.flatMap((rawTurn) =>
     rawTurn &&
@@ -333,17 +338,6 @@ export const readCodexThreadTimeline = async (
       ? [String((rawTurn as Record<string, unknown>).id)]
       : []
   ));
-  const rolloutMarkersByTurn = new Map<string, CodexRolloutCommand[]>();
-  for (const activity of rolloutCommands) {
-    if (
-      activity.activityKind !== "timelineMarker" ||
-      !activity.turnId ||
-      !returnedTurnIds.has(activity.turnId)
-    ) continue;
-    const markers = rolloutMarkersByTurn.get(activity.turnId) ?? [];
-    markers.push(activity);
-    rolloutMarkersByTurn.set(activity.turnId, markers);
-  }
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
   const commandsByTurnIndex = new Map<number, CodexRolloutCommand[]>();
   const latestRolloutTurnIndex = rolloutCommands.reduce(
@@ -377,18 +371,36 @@ export const readCodexThreadTimeline = async (
       ? []
       : [{ id: turn.id, startedAt, completedAt, nextStartedAt }];
   });
+  const owningReturnedTurnId = (activity: CodexRolloutCommand) => {
+    if (activity.turnId && returnedTurnIds.has(activity.turnId)) {
+      return activity.turnId;
+    }
+    const activityAt = timestampMilliseconds(activity.createdAt);
+    const inferredTurn = activityAt === null ? null : [...turnWindows]
+      .reverse()
+      .find((turn) => turn.startedAt <= activityAt && (
+        turn.nextStartedAt === null || activityAt < turn.nextStartedAt
+      ));
+    if (inferredTurn) return inferredTurn.id;
+    if (typeof activity.turnIndex !== "number") return undefined;
+    const localTurnIndex = activity.turnIndex - rolloutTurnOffset;
+    const indexedTurn = turns[localTurnIndex];
+    if (!indexedTurn || typeof indexedTurn !== "object") return undefined;
+    const indexedTurnId = (indexedTurn as Record<string, unknown>).id;
+    return typeof indexedTurnId === "string" ? indexedTurnId : undefined;
+  };
+  const rolloutMarkersByTurn = new Map<string, CodexRolloutCommand[]>();
+  for (const marker of rolloutCommands) {
+    if (marker.activityKind !== "timelineMarker") continue;
+    const owningTurnId = owningReturnedTurnId(marker);
+    if (!owningTurnId) continue;
+    const markers = rolloutMarkersByTurn.get(owningTurnId) ?? [];
+    markers.push(marker);
+    rolloutMarkersByTurn.set(owningTurnId, markers);
+  }
   for (const command of rolloutCommands) {
     if (command.activityKind === "timelineMarker") continue;
-    const commandAt = timestampMilliseconds(command.createdAt);
-    const inferredTurn = commandAt === null ? null : [...turnWindows]
-      .reverse()
-      .find((turn) => turn.startedAt <= commandAt && (
-        turn.nextStartedAt === null || commandAt < turn.nextStartedAt
-      ));
-    const owningTurnId =
-      command.turnId && returnedTurnIds.has(command.turnId)
-        ? command.turnId
-        : inferredTurn?.id;
+    const owningTurnId = owningReturnedTurnId(command);
     if (owningTurnId) {
       const current = commandsByTurn.get(owningTurnId) ?? [];
       current.push(command);
