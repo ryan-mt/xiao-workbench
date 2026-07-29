@@ -22,6 +22,23 @@ type PendingResponse = oneshot::Sender<Result<Value, RequestFailure>>;
 type PendingRequests = Arc<Mutex<HashMap<u64, PendingResponse>>>;
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const COMMAND_TIMEOUT_GRACE: u64 = 5_000;
+const RESERVED_PROFILE_ENVIRONMENT_KEYS: &[&str] = &[
+    "CODEX_HOME",
+    "CODEX_AUTH_HOME",
+    "CODEX_SQLITE_HOME",
+    "XIAO_RUN_ID",
+    // Account identity belongs to the Codex account response. Machine-login
+    // fallbacks must not become conversational user names.
+    "USER",
+    "USERNAME",
+    "LOGNAME",
+];
+
+fn is_reserved_profile_environment_key(key: &str) -> bool {
+    RESERVED_PROFILE_ENVIRONMENT_KEYS
+        .iter()
+        .any(|reserved| key.eq_ignore_ascii_case(reserved))
+}
 
 pub struct AgentRuntime {
     lifecycle: Mutex<()>,
@@ -175,6 +192,9 @@ impl AgentRuntime {
         let mut command = codex_command().ok_or_else(|| {
             "Codex CLI was not found. Install it before connecting the agent runtime.".to_owned()
         })?;
+        command.env_remove("USER");
+        command.env_remove("USERNAME");
+        command.env_remove("LOGNAME");
         if let Some(profile) = profile {
             if let Some(codex_home) = profile.codex_home.as_deref() {
                 command.env("CODEX_HOME", codex_home);
@@ -189,15 +209,7 @@ impl AgentRuntime {
                 .flatten()
                 .filter_map(|(key, value)| value.as_str().map(|value| (key, value)))
             {
-                if ![
-                    "CODEX_HOME",
-                    "CODEX_AUTH_HOME",
-                    "CODEX_SQLITE_HOME",
-                    "XIAO_RUN_ID",
-                ]
-                .iter()
-                .any(|reserved| key.eq_ignore_ascii_case(reserved))
-                {
+                if !is_reserved_profile_environment_key(key) {
                     command.env(key, value);
                 }
             }
@@ -857,6 +869,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn machine_login_names_cannot_override_codex_identity() {
+        for key in ["USER", "username", "LogName"] {
+            assert!(is_reserved_profile_environment_key(key));
+        }
+        assert!(!is_reserved_profile_environment_key("XIAO_THEME"));
+    }
 
     #[test]
     fn resolves_pending_result() {
