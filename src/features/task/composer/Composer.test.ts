@@ -16,6 +16,7 @@ import {
   Composer,
   deliverComposerSubmission,
   navigateComposerPromptHistory,
+  prepareComposerSubmission,
   runComposerSubmission,
   sandboxModeOptions,
 } from "./Composer";
@@ -71,6 +72,7 @@ const composerProps = (
   sendingFollowUpId: null,
   failedFollowUpId: null,
   attachments: [],
+  liveFileChanges: null,
   canCompact: false,
   compacting: false,
   hasThread: false,
@@ -351,6 +353,77 @@ describe("selected conversation context", () => {
 
     expect(selectedContextPromptParts(submitted)).toEqual({ context, prompt });
     expect(visiblePromptFromSelectedContext(submitted)).toBe(prompt);
+  });
+
+  it("prepares a stash with the same quote, review comments, and files as submission", () => {
+    const file = attachment("notes.txt");
+    const review: AgentAttachment = {
+      id: "review-1",
+      name: "Composer.tsx",
+      path: "src/Composer.tsx",
+      kind: "review",
+      comment: "Keep this context",
+      lineStart: 10,
+    };
+
+    expect(prepareComposerSubmission(
+      "Explain the fix",
+      [file],
+      [review],
+      "const ready = false;",
+    )).toEqual({
+      prompt: promptWithSelectedContext("Explain the fix", "const ready = false;"),
+      attachments: [file, review],
+    });
+  });
+
+  it("restores stashed quote and review context without exposing the internal prompt wrapper", () => {
+    window.localStorage.clear();
+    const file = attachment("notes.txt");
+    const review: AgentAttachment = {
+      id: "review-1",
+      name: "Composer.tsx",
+      path: "src/Composer.tsx",
+      kind: "review",
+      comment: "Keep this context",
+      lineStart: 10,
+    };
+    const onAttachmentsChange = vi.fn();
+    const onReviewContextSent = vi.fn();
+    const onClearSelectedContext = vi.fn();
+    const initialProps = composerProps({
+      draftText: "Explain the fix",
+      attachments: [file],
+      reviewContext: [review],
+      selectedContext: "const ready = false;",
+      onAttachmentsChange,
+      onReviewContextSent,
+      onClearSelectedContext,
+    });
+    const view = render(createElement(Composer, initialProps));
+
+    fireEvent.click(screen.getByRole("button", { name: "Stash current prompt" }));
+    expect(onAttachmentsChange).toHaveBeenCalledWith([]);
+    expect(onReviewContextSent).toHaveBeenCalledWith([review]);
+    expect(onClearSelectedContext).toHaveBeenCalledOnce();
+
+    view.rerender(createElement(Composer, {
+      ...initialProps,
+      draftText: "",
+      attachments: [],
+      reviewContext: [],
+      selectedContext: null,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Stashed prompts, 1" }));
+    fireEvent.click(screen.getByRole("button", { name: /Use this text selected/ }));
+
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value)
+      .toBe("Explain the fix");
+    expect(screen.getByLabelText("Selected conversation text").textContent)
+      .toContain("const ready = false;");
+    expect(screen.getByLabelText("Review comments ready to send").textContent)
+      .toContain("Keep this context");
+    expect(onAttachmentsChange).toHaveBeenLastCalledWith([file]);
   });
 });
 

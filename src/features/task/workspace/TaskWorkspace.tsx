@@ -39,10 +39,12 @@ import type {
 import { workspacePathComparisonKey } from "../../../core/workspacePath";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
+import { projectLiveFileChanges } from "../composer/liveFileChanges";
 import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskHeader } from "./TaskHeader";
 import "../styles/task.css";
 import "../styles/timeline.css";
+import "../styles/chat-canvas.css";
 
 const useEventCallback = <Args extends unknown[], Result>(
   callback: (...args: Args) => Result,
@@ -104,6 +106,10 @@ export const shouldFollowLiveOutput = (
   metrics: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
 ) => distanceFromScrollBottom(metrics) <= liveOutputFollowThreshold;
 
+export const latestTimelineScrollTop = (
+  metrics: Pick<HTMLElement, "scrollHeight">,
+) => metrics.scrollHeight;
+
 type TaskWorkspaceFrameProps = {
   launchMode: boolean;
   launchContent: ReactNode;
@@ -139,7 +145,6 @@ type TaskWorkspaceProps = {
   launchMode: boolean;
   taskStateError: string | null;
   taskStateLoading: boolean;
-  initialTimelineScrollTop: number;
   timeline: TimelineEntry[];
   runtime: AgentRuntimeState;
   rateLimits: AgentRateLimitSnapshot | null;
@@ -173,6 +178,7 @@ type TaskWorkspaceProps = {
   definitionOfDone: AcceptanceContractDraft | null;
   definitionOfDoneError: string | null;
   contextUsage: ThreadTokenUsage | null;
+  initialTimelineScrollTop: number | null;
   showReasoningSummaries: boolean;
   expandToolOutput: boolean;
   launchBrand: "logo" | "wordmark";
@@ -280,7 +286,6 @@ export function TaskWorkspace({
   launchMode,
   taskStateError,
   taskStateLoading,
-  initialTimelineScrollTop,
   timeline,
   runtime,
   rateLimits,
@@ -314,6 +319,7 @@ export function TaskWorkspace({
   definitionOfDone,
   definitionOfDoneError,
   contextUsage,
+  initialTimelineScrollTop,
   showReasoningSummaries,
   expandToolOutput,
   launchBrand,
@@ -363,6 +369,10 @@ export function TaskWorkspace({
   const followLiveOutput = useRef(true);
   const previousTaskId = useRef(taskId);
   const restoredTimelineScrollTaskId = useRef<string | null>(null);
+  const scrollPersistTimer = useRef<number | null>(null);
+  const pendingScroll = useRef<{ taskId: string; scrollTop: number } | null>(null);
+  const scrollCallbacksByTask = useRef(new Map<string, (scrollTop: number) => void>());
+  scrollCallbacksByTask.current.set(taskId, onTimelineScrollTopChange);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | null>(null);
   const [selectedContext, setSelectedContext] = useState<string | null>(null);
@@ -405,10 +415,32 @@ export function TaskWorkspace({
     hasActiveRuns,
     latestRun?.status ?? null,
   );
+  const liveFileChanges = useMemo(() => {
+    if (runtime.phase !== "working" || runtime.taskId !== taskId) return null;
+    const summary = projectLiveFileChanges(timeline);
+    if (!summary) return null;
+    const activeStepIndex = plan?.steps.findIndex((step) => step.status === "inProgress") ?? -1;
+    return activeStepIndex >= 0
+      ? { ...summary, stepIndex: activeStepIndex + 1, stepTotal: plan!.steps.length }
+      : summary;
+  }, [plan, runtime.phase, runtime.taskId, taskId, timeline]);
 
   useEffect(() => {
     setTimelineSelection(null);
     setSelectedContext(null);
+  }, [taskId]);
+
+  useEffect(() => () => {
+    if (scrollPersistTimer.current !== null) {
+      window.clearTimeout(scrollPersistTimer.current);
+      scrollPersistTimer.current = null;
+    }
+    const pending = pendingScroll.current;
+    if (pending?.taskId === taskId) {
+      scrollCallbacksByTask.current.get(taskId)?.(pending.scrollTop);
+      pendingScroll.current = null;
+    }
+    scrollCallbacksByTask.current.delete(taskId);
   }, [taskId]);
 
   useEffect(() => {
@@ -463,18 +495,20 @@ export function TaskWorkspace({
     if (previousTaskId.current !== taskId) {
       previousTaskId.current = taskId;
       restoredTimelineScrollTaskId.current = timeline.length > 0 ? taskId : null;
-      node.scrollTop = initialTimelineScrollTop;
+      node.scrollTop = initialTimelineScrollTop !== null
+        ? initialTimelineScrollTop
+        : timeline.length > 0
+          ? latestTimelineScrollTop(node)
+          : 0;
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
     }
-    if (
-      restoredTimelineScrollTaskId.current !== taskId &&
-      initialTimelineScrollTop > 0 &&
-      timeline.length > 0
-    ) {
+    if (restoredTimelineScrollTaskId.current !== taskId && timeline.length > 0) {
       restoredTimelineScrollTaskId.current = taskId;
-      node.scrollTop = initialTimelineScrollTop;
+      node.scrollTop = initialTimelineScrollTop !== null
+        ? initialTimelineScrollTop
+        : latestTimelineScrollTop(node);
       followLiveOutput.current = shouldFollowLiveOutput(node);
       setShowJumpToLatest(!followLiveOutput.current);
       return;
@@ -542,6 +576,7 @@ export function TaskWorkspace({
       mcpElicitationRequest={mcpElicitationRequest}
       draftText={draftText}
       followUps={followUps}
+      liveFileChanges={liveFileChanges}
       sendingFollowUpId={sendingFollowUpId}
       failedFollowUpId={failedFollowUpId}
       attachments={attachments}
@@ -687,9 +722,23 @@ export function TaskWorkspace({
           onScroll={(event) => {
             const following = shouldFollowLiveOutput(event.currentTarget);
             followLiveOutput.current = following;
-            setShowJumpToLatest(!following);
-            setTimelineSelection(null);
-            onTimelineScrollTopChange(event.currentTarget.scrollTop);
+            setShowJumpToLatest((current) => current === !following ? current : !following);
+            setTimelineSelection((current) => current === null ? current : null);
+            pendingScroll.current = {
+              taskId,
+              scrollTop: event.currentTarget.scrollTop,
+            };
+            if (scrollPersistTimer.current !== null) {
+              window.clearTimeout(scrollPersistTimer.current);
+            }
+            scrollPersistTimer.current = window.setTimeout(() => {
+              scrollPersistTimer.current = null;
+              const pending = pendingScroll.current;
+              if (pending) {
+                scrollCallbacksByTask.current.get(pending.taskId)?.(pending.scrollTop);
+                pendingScroll.current = null;
+              }
+            }, 700);
           }}
         >
           <TaskTimeline
@@ -711,6 +760,10 @@ export function TaskWorkspace({
             canUndo={canUndo}
             undoing={undoing}
             onUndo={undoTimelineTurn}
+            onEditUserMessage={(text, sentAttachments) => {
+              onDraftChange(text);
+              onAttachmentsChange(sentAttachments);
+            }}
           />
         </div>
         {timelineSelection ? (

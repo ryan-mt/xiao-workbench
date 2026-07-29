@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-codex-rollout-commands"
+description = "Enables the read_codex_rollout_commands command without any pre-configured scope."
+commands.allow = ["read_codex_rollout_commands"]
+
+[[permission]]
+identifier = "deny-read-codex-rollout-commands"
+description = "Denies the read_codex_rollout_commands command without any pre-configured scope."
+commands.deny = ["read_codex_rollout_commands"]

@@ -9,15 +9,21 @@ import { createPortal } from "react-dom";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import { APP_DISPLAY_NAME, APP_STAGE } from "../../../core/branding";
-import type { AgentAccountSummary } from "../../../core/models/agent";
+import type { AgentAccountSummary, CodexThreadSummary } from "../../../core/models/agent";
+import { workspaceContainsPath } from "../../agent/history/codexHistory";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
 import { profileInitials, type LocalUserProfile } from "../../profile/hooks/useLocalProfile";
-import type { WorkbenchTask } from "../../task/task.types";
-import { projectSidebarTasks, sidebarTaskPresentation } from "../sidebarProjection";
+import {
+  taskGroupForUpdatedAt,
+  type TaskGroup,
+  type WorkbenchTask,
+} from "../../task/task.types";
 import type { AppPage } from "../shell.types";
+import { sidebarTaskPresentation } from "../sidebarProjection";
 import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
+import { SidebarInbox } from "./SidebarInbox";
 
 type SidebarProps = {
   activePage: AppPage;
@@ -26,6 +32,9 @@ type SidebarProps = {
   projectGroups?: ProjectGroup[];
   activeProjectPath: string;
   tasks: WorkbenchTask[];
+  codexThreads?: CodexThreadSummary[];
+  codexHistoryError?: string | null;
+  sidebarV2?: boolean;
   activeTaskId: string;
   workspace: WorkspaceSnapshot;
   workingTaskIds: string[];
@@ -50,6 +59,8 @@ type SidebarProps = {
   onNewTask: () => void;
   onSelectProject: (path: string) => void;
   onSelectTask: (taskId: string) => void;
+  onSelectCodexThread?: (thread: CodexThreadSummary) => void;
+  onArchiveCodexThread?: (thread: CodexThreadSummary) => void;
   onToggleTaskPinned: (taskId: string) => void;
   onSetTaskArchived: (taskId: string, archived: boolean) => void;
   onRenameTask: (taskId: string, title: string) => void;
@@ -81,6 +92,12 @@ type TaskMenuState = {
   focusFirst: boolean;
 };
 
+type CodexThreadMenuState = {
+  threadId: string;
+  top: number;
+  left: number;
+};
+
 type RenamingTask = {
   id: string;
   title: string;
@@ -94,7 +111,9 @@ export const sidebarAttentionTriggerId = "sidebar-attention-trigger";
 
 const projectMenuWidth = 218;
 const projectMenuHeight = 214;
-const taskMenuHeight = 376;
+const taskMenuHeight = 330;
+const collapsedTaskGroupLimit = 6;
+const taskGroupOrder: TaskGroup[] = ["Recent", "Yesterday", "This week", "Older"];
 const sidebarDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
@@ -109,13 +128,9 @@ const relativeTime = (timestamp: number, now: number) => {
   return sidebarDateFormatter.format(new Date(timestamp));
 };
 
-const stageLabel = APP_STAGE === "production"
-  ? null
-  : APP_STAGE === "release"
-    ? "Release"
-    : APP_STAGE === "beta"
-      ? "Beta"
-      : "Dev";
+const groupForTask = (task: WorkbenchTask, now: number): TaskGroup => {
+  return taskGroupForUpdatedAt(task.updatedAt, false, now);
+};
 
 export function Sidebar({
   activePage,
@@ -124,6 +139,9 @@ export function Sidebar({
   projectGroups = [],
   activeProjectPath,
   tasks,
+  codexThreads = [],
+  codexHistoryError = null,
+  sidebarV2 = false,
   activeTaskId,
   workspace,
   workingTaskIds,
@@ -148,6 +166,8 @@ export function Sidebar({
   onNewTask,
   onSelectProject,
   onSelectTask,
+  onSelectCodexThread = () => {},
+  onArchiveCodexThread = () => {},
   onToggleTaskPinned,
   onSetTaskArchived,
   onRenameTask,
@@ -159,26 +179,38 @@ export function Sidebar({
   onArchiveProjectTasks,
   onRemoveProject,
 }: SidebarProps) {
-  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
-  const [completedShelfExpanded, setCompletedShelfExpanded] = useState(true);
+  const [expandedProjectPath, setExpandedProjectPath] = useState<string | null>(activeProjectPath);
   const [projectMenu, setProjectMenu] = useState<ProjectMenuState | null>(null);
   const [renamingProject, setRenamingProject] = useState<RenamingProject | null>(null);
   const [projectGroupDialogOpen, setProjectGroupDialogOpen] = useState(false);
   const [projectGroupName, setProjectGroupName] = useState("");
   const [taskMenu, setTaskMenu] = useState<TaskMenuState | null>(null);
+  const [codexThreadMenu, setCodexThreadMenu] = useState<CodexThreadMenuState | null>(null);
   const [renamingTask, setRenamingTask] = useState<RenamingTask | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
+  const [expandedTaskGroups, setExpandedTaskGroups] = useState<ReadonlySet<TaskGroup>>(
+    () => new Set(),
+  );
   const [now, setNow] = useState(Date.now);
-  const projectPickerRef = useRef<HTMLDivElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const projectMenuTriggerRef = useRef<HTMLElement | null>(null);
   const taskMenuRef = useRef<HTMLDivElement>(null);
+  const codexThreadMenuRef = useRef<HTMLDivElement>(null);
   const taskMenuTriggerRef = useRef<HTMLElement | null>(null);
-  const { active: activeTasks, completed: completedTasks } = projectSidebarTasks(
-    tasks,
-    workingTaskIds,
-  );
-  const visibleTasks = [...activeTasks, ...completedTasks];
+  const visibleTasks = [...tasks]
+    .filter((task) => !task.archived)
+    .sort(
+      (left, right) =>
+        Number(right.pinned) - Number(left.pinned) ||
+        right.createdAt - left.createdAt ||
+        left.id.localeCompare(right.id),
+    );
+  const groupedTasks = taskGroupOrder
+    .map((group) => ({
+      group,
+      tasks: visibleTasks.filter((task) => groupForTask(task, now) === group),
+    }))
+    .filter(({ tasks: groupTasks }) => groupTasks.length > 0);
   const menuProject = projects.find((project) => project.path === projectMenu?.projectPath);
   const projectGroupPositions = new Map(projectGroups.map((group) => [group.id, group.position]));
   const navigationProjects = [...projects].sort((left, right) => {
@@ -190,9 +222,10 @@ export function Sidebar({
       return (projectGroupPositions.get(leftGroup) ?? Number.MAX_SAFE_INTEGER) -
         (projectGroupPositions.get(rightGroup) ?? Number.MAX_SAFE_INTEGER);
     }
-    return (left.projectGroupPosition ?? 0) - (right.projectGroupPosition ?? 0) ||
-      Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
-      right.updatedAt - left.updatedAt;
+    return Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
+      (left.projectGroupPosition ?? Number.MAX_SAFE_INTEGER) -
+        (right.projectGroupPosition ?? Number.MAX_SAFE_INTEGER) ||
+      left.name.localeCompare(right.name);
   });
   const navigationItems: ProjectNavigationItem[] = [...projectGroups]
     .sort((left, right) => left.position - right.position)
@@ -211,8 +244,15 @@ export function Sidebar({
       ...ungroupedProjects.map((project) => ({ kind: "project" as const, project })),
     );
   }
-  const activeProject = projects.find((project) => project.path === activeProjectPath) ?? null;
   const menuTask = tasks.find((task) => task.id === taskMenu?.taskId);
+  const menuCodexThread = codexThreads.find(
+    (thread) => thread.id === codexThreadMenu?.threadId,
+  );
+  const unmatchedCodexThreads = codexThreads.filter(
+    (thread) =>
+      !thread.archived &&
+      !projects.some((project) => workspaceContainsPath(project.path, thread.cwd)),
+  );
   const workingTasks = new Set(workingTaskIds);
   const projectSwitchLocked = workingTasks.size > 0;
   const initials = profileInitials(profile.name);
@@ -231,7 +271,6 @@ export function Sidebar({
     const trigger = taskMenuTriggerRef.current;
     taskMenuTriggerRef.current = null;
     setTaskMenu(null);
-    setCopyError(null);
     if (restoreFocus) window.requestAnimationFrame(() => trigger?.focus());
   };
 
@@ -304,13 +343,27 @@ export function Sidebar({
     event.preventDefault();
     event.stopPropagation();
     closeProjectMenu();
-    setCopyError(null);
     taskMenuTriggerRef.current = event.currentTarget;
     setTaskMenu({
       taskId,
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - taskMenuHeight - 8)),
       left: Math.max(8, Math.min(event.clientX, window.innerWidth - projectMenuWidth - 8)),
       focusFirst: false,
+    });
+  };
+
+  const openCodexThreadContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    threadId: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectMenu();
+    closeTaskMenu();
+    setCodexThreadMenu({
+      threadId,
+      top: Math.max(8, Math.min(event.clientY, window.innerHeight - 150)),
+      left: Math.max(8, Math.min(event.clientX, window.innerWidth - projectMenuWidth - 8)),
     });
   };
 
@@ -322,7 +375,6 @@ export function Sidebar({
     }
 
     const trigger = event.currentTarget;
-    setCopyError(null);
     const bounds = trigger.getBoundingClientRect();
     const below = bounds.bottom + 6;
     const top =
@@ -371,6 +423,7 @@ export function Sidebar({
       }
       if (!copied) throw new Error("Clipboard write failed");
       closeTaskMenu();
+      setCodexThreadMenu(null);
     } catch {
       setCopyError("Could not copy to the clipboard. Check Xiao's clipboard permission and retry.");
     }
@@ -389,32 +442,9 @@ export function Sidebar({
   };
 
   useEffect(() => {
-    setProjectPickerOpen(false);
-    setCompletedShelfExpanded(true);
+    setExpandedProjectPath(activeProjectPath);
+    setExpandedTaskGroups(new Set());
   }, [activeProjectPath]);
-
-  useEffect(() => {
-    if (!projectPickerOpen) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (
-        projectPickerRef.current?.contains(target) ||
-        projectMenuRef.current?.contains(target)
-      ) {
-        return;
-      }
-      setProjectPickerOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setProjectPickerOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [projectPickerOpen]);
 
   useEffect(() => {
     let interval: number | undefined;
@@ -502,115 +532,50 @@ export function Sidebar({
     };
   }, [taskMenu]);
 
-  const renderTaskRow = (task: WorkbenchTask, variant: "card" | "slim") => {
-    const selected = activePage === "tasks" && task.id === activeTaskId;
-    const taskRunning = workingTasks.has(task.id);
-    const taskMenuOpen = taskMenu?.taskId === task.id;
-    const presentation = sidebarTaskPresentation(task, taskRunning);
-    const stateLabel = taskRunning
-      ? ", running"
-      : task.unread
-        ? ", unread"
-        : "";
-    return (
-      <article
-        className={`sidebar-v2-task sidebar-v2-task--${variant} is-${presentation.tone} ${
-          task.unread ? "is-unread" : ""
-        } ${selected ? "is-selected" : ""} ${taskMenuOpen ? "has-open-menu" : ""}`}
-        key={task.id}
-        onContextMenu={(event) => openTaskContextMenu(event, task.id)}
-      >
-        {renamingTask?.id === task.id ? (
-          <form
-            className="sidebar-v2-task__rename"
-            onSubmit={(event) => {
-              event.preventDefault();
-              commitTaskRename();
-            }}
-          >
-            <input
-              autoFocus
-              aria-label="Rename task"
-              value={renamingTask.title}
-              onBlur={commitTaskRename}
-              onChange={(event) =>
-                setRenamingTask({ id: task.id, title: event.target.value })
-              }
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.preventDefault();
-                setRenamingTask(null);
-              }}
-            />
-          </form>
-        ) : (
-          <>
-            <button
-              className="sidebar-v2-task__select"
-              aria-label={`${task.title}${stateLabel}${task.pinned ? ", pinned" : ""}`}
-              title={task.title}
-              onClick={() => {
-                onSelectTask(task.id);
-                onOpenTasks();
-              }}
-            >
-              <span className="sidebar-v2-task__state" aria-hidden="true">
-                {taskRunning ? (
-                  <XiaoIcon className="sidebar-v2-task__spinner" name="pending" size={14} />
-                ) : presentation.tone === "completed" ? (
-                  <XiaoIcon name="check" size={13} />
-                ) : (
-                  <i />
-                )}
-              </span>
-              <span className="sidebar-v2-task__copy">
-                <span className="sidebar-v2-task__title">
-                  <strong>{task.title}</strong>
-                  {task.pinned ? <XiaoIcon name="pin" size={11} /> : null}
-                </span>
-                <span className="sidebar-v2-task__meta">
-                  <span>{presentation.status}</span>
-                  <i aria-hidden="true">·</i>
-                  <time dateTime={new Date(task.updatedAt).toISOString()}>
-                    {relativeTime(task.updatedAt, now)}
-                  </time>
-                </span>
-              </span>
-            </button>
-            <button
-              className="sidebar-v2-task__menu"
-              type="button"
-              aria-label={`Task actions for ${task.title}`}
-              aria-haspopup="menu"
-              aria-expanded={taskMenuOpen}
-              title="Task actions"
-              onClick={(event) => toggleTaskMenu(event, task.id)}
-            >
-              <XiaoIcon name="more" size={15} />
-            </button>
-          </>
-        )}
-      </article>
+  useEffect(() => {
+    if (!codexThreadMenu) return;
+    const close = (event: PointerEvent) => {
+      if (codexThreadMenuRef.current?.contains(event.target as Node)) return;
+      setCodexThreadMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCodexThreadMenu(null);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [codexThreadMenu]);
+
+  useEffect(() => {
+    if (!codexThreadMenu || !codexThreadMenuRef.current) return;
+    const menuHeight = codexThreadMenuRef.current.getBoundingClientRect().height;
+    const top = Math.max(
+      8,
+      Math.min(codexThreadMenu.top, window.innerHeight - menuHeight - 8),
     );
-  };
+    if (top !== codexThreadMenu.top) {
+      setCodexThreadMenu((current) => current ? { ...current, top } : current);
+    }
+  }, [codexThreadMenu?.threadId, copyError]);
 
   return (
     <>
-      <aside
-        className={`sidebar app-sidebar sidebar--${APP_STAGE}`}
-        aria-label="Workspace navigation"
-      >
+      <aside className="sidebar app-sidebar" aria-label="Workspace navigation">
         <div className="sidebar__panel">
           <header className="sidebar__header">
             <SidebarStageBackdrop variant={APP_STAGE} />
             <div
-              className={`sidebar__brand${APP_STAGE === "production" ? "" : " is-on-stage"}`}
+              className={`sidebar__brand${APP_STAGE === "production" || APP_STAGE === "release"
+                ? ""
+                : " is-on-stage"}`}
               aria-label={APP_DISPLAY_NAME}
             >
               <strong>XIAO</strong>
               <span>Workbench</span>
             </div>
-            {stageLabel ? <span className="sidebar__stage-label">{stageLabel}</span> : null}
           </header>
 
           <div className="sidebar__primary-nav">
@@ -619,277 +584,412 @@ export function Sidebar({
               <span>Find anything</span>
               <kbd>Ctrl K</kbd>
             </button>
+          </div>
+
+        {sidebarV2 ? (
+          <SidebarInbox
+            projects={projects}
+            activeProjectPath={activeProjectPath}
+            tasks={tasks}
+            codexThreads={codexThreads}
+            activeTaskId={activeTaskId}
+            workingTaskIds={workingTaskIds}
+            now={now}
+            codexHistoryError={codexHistoryError}
+            onNewTask={onNewTask}
+            onAddProject={onAddProject}
+            onSelectProject={onSelectProject}
+            onSelectTask={(taskId) => {
+              onSelectTask(taskId);
+              onOpenTasks();
+            }}
+            onSelectCodexThread={onSelectCodexThread}
+            onTaskContextMenu={openTaskContextMenu}
+            onCodexContextMenu={openCodexThreadContextMenu}
+          />
+        ) : (
+          <>
+        <div className="sidebar__projects-heading">
+          <div className="sidebar__projects-title">
+            <span>Projects</span>
+            <small>{projects.length}</small>
+          </div>
+          <div className="sidebar__project-actions">
+            {canOpenProjects ? (
+              <button
+                aria-label="Create project group"
+                title="Create a project group"
+                onClick={() => {
+                  setProjectGroupName("");
+                  setProjectGroupDialogOpen(true);
+                }}
+              >
+                <XiaoIcon name="folder" size={13} />
+                <span>Group</span>
+              </button>
+            ) : null}
             <button
-              className="sidebar-v2__new-task"
-              type="button"
-              aria-label="New task"
-              title="New task"
-              onClick={onNewTask}
+              aria-label="Add project"
+              disabled={projectSwitchLocked}
+              title={projectSwitchLocked ? "Wait for the active task to finish" : "Add a project"}
+              onClick={onAddProject}
             >
-              <XiaoIcon name="edit" size={15} />
+              <XiaoIcon name="add" size={13} />
+              <span>Add</span>
             </button>
           </div>
+        </div>
 
-          <div className="sidebar-v2__scope" ref={projectPickerRef}>
-            <div className="sidebar-v2__scope-controls">
-              <button
-                className="sidebar-v2__scope-trigger"
-                type="button"
-                aria-label={`Current project: ${activeProject?.name ?? workspace.name}`}
-                aria-haspopup="dialog"
-                aria-expanded={projectPickerOpen}
-                onClick={() => setProjectPickerOpen((open) => !open)}
-              >
-                <XiaoIcon name="folder" size={15} />
-                <span>{activeProject?.name ?? workspace.name}</span>
-                <XiaoIcon
-                  className={projectPickerOpen ? "is-open" : ""}
-                  name="caret"
-                  size={13}
-                />
-              </button>
-              <button
-                className="sidebar-v2__add-project"
-                type="button"
-                aria-label="Add project"
-                disabled={projectSwitchLocked}
-                title={projectSwitchLocked ? "Wait for the active task to finish" : "Add project"}
-                onClick={onAddProject}
-              >
-                <XiaoIcon name="folderOpen" size={15} />
-                <XiaoIcon name="add" size={10} />
-              </button>
-            </div>
-
-            {projectPickerOpen ? (
+        <div className="sidebar__projects">
+          {navigationItems.map((item) => {
+            if (item.kind === "group") {
+              const group = item.group;
+              return (
+                <h3 className="sidebar-project-group" key={group?.id ?? "ungrouped"}>
+                  <span>{group?.name ?? "Ungrouped"}</span>
+                  {group ? (
+                    <span>
+                      <button type="button" aria-label={`Rename ${group.name}`} onClick={() => onRenameProjectGroup(group)}>Rename</button>
+                      <button type="button" aria-label={`Move ${group.name} up`} disabled={group.position === 0} onClick={() => onMoveProjectGroup(group, -1)}>↑</button>
+                      <button type="button" aria-label={`Move ${group.name} down`} disabled={group.position >= projectGroups.length - 1} onClick={() => onMoveProjectGroup(group, 1)}>↓</button>
+                      <button type="button" aria-label={`Delete ${group.name}`} onClick={() => onDeleteProjectGroup(group)}>Delete</button>
+                    </span>
+                  ) : null}
+                </h3>
+              );
+            }
+            const project = item.project;
+            const active = workspaceContainsPath(project.path, activeProjectPath);
+            const expanded = active && (
+              expandedProjectPath === project.path || expandedProjectPath === activeProjectPath
+            );
+            const menuOpen = projectMenu?.projectPath === project.path;
+            const renaming = renamingProject?.path === project.path;
+            const running = active && workingTasks.size > 0;
+            const projectCodexThreads = codexThreads.filter(
+              (thread) =>
+                !thread.archived &&
+                workspaceContainsPath(project.path, thread.cwd) &&
+                !tasks.some((task) => task.origin === "codex" && task.threadId === thread.id),
+            );
+            const updatedAt = active
+              ? Math.max(project.updatedAt, ...visibleTasks.map((task) => task.updatedAt))
+              : project.updatedAt;
+            const status = running
+              ? "Running"
+              : !active && projectSwitchLocked
+                ? "Locked: task running"
+                : `Updated ${relativeTime(updatedAt, now)}`;
+            return (
               <section
-                className="sidebar-v2-project-picker"
-                role="dialog"
-                aria-label="Projects"
+                key={project.path}
+                className={`sidebar-project ${active ? "is-active" : ""} ${menuOpen ? "has-open-menu" : ""}`}
+                onContextMenu={(event) => openProjectContextMenu(event, project.path)}
               >
-                <header>
-                  <span>
-                    Projects <small>{projects.length}</small>
-                  </span>
-                  {canOpenProjects ? (
-                    <button
-                      type="button"
-                      aria-label="Create project group"
-                      onClick={() => {
-                        setProjectPickerOpen(false);
-                        setProjectGroupName("");
-                        setProjectGroupDialogOpen(true);
+                <div className="sidebar-project__row">
+                  {renaming ? (
+                    <form
+                      className="sidebar-project__rename"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        commitProjectRename();
                       }}
                     >
-                      <XiaoIcon name="add" size={12} />
-                      New group
-                    </button>
-                  ) : null}
-                </header>
-                <div className="sidebar-v2-project-picker__list">
-                  {navigationItems.map((item) => {
-                    if (item.kind === "group") {
-                      const group = item.group;
-                      return (
-                        <div
-                          className="sidebar-v2-project-group"
-                          key={group?.id ?? "ungrouped"}
-                        >
-                          <span>{group?.name ?? "Ungrouped"}</span>
-                          {group ? (
-                            <span className="sidebar-v2-project-group__actions">
-                              <button
-                                type="button"
-                                aria-label={`Rename ${group.name}`}
-                                title={`Rename ${group.name}`}
-                                onClick={() => onRenameProjectGroup(group)}
-                              >
-                                <XiaoIcon name="edit" size={11} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Move ${group.name} up`}
-                                title={`Move ${group.name} up`}
-                                disabled={group.position === 0}
-                                onClick={() => onMoveProjectGroup(group, -1)}
-                              >
-                                <XiaoIcon className="is-up" name="down" size={11} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Move ${group.name} down`}
-                                title={`Move ${group.name} down`}
-                                disabled={group.position >= projectGroups.length - 1}
-                                onClick={() => onMoveProjectGroup(group, 1)}
-                              >
-                                <XiaoIcon name="down" size={11} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Delete ${group.name}`}
-                                title={`Delete ${group.name}`}
-                                onClick={() => onDeleteProjectGroup(group)}
-                              >
-                                <XiaoIcon name="close" size={11} />
-                              </button>
-                            </span>
-                          ) : null}
-                        </div>
-                      );
-                    }
-                    const project = item.project;
-                    const active = project.path === activeProjectPath;
-                    const menuOpen = projectMenu?.projectPath === project.path;
-                    const renaming = renamingProject?.path === project.path;
-                    const running = active && workingTasks.size > 0;
-                    const updatedAt = active
-                      ? Math.max(project.updatedAt, ...visibleTasks.map((task) => task.updatedAt))
-                      : project.updatedAt;
-                    const status = running
-                      ? "Running"
-                      : !active && projectSwitchLocked
-                        ? "Locked while task runs"
-                        : `Updated ${relativeTime(updatedAt, now)}`;
-                    return (
-                      <div
-                        className={`sidebar-v2-project ${active ? "is-active" : ""} ${
-                          menuOpen ? "has-open-menu" : ""
-                        }`}
-                        key={project.path}
-                        onContextMenu={(event) => openProjectContextMenu(event, project.path)}
-                      >
-                        {renaming ? (
-                          <form
-                            className="sidebar-v2-project__rename"
-                            onSubmit={(event) => {
-                              event.preventDefault();
-                              commitProjectRename();
-                            }}
-                          >
-                            <XiaoIcon name="folder" size={14} />
-                            <input
-                              aria-label={`Rename ${project.name}`}
-                              autoFocus
-                              value={renamingProject.name}
-                              onBlur={commitProjectRename}
-                              onChange={(event) =>
-                                setRenamingProject({
-                                  path: project.path,
-                                  name: event.target.value,
-                                })
-                              }
-                              onKeyDown={(event) => {
-                                if (event.key !== "Escape") return;
-                                event.preventDefault();
-                                setRenamingProject(null);
-                              }}
-                            />
-                          </form>
-                        ) : (
-                          <>
-                            <button
-                              className="sidebar-v2-project__select"
-                              type="button"
-                              title={project.path}
-                              disabled={!active && projectSwitchLocked}
-                              onClick={() => {
-                                setProjectPickerOpen(false);
-                                if (!active) onSelectProject(project.path);
-                                else onOpenTasks();
-                              }}
-                            >
-                              <span className="sidebar-v2-project__icon">
-                                <XiaoIcon name={active ? "folderOpen" : "folder"} size={14} />
-                              </span>
-                              <span>
-                                <strong>{project.name}</strong>
-                                <small className={running ? "is-running" : ""}>{status}</small>
-                              </span>
-                              {project.pinned ? <XiaoIcon name="pin" size={11} /> : null}
-                              {active ? <XiaoIcon name="check" size={13} /> : null}
-                            </button>
-                            <button
-                              className="sidebar-v2-project__menu"
-                              type="button"
-                              aria-label={`Project actions for ${project.name}`}
-                              aria-haspopup="menu"
-                              aria-expanded={menuOpen}
-                              title="Project actions"
-                              onClick={(event) => toggleProjectMenu(event, project.path)}
-                            >
-                              <XiaoIcon name="more" size={15} />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                {hiddenProjects.length ? (
-                  <details className="sidebar-v2-project-picker__hidden">
-                    <summary>Hidden projects ({hiddenProjects.length})</summary>
-                    {hiddenProjects.map((project) => (
+                      <XiaoIcon name="folder" size={16} />
+                      <input
+                        aria-label={`Rename ${project.name}`}
+                        autoFocus
+                        value={renamingProject.name}
+                        onBlur={commitProjectRename}
+                        onChange={(event) =>
+                          setRenamingProject({ path: project.path, name: event.target.value })
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            setRenamingProject(null);
+                          }
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <>
                       <button
-                        type="button"
-                        key={project.path}
-                        onClick={() => onRestoreProject(project)}
+                        className="sidebar-project__select"
+                        title={project.path}
+                        aria-expanded={expanded}
+                        disabled={!active && projectSwitchLocked}
+                        onClick={() => {
+                          if (active) {
+                            setExpandedProjectPath((currentPath) =>
+                              currentPath === project.path || currentPath === activeProjectPath
+                                ? null
+                                : project.path,
+                            );
+                            onOpenTasks();
+                            return;
+                          }
+                          setExpandedProjectPath(project.path);
+                          onSelectProject(project.path);
+                        }}
                       >
-                        Restore {project.name}
+                        <span className={`sidebar-project__chevron ${expanded ? "is-expanded" : ""}`}>
+                          <XiaoIcon name="caret" size={12} />
+                        </span>
+                        <span className="sidebar-project__index" aria-hidden="true">
+                          <XiaoIcon name="folder" size={14} />
+                        </span>
+                        <span className="sidebar-project__copy">
+                          <span className="sidebar-project__title">
+                            <strong>{project.name}</strong>
+                            {project.pinned ? (
+                              <XiaoIcon className="sidebar-project__pin" name="pin" size={11} />
+                            ) : null}
+                          </span>
+                          <small className={running ? "is-running" : ""}>
+                            {running ? <i aria-hidden="true" /> : null}
+                            {status}
+                          </small>
+                        </span>
                       </button>
-                    ))}
-                  </details>
-                ) : null}
-              </section>
-            ) : null}
-          </div>
+                      <div className="sidebar-project__actions">
+                        <button
+                          className="sidebar-project__menu-trigger"
+                          type="button"
+                          aria-label={`Project actions for ${project.name}`}
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
+                          title="Project actions"
+                          onClick={(event) => toggleProjectMenu(event, project.path)}
+                        >
+                          <XiaoIcon name="more" size={15} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
 
-          <section className="sidebar-v2__tasks" aria-label="Project tasks">
-            <header className="sidebar-v2__tasks-heading">
-              <span>Tasks</span>
-              <small>{visibleTasks.length}</small>
-            </header>
-            <div className="sidebar-v2__active-list">
-              {activeTasks.map((task) => renderTaskRow(task, "card"))}
-            </div>
-            {completedTasks.length ? (
-              <section className="sidebar-v2__completed">
-                <button
-                  className="sidebar-v2__completed-toggle"
-                  type="button"
-                  aria-expanded={completedShelfExpanded}
-                  onClick={() => setCompletedShelfExpanded((expanded) => !expanded)}
-                >
-                  <span>Completed</span>
-                  {!completedShelfExpanded ? <small>{completedTasks.length}</small> : null}
-                  <i aria-hidden="true" />
-                  <XiaoIcon
-                    className={completedShelfExpanded ? "is-open" : ""}
-                    name="down"
-                    size={12}
-                  />
-                </button>
-                {completedShelfExpanded ? (
-                  <div className="sidebar-v2__completed-list">
-                    {completedTasks.map((task) => renderTaskRow(task, "slim"))}
+                {expanded ? (
+                  <div className="sidebar-project__tasks">
+                    <div className="task-groups">
+                      {groupedTasks.map(({ group, tasks: groupTasks }) => {
+                        const groupId = `task-group-${group.toLowerCase().replaceAll(" ", "-")}`;
+                        const taskListId = `${groupId}-list`;
+                        const groupExpanded = expandedTaskGroups.has(group);
+                        const hiddenTaskCount = Math.max(
+                          0,
+                          groupTasks.length - collapsedTaskGroupLimit,
+                        );
+                        const collapsedTasks = groupTasks.slice(0, collapsedTaskGroupLimit);
+                        const activeTask = groupTasks.find((task) => task.id === activeTaskId);
+                        let renderedTasks = groupExpanded ? groupTasks : collapsedTasks;
+                        if (
+                          !groupExpanded &&
+                          activeTask &&
+                          !collapsedTasks.some((task) => task.id === activeTask.id)
+                        ) {
+                          renderedTasks = [...collapsedTasks.slice(0, -1), activeTask];
+                        }
+                        return (
+                          <section className="task-group" aria-labelledby={groupId} key={group}>
+                            <h3 id={groupId}>
+                              <span>{group}</span>
+                              <small>{groupTasks.length}</small>
+                            </h3>
+                            <div className="task-list" id={taskListId}>
+                              {renderedTasks.map((task) => {
+                                const selected = activePage === "tasks" && task.id === activeTaskId;
+                                const taskRunning = workingTasks.has(task.id);
+                                const taskMenuOpen = taskMenu?.taskId === task.id;
+                                const taskMeta = sidebarTaskPresentation(task, taskRunning).status;
+                                const stateLabel = taskRunning
+                                  ? ", running"
+                                  : task.unread
+                                    ? ", unread"
+                                    : "";
+                                return (
+                                  <div
+                                    className={`task-list__row ${task.unread ? "is-unread" : ""} ${
+                                      taskRunning ? "is-running" : ""
+                                    } ${taskMenuOpen ? "has-open-menu" : ""}`}
+                                    key={task.id}
+                                    onContextMenu={(event) => openTaskContextMenu(event, task.id)}
+                                  >
+                                    {renamingTask?.id === task.id ? (
+                                      <form
+                                        className="task-list__rename"
+                                        onSubmit={(event) => {
+                                          event.preventDefault();
+                                          commitTaskRename();
+                                        }}
+                                      >
+                                        <input
+                                          autoFocus
+                                          aria-label="Rename task"
+                                          value={renamingTask.title}
+                                          onBlur={commitTaskRename}
+                                          onChange={(event) =>
+                                            setRenamingTask({ id: task.id, title: event.target.value })
+                                          }
+                                          onKeyDown={(event) => {
+                                            if (event.key === "Escape") {
+                                              event.preventDefault();
+                                              setRenamingTask(null);
+                                            }
+                                          }}
+                                        />
+                                      </form>
+                                    ) : (
+                                      <>
+                                        <button
+                                          className={`task-list__item ${selected ? "is-selected" : ""}`}
+                                          aria-label={`${task.title}${stateLabel}${task.pinned ? ", pinned" : ""}`}
+                                          onClick={() => {
+                                            onSelectTask(task.id);
+                                            onOpenTasks();
+                                          }}
+                                        >
+                                          <span className="task-list__state" aria-hidden="true">
+                                            {taskRunning ? (
+                                              <XiaoIcon className="task-list__spinner" name="pending" size={13} />
+                                            ) : task.unread ? (
+                                              <i />
+                                            ) : null}
+                                          </span>
+                                          <span className="task-list__copy">
+                                            <span className="task-list__title">{task.title}</span>
+                                            <small>{taskMeta}</small>
+                                          </span>
+                                          {task.pinned ? (
+                                            <XiaoIcon className="task-list__pin" name="pin" size={12} />
+                                          ) : null}
+                                        </button>
+                                        <button
+                                          className="task-list__menu-trigger"
+                                          type="button"
+                                          aria-label={`Task actions for ${task.title}`}
+                                          aria-haspopup="menu"
+                                          aria-expanded={taskMenuOpen}
+                                          title="Task actions"
+                                          onClick={(event) => toggleTaskMenu(event, task.id)}
+                                        >
+                                          <XiaoIcon name="more" size={15} />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {hiddenTaskCount > 0 ? (
+                              <button
+                                className="task-group__toggle"
+                                type="button"
+                                aria-controls={taskListId}
+                                aria-expanded={groupExpanded}
+                                onClick={() => {
+                                  setExpandedTaskGroups((currentGroups) => {
+                                    const nextGroups = new Set(currentGroups);
+                                    if (groupExpanded) nextGroups.delete(group);
+                                    else nextGroups.add(group);
+                                    return nextGroups;
+                                  });
+                                }}
+                              >
+                                <span>{groupExpanded ? "Show less" : "Show more"}</span>
+                                {!groupExpanded ? <small>+{hiddenTaskCount}</small> : null}
+                              </button>
+                            ) : null}
+                          </section>
+                        );
+                      })}
+                      {projectCodexThreads.length ? (
+                        <section className="task-group sidebar-codex-chats">
+                          <h3>
+                            <span>Codex chats</span>
+                            <small>{projectCodexThreads.length}</small>
+                          </h3>
+                          <div className="sidebar-codex-chats__list">
+                            {projectCodexThreads.map((thread) => (
+                              <button
+                                type="button"
+                                key={thread.id}
+                                className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
+                                onClick={() => onSelectCodexThread(thread)}
+                                onContextMenu={(event) =>
+                                  openCodexThreadContextMenu(event, thread.id)}
+                              >
+                                <span>{thread.title}</span>
+                                <small>{relativeTime(thread.updatedAt, now)}</small>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+                      ) : null}
+                    </div>
+
+                    {!visibleTasks.length && !projectCodexThreads.length ? (
+                      <div className="sidebar__empty-project">
+                        <span>No tasks yet</span>
+                        <button type="button" onClick={onNewTask}>
+                          <XiaoIcon name="add" size={13} />
+                          <span>New task</span>
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </section>
-            ) : null}
-            {!visibleTasks.length ? (
-              <div className="sidebar-v2__empty">
-                <span className="sidebar-v2__empty-icon">
-                  <XiaoIcon name="taskQueue" size={17} />
+            );
+          })}
+          {codexHistoryError ? (
+            <div className="sidebar-codex-state is-error">{codexHistoryError}</div>
+          ) : null}
+          {unmatchedCodexThreads.length ? (
+            <details className="sidebar-other-chats">
+              <summary>
+                <span className="sidebar-codex-chats__title">
+                  <XiaoIcon name="branch" size={13} />
+                  <span>Other Codex chats</span>
                 </span>
-                <strong>No tasks yet</strong>
-                <p>Start a Task in {activeProject?.name ?? workspace.name}.</p>
-                <button type="button" onClick={onNewTask}>
-                  <XiaoIcon name="add" size={13} />
-                  <span>New task</span>
-                </button>
+                <span className="sidebar-other-chats__summary-end">
+                  <small>{unmatchedCodexThreads.length}</small>
+                  <XiaoIcon name="caret" size={11} />
+                </span>
+              </summary>
+              <p>Chats outside your added project folders</p>
+              <div className="sidebar-codex-chats__list">
+                {unmatchedCodexThreads.map((thread) => (
+                  <button
+                    type="button"
+                    key={thread.id}
+                    className={activeTaskId === `codex:${thread.id}` ? "is-selected" : ""}
+                    onClick={() => onSelectCodexThread(thread)}
+                    onContextMenu={(event) =>
+                      openCodexThreadContextMenu(event, thread.id)}
+                  >
+                    <span>{thread.title}</span>
+                    <small>
+                      {relativeTime(thread.updatedAt, now)}
+                    </small>
+                  </button>
+                ))}
               </div>
-            ) : null}
-          </section>
-
+            </details>
+          ) : null}
+        </div>
+        {hiddenProjects.length ? (
+          <details className="sidebar__hidden-projects">
+            <summary>Hidden projects ({hiddenProjects.length})</summary>
+            {hiddenProjects.map((project) => (
+              <button type="button" key={project.path} onClick={() => onRestoreProject(project)}>
+                Restore {project.name}
+              </button>
+            ))}
+          </details>
+        ) : null}
+          </>
+        )}
 
           <footer className="sidebar__footer">
             <nav className="sidebar__footer-nav" aria-label="Workspace utilities">
@@ -1169,7 +1269,7 @@ export function Sidebar({
                 <XiaoIcon name="folderOpen" size={15} />
                 <span>Open in Explorer</span>
               </button>
-              <button role="menuitem" onClick={() => void copyText(workspace.path)}>
+              <button role="menuitem" onClick={() => copyText(workspace.path)}>
                 <XiaoIcon name="copy" size={15} />
                 <span>Copy working directory</span>
               </button>
@@ -1177,9 +1277,7 @@ export function Sidebar({
                 role="menuitem"
                 disabled={!menuTask.threadId}
                 title={menuTask.threadId ? undefined : "This task has no active Codex session"}
-                onClick={() => {
-                  if (menuTask.threadId) void copyText(menuTask.threadId);
-                }}
+                onClick={() => menuTask.threadId && copyText(menuTask.threadId)}
               >
                 <XiaoIcon name="copy" size={15} />
                 <span>Copy session ID</span>
@@ -1197,6 +1295,47 @@ export function Sidebar({
                 <XiaoIcon name="taskQueue" size={15} />
                 <span>Continue in new task</span>
               </button>
+            </div>,
+            document.body,
+          )
+        : null}
+
+      {codexThreadMenu && menuCodexThread
+        ? createPortal(
+            <div
+              className="project-actions-menu codex-thread-actions-menu"
+              ref={codexThreadMenuRef}
+              role="menu"
+              onKeyDown={handleMenuKeyDown}
+              aria-label={`Actions for ${menuCodexThread.title}`}
+              style={{ top: codexThreadMenu.top, left: codexThreadMenu.left }}
+            >
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                onSelectCodexThread(menuCodexThread);
+              }}>
+                <XiaoIcon name="folderOpen" size={15} />
+                <span>Open chat</span>
+              </button>
+              <button role="menuitem" onClick={() => {
+                setCodexThreadMenu(null);
+                onArchiveCodexThread(menuCodexThread);
+              }}>
+                <XiaoIcon name="archive" size={15} />
+                <span>Archive chat</span>
+              </button>
+              <i className="context-menu-separator" />
+              <button role="menuitem" onClick={() => void copyText(menuCodexThread.title)}>
+                <XiaoIcon name="copy" size={15} />
+                <span>Copy title</span>
+              </button>
+              <button role="menuitem" onClick={() => void copyText(menuCodexThread.cwd)}>
+                <XiaoIcon name="folder" size={15} />
+                <span>Copy project path</span>
+              </button>
+              {copyError ? (
+                <p className="task-actions-menu__error" role="alert">{copyError}</p>
+              ) : null}
             </div>,
             document.body,
           )

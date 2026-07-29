@@ -84,9 +84,19 @@ import {
 } from "./mcpElicitation";
 
 const MAX_RUNTIME_LOGS = 240;
-const LIVE_DELTA_FLUSH_MS = 33;
+const LIVE_DELTA_FLUSH_MS = 16;
 const WORKSPACE_REFRESH_DEBOUNCE_MS = 180;
 const RUN_EVENT_PAGE_SIZE = 200;
+const LIVE_DELTA_METHODS = new Set([
+  "item/agentMessage/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/textDelta",
+  "item/commandExecution/outputDelta",
+]);
+
+export const agentMessageIsLiveDelta = (message: AgentMessage) =>
+  typeof message.params?.delta === "string" &&
+  LIVE_DELTA_METHODS.has(message.method ?? "");
 type LiveDeltaBatch = {
   deltas: LiveTimelineDelta[];
   eventCount: number;
@@ -198,6 +208,17 @@ export const runtimeForPublishedActiveRun = (
 export const resetPendingInputReplayForTaskRestore = (replayed: Set<string>) => {
   replayed.clear();
 };
+
+export const shouldRestoreTaskRunState = (
+  tauriHost: boolean,
+  listenersReady: boolean,
+  timelineComplete: boolean,
+  executionTaskId: string | null,
+) =>
+  tauriHost &&
+  listenersReady &&
+  timelineComplete &&
+  executionTaskId !== null;
 
 export const agentRuntimeTaskWorkspaceScopeMatches = (
   current: AgentRuntimeWorkspaceScope,
@@ -608,6 +629,7 @@ export const normalizeFileChangeDiff = (diff: string, kind: FileChangeKind) => {
 };
 
 const fileChangeKind = (value: unknown): FileChangeKind => {
+  if (value === "add" || value === "delete" || value === "update") return value;
   if (!value || typeof value !== "object") return null;
   const type = (value as Record<string, unknown>).type;
   return type === "add" || type === "delete" || type === "update" ? type : null;
@@ -622,8 +644,14 @@ export const fileChangeTimelineEntry = (
     const value = change as Record<string, unknown>;
     if (typeof value.path !== "string") return [];
     const diff = typeof value.diff === "string" ? value.diff : "";
-    const normalized = normalizeFileChangeDiff(diff, fileChangeKind(value.kind));
-    return [{ path: value.path, ...normalized }];
+    const kind = fileChangeKind(value.kind);
+    const normalized = normalizeFileChangeDiff(diff, kind);
+    const patch = kind === "add"
+      ? `--- /dev/null\n+++ b/${value.path}\n${normalized.patch}`
+      : kind === "delete"
+        ? `--- a/${value.path}\n+++ /dev/null\n${normalized.patch}`
+        : normalized.patch;
+    return [{ path: value.path, ...normalized, patch }];
   });
   if (!files.length) return null;
 
@@ -866,13 +894,14 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
   const createdAt = Date.now();
 
   if (item.type === "agentMessage" && typeof item.text === "string") {
+    const commentary = item.phase === "commentary";
     return {
       id,
       kind: "result",
       title: "Agent response",
       createdAt,
       body: item.text,
-      meta: "Xiao",
+      meta: commentary ? "Commentary" : "Xiao",
       status: "success",
     };
   }
@@ -890,11 +919,18 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
   }
 
   if (item.type === "reasoning") {
+    const textFromPart = (part: unknown) =>
+      typeof part === "string"
+        ? part
+        : part && typeof part === "object" &&
+            typeof (part as Record<string, unknown>).text === "string"
+          ? String((part as Record<string, unknown>).text)
+          : null;
     const summary = Array.isArray(item.summary)
-      ? item.summary.filter((part): part is string => typeof part === "string").join("\n\n")
+      ? item.summary.map(textFromPart).filter((part): part is string => part !== null).join("\n\n")
       : "";
     const content = Array.isArray(item.content)
-      ? item.content.filter((part): part is string => typeof part === "string").join("\n\n")
+      ? item.content.map(textFromPart).filter((part): part is string => part !== null).join("\n\n")
       : "";
     return {
       id,
@@ -924,26 +960,13 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
       (commandTool === "rg" || commandTool === "ripgrep");
     const failed = rawFailed && !noSearchMatches;
     const exploration = readExplorationActions(item);
-    if (exploration) {
-      return {
-        id,
-        kind: "explore",
-        createdAt,
-        title:
-          commandStatus === "inProgress"
-            ? "Exploring workspace"
-            : noSearchMatches
-              ? "No workspace matches"
-              : failed
-                ? "Exploration failed"
-                : "Explored workspace",
-        command: typeof item.command === "string" ? item.command : undefined,
-        body: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined,
-        meta: typeof item.cwd === "string" ? item.cwd : "Workspace",
-        status: commandStatus === "inProgress" ? "active" : failed ? "error" : "success",
-        exploration,
-      };
-    }
+    const pluginId = typeof item.pluginId === "string" && item.pluginId.trim()
+      ? item.pluginId.trim()
+      : null;
+    const scriptPath = typeof item.scriptPath === "string" && item.scriptPath.trim()
+      ? item.scriptPath.trim()
+      : null;
+    const source = typeof item.source === "string" ? item.source : null;
     return {
       id,
       kind: "command",
@@ -958,8 +981,15 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
             : "Command completed",
       command,
       body: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined,
-      meta: typeof item.cwd === "string" ? item.cwd : "Workspace",
+      meta: pluginId || scriptPath
+        ? ["Skill", pluginId, scriptPath].filter(Boolean).join(" · ")
+        : source === "userShell"
+          ? "Terminal"
+          : typeof item.cwd === "string" ? item.cwd : "Workspace",
       status: commandStatus === "inProgress" ? "active" : failed ? "error" : "success",
+      exploration: exploration ?? undefined,
+      durationMs: typeof item.durationMs === "number" ? Math.max(0, item.durationMs) : undefined,
+      exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
     };
   }
 
@@ -1009,13 +1039,63 @@ export const timelineEntryFromItem = (item: Record<string, unknown>): TimelineEn
   }
 
   if (item.type === "webSearch") {
+    const results = Array.isArray(item.results) ? item.results : [];
+    const body = results.length ? JSON.stringify(results, null, 2).slice(0, 24_000) : undefined;
+    const active = item.status === "started" || item.status === "inProgress";
+    const failed = item.status === "failed" || item.status === "cancelled";
     return {
       id,
       kind: "result",
       createdAt,
       title: typeof item.query === "string" ? `Searched: ${item.query}` : "Web search",
+      body,
       meta: "Browser tool",
+      status: active ? "active" : failed ? "error" : "success",
+    };
+  }
+
+  if (item.type === "imageView" && typeof item.path === "string") {
+    const name = item.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Viewed image";
+    return {
+      id,
+      kind: "command",
+      createdAt,
+      title: "Viewed an image",
+      meta: "Image tool",
       status: "success",
+      attachments: [{
+        id: `${id}-image`,
+        name,
+        path: item.path,
+        kind: "image",
+      }],
+    };
+  }
+
+  if (
+    typeof item.type === "string" &&
+    /(?:command|execution|shell|terminal|tool|skill|search)/i.test(item.type)
+  ) {
+    const label = item.type
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const bodySource = item.output ?? item.result ?? item.content ?? item.arguments;
+    const body = typeof bodySource === "string"
+      ? bodySource
+      : bodySource == null ? undefined : JSON.stringify(bodySource, null, 2);
+    return {
+      id,
+      kind: "command",
+      createdAt,
+      title: label,
+      body: body?.slice(0, 24_000),
+      meta: "Codex activity",
+      status: item.status === "inProgress"
+        ? "active"
+        : ["failed", "declined", "cancelled", "interrupted"].includes(String(item.status))
+          ? "error"
+          : "success",
     };
   }
 
@@ -1383,15 +1463,7 @@ export function useAgentRuntime(
   const queueLiveDelta = useCallback((taskId: string, message: AgentMessage) => {
     const method = message.method;
     const delta = message.params?.delta;
-    if (
-      typeof delta !== "string" ||
-      ![
-        "item/agentMessage/delta",
-        "item/reasoning/summaryTextDelta",
-        "item/reasoning/textDelta",
-        "item/commandExecution/outputDelta",
-      ].includes(method ?? "")
-    ) return false;
+    if (typeof delta !== "string" || !agentMessageIsLiveDelta(message)) return false;
 
     let batch = liveDeltaBatches.current.get(taskId);
     if (!batch) {
@@ -1924,6 +1996,30 @@ export function useAgentRuntime(
         return;
       }
 
+      if (
+        message.method === "item/mcpToolCall/progress" &&
+        typeof message.params?.itemId === "string" &&
+        typeof message.params.message === "string"
+      ) {
+        const itemId = message.params.itemId;
+        const progress = message.params.message.trim();
+        if (!progress) return;
+        updateTimeline(taskId, (current) =>
+          current.map((entry) =>
+            entry.id === itemId
+              ? {
+                  ...entry,
+                  body: entry.body
+                    ? `${entry.body}\n${progress}`.slice(-24_000)
+                    : progress,
+                  status: "active",
+                }
+              : entry,
+          ),
+        );
+        return;
+      }
+
       if (message.method === "thread/name/updated") {
         const threadId = readMessageThreadId(message);
         const threadName = message.params?.threadName;
@@ -2039,22 +2135,18 @@ export function useAgentRuntime(
           );
           return;
         }
-        if (
-          item.type === "commandExecution" ||
-          item.type === "fileChange" ||
-          item.type === "collabAgentToolCall" ||
-          item.type === "mcpToolCall" ||
-          item.type === "dynamicToolCall"
-        ) {
-          settleThinking(taskId);
-          const entry = timelineEntryFromItem(item);
-          if (entry) {
-            updateTimeline(taskId, (current) =>
-              current.some((currentEntry) => currentEntry.id === entry.id)
-                ? current
-                : [...current, entry],
-            );
-          }
+        settleThinking(taskId);
+        const entry = timelineEntryFromItem(item);
+        if (entry) {
+          const startedAt = typeof message.params?.startedAtMs === "number"
+            ? message.params.startedAtMs
+            : entry.createdAt;
+          const liveEntry = { ...entry, createdAt: startedAt };
+          updateTimeline(taskId, (current) =>
+            current.some((currentEntry) => currentEntry.id === liveEntry.id)
+              ? current
+              : [...current, liveEntry],
+          );
         }
       }
 
@@ -2084,6 +2176,10 @@ export function useAgentRuntime(
           : liveEntryId
             ? { ...entry, id: liveEntryId }
             : entry;
+        const completedAt = typeof message.params?.completedAtMs === "number"
+          ? message.params.completedAtMs
+          : completedEntry.createdAt;
+        const timestampedEntry = { ...completedEntry, createdAt: completedAt };
         if (item.type === "agentMessage") liveAgentEntries.current.delete(taskId);
         if (item.type === "reasoning") {
           if (typeof item.id === "string") {
@@ -2096,20 +2192,21 @@ export function useAgentRuntime(
           const timeline = item.type === "contextCompaction"
             ? invalidateUndoHistory(current)
             : current;
-          return timeline.some((currentEntry) => currentEntry.id === completedEntry.id)
+          return timeline.some((currentEntry) => currentEntry.id === timestampedEntry.id)
             ? timeline.map((currentEntry) => {
-                if (currentEntry.id !== completedEntry.id) return currentEntry;
+                if (currentEntry.id !== timestampedEntry.id) return currentEntry;
                 const streamedBody = currentEntry.body;
-                const completedBody = completedEntry.body;
+                const completedBody = timestampedEntry.body;
                 return {
-                  ...completedEntry,
+                  ...timestampedEntry,
+                  createdAt: currentEntry.createdAt ?? timestampedEntry.createdAt,
                   body:
                     item.type === "agentMessage" || item.type === "reasoning"
                       ? reconcileCompletedStreamBody(streamedBody, completedBody)
                       : completedBody ?? streamedBody,
                 };
               })
-            : [...timeline, completedEntry];
+            : [...timeline, timestampedEntry];
         });
       }
 
@@ -2489,7 +2586,8 @@ export function useAgentRuntime(
             if (
               !listenerIsCurrent() ||
               event.payload.taskId !== activeTaskIdRef.current ||
-              !activeTimelineReadyRef.current
+              !activeTimelineReadyRef.current ||
+              agentMessageIsLiveDelta(event.payload.message)
             ) return;
             const accepted = acceptRunProtocol(runProjectionRef.current, event.payload);
             if (!accepted.accepted) return;
@@ -2512,7 +2610,11 @@ export function useAgentRuntime(
                 activeGeneration,
                 event.payload,
               ) &&
-              (event.payload.message.id === 0 || compactingTasks.current.size > 0)
+              (
+                event.payload.message.id === 0 ||
+                compactingTasks.current.size > 0 ||
+                agentMessageIsLiveDelta(event.payload.message)
+              )
             ) {
               void handleMessage(event.payload.message);
             }
@@ -2713,7 +2815,13 @@ export function useAgentRuntime(
   ]);
 
   useEffect(() => {
-    if (!isTauriHost() || !listenersReady || !activeTaskTimelineComplete) return;
+    if (!shouldRestoreTaskRunState(
+      isTauriHost(),
+      listenersReady,
+      activeTaskTimelineComplete,
+      executionTaskId,
+    )) return;
+    const taskId = executionTaskId;
     resetPendingInputReplayForTaskRestore(replayedPendingInputs.current);
     let cancelled = false;
     const restoreScope = workspaceScopeRef.current;
@@ -2726,8 +2834,8 @@ export function useAgentRuntime(
       );
     const restore = async () => {
       const [runs, pendingInputs] = await Promise.all([
-        nativeBridge.listXiaoRuns(workspacePath, activeTaskId, 50),
-        nativeBridge.listXiaoPendingInputs(workspacePath, activeTaskId),
+        nativeBridge.listXiaoRuns(workspacePath, taskId, 50),
+        nativeBridge.listXiaoPendingInputs(workspacePath, taskId),
       ]);
       if (!restoreIsCurrent()) return;
       const scopedRuns = runs.filter((run) => run.workspacePath === workspacePath);
@@ -2847,6 +2955,7 @@ export function useAgentRuntime(
   }, [
     activeTaskId,
     activeTaskTimelineComplete,
+    executionTaskId,
     handleMessage,
     listenersReady,
     publishRunProjection,

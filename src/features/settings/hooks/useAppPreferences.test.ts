@@ -8,6 +8,7 @@ import {
 describe("normalizeAppPreferences", () => {
   it("restores every saved task run setting", () => {
     const preferences = normalizeAppPreferences({
+      importCodexHistory: true,
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
@@ -31,6 +32,8 @@ describe("normalizeAppPreferences", () => {
     });
 
     expect(preferences).toEqual({
+      importCodexHistory: true,
+      sidebarV2: true,
       showReasoningSummaries: false,
       expandToolOutput: true,
       focusNewTasks: false,
@@ -62,6 +65,7 @@ describe("normalizeAppPreferences", () => {
     const preferences = normalizeAppPreferences({ wrapCode: true });
 
     expect(preferences.fastMode).toBe(false);
+    expect(preferences.importCodexHistory).toBe(false);
     expect(preferences.launchBrand).toBe("logo");
     expect(preferences.taskRunDefaults).toEqual(defaultTaskRunDefaults);
   });

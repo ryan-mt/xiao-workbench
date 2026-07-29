@@ -16,6 +16,7 @@ permissions = [
   "allow-start-agent-runtime",
   "allow-stop-agent-runtime",
   "allow-agent-request",
+  "allow-read-codex-rollout-commands",
   "allow-read-agent-account",
   "allow-read-agent-rate-limits",
   "allow-read-agent-usage",

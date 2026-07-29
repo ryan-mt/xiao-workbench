@@ -22,7 +22,7 @@ unsafe extern "C" {}
 
 use agent::commands::{
     agent_request, list_agent_models, read_agent_account, read_agent_rate_limits, read_agent_usage,
-    start_agent_runtime, stop_agent_runtime,
+    read_codex_rollout_commands, start_agent_runtime, stop_agent_runtime,
 };
 use agent::runtime::EnvironmentRuntimeRegistry;
 use browser::commands::{
@@ -207,6 +207,7 @@ pub fn run() {
             start_agent_runtime,
             stop_agent_runtime,
             agent_request,
+            read_codex_rollout_commands,
             read_agent_account,
             read_agent_rate_limits,
             read_agent_usage,

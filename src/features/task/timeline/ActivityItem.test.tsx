@@ -46,6 +46,7 @@ describe("ActivityItem user message", () => {
     });
 
     expect(markup).toContain("thấy gì?");
+    expect(markup).not.toContain(">You<");
     expect(markup).not.toContain("selected_text");
     expect(markup).not.toContain("Hi! What would you like to work on?");
   });
@@ -73,8 +74,9 @@ describe("ActivityItem user message", () => {
       />,
     );
 
-    expect(renderUser(true)).toContain("Fork from here");
-    expect(renderUser(false)).not.toContain("Fork from here");
+    expect(renderUser(true)).toContain("title=\"Fork from here\"");
+    expect(renderUser(true)).toContain(">Fork<");
+    expect(renderUser(false)).not.toContain("title=\"Fork from here\"");
   });
 
   it("keeps sent images visible while the prompt is queued", () => {
@@ -119,6 +121,21 @@ describe("ActivityItem approval actions", () => {
 });
 
 describe("ActivityItem command retries", () => {
+  it("keeps active integrations labeled as Using instead of shell timing", () => {
+    const markup = renderCompaction({
+      id: "dynamic-tool",
+      kind: "command",
+      title: "node_repl · js",
+      command: "const result = await inspect();",
+      meta: "Dynamic tool",
+      createdAt: Date.now() - 2_000,
+      status: "active",
+    });
+
+    expect(markup).toContain(">Using node_repl · js<");
+    expect(markup).not.toContain("Running command for");
+  });
+
   it("shows one warning row with its attempt count for an environment block", () => {
     const markup = renderCompaction({
       id: "command-1",
@@ -224,6 +241,35 @@ describe("ActivityItem browser tools", () => {
     expect(markup).toContain("site:github.com/example/project message part");
     expect(markup).not.toContain("activity__body");
     expect(markup).not.toContain("Browser tool");
+  });
+
+  it("keeps the disclosure caret adjacent to the search query", () => {
+    const markup = renderCompaction({
+      id: "search-results",
+      kind: "result",
+      title: "Searched: app-server event schema",
+      body: "[{\"title\":\"Schema\"}]",
+      meta: "Browser tool",
+      status: "success",
+    });
+
+    expect(markup).toContain("<details class=\"activity__tool-disclosure\"");
+    expect(markup).toMatch(/activity__web-query[^>]*>app-server event schema<\/span><span class="activity__tool-caret">/);
+    expect(markup).toContain("aria-label=\"Search results\"");
+  });
+
+  it("uses the web-search presentation for command-form search events", () => {
+    const markup = renderCompaction({
+      id: "search-command",
+      kind: "command",
+      title: "Searched: Codex app-server protocol",
+      meta: "Web search",
+      status: "success",
+    });
+
+    expect(markup).toContain(">Web search<");
+    expect(markup).toContain("Codex app-server protocol");
+    expect(markup).not.toContain(">Ran command<");
   });
 });
 
@@ -368,7 +414,24 @@ describe("ActivityItem timeline disclosures", () => {
     expect(markup).not.toContain("<details class=\"activity__tool-disclosure\" open=\"\"");
   });
 
-  it("shows an absolute patch path and first changed line", () => {
+  it("shows app-server command duration and successful exit state", () => {
+    const markup = renderCompaction({
+      id: "command-complete",
+      kind: "command",
+      title: "Command completed",
+      command: "npm run check",
+      body: "TypeScript passed",
+      status: "success",
+      durationMs: 24_300,
+      exitCode: 0,
+    }, 1, false);
+
+    expect(markup).toContain("Ran command in 24s");
+    expect(markup).toContain("Completed · exit 0");
+    expect(markup).toContain("$ npm run check");
+  });
+
+  it("renders a compact flat file row without line metadata or disclosure chrome", () => {
     const markup = renderCompaction({
       id: "patch-1",
       kind: "change",
@@ -383,10 +446,13 @@ describe("ActivityItem timeline disclosures", () => {
     });
 
     expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
-    expect(markup).toContain("line 10");
-    expect(markup).toContain(">Edit<");
+    expect(markup).toContain(">Edited<");
     expect(markup).toContain("patch-activity__verb is-active");
-    expect(markup).not.toContain("<details open=\"\"");
+    expect(markup).toContain("patch-activity__row");
+    expect(markup).toContain("<button class=\"patch-activity__path\"");
+    expect(markup).not.toContain("line 10");
+    expect(markup).not.toContain("patch-activity__caret");
+    expect(markup).not.toContain("<details");
   });
 
   it("keeps completed-turn actions compact without repeating edited files", () => {

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { WorkspaceSnapshot } from "../../../core/models/workspace";
+import type { CodexThreadSummary } from "../../../core/models/agent";
 import type { ProjectGroup, XiaoProjectSummary } from "../../../core/models/xiao";
 import type { AttentionHydrationStatus } from "../../agent/hooks/useAgentRuntime";
 import type { WorkbenchTask } from "../../task/task.types";
@@ -40,11 +41,7 @@ const project: XiaoProjectSummary = {
   updatedAt: Date.now(),
 };
 
-const task = (
-  id: string,
-  updatedAt: number,
-  patch: Partial<WorkbenchTask> = {},
-): WorkbenchTask => ({
+const task = (id: string, updatedAt: number): WorkbenchTask => ({
   id,
   title: id,
   meta: "Now",
@@ -78,7 +75,6 @@ const task = (
   executionEnvironmentId: null,
   workspaceMode: "local",
   managedWorktreeId: null,
-  ...patch,
 });
 
 type SidebarContent = {
@@ -86,7 +82,8 @@ type SidebarContent = {
   projectGroups?: ProjectGroup[];
   tasks?: WorkbenchTask[];
   activeTaskId?: string;
-  workingTaskIds?: string[];
+  activeProjectPath?: string;
+  codexThreads?: CodexThreadSummary[];
 };
 
 const sidebarElement = (
@@ -96,16 +93,18 @@ const sidebarElement = (
   content: SidebarContent = {},
   canOpenProjects = false,
   onCreateProjectGroup: (name: string) => void = noop,
+  onOpenTasks: () => void = noop,
 ) => (
   <Sidebar
       activePage={activePage}
       projects={content.projects ?? []}
       projectGroups={content.projectGroups ?? []}
-      activeProjectPath={workspace.path}
+      activeProjectPath={content.activeProjectPath ?? workspace.path}
       tasks={content.tasks ?? []}
+      codexThreads={content.codexThreads ?? []}
       activeTaskId={content.activeTaskId ?? ""}
       workspace={workspace}
-      workingTaskIds={content.workingTaskIds ?? []}
+      workingTaskIds={[]}
       account={null}
       profile={{ name: "Xiao User", avatarDataUrl: null }}
       canOpenProjects={canOpenProjects}
@@ -115,7 +114,7 @@ const sidebarElement = (
       onOpenAttention={noop}
       onOpenProfile={noop}
       onOpenSettings={noop}
-      onOpenTasks={noop}
+      onOpenTasks={onOpenTasks}
       onAddProject={noop}
       onCreateProjectGroup={onCreateProjectGroup}
       onNewTask={noop}
@@ -203,34 +202,71 @@ describe("Sidebar attention trigger", () => {
     expect(markup).not.toContain('class="sidebar__rail"');
     expect(markup).not.toContain('class="sidebar__new-task"');
     expect(markup).toContain(">Find anything</span>");
-    expect(markup).toContain(">Tasks</span>");
-    expect(markup).toContain('aria-label="Current project: Xiao"');
-    expect(markup).toContain('aria-label="New task"');
+    expect(markup).toContain(">Projects</span>");
+    expect(markup).not.toContain(">Tasks</span>");
     expect(markup).toContain(">Attention</span>");
     expect(markup).toContain(">Settings</span>");
     expect(markup).toContain(">Xiao User</strong>");
   });
 
+  it("keeps production branding free of non-production stage styling", () => {
+    const markup = renderSidebar(0);
+
+    expect(markup).toContain('class="sidebar__brand"');
+    expect(markup).not.toContain('class="sidebar__brand is-on-stage"');
+  });
+
   it("offers a new task action for an empty project", () => {
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project] });
 
-    expect(markup).toContain('class="sidebar app-sidebar sidebar--');
-    expect(markup).toContain(">No tasks yet</strong>");
+    expect(markup).toContain('class="sidebar app-sidebar"');
+    expect(markup).toContain(">No tasks yet</span>");
     expect(markup).toContain(">New task</span>");
   });
 
-  it("labels project and group creation actions", () => {
+  it("returns to Tasks when the active project is clicked", () => {
+    const onOpenTasks = vi.fn();
     render(sidebarElement(
       0,
-      "tasks",
+      "settings",
       "ready",
       { projects: [project] },
-      true,
+      false,
+      noop,
+      onOpenTasks,
     ));
-    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
 
-    expect(screen.getByRole("button", { name: "Create project group" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add project" })).toBeTruthy();
+    const projectButton = document.querySelector<HTMLButtonElement>(".sidebar-project__select");
+    expect(projectButton).not.toBeNull();
+    fireEvent.click(projectButton!);
+    expect(onOpenTasks).toHaveBeenCalledOnce();
+  });
+
+  it("expands the containing project when the active workspace is nested beneath it", () => {
+    const nestedTask = task("Nested workspace task", Date.now());
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [nestedTask],
+      activeTaskId: nestedTask.id,
+      activeProjectPath: `${project.path}/.xiao/worktrees/pr-12`,
+    }));
+
+    const projectButton = document.querySelector<HTMLButtonElement>(".sidebar-project__select");
+    expect(projectButton?.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: nestedTask.title })).not.toBeNull();
+
+    fireEvent.click(projectButton!);
+    expect(projectButton?.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: nestedTask.title })).toBeNull();
+  });
+
+  it("labels project and group creation actions", () => {
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project] }, true);
+
+    expect(markup).toContain('aria-label="Create project group"');
+    expect(markup).toContain(">Group</span>");
+    expect(markup).toContain('aria-label="Add project"');
+    expect(markup).toContain(">Add</span>");
   });
 
   it("creates project groups through an in-app dialog", () => {
@@ -244,7 +280,6 @@ describe("Sidebar attention trigger", () => {
       onCreateProjectGroup,
     ));
 
-    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
     fireEvent.click(screen.getByRole("button", { name: "Create project group" }));
     const dialog = screen.getByRole("dialog", { name: "New project group" });
     fireEvent.change(screen.getByLabelText("Group name"), { target: { value: "Client work" } });
@@ -262,18 +297,17 @@ describe("Sidebar attention trigger", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    render(sidebarElement(0, "tasks", "ready", {
+    const markup = renderSidebar(0, "tasks", "ready", {
       projects: [project],
       projectGroups: [emptyGroup],
-    }));
-    fireEvent.click(screen.getByRole("button", { name: "Current project: Xiao" }));
+    });
 
-    expect(screen.getByText("Empty Group")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Rename Empty Group" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Move Empty Group up" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Move Empty Group down" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Delete Empty Group" })).toBeTruthy();
-    expect(screen.getByText("Ungrouped")).toBeTruthy();
+    expect(markup).toContain(">Empty Group</span>");
+    expect(markup).toContain('aria-label="Rename Empty Group"');
+    expect(markup).toContain('aria-label="Move Empty Group up"');
+    expect(markup).toContain('aria-label="Move Empty Group down"');
+    expect(markup).toContain('aria-label="Delete Empty Group"');
+    expect(markup).toContain(">Ungrouped</span>");
   });
 });
 
@@ -286,8 +320,24 @@ describe("Sidebar Companion trigger", () => {
   });
 });
 
-describe("Sidebar V2 task queue", () => {
-  it("keeps the active task visible as a selected work card", () => {
+describe("Sidebar task group disclosure", () => {
+  it("keeps task order stable when activity timestamps change", () => {
+    const now = Date.now();
+    const olderTask = { ...task("Created first", now), createdAt: now - 2_000 };
+    const newerTask = {
+      ...task("Created second", now - 1_000),
+      createdAt: now - 1_000,
+      updatedAt: now - 2_000,
+    };
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [olderTask, newerTask],
+    });
+
+    expect(markup.indexOf("Created second")).toBeLessThan(markup.indexOf("Created first"));
+  });
+
+  it("keeps the active task in its recent time group", () => {
     const now = Date.now();
     const activeTask = task("Active task", now);
     const markup = renderSidebar(0, "tasks", "ready", {
@@ -296,92 +346,135 @@ describe("Sidebar V2 task queue", () => {
       activeTaskId: activeTask.id,
     });
 
-    expect(markup).toContain("Active task");
-    expect(markup).toContain("sidebar-v2-task--card");
-    expect(markup).toContain("is-selected");
+    expect(markup).not.toContain(">Active</span>");
+    expect(markup).toContain(">Recent</span><small>2</small>");
+    expect(markup).toContain('class="task-list__item is-selected"');
   });
 
-  it("shows the full active queue without time-group disclosures", () => {
+  it.each([
+    ["ready_for_review", "Ready for review"],
+    ["published", "Published"],
+    ["completed", "Completed"],
+  ] as const)("shows the durable %s stage in the legacy task list", (stage, label) => {
+    const stagedTask = {
+      ...task(`${label} task`, Date.now()),
+      stage,
+      threadId: `thread-${stage}`,
+      timelineEntryCount: 1,
+    };
+    const markup = renderSidebar(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [stagedTask],
+    });
+
+    expect(markup).toContain(`<small>${label}</small>`);
+  });
+
+  it("shows all tasks without a disclosure at the six-task limit", () => {
+    const now = Date.now();
+    const tasks = Array.from({ length: 6 }, (_, index) =>
+      task(`Recent task ${index + 1}`, now - index),
+    );
+    const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
+
+    expect(markup).toContain("Recent task 6");
+    expect(markup).not.toContain("task-group__toggle");
+  });
+
+  it("collapses task groups after six tasks and reports the hidden count", () => {
     const now = Date.now();
     const tasks = Array.from({ length: 8 }, (_, index) =>
       task(`Recent task ${index + 1}`, now - index),
     );
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project], tasks });
 
-    expect(markup).toContain("Recent task 8");
-    expect(markup).not.toContain("task-group__toggle");
-    expect(markup).not.toContain(">Recent</span>");
+    expect(markup).toContain("Recent task 6");
+    expect(markup).not.toContain("Recent task 7");
+    expect(markup).not.toContain("Recent task 8");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain(">Show more</span><small>+2</small>");
   });
 
-  it("moves completed tasks into a collapsible slim shelf", () => {
+  it("keeps an active task visible when it falls beyond a collapsed group's limit", () => {
     const now = Date.now();
-    const completedTask = task("Completed task", now, { stage: "completed" });
-    render(sidebarElement(0, "tasks", "ready", {
-      projects: [project],
-      tasks: [task("Active task", now - 1), completedTask],
-      activeTaskId: completedTask.id,
-    }));
-
-    const toggle = screen.getByRole("button", { name: "Completed" });
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByText("Completed task")).toBeTruthy();
-    expect(screen.getByText("Completed task").closest(".sidebar-v2-task--slim")).toBeTruthy();
-
-    fireEvent.click(toggle);
-
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByText("Completed task")).toBeNull();
-  });
-
-  it("gives running work the strongest visual status", () => {
-    const running = task("Running task", Date.now(), { stage: "ready_for_review" });
+    const tasks = Array.from({ length: 7 }, (_, index) =>
+      task(`Recent task ${index + 1}`, now - index),
+    );
+    const activeTask = tasks[6]!;
     const markup = renderSidebar(0, "tasks", "ready", {
       projects: [project],
-      tasks: [running],
-      workingTaskIds: [running.id],
+      tasks,
+      activeTaskId: activeTask.id,
     });
 
-    expect(markup).toContain("is-running");
-    expect(markup).toContain(">Running</span>");
+    expect(markup).toContain(activeTask.title);
+    expect(markup).toContain('class="task-list__item is-selected"');
+    expect(markup).toContain(">Show more</span><small>+1</small>");
   });
+});
 
-  it("keeps clipboard failures recoverable instead of rejecting the click handler", async () => {
-    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
-    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockRejectedValue(new Error("clipboard denied")),
-      },
+describe("Sidebar Codex thread menu", () => {
+  it("reclamps against the rendered height when a copy error expands the menu", async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 300 });
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("codex-thread-actions-menu")) {
+          const height = this.querySelector('[role="alert"]') ? 240 : 180;
+          return {
+            bottom: 0,
+            height,
+            left: 0,
+            right: 0,
+            top: 0,
+            width: 218,
+            x: 0,
+            y: 0,
+            toJSON: () => ({}),
+          };
+        }
+        return {
+          bottom: 0,
+          height: 0,
+          left: 0,
+          right: 0,
+          top: 0,
+          width: 0,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      });
+    const thread: CodexThreadSummary = {
+      id: "thread-1",
+      title: "Imported chat",
+      preview: "",
+      cwd: workspace.path,
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    };
+
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      codexThreads: [thread],
+    }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Imported chat/ }), {
+      clientX: 100,
+      clientY: 290,
     });
-    Object.defineProperty(document, "execCommand", {
+
+    const menu = await screen.findByRole("menu", { name: "Actions for Imported chat" });
+    expect(menu.style.top).toBe("112px");
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy title" }));
+    await screen.findByRole("alert");
+    expect(menu.style.top).toBe("52px");
+
+    bounds.mockRestore();
+    Object.defineProperty(window, "innerHeight", {
       configurable: true,
-      value: vi.fn(() => false),
+      value: originalInnerHeight,
     });
-
-    try {
-      render(sidebarElement(0, "tasks", "ready", {
-        projects: [project],
-        tasks: [task("Copy target", Date.now())],
-      }));
-      fireEvent.contextMenu(screen.getByText("Copy target").closest("article")!);
-      fireEvent.click(screen.getByRole("menuitem", { name: "Copy working directory" }));
-
-      expect((await screen.findByRole("alert")).textContent).toContain(
-        "Could not copy to the clipboard",
-      );
-      expect(screen.getByRole("menu", { name: "Actions for Copy target" })).toBeTruthy();
-    } finally {
-      if (clipboardDescriptor) {
-        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
-      } else {
-        Reflect.deleteProperty(navigator, "clipboard");
-      }
-      if (execCommandDescriptor) {
-        Object.defineProperty(document, "execCommand", execCommandDescriptor);
-      } else {
-        Reflect.deleteProperty(document, "execCommand");
-      }
-    }
   });
 });

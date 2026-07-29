@@ -50,6 +50,7 @@ import {
   SquarePlus,
   SquareTerminal,
   Terminal,
+  Trash2,
   Undo2,
   User,
   Workflow,
@@ -110,6 +111,7 @@ export type XiaoIconName =
   | "settings"
   | "sidebar"
   | "target"
+  | "trash"
   | "todoPending"
   | "taskQueue"
   | "terminal"
@@ -174,6 +176,7 @@ const icons = {
   settings: SlidersHorizontal,
   sidebar: PanelLeft,
   target: Scan,
+  trash: Trash2,
   todoPending: CircleDashed,
   taskQueue: ListTodo,
   terminal: SquareTerminal,

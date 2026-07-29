@@ -148,6 +148,12 @@ export type TimelineEntry = {
   approvalKind?: AgentApprovalRequestKind;
   approvalPermissions?: Record<string, unknown>;
   turnId?: string;
+  /** App-server supplied wall-clock duration for the owning turn. */
+  turnDurationMs?: number;
+  /** App-server supplied wall-clock duration for this execution item. */
+  durationMs?: number;
+  /** Shell exit code when this entry represents a command execution. */
+  exitCode?: number | null;
   turnDiff?: string;
   collaborators?: AgentCollaborator[];
   collaborationTool?: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";
@@ -177,6 +183,41 @@ export type AgentAttachment = {
   preview?: string;
   /** Fingerprint of the exact patch the review comment was created against. */
   sourceRevision?: string;
+};
+
+export type CodexThreadSummary = {
+  id: string;
+  title: string;
+  preview: string;
+  cwd: string;
+  rolloutPath?: string;
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+  status?: "working" | "waiting" | "failed" | "ready" | "done";
+  additions?: number;
+  deletions?: number;
+};
+
+export type CodexRolloutCommand = {
+  id: string;
+  turnId?: string | null;
+  turnIndex?: number | null;
+  activityKind:
+    | "command"
+    | "webSearch"
+    | "integration"
+    | "skill"
+    | "tool"
+    | "imageView"
+    | "timelineMarker";
+  label?: string | null;
+  command: string;
+  output?: string | null;
+  createdAt?: string | null;
+  markerSpan?: number | null;
+  durationMs?: number | null;
+  exitCode?: number | null;
 };
 
 export type AgentFollowUp = {

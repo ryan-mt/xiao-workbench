@@ -53,7 +53,7 @@ describe("ToolCallGroup", () => {
     expect(markup).toContain("Show 3 calls · 1 failed");
   });
 
-  it("presents a corrected shell call as recovered instead of leaving the group red", () => {
+  it("does not let a different command from the same executable recover a failure", () => {
     const markup = renderToStaticMarkup(
       <ToolCallGroup
         entries={[
@@ -67,6 +67,26 @@ describe("ToolCallGroup", () => {
             command: "\"powershell.exe\" -Command \"rg -n -F 'valid' src\"",
             status: "success",
           }),
+        ]}
+        expandByDefault={false}
+        index={0}
+      >
+        <span>Tool details</span>
+      </ToolCallGroup>,
+    );
+
+    expect(markup).toContain("tool-call-group is-error");
+    expect(markup).not.toContain("tool-call-group is-recovered");
+    expect(markup).toContain("Show 2 calls · 1 failed");
+  });
+
+  it("marks an actual retry of the same command as recovered", () => {
+    const command = "\"powershell.exe\" -Command \"npm test\"";
+    const markup = renderToStaticMarkup(
+      <ToolCallGroup
+        entries={[
+          tool("one", { command, status: "error" }),
+          tool("two", { command, status: "success" }),
         ]}
         expandByDefault={false}
         index={0}

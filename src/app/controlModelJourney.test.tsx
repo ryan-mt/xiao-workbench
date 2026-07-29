@@ -514,9 +514,7 @@ const clickWorkspaceTool = async (name: string) => {
   fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(name) }));
 };
 
-const taskButton = (title: string) => screen.getAllByText(title)
-  .map((element) => element.closest(".sidebar-v2-task__select"))
-  .find((element): element is HTMLElement => element instanceof HTMLElement)!;
+const taskButton = (title: string) => screen.getByRole("button", { name: `Open ${title}` });
 
 describe("control-model application shell journey", () => {
   beforeEach(() => {

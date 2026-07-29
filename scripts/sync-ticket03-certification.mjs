@@ -22,6 +22,7 @@ const excludedDirectories = new Set([
   ".git",
   ".hermes",
   ".next",
+  ".ok",
   ".pi",
   ".scratch",
   ".vite",

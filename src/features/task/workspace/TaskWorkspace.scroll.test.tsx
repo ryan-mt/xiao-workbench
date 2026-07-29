@@ -24,6 +24,7 @@ vi.mock("./TaskHeader", () => ({
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 const runtime: AgentRuntimeState = {
@@ -60,7 +61,7 @@ const workspace: WorkspaceSnapshot = {
 
 const taskWorkspaceProps = (
   timeline: TimelineEntry[],
-  initialTimelineScrollTop: number,
+  initialTimelineScrollTop: number | null,
 ): ComponentProps<typeof TaskWorkspace> => ({
   taskId: "task-a",
   executionTaskId: "task-a",
@@ -181,5 +182,83 @@ describe("TaskWorkspace live output scrolling", () => {
     );
 
     expect(scrollArea.scrollTop).toBe(1_200);
+  });
+
+  it("flushes a pending scroll position to the task that produced it", () => {
+    vi.useFakeTimers();
+    const firstSave = vi.fn();
+    const secondSave = vi.fn();
+    const entries = [{ id: "entry-a", kind: "agent", title: "Output" }] satisfies TimelineEntry[];
+    const firstProps = {
+      ...taskWorkspaceProps(entries, 0),
+      onTimelineScrollTopChange: firstSave,
+    };
+    const view = render(<TaskWorkspace {...firstProps} />);
+    const scrollArea = view.container.querySelector<HTMLElement>(".task-workspace__scroll")!;
+    scrollArea.scrollTop = 42;
+    fireEvent.scroll(scrollArea);
+
+    view.rerender(
+      <TaskWorkspace
+        {...taskWorkspaceProps(entries, 0)}
+        taskId="task-b"
+        executionTaskId="task-b"
+        onTimelineScrollTopChange={secondSave}
+      />,
+    );
+
+    expect(firstSave).toHaveBeenCalledWith(42);
+    expect(secondSave).not.toHaveBeenCalled();
+  });
+
+  it("uses the latest persistence callback inside the debounce", () => {
+    vi.useFakeTimers();
+    const firstSave = vi.fn();
+    const latestSave = vi.fn();
+    const entries = [{ id: "entry-a", kind: "agent", title: "Output" }] satisfies TimelineEntry[];
+    const view = render(
+      <TaskWorkspace
+        {...taskWorkspaceProps(entries, 0)}
+        onTimelineScrollTopChange={firstSave}
+      />,
+    );
+    const scrollArea = view.container.querySelector<HTMLElement>(".task-workspace__scroll")!;
+    scrollArea.scrollTop = 64;
+    fireEvent.scroll(scrollArea);
+    view.rerender(
+      <TaskWorkspace
+        {...taskWorkspaceProps(entries, 0)}
+        onTimelineScrollTopChange={latestSave}
+      />,
+    );
+    vi.advanceTimersByTime(700);
+
+    expect(firstSave).not.toHaveBeenCalled();
+    expect(latestSave).toHaveBeenCalledWith(64);
+  });
+
+  it("distinguishes a saved top position from an unseen task", () => {
+    const entries = [{ id: "entry-a", kind: "agent", title: "Output" }] satisfies TimelineEntry[];
+    const view = render(<TaskWorkspace {...taskWorkspaceProps(entries, 10)} />);
+    const scrollArea = view.container.querySelector<HTMLElement>(".task-workspace__scroll")!;
+    Object.defineProperty(scrollArea, "scrollHeight", { configurable: true, value: 900 });
+
+    view.rerender(
+      <TaskWorkspace
+        {...taskWorkspaceProps(entries, 0)}
+        taskId="task-b"
+        executionTaskId="task-b"
+      />,
+    );
+    expect(scrollArea.scrollTop).toBe(0);
+
+    view.rerender(
+      <TaskWorkspace
+        {...taskWorkspaceProps(entries, null)}
+        taskId="task-c"
+        executionTaskId="task-c"
+      />,
+    );
+    expect(scrollArea.scrollTop).toBe(900);
   });
 });

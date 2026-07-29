@@ -1,4 +1,20 @@
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRolloutCommand {
+    pub id: String,
+    pub turn_id: Option<String>,
+    pub turn_index: Option<u64>,
+    pub activity_kind: String,
+    pub label: Option<String>,
+    pub command: String,
+    pub output: Option<String>,
+    pub created_at: Option<String>,
+    pub marker_span: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i64>,
+}
 use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize)]

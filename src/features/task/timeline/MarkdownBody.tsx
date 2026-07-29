@@ -1,7 +1,9 @@
 import {
   Children,
+  createContext,
   isValidElement,
   memo,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -19,10 +21,89 @@ import {
   projectStreamingMarkdown,
   type MarkdownStreamProjection,
 } from "./markdownStream";
+import { MessageImage } from "./MessageImage";
 
 const markdownPlugins = [remarkGfm];
 const maxMarkdownCharacters = 200_000;
 const highlightCacheLimit = 64;
+const streamedTextPaceMs = 24;
+const streamedTextImmediateLimit = 512;
+const streamedTextBoundary = /[\s.,!?;:)\]]/;
+const LinkedMarkdownImageContext = createContext(false);
+
+const containsMarkdownImage = (node: unknown): boolean => {
+  if (typeof node !== "object" || node === null) return false;
+  if ("tagName" in node && node.tagName === "img") return true;
+  if (!("children" in node) || !Array.isArray(node.children)) return false;
+  return node.children.some(containsMarkdownImage);
+};
+
+const pacedStep = (remaining: number) => {
+  if (remaining <= 12) return 2;
+  if (remaining <= 48) return 4;
+  if (remaining <= 96) return 8;
+  return Math.min(256, Math.ceil(remaining / 4));
+};
+
+const nextPacedEnd = (text: string, start: number) => {
+  const end = Math.min(text.length, start + pacedStep(text.length - start));
+  const boundary = Math.min(text.length, end + 8);
+  for (let index = end; index < boundary; index += 1) {
+    if (streamedTextBoundary.test(text[index] ?? "")) return index + 1;
+  }
+  return end;
+};
+
+const usePacedStreamingText = (content: string, streaming: boolean) => {
+  const [visible, setVisible] = useState(content);
+  const visibleRef = useRef(content);
+  const contentRef = useRef(content);
+  const streamingRef = useRef(streaming);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    contentRef.current = content;
+    streamingRef.current = streaming;
+
+    const clear = () => {
+      if (timerRef.current === null) return;
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    };
+    const sync = (value: string) => {
+      visibleRef.current = value;
+      setVisible(value);
+    };
+    const advance = () => {
+      timerRef.current = null;
+      const latest = contentRef.current;
+      const shown = visibleRef.current;
+      if (!streamingRef.current || !latest.startsWith(shown) || latest.length <= shown.length) {
+        sync(latest);
+        return;
+      }
+      const end = nextPacedEnd(latest, shown.length);
+      sync(latest.slice(0, end));
+      if (end < latest.length) timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
+    };
+
+    clear();
+    const shown = visibleRef.current;
+    if (
+      !streaming ||
+      !content.startsWith(shown) ||
+      content.length <= shown.length ||
+      content.length - shown.length <= streamedTextImmediateLimit
+    ) {
+      sync(content);
+      return clear;
+    }
+    timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
+    return clear;
+  }, [content, streaming]);
+
+  return streaming ? visible : content;
+};
 
 const copyText = async (text: string) => {
   if (navigator.clipboard?.writeText) {
@@ -179,77 +260,6 @@ const rememberHighlightedCode = (key: string, value: HighlightedCode) => {
   }
 };
 
-const streamedTextPaceMs = 24;
-const streamedTextImmediateLimit = 512;
-const streamedTextBoundary = /[\s.,!?;:)\]]/;
-
-const pacedStep = (remaining: number) => {
-  if (remaining <= 12) return 2;
-  if (remaining <= 48) return 4;
-  if (remaining <= 96) return 8;
-  return Math.min(256, Math.ceil(remaining / 4));
-};
-
-const nextPacedEnd = (text: string, start: number) => {
-  const end = Math.min(text.length, start + pacedStep(text.length - start));
-  const boundary = Math.min(text.length, end + 8);
-  for (let index = end; index < boundary; index += 1) {
-    if (streamedTextBoundary.test(text[index] ?? "")) return index + 1;
-  }
-  return end;
-};
-
-const usePacedStreamingText = (content: string, streaming: boolean) => {
-  const [visible, setVisible] = useState(content);
-  const visibleRef = useRef(content);
-  const contentRef = useRef(content);
-  const streamingRef = useRef(streaming);
-  const timerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    contentRef.current = content;
-    streamingRef.current = streaming;
-
-    const clear = () => {
-      if (timerRef.current === null) return;
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    };
-    const sync = (value: string) => {
-      visibleRef.current = value;
-      setVisible(value);
-    };
-    const advance = () => {
-      timerRef.current = null;
-      const latest = contentRef.current;
-      const shown = visibleRef.current;
-      if (!streamingRef.current || !latest.startsWith(shown) || latest.length <= shown.length) {
-        sync(latest);
-        return;
-      }
-      const end = nextPacedEnd(latest, shown.length);
-      sync(latest.slice(0, end));
-      if (end < latest.length) timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
-    };
-
-    clear();
-    const shown = visibleRef.current;
-    if (
-      !streaming ||
-      !content.startsWith(shown) ||
-      content.length <= shown.length ||
-      content.length - shown.length <= streamedTextImmediateLimit
-    ) {
-      sync(content);
-      return clear;
-    }
-    timerRef.current = window.setTimeout(advance, streamedTextPaceMs);
-    return clear;
-  }, [content, streaming]);
-
-  return streaming ? visible : content;
-};
-
 function InlineCode({
   children,
   className,
@@ -284,10 +294,10 @@ function MarkdownImage({
   node: _node,
   src,
   alt,
-  onError,
+  title,
   ...props
 }: ComponentProps<"img"> & { node?: unknown }) {
-  const [failed, setFailed] = useState(false);
+  const linked = useContext(LinkedMarkdownImageContext);
   const localPath = localMarkdownImagePath(src);
   const tauriHost = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   const resolvedSource = localPath
@@ -297,13 +307,13 @@ function MarkdownImage({
     : src;
   const label = alt || localPath?.split(/[\\/]/).pop() || "Image";
 
-  if (!resolvedSource || failed) {
+  if (!resolvedSource) {
     return (
       <span
         className="markdown-image-fallback"
         role="img"
         aria-label={`${label}: image unavailable`}
-        title={localPath ?? src}
+        title={title ?? localPath ?? src}
       >
         <XiaoIcon name="file" size={14} />
         <span>{label}</span>
@@ -313,17 +323,13 @@ function MarkdownImage({
   }
 
   return (
-    <img
-      {...props}
-      src={resolvedSource}
-      alt={alt}
-      data-local-image={localPath ? "true" : undefined}
-      decoding={props.decoding ?? "async"}
-      loading={props.loading ?? "lazy"}
-      onError={(event) => {
-        onError?.(event);
-        setFailed(true);
-      }}
+    <MessageImage
+      source={resolvedSource}
+      name={label}
+      title={title}
+      className={props.className ? `is-markdown ${props.className}` : "is-markdown"}
+      local={Boolean(localPath)}
+      linked={linked}
     />
   );
 }
@@ -439,9 +445,10 @@ const MarkdownChunk = memo(function MarkdownChunk({
       </div>
     ),
     img: (props: ComponentProps<"img"> & { node?: unknown }) => <MarkdownImage {...props} />,
-    a: ({ children, node: _node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
+    a: ({ children, node, href, onClick, ...props }: ComponentProps<"a"> & { node?: unknown }) => {
+      const containsImage = containsMarkdownImage(node);
       const internalResource = Boolean(href && workspacePathHref(href));
-      return (
+      const anchor = (
         <a
           {...props}
           href={internalResource ? "#" : href}
@@ -458,6 +465,11 @@ const MarkdownChunk = memo(function MarkdownChunk({
           }}
         >{children}</a>
       );
+      return containsImage ? (
+        <LinkedMarkdownImageContext.Provider value>
+          {anchor}
+        </LinkedMarkdownImageContext.Provider>
+      ) : anchor;
     },
   }), [onOpenResource, streaming]);
 

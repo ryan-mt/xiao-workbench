@@ -27,6 +27,8 @@ import {
   captureTaskOperationScope,
   clearProjectGroup,
   clearVisibleTaskUnread,
+  codexThreadSelectionTarget,
+  codexTimelineImportRequestIsCurrent,
   completeUndoRecovery,
   confirmedExecutionTaskId,
   confirmNativeTaskIds,
@@ -35,16 +37,19 @@ import {
   explicitlyOpenedTaskSuppressesFocusedLaunch,
   isTaskWorkspaceStateLoading,
   markTaskUnreadAfterCompletion,
+  nativeTaskIdsFromState,
   outcomeHasAcceptanceContract,
   pendingInputIdFromAttentionOccurrence,
   pendingAttentionTargetMatchesScope,
   pendingRequestMatchesAttentionTarget,
+  projectPathForCodexThread,
   queuedFollowUpIdForAutoSend,
   removeTaskOperationRevision,
   removeTaskReviewContext,
   restoreTaskAfterUndo,
   shouldAdoptResolvedWorkspacePath,
   shouldAutoConnectAgentRuntime,
+  observedCodexThreadStatus,
   shouldInvalidateTaskWorkspaceState,
   shouldLoadTaskWorkspaceState,
   shouldCreateDraftWhenOpeningNewTaskTab,
@@ -52,7 +57,9 @@ import {
   stageTaskReviewContext,
   submitTaskFollowUpAfterPersistence,
   taskIsVisible,
+  taskSupportsNativeComposerActions,
   taskReviewContext,
+  workspacePathForSelectedTask,
   isAcceptanceContractVersionSummary,
   readBrowserTaskState,
   type ConfirmedNativeTaskScope,
@@ -65,6 +72,73 @@ describe("outcome readiness", () => {
   it("keeps the frozen Run contract actionable after the Task contract is cleared", () => {
     expect(outcomeHasAcceptanceContract(null, "contract-version-1")).toBe(true);
     expect(outcomeHasAcceptanceContract(null, null)).toBe(false);
+  });
+});
+
+describe("imported Codex workspace routing", () => {
+  it("invalidates timeline import completion when history is disabled or superseded", () => {
+    expect(codexTimelineImportRequestIsCurrent(true, 4, 4)).toBe(true);
+    expect(codexTimelineImportRequestIsCurrent(false, 4, 4)).toBe(false);
+    expect(codexTimelineImportRequestIsCurrent(true, 5, 4)).toBe(false);
+  });
+
+  it("keeps native composer actions disabled for imported Codex tasks", () => {
+    expect(taskSupportsNativeComposerActions({ origin: "codex" })).toBe(false);
+    expect(taskSupportsNativeComposerActions({ origin: "xiao" })).toBe(true);
+    expect(taskSupportsNativeComposerActions({})).toBe(true);
+  });
+
+  it("uses the thread cwd so nested repositories expose their Git context", () => {
+    expect(workspacePathForSelectedTask(
+      "D:/Project Archive",
+      { origin: "codex", threadId: "thread-1" },
+      [{
+        id: "thread-1",
+        title: "Nested repository task",
+        preview: "",
+        cwd: "D:/Project Archive/xiao-workbench",
+        createdAt: 1,
+        updatedAt: 2,
+        archived: false,
+        status: "ready",
+      }],
+    )).toBe("D:/Project Archive/xiao-workbench");
+  });
+
+  it("keeps Xiao tasks on their selected project path", () => {
+    expect(workspacePathForSelectedTask(
+      "D:/Project Archive",
+      { origin: "xiao", threadId: "thread-1" },
+      [],
+    )).toBe("D:/Project Archive");
+  });
+
+  it("uses the closest registered project as the history context", () => {
+    expect(projectPathForCodexThread(
+      [
+        { path: "D:/Project Archive", name: "Archive", updatedAt: 1 },
+        { path: "D:/Project Archive/xiao", name: "Xiao", updatedAt: 2 },
+      ],
+      { cwd: "D:/Project Archive/xiao/packages/app" },
+    )).toBe("D:/Project Archive/xiao");
+    expect(projectPathForCodexThread([], { cwd: "/srv/xiao" })).toBe("/srv/xiao");
+  });
+
+  it("builds CommandMenu selection context from the thread's containing project", () => {
+    expect(codexThreadSelectionTarget(
+      [
+        { path: "D:/Current", name: "Current", updatedAt: 1 },
+        { path: "D:/Other", name: "Other", updatedAt: 2 },
+      ],
+      { cwd: "D:/Other/packages/app" },
+    )).toEqual({
+      projectPath: "D:/Other",
+      context: {
+        projectPath: "D:/Other",
+        taskId: null,
+      },
+      activeTaskId: null,
+    });
   });
 });
 
@@ -1447,6 +1521,51 @@ describe("confirmed native task materialization", () => {
     ).toBe(false);
   });
 
+  it("connects a workspace-scoped runtime for optional live Codex history", () => {
+    expect(
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        null,
+        true,
+        workspacePath,
+        workspacePath,
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it("connects imported history in its separate runtime workspace scope", () => {
+    expect(
+      shouldAutoConnectAgentRuntime(
+        false,
+        true,
+        null,
+        true,
+        "D:/projects/xiao",
+        "D:/projects/xiao/nested-repo",
+        true,
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it("never confirms imported Codex rows as native Xiao tasks", () => {
+    installStoredState(null);
+    const nativeTask = readBrowserTaskState(workspacePath).tasks[0]!;
+    const importedTask = {
+      ...nativeTask,
+      id: "codex:thread-1",
+      origin: "codex" as const,
+      threadId: "thread-1",
+    };
+    expect(nativeTaskIdsFromState({
+      tasks: [nativeTask, importedTask],
+      activeTaskId: importedTask.id,
+      showArchived: false,
+    })).toEqual([nativeTask.id]);
+  });
+
   it("keeps a fresh task unconfirmed while its bridge save is pending and after failure", async () => {
     let confirmation = confirmNativeTaskIds(
       beginNativeTaskConfirmation(
@@ -1606,6 +1725,18 @@ describe("confirmed native task materialization", () => {
       ["shared-task"],
     );
     expect(confirmedExecutionTaskId(confirmation, secondPath, "shared-task")).toBe("shared-task");
+  });
+});
+
+describe("observed Codex thread status", () => {
+  it("settles a previously working thread when the source is ready after its grace window", () => {
+    expect(observedCodexThreadStatus("ready", false, true, false)).toBe("done");
+    expect(observedCodexThreadStatus("ready", false, false, true)).toBe("done");
+  });
+
+  it("clears done when new live activity arrives and preserves real failures", () => {
+    expect(observedCodexThreadStatus("ready", true, false, true)).toBe("working");
+    expect(observedCodexThreadStatus("failed", true, true, false)).toBe("failed");
   });
 });
 

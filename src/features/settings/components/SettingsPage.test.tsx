@@ -11,6 +11,8 @@ import { DEFAULT_COMMAND_BINDINGS } from "../../command-menu/commandBindings";
 const noop = () => undefined;
 
 const preferences: AppPreferences = {
+  importCodexHistory: false,
+  sidebarV2: true,
   showReasoningSummaries: true,
   expandToolOutput: false,
   focusNewTasks: true,

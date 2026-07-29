@@ -19,6 +19,7 @@ const APP_COMMANDS: &[&str] = &[
     "start_agent_runtime",
     "stop_agent_runtime",
     "agent_request",
+    "read_codex_rollout_commands",
     "read_agent_account",
     "read_agent_rate_limits",
     "read_agent_usage",
@@ -354,6 +355,7 @@ fn excluded_source_directory(relative: &str) -> bool {
             ".git"
                 | ".hermes"
                 | ".next"
+                | ".ok"
                 | ".pi"
                 | ".scratch"
                 | ".vite"

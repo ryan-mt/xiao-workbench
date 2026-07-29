@@ -1,10 +1,17 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
 import { isTauriHost } from "../../../core/bridges/tauri";
-import { visiblePromptFromSelectedContext, type TimelineEntry } from "../../../core/models/agent";
+import {
+  replaceVisiblePromptInSelectedContext,
+  visiblePromptFromSelectedContext,
+  type AgentAttachment,
+  type TimelineEntry,
+} from "../../../core/models/agent";
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
+import { InlineMessageEditor, MessageActions } from "./MessageActions";
+import { MessageImage } from "./MessageImage";
 
 const agentProgressDots = Array.from({ length: 25 }, (_, index) => ({
   index,
@@ -37,39 +44,47 @@ function AgentProgressIndicator() {
   );
 }
 
+const formatCommandDuration = (milliseconds: number) => {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${remainder}s` : `${seconds}s`;
+};
+
+function CommandExecutionTitle({
+  active,
+  startedAt,
+  durationMs,
+  fallback,
+}: {
+  active: boolean;
+  startedAt?: number;
+  durationMs?: number;
+  fallback: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
+  if (active) {
+    return <>Running command for {formatCommandDuration(Math.max(0, now - (startedAt ?? now)))}</>;
+  }
+  if (typeof durationMs === "number" && durationMs > 0 && fallback === "Ran command") {
+    return <>Ran command in {formatCommandDuration(durationMs)}</>;
+  }
+  return <>{fallback}</>;
+}
+
 const directImageSource = (value: string | undefined) => {
   const source = value?.trim();
   if (!source) return null;
   return /^data:image\//i.test(source) || /^https?:\/\//i.test(source) ? source : null;
 };
-
-function TimelineImage({
-  name,
-  source,
-}: {
-  name: string;
-  source: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  if (failed) {
-    return (
-      <div className="activity__image-fallback" role="img" aria-label={`${name}: image unavailable`}>
-        <XiaoIcon name="file" size={14} />
-        <span>{name}</span>
-        <small>Image unavailable</small>
-      </div>
-    );
-  }
-  return (
-    <img
-      src={source}
-      alt={name}
-      decoding="async"
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
-  );
-}
 
 export function TimelineImages({
   attachments,
@@ -78,14 +93,20 @@ export function TimelineImages({
 }) {
   const images = attachments?.flatMap((attachment) => {
     if (attachment.kind !== "image") return [];
-    const source = directImageSource(attachment.url);
+    const source = directImageSource(attachment.url) ?? (
+      attachment.path &&
+      !attachment.path.startsWith("clipboard:") &&
+      isTauriHost()
+        ? convertFileSrc(attachment.path)
+        : null
+    );
     return source ? [{ attachment, source }] : [];
   }) ?? [];
   if (!images.length) return null;
   return (
     <div className="activity__image-attachments" aria-label="Image output">
       {images.map(({ attachment, source }) => (
-        <TimelineImage
+        <MessageImage
           key={attachment.id ?? attachment.path}
           name={attachment.name}
           source={source}
@@ -116,6 +137,8 @@ type ActivityItemProps = {
   canUndo?: boolean;
   undoing?: boolean;
   onUndo?: () => void;
+  onEditUserMessage?: (text: string, attachments: AgentAttachment[]) => void;
+  showMessageActions?: boolean;
   attemptCount?: number;
   recovered?: boolean;
   isLive?: boolean;
@@ -147,58 +170,6 @@ const collaboratorStatusLabel: Record<NonNullable<TimelineEntry["collaborators"]
   shutdown: "Closed",
   notFound: "Not found",
   unknown: "Status unavailable",
-};
-
-type PatchLine = {
-  kind: "add" | "delete" | "context" | "meta" | "fold";
-  text: string;
-  oldLine?: number;
-  newLine?: number;
-};
-
-const patchLines = (patch: string): PatchLine[] => {
-  const result: PatchLine[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-  let initialized = false;
-
-  for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
-    const hunk = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-    if (hunk) {
-      const nextOld = Number(hunk[1]);
-      const nextNew = Number(hunk[2]);
-      const hidden = initialized
-        ? Math.max(0, Math.min(nextOld - oldLine, nextNew - newLine))
-        : Math.max(0, Math.min(nextOld - 1, nextNew - 1));
-      if (hidden > 0) result.push({ kind: "fold", text: `${hidden} unmodified lines` });
-      oldLine = nextOld;
-      newLine = nextNew;
-      initialized = true;
-      result.push({ kind: "meta", text: line });
-      continue;
-    }
-    if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
-      continue;
-    }
-    if (line.startsWith("+")) {
-      result.push({ kind: "add", text: line.slice(1), newLine });
-      newLine += 1;
-      continue;
-    }
-    if (line.startsWith("-")) {
-      result.push({ kind: "delete", text: line.slice(1), oldLine });
-      oldLine += 1;
-      continue;
-    }
-    if (line.startsWith("\\")) {
-      result.push({ kind: "meta", text: line });
-      continue;
-    }
-    result.push({ kind: "context", text: line.startsWith(" ") ? line.slice(1) : line, oldLine, newLine });
-    oldLine += 1;
-    newLine += 1;
-  }
-  return result;
 };
 
 const reasoningHeading = (body?: string) =>
@@ -252,15 +223,21 @@ export const ActivityItem = memo(function ActivityItem({
   canUndo = false,
   undoing = false,
   onUndo,
+  onEditUserMessage,
+  showMessageActions = true,
   attemptCount = 1,
   recovered = false,
   isLive = true,
 }: ActivityItemProps) {
+  const [editingPrompt, setEditingPrompt] = useState(false);
   const waitingForApproval = entry.kind === "approval" && entry.status === "warning";
   const userMessage = entry.kind === "brief" || entry.kind === "user";
   const assistantMessage = entry.kind === "result" && entry.title === "Agent response";
   const contextCompaction = entry.kind === "result" && entry.meta === "Context";
-  const browserTool = entry.kind === "result" && entry.meta?.toLowerCase() === "browser tool";
+  const browserTool = (
+    entry.kind === "result" ||
+    entry.kind === "command"
+  ) && ["browser tool", "web search"].includes(entry.meta?.toLowerCase() ?? "");
 
   if (entry.kind === "thought" && entry.status !== "active" && !entry.body?.trim()) return null;
 
@@ -279,6 +256,7 @@ export const ActivityItem = memo(function ActivityItem({
   }
 
   if (userMessage) {
+    const visiblePrompt = visiblePromptFromSelectedContext(entry.body ?? entry.title);
     const reviewComments = entry.attachments?.filter((attachment) => attachment.kind === "review") ?? [];
     const sentAttachments = entry.attachments?.filter((attachment) => attachment.kind !== "review") ?? [];
     return (
@@ -287,9 +265,23 @@ export const ActivityItem = memo(function ActivityItem({
         style={{ "--activity-index": index } as React.CSSProperties}
       >
         <div className="activity__user-message-content">
-          <div className="activity__user-bubble">
-            {visiblePromptFromSelectedContext(entry.body ?? entry.title)}
-          </div>
+          {editingPrompt && onEditUserMessage ? (
+            <InlineMessageEditor
+              text={visiblePrompt}
+              onCancel={() => setEditingPrompt(false)}
+              onSubmit={(text) => {
+                onEditUserMessage(
+                  replaceVisiblePromptInSelectedContext(entry.body ?? entry.title, text),
+                  sentAttachments,
+                );
+                setEditingPrompt(false);
+              }}
+            />
+          ) : (entry.body ?? entry.title).trim() ? (
+            <div className="activity__user-bubble">
+              {visiblePrompt}
+            </div>
+          ) : null}
           {sentAttachments.length > 0 && (
             <div className="activity__user-attachments" aria-label="Sent attachments">
               {sentAttachments.map((attachment) => {
@@ -307,17 +299,21 @@ export const ActivityItem = memo(function ActivityItem({
                     title={attachment.path}
                   >
                     {imageSource ? (
-                      <img src={imageSource} alt={attachment.name} />
+                      <MessageImage
+                        source={imageSource}
+                        name={attachment.name}
+                        className="is-user-attachment"
+                      />
                     ) : (
                       <XiaoIcon name={attachment.kind === "directory" ? "folder" : "file"} size={14} />
                     )}
-                    <span>{attachment.name}</span>
+                    {!imageSource ? <span>{attachment.name}</span> : null}
                   </span>
                 );
               })}
             </div>
           )}
-          {entry.kind === "user" && entry.meta ? (
+          {entry.kind === "user" && entry.meta && entry.meta !== "You" ? (
             <span className={`activity__user-state is-${entry.status ?? "idle"}`}>
               <XiaoIcon
                 className={entry.status === "active" && isLive ? "spin" : undefined}
@@ -344,17 +340,15 @@ export const ActivityItem = memo(function ActivityItem({
               })}
             </div>
           )}
-          {entry.kind === "user" && canFork ? (
-            <div className="activity__user-actions">
-              <button
-                type="button"
-                title="Create a new task from the conversation before this prompt"
-                onClick={() => onForkTask(entry.id)}
-              >
-                <XiaoIcon name="branch" size={12} />
-                Fork from here
-              </button>
-            </div>
+          {!editingPrompt ? (
+            <MessageActions
+              text={visiblePrompt}
+              createdAt={entry.createdAt}
+              editable
+              onEdit={onEditUserMessage ? () => setEditingPrompt(true) : undefined}
+              onFork={entry.kind === "user" && canFork ? () => onForkTask(entry.id) : undefined}
+              copyLabel="Copy prompt"
+            />
           ) : null}
         </div>
       </article>
@@ -372,11 +366,8 @@ export const ActivityItem = memo(function ActivityItem({
         <div className="activity__assistant-message">
           {entry.body && <MarkdownBody content={entry.body} streaming={streaming} onOpenResource={onOpenResource} />}
           <TimelineImages attachments={entry.attachments} />
-          {entry.body && !streaming ? (
-            <footer className="activity__assistant-meta">
-              <CopyButton text={entry.body} label="Copy response" />
-              <span>{entry.meta && entry.meta !== "Streaming" ? entry.meta : "Xiao"}</span>
-            </footer>
+          {entry.body && !streaming && showMessageActions ? (
+            <MessageActions text={entry.body} createdAt={entry.createdAt} copyLabel="Copy response" />
           ) : null}
           {turnFiles.length > 0 && (
             <nav className="turn-change-actions" aria-label="Actions for edited files">
@@ -398,19 +389,43 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (browserTool) {
     const query = entry.title.replace(/^Searched:\s*/i, "").trim();
+    const hasDetails = Boolean(entry.body);
+    const summary = (
+      <>
+        <span className="activity__tool-icon" aria-hidden="true">
+          <XiaoIcon name="browser" size={13} />
+        </span>
+        <span className="activity__tool-summary">
+          <strong>Web search</strong>
+          {query && query !== "Web search" ? <span className="activity__web-query" title={query}>{query}</span> : null}
+          {hasDetails ? (
+            <span className="activity__tool-caret">
+              <XiaoIcon name="caret" size={13} />
+            </span>
+          ) : null}
+        </span>
+      </>
+    );
     return (
       <article
         className={`activity activity--command activity--${entry.status ?? "success"}`}
         style={{ "--activity-index": index } as React.CSSProperties}
       >
-        <div className="activity__tool-disclosure activity__tool-disclosure--static">
-          <div className="activity__tool-summary-row">
-            <span className="activity__tool-summary">
-              <strong>Web search</strong>
-              {query && query !== "Web search" ? <span title={query}>{query}</span> : null}
-            </span>
+        {hasDetails ? (
+          <details className="activity__tool-disclosure" open={expandToolOutput}>
+            <summary>{summary}</summary>
+            <div className="activity__tool-details">
+              <div className="activity__terminal">
+                <span className="activity__terminal-copy"><CopyButton text={entry.body!} /></span>
+                <pre tabIndex={0} aria-label="Search results"><code>{entry.body}</code></pre>
+              </div>
+            </div>
+          </details>
+        ) : (
+          <div className="activity__tool-disclosure activity__tool-disclosure--static">
+            <div className="activity__tool-summary-row">{summary}</div>
           </div>
-        </div>
+        )}
       </article>
     );
   }
@@ -519,6 +534,19 @@ export const ActivityItem = memo(function ActivityItem({
     const toolDetail = (entry.command ?? entry.title).replace(/\s+/g, " ").trim();
     const hasDetails = Boolean(entry.command || entry.body);
     const active = entry.status === "active" && isLive;
+    const integration = Boolean(
+      entry.meta === "Plugin tool" ||
+      entry.meta === "Dynamic tool" ||
+      entry.meta === "Codex tool" ||
+      entry.meta === "Image tool" ||
+      entry.meta?.startsWith("Skill"),
+    );
+    const codexTool = entry.meta === "Codex tool";
+    const imageTool = entry.meta === "Image tool";
+    const webSearch = entry.meta === "Web search";
+    const skillName = entry.meta?.startsWith("Skill")
+      ? entry.meta.split(" · ").slice(1).filter(Boolean).join(" · ")
+      : "";
     const toolTitle = recovered
       ? "Shell retry"
       : environmentBlocked
@@ -527,16 +555,48 @@ export const ActivityItem = memo(function ActivityItem({
           ? "Shell failed"
           : noSearchMatches
             ? "No matches"
-            : entry.command
-              ? "Shell"
-              : entry.title;
+            : integration
+              ? active
+                ? `Using ${skillName || entry.title}`
+                : `Used ${skillName || entry.title}`
+              : entry.command
+                ? active ? "Running command" : "Ran command"
+                : entry.title;
     const terminalText = entry.command
       ? `$ ${entry.command}${entry.body ? `\n\n${entry.body}` : ""}`
       : entry.body ?? "";
     const summary = (
       <>
+        <span className="activity__tool-icon" aria-hidden="true">
+          {codexTool && !active ? (
+            <img className="activity__codex-icon" src="/codex-mark.png" alt="" />
+          ) : (
+            <XiaoIcon
+              className={active ? "spin" : undefined}
+              name={active
+                ? "pending"
+                : imageTool
+                  ? "files"
+                  : webSearch
+                    ? "browser"
+                    : integration
+                      ? "capability"
+                      : "command"}
+              size={13}
+            />
+          )}
+        </span>
         <span className="activity__tool-summary">
-          <strong className={active ? "is-active" : undefined}>{toolTitle}</strong>
+          <strong className={active ? "is-active" : undefined}>
+            {entry.command && !integration ? (
+              <CommandExecutionTitle
+                active={active}
+                startedAt={entry.createdAt}
+                durationMs={entry.durationMs}
+                fallback={toolTitle}
+              />
+            ) : toolTitle}
+          </strong>
           {entry.command ? <span title={toolDetail}>{toolDetail}</span> : null}
           {attemptCount > 1 && (
             <small className="activity__tool-attempts">{attemptCount} attempts</small>
@@ -544,12 +604,12 @@ export const ActivityItem = memo(function ActivityItem({
           {recovered && (
             <small className="activity__tool-recovered">recovered</small>
           )}
+          {hasDetails && (
+            <span className="activity__tool-caret">
+              <XiaoIcon name="caret" size={13} />
+            </span>
+          )}
         </span>
-        {hasDetails && (
-          <span className="activity__tool-caret">
-            <XiaoIcon name="caret" size={13} />
-          </span>
-        )}
       </>
     );
 
@@ -567,6 +627,12 @@ export const ActivityItem = memo(function ActivityItem({
                 <div className="activity__terminal">
                   <span className="activity__terminal-copy"><CopyButton text={terminalText} /></span>
                   <pre tabIndex={0} aria-label="Shell output"><code>{terminalText}</code></pre>
+                  {!active && entry.status === "success" ? (
+                    <span className="activity__terminal-success">
+                      <XiaoIcon name="check" size={11} />
+                      Completed{typeof entry.exitCode === "number" ? ` · exit ${entry.exitCode}` : ""}
+                    </span>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -576,13 +642,22 @@ export const ActivityItem = memo(function ActivityItem({
             <div className="activity__tool-summary-row">{summary}</div>
           </div>
         )}
-        <TimelineImages attachments={entry.attachments} />
+        {entry.attachments?.some((attachment) => attachment.kind === "image") ? (
+          <div className="activity__viewed-images">
+            <span className="activity__viewed-images-label">
+              <XiaoIcon name="files" size={13} />
+              Viewed {entry.attachments.filter((attachment) => attachment.kind === "image").length === 1
+                ? "an image"
+                : `${entry.attachments.filter((attachment) => attachment.kind === "image").length} images`}
+            </span>
+            <TimelineImages attachments={entry.attachments} />
+          </div>
+        ) : null}
       </article>
     );
   }
 
   if (entry.kind === "change" && entry.files?.length) {
-    const verb = entry.status === "error" ? "Edit failed" : "Edit";
     return (
       <article
         className={`activity activity--patch activity--${entry.status ?? "idle"}`}
@@ -590,65 +665,46 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="patch-activity__files">
           {entry.files.map((file) => {
-            const lines = file.patch ? patchLines(file.patch) : [];
+            const created = /---\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
+            const deleted = /\+\+\+\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
+            const verb = entry.status === "error"
+              ? "Edit failed"
+              : created
+                ? "Created"
+                : deleted
+                  ? "Deleted"
+                  : "Edited";
             const absolutePath = /^[A-Za-z]:[\\/]/.test(file.path)
               ? file.path
               : `${workspacePath.replace(/[\\/]+$/, "")}\\${file.path.replace(/\//g, "\\")}`;
-            const displayPath = file.path.split(/[\\/]/).filter(Boolean).at(-1) ?? file.path;
-            const directory = file.path.split(/[\\/]/).slice(0, -1).join("/");
-            const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
-            const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
+            const normalizedWorkspace = workspacePath.replace(/\\/g, "/").replace(/\/+$/, "");
+            const normalizedPath = file.path.replace(/\\/g, "/");
+            const displayPath = normalizedPath.toLowerCase().startsWith(`${normalizedWorkspace.toLowerCase()}/`)
+              ? normalizedPath.slice(normalizedWorkspace.length + 1)
+              : normalizedPath;
+            const displayName = displayPath.split("/").filter(Boolean).at(-1) ?? displayPath;
             return (
-              <details key={file.path} open={expandToolOutput}>
-                <summary>
-                  <span className="patch-activity__title">
-                    <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
-                      {verb}
-                    </strong>
-                    <span
-                      className="patch-activity__path"
-                      title={`Open ${absolutePath}`}
-                      role="link"
-                      tabIndex={0}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onOpenResource(absolutePath);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onOpenResource(absolutePath);
-                      }}
-                    >
-                      <strong>{displayPath}</strong>
-                      {directory ? <small>{directory}</small> : null}
-                      {lineNumber ? <small>line {lineNumber}</small> : null}
-                    </span>
-                  </span>
-                  <span className="patch-activity__stats"><b>+{file.additions}</b><em>-{file.deletions}</em></span>
-                  <XiaoIcon className="patch-activity__caret" name="caret" size={13} />
-                </summary>
-                <div className="patch-activity__diff">
-                  {lines.length ? lines.map((line, lineIndex) => (
-                    <div className={`is-${line.kind}`} key={`${lineIndex}-${line.text}`}>
-                      {line.kind === "fold" ? (
-                        <span className="patch-activity__fold">{line.text}</span>
-                      ) : (
-                        <>
-                          <span>{line.oldLine ?? ""}</span>
-                          <span>{line.newLine ?? ""}</span>
-                          <i>{line.kind === "add" ? "+" : line.kind === "delete" ? "-" : ""}</i>
-                          <code>{line.text || " "}</code>
-                        </>
-                      )}
-                    </div>
-                  )) : (
-                    <p>No textual patch is available for this file.</p>
-                  )}
-                </div>
-              </details>
+              <div className={`patch-activity__row is-${created ? "created" : deleted ? "deleted" : "edited"}`} key={file.path}>
+                <span className="activity__tool-icon" aria-hidden="true">
+                  <XiaoIcon name={created ? "mutation" : deleted ? "trash" : "edit"} size={13} />
+                  {created || deleted ? <i className="patch-activity__operation-dot" /> : null}
+                </span>
+                <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
+                  {verb}
+                </strong>
+                <button
+                  className="patch-activity__path"
+                  type="button"
+                  title={`Open ${absolutePath}`}
+                  onClick={() => onOpenResource(absolutePath)}
+                >
+                  {displayName}
+                </button>
+                <span className="patch-activity__stats">
+                  <b>+{file.additions}</b>
+                  <em>-{file.deletions}</em>
+                </span>
+              </div>
             );
           })}
         </div>

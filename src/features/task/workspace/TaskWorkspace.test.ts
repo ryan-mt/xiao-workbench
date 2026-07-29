@@ -7,6 +7,7 @@ import type { TimelineEntry } from "../../../core/models/agent";
 import {
   activeCollaboratorsFromTimeline,
   distanceFromScrollBottom,
+  latestTimelineScrollTop,
   newTaskProjectOptions,
   shouldFollowLiveOutput,
   taskOutcomeAction,
@@ -53,6 +54,10 @@ describe("activeCollaboratorsFromTimeline", () => {
 });
 
 describe("live output scroll behavior", () => {
+  it("opens a conversation at its latest rendered content", () => {
+    expect(latestTimelineScrollTop({ scrollHeight: 2480 })).toBe(2480);
+  });
+
   it("follows output while the viewport is near the bottom", () => {
     const metrics = { scrollHeight: 1200, scrollTop: 528, clientHeight: 600 };
 
@@ -179,5 +184,11 @@ describe("task workspace frame", () => {
     expect(conversationMarkup.match(/task-workspace__composer-slot/g)).toHaveLength(1);
     expect(launchMarkup.match(/data-composer="true"/g)).toHaveLength(1);
     expect(conversationMarkup.match(/data-composer="true"/g)).toHaveLength(1);
+  });
+
+  it("centers the live changes pill as a block-level flex control", () => {
+    expect(taskWorkspaceStyles).toMatch(
+      /\.composer-live-changes\s*{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*margin:\s*0 auto -16px;/s,
+    );
   });
 });

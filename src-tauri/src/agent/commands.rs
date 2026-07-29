@@ -1,3 +1,11 @@
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    io::{BufRead, BufReader, ErrorKind, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+};
+
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
@@ -8,6 +16,626 @@ use crate::xiao::repository::XiaoRepository;
 use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
 use super::{models, service};
 
+const MAX_ROLLOUT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_CHARS: usize = 24_000;
+
+#[derive(Debug, Clone)]
+struct PendingRolloutCommand {
+    commands: Vec<models::CodexRolloutCommand>,
+    started_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct RolloutCommandCache {
+    offset: u64,
+    current_turn_index: Option<u64>,
+    pending: HashMap<String, PendingRolloutCommand>,
+    completed: Vec<models::CodexRolloutCommand>,
+}
+
+static ROLLOUT_COMMAND_CACHE: OnceLock<Mutex<HashMap<PathBuf, RolloutCommandCache>>> =
+    OnceLock::new();
+
+fn default_codex_sessions_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or("Could not resolve the local user profile.")?;
+    Ok(PathBuf::from(home).join(".codex").join("sessions"))
+}
+
+fn validated_rollout_path(path: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(path)
+        .canonicalize()
+        .map_err(|error| format!("Could not open this Codex rollout: {error}"))?;
+    let sessions = default_codex_sessions_root()?
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the local Codex sessions folder: {error}"))?;
+    if !candidate.starts_with(&sessions) {
+        return Err("Codex rollout is outside the local sessions folder.".to_owned());
+    }
+    let name = candidate
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !name.starts_with("rollout-")
+        || candidate.extension().and_then(|value| value.to_str()) != Some("jsonl")
+    {
+        return Err("Codex rollout path is not a rollout JSONL file.".to_owned());
+    }
+    let size = candidate
+        .metadata()
+        .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?
+        .len();
+    if size > MAX_ROLLOUT_BYTES {
+        return Err("Codex rollout is too large to import safely.".to_owned());
+    }
+    Ok(candidate)
+}
+
+fn valid_codex_thread_id(thread_id: &str) -> bool {
+    thread_id.len() == 36
+        && thread_id
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => byte == b'-',
+                _ => byte.is_ascii_hexdigit(),
+            })
+}
+
+fn rollout_path_for_thread(thread_id: &str) -> Result<PathBuf, String> {
+    if !valid_codex_thread_id(thread_id) {
+        return Err("Codex task id is not a valid UUID.".to_owned());
+    }
+    let sessions = default_codex_sessions_root()?;
+    let expected_suffix = format!("-{thread_id}.jsonl");
+    let years = match fs::read_dir(&sessions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err("Could not find the local Codex rollout for this task.".to_owned());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Could not read the local Codex sessions folder: {error}"
+            ));
+        }
+    };
+    for year in years
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+    {
+        for month in fs::read_dir(year.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        {
+            for day in fs::read_dir(month.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            {
+                for entry in fs::read_dir(day.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                {
+                    let name = entry.file_name();
+                    let Some(name) = name.to_str() else { continue };
+                    if name.starts_with("rollout-") && name.ends_with(&expected_suffix) {
+                        return validated_rollout_path(entry.path().to_string_lossy().as_ref());
+                    }
+                }
+            }
+        }
+    }
+    Err("Could not find the local Codex rollout for this task.".to_owned())
+}
+
+fn parse_timestamp_ms(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn quoted_value_after(input: &str, marker: &str) -> Option<String> {
+    let mut tail = input
+        .get(input.find(marker)? + marker.len()..)?
+        .trim_start();
+    if tail.starts_with(':') {
+        tail = tail[1..].trim_start();
+    }
+    if tail.starts_with('"') {
+        let mut escaped = false;
+        for (index, character) in tail.char_indices().skip(1) {
+            if character == '"' && !escaped {
+                return serde_json::from_str::<String>(&tail[..=index]).ok();
+            }
+            escaped = character == '\\' && !escaped;
+            if character != '\\' {
+                escaped = false;
+            }
+        }
+    }
+    if let Some(rest) = tail.strip_prefix('\'') {
+        let mut result = String::new();
+        let mut escaped = false;
+        for character in rest.chars() {
+            if character == '\'' && !escaped {
+                return Some(result);
+            }
+            if escaped {
+                result.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else {
+                result.push(character);
+            }
+        }
+    }
+    None
+}
+
+fn command_from_tool_input(input: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(input) {
+        if let Some(command) = value.get("cmd").and_then(Value::as_str) {
+            return Some(command.to_owned());
+        }
+        if let Some(command) = value.get("command").and_then(Value::as_str) {
+            return Some(command.to_owned());
+        }
+        if let Some(command) = value.get("command").and_then(Value::as_array) {
+            let parts = command
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()?;
+            return Some(parts.join(" "));
+        }
+    }
+    ["\"cmd\"", "cmd:", "cmd", "\"command\"", "command:"]
+        .iter()
+        .find_map(|marker| quoted_value_after(input, marker))
+        .map(|command| command.trim().to_owned())
+        .filter(|command| !command.is_empty())
+}
+
+fn commands_from_tool_input(name: &str, input: &str) -> Vec<String> {
+    if matches!(name, "exec_command" | "functions.exec_command") {
+        return command_from_tool_input(input).into_iter().collect();
+    }
+    let mut commands = Vec::new();
+    let mut tail = input;
+    while let Some(offset) = tail.find("tools.exec_command") {
+        tail = &tail[offset + "tools.exec_command".len()..];
+        if let Some(command) = command_from_tool_input(tail) {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+        }
+    }
+    commands
+}
+
+fn nested_tool_name(input: &str) -> Option<String> {
+    let tail = input.get(input.find("tools.")? + "tools.".len()..)?;
+    let name: String = tail
+        .chars()
+        .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+fn tool_activities(name: &str, input: &str) -> Vec<(String, Option<String>, String)> {
+    let commands = commands_from_tool_input(name, input);
+    if !commands.is_empty() {
+        return commands
+            .into_iter()
+            .map(|command| ("command".to_owned(), None, command))
+            .collect();
+    }
+    let nested = nested_tool_name(input);
+    let tool = nested.as_deref().unwrap_or(name);
+    if matches!(tool, "apply_patch" | "functions.apply_patch") {
+        return Vec::new();
+    }
+    if matches!(
+        tool,
+        "read_thread_terminal" | "codex_app__read_thread_terminal"
+    ) {
+        return vec![(
+            "tool".to_owned(),
+            Some("Read chat terminal".to_owned()),
+            "Read chat terminal".to_owned(),
+        )];
+    }
+
+    if matches!(tool, "view_image" | "functions_view_image") {
+        let path = ["\"path\"", "path:"]
+            .iter()
+            .find_map(|marker| quoted_value_after(input, marker))
+            .unwrap_or_else(|| "Viewed image".to_owned());
+        return vec![(
+            "imageView".to_owned(),
+            Some("Viewed an image".to_owned()),
+            path,
+        )];
+    }
+
+    if tool.contains("web__") || tool.starts_with("web_") || tool.contains("search_query") {
+        let query = ["\"q\"", "q:", "\"query\"", "query:"]
+            .iter()
+            .find_map(|marker| quoted_value_after(input, marker));
+        return vec![(
+            "webSearch".to_owned(),
+            Some(query.as_deref().map_or_else(
+                || "Web search".to_owned(),
+                |query| format!("Web search · {query}"),
+            )),
+            query.unwrap_or_else(|| "Web search".to_owned()),
+        )];
+    }
+
+    if let Some(rest) = tool.strip_prefix("mcp__") {
+        let mut parts = rest.split("__");
+        let server = parts.next().unwrap_or("integration").replace('_', "-");
+        let action = parts.next().unwrap_or("tool").replace('_', " ");
+        let label = format!("{server} · {action}");
+        return vec![("integration".to_owned(), Some(label.clone()), label)];
+    }
+
+    if tool.contains("skill") {
+        let label = tool.replace("__", " · ").replace('_', " ");
+        return vec![("skill".to_owned(), Some(label.clone()), label)];
+    }
+
+    if nested.is_some() {
+        let label = tool.replace("__", " · ").replace('_', " ");
+        return vec![("tool".to_owned(), Some(label.clone()), label)];
+    }
+    Vec::new()
+}
+
+fn output_text(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("output_text").and_then(Value::as_str))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(object) => object
+            .get("text")
+            .and_then(Value::as_str)
+            .or_else(|| object.get("output").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_owned(),
+        _ => String::new(),
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.chars().take(MAX_COMMAND_OUTPUT_CHARS).collect())
+    }
+}
+
+fn output_exit_code(output: &str) -> Option<i64> {
+    for marker in [
+        "\"exit_code\":",
+        "\"exitCode\":",
+        "Process exited with code ",
+    ] {
+        if let Some(tail) = output.split_once(marker).map(|(_, tail)| tail.trim_start()) {
+            let digits: String = tail
+                .chars()
+                .take_while(|character| character.is_ascii_digit() || *character == '-')
+                .collect();
+            if let Ok(code) = digits.parse() {
+                return Some(code);
+            }
+        }
+    }
+    None
+}
+
+fn rollout_turn_id(record: &Value, payload: &Value) -> Option<String> {
+    payload
+        .get("internal_chat_message_metadata_passthrough")
+        .and_then(|metadata| metadata.get("turn_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            payload
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            record
+                .get("internal_chat_message_metadata_passthrough")
+                .and_then(|metadata| metadata.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            record
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+}
+
+fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
+    if record.get("type").and_then(Value::as_str) != Some("response_item") {
+        return;
+    }
+    let Some(payload) = record.get("payload") else {
+        return;
+    };
+    let item_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if item_type == "message" && payload.get("role").and_then(Value::as_str) == Some("user") {
+        if let Some(id) = payload.get("id").and_then(Value::as_str) {
+            cache.completed.push(models::CodexRolloutCommand {
+                id: id.to_owned(),
+                turn_id: rollout_turn_id(&record, payload),
+                turn_index: cache.current_turn_index,
+                activity_kind: "timelineMarker".to_owned(),
+                label: Some("user".to_owned()),
+                command: String::new(),
+                output: None,
+                created_at: record
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                marker_span: None,
+                duration_ms: None,
+                exit_code: None,
+            });
+        }
+        cache.current_turn_index = Some(
+            cache
+                .current_turn_index
+                .map_or(0, |index| index.saturating_add(1)),
+        );
+        return;
+    }
+    if (item_type == "message" && payload.get("role").and_then(Value::as_str) == Some("assistant"))
+        || item_type == "reasoning"
+    {
+        let Some(id) = payload.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let marker_span = if item_type == "reasoning" {
+            payload
+                .get("summary")
+                .and_then(Value::as_array)
+                .map(|summary| summary.len() as u64)
+                .filter(|span| *span > 0)
+        } else {
+            None
+        };
+        if item_type == "reasoning" && marker_span.is_none() {
+            return;
+        }
+        cache.completed.push(models::CodexRolloutCommand {
+            id: id.to_owned(),
+            turn_id: rollout_turn_id(&record, payload),
+            turn_index: cache.current_turn_index,
+            activity_kind: "timelineMarker".to_owned(),
+            label: if item_type == "reasoning" {
+                Some("reasoning".to_owned())
+            } else {
+                payload
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            },
+            command: String::new(),
+            output: None,
+            created_at: record
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            marker_span,
+            duration_ms: None,
+            exit_code: None,
+        });
+        return;
+    }
+    if matches!(item_type, "custom_tool_call" | "function_call") {
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let input = payload.get("input").or_else(|| payload.get("arguments"));
+        let Some(input) = input.and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| serde_json::to_string(value).ok())
+        }) else {
+            return;
+        };
+        let activities = tool_activities(name, &input);
+        let Some(id) = payload
+            .get("call_id")
+            .or_else(|| payload.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let created_at = record
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let turn_id = rollout_turn_id(&record, payload);
+        cache.completed.push(models::CodexRolloutCommand {
+            id: id.to_owned(),
+            turn_id: turn_id.clone(),
+            turn_index: cache.current_turn_index,
+            activity_kind: "timelineMarker".to_owned(),
+            label: Some("tool".to_owned()),
+            command: String::new(),
+            output: None,
+            created_at: created_at.clone(),
+            marker_span: None,
+            duration_ms: None,
+            exit_code: None,
+        });
+        if activities.is_empty() {
+            return;
+        }
+        let commands = activities
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, (activity_kind, label, command))| models::CodexRolloutCommand {
+                    id: if index == 0 {
+                        id.to_owned()
+                    } else {
+                        format!("{id}:{index}")
+                    },
+                    turn_id: turn_id.clone(),
+                    turn_index: cache.current_turn_index,
+                    activity_kind,
+                    label,
+                    command,
+                    output: None,
+                    created_at: created_at.clone(),
+                    marker_span: None,
+                    duration_ms: None,
+                    exit_code: None,
+                },
+            )
+            .collect();
+        cache.pending.insert(
+            id.to_owned(),
+            PendingRolloutCommand {
+                started_at_ms: parse_timestamp_ms(created_at.as_deref()),
+                commands,
+            },
+        );
+    } else if matches!(
+        item_type,
+        "custom_tool_call_output" | "function_call_output"
+    ) {
+        let Some(id) = payload
+            .get("call_id")
+            .or_else(|| payload.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let Some(mut item) = cache.pending.remove(id) else {
+            return;
+        };
+        let output = payload.get("output").and_then(output_text);
+        let ended_at = parse_timestamp_ms(record.get("timestamp").and_then(Value::as_str));
+        let duration_ms = ended_at
+            .zip(item.started_at_ms)
+            .map(|(end, start)| end.saturating_sub(start) as u64);
+        let exit_code = output.as_deref().and_then(output_exit_code);
+        for command in &mut item.commands {
+            command.exit_code = exit_code;
+            command.output = output.clone();
+            command.duration_ms = duration_ms;
+        }
+        cache.completed.extend(item.commands);
+    }
+}
+
+fn parse_rollout_commands(path: &Path) -> Result<Vec<models::CodexRolloutCommand>, String> {
+    let file =
+        File::open(path).map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
+    let cache_map = ROLLOUT_COMMAND_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache_map = cache_map
+        .lock()
+        .map_err(|_| "Codex rollout cache is unavailable.")?;
+    let cache = cache_map.entry(path.to_owned()).or_default();
+    let file_length = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?
+        .len();
+    if cache.offset > file_length {
+        *cache = RolloutCommandCache::default();
+    }
+    let mut reader = BufReader::new(file);
+    reader
+        .seek(SeekFrom::Start(cache.offset))
+        .map_err(|error| format!("Could not seek this Codex rollout: {error}"))?;
+    loop {
+        let line_start = reader
+            .stream_position()
+            .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("Could not read this Codex rollout: {error}"))?;
+        if bytes == 0 {
+            cache.offset = line_start;
+            break;
+        }
+        match serde_json::from_str::<Value>(&line) {
+            Ok(record) => {
+                apply_rollout_record(record, cache);
+                cache.offset = reader
+                    .stream_position()
+                    .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+            }
+            Err(_) if !line.ends_with('\n') => {
+                cache.offset = line_start;
+                break;
+            }
+            Err(_) => {
+                cache.offset = reader
+                    .stream_position()
+                    .map_err(|error| format!("Could not inspect this Codex rollout: {error}"))?;
+            }
+        }
+    }
+    let mut completed = cache.completed.clone();
+    completed.extend(
+        cache
+            .pending
+            .values()
+            .flat_map(|item| item.commands.iter().cloned()),
+    );
+    completed.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    Ok(completed)
+}
+
+#[tauri::command]
+pub fn read_codex_rollout_commands(
+    thread_id: String,
+    rollout_path: Option<String>,
+) -> Result<Vec<models::CodexRolloutCommand>, String> {
+    // App-server snapshots can retain an old or non-rollout `thread.path`.
+    // Treat it as a hint; the thread UUID remains the authoritative lookup.
+    let expected_suffix = format!("-{thread_id}.jsonl");
+    let path = rollout_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .and_then(|path| validated_rollout_path(path).ok())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(&expected_suffix))
+        })
+        .map(Ok)
+        .unwrap_or_else(|| rollout_path_for_thread(&thread_id))?;
+    parse_rollout_commands(&path)
+}
+
 #[tauri::command]
 pub fn start_agent_runtime(
     app: AppHandle,
@@ -17,12 +645,10 @@ pub fn start_agent_runtime(
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
-    let task_id = task_id
-        .as_deref()
-        .ok_or("Starting Codex requires a persisted Xiao Task.")?;
-    let context = resolve_execution_context(&repository, &project_path, Some(task_id))?;
+    let task_id = task_id.as_deref();
+    let context = resolve_execution_context(&repository, &project_path, task_id)?;
     let profile =
-        repository.runtime_codex_profile(&project_path, Some(task_id), profile_id.as_deref())?;
+        repository.runtime_codex_profile(&project_path, task_id, profile_id.as_deref())?;
     runtimes.start_with_profile(app, &context.environment.id, &profile)
 }
 
@@ -52,10 +678,15 @@ pub async fn agent_request(
     let project_path = project_path
         .as_deref()
         .ok_or("This agent request requires a Xiao project context.")?;
-    let task_id = task_id
-        .as_deref()
-        .ok_or("This agent request requires a persisted Xiao task.")?;
-    let context = resolve_execution_context(&repository, project_path, Some(task_id))?;
+    let task_id = task_id.as_deref();
+    let history_method = matches!(
+        method.as_str(),
+        "thread/list" | "thread/turns/list" | "thread/archive" | "thread/unarchive"
+    );
+    if task_id.is_none() && !history_method {
+        return Err("This agent request requires a persisted Xiao task.".to_owned());
+    }
+    let context = resolve_execution_context(&repository, project_path, task_id)?;
     if method_uses_execution_root(&method) {
         if method == "command/exec" {
             validate_direct_command(&params)?;
@@ -63,14 +694,19 @@ pub async fn agent_request(
         strip_execution_path_fields(&mut params);
         apply_execution_root(&method, &mut params, &context.execution_root)?;
     }
-    if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
-        runtimes.require_thread_task(
-            &context.environment.id,
-            thread_id,
-            &context.project_path,
-            task_id,
-            &context.execution_root,
-        )?;
+    if !matches!(
+        method.as_str(),
+        "thread/turns/list" | "thread/archive" | "thread/unarchive"
+    ) {
+        if let Some(thread_id) = params.get("threadId").and_then(Value::as_str) {
+            runtimes.require_thread_task(
+                &context.environment.id,
+                thread_id,
+                &context.project_path,
+                task_id.expect("non-history methods require a persisted task"),
+                &context.execution_root,
+            )?;
+        }
     }
     runtimes
         .request(&context.environment.id, method, params)
@@ -108,6 +744,10 @@ fn renderer_agent_method(method: &str) -> bool {
             | "plugin/uninstall"
             | "skills/config/write"
             | "skills/list"
+            | "thread/list"
+            | "thread/turns/list"
+            | "thread/archive"
+            | "thread/unarchive"
             | "thread/compact/start"
             | "thread/goal/clear"
             | "thread/goal/set"
@@ -125,8 +765,6 @@ fn native_run_method(method: &str) -> bool {
                 | "thread/inject_items"
                 | "thread/delete"
                 | "thread/fork"
-                | "thread/archive"
-                | "thread/unarchive"
         )
 }
 
@@ -306,9 +944,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_execution_root, contains_execution_path_fields, native_run_method,
-        renderer_agent_method, strip_execution_path_fields, validate_direct_command,
-        validate_renderer_agent_request,
+        apply_execution_root, apply_rollout_record, command_from_tool_input,
+        contains_execution_path_fields, native_run_method, output_text, renderer_agent_method,
+        strip_execution_path_fields, tool_activities, valid_codex_thread_id,
+        validate_direct_command, validate_renderer_agent_request, RolloutCommandCache,
     };
 
     #[test]
@@ -320,6 +959,111 @@ mod tests {
         let mut search = json!({ "query": "x", "roots": ["C:/escape"] });
         apply_execution_root("fuzzyFileSearch", &mut search, "C:/owned/root").unwrap();
         assert_eq!(search["roots"], json!(["C:/owned/root"]));
+    }
+
+    #[test]
+    fn extracts_nested_exec_commands_from_rollout_tool_calls() {
+        let input = r#"const r = await tools.exec_command({cmd:"npm test -- --run","workdir":"D:\\Project Archive\\xiao-workbench"}); text(r.output);"#;
+        assert_eq!(
+            command_from_tool_input(input).as_deref(),
+            Some("npm test -- --run")
+        );
+        assert_eq!(
+            command_from_tool_input(r#"{"cmd":"cargo check","yield_time_ms":30000}"#).as_deref(),
+            Some("cargo check")
+        );
+    }
+
+    #[test]
+    fn rollout_discovery_only_accepts_codex_thread_uuids() {
+        assert!(valid_codex_thread_id(
+            "019f9afa-cb11-7873-b644-f57afbb81239"
+        ));
+        assert!(!valid_codex_thread_id("../sessions/rollout"));
+        assert!(!valid_codex_thread_id(
+            "019f9afa-cb11-7873-b644-f57afbb8123z"
+        ));
+    }
+
+    #[test]
+    fn reads_text_blocks_from_rollout_command_outputs() {
+        let output = json!([
+            { "type": "input_text", "text": "Script completed\n" },
+            { "type": "input_text", "text": "Output:\npassed" }
+        ]);
+        assert_eq!(
+            output_text(&output).as_deref(),
+            Some("Script completed\n\nOutput:\npassed")
+        );
+    }
+
+    #[test]
+    fn records_rollout_timeline_markers_without_message_content() {
+        let mut cache = RolloutCommandCache::default();
+        apply_rollout_record(
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-29T12:45:22.799Z",
+                "payload": {
+                    "type": "message",
+                    "id": "commentary-1",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [{ "type": "output_text", "text": "private commentary" }],
+                    "turn_id": "turn-1"
+                }
+            }),
+            &mut cache,
+        );
+
+        assert_eq!(cache.completed.len(), 1);
+        let marker = &cache.completed[0];
+        assert_eq!(marker.id, "commentary-1");
+        assert_eq!(marker.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(marker.activity_kind, "timelineMarker");
+        assert_eq!(marker.label.as_deref(), Some("commentary"));
+        assert!(marker.command.is_empty());
+        assert!(marker.output.is_none());
+    }
+
+    #[test]
+    fn preserves_reasoning_span_and_direct_codex_terminal_tools() {
+        let mut cache = RolloutCommandCache::default();
+        apply_rollout_record(
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-29T12:45:29.932Z",
+                "payload": {
+                    "type": "reasoning",
+                    "id": "reasoning-1",
+                    "summary": [
+                        { "type": "summary_text", "text": "first" },
+                        { "type": "summary_text", "text": "second" }
+                    ],
+                    "turn_id": "turn-1"
+                }
+            }),
+            &mut cache,
+        );
+
+        assert_eq!(cache.completed[0].label.as_deref(), Some("reasoning"));
+        assert_eq!(cache.completed[0].marker_span, Some(2));
+        assert_eq!(
+            tool_activities("read_thread_terminal", "{}"),
+            vec![(
+                "tool".to_owned(),
+                Some("Read chat terminal".to_owned()),
+                "Read chat terminal".to_owned(),
+            )],
+        );
+        assert_eq!(
+            tool_activities("view_image", r#"{"path":"C:\\Temp\\reference.png"}"#),
+            vec![(
+                "imageView".to_owned(),
+                Some("Viewed an image".to_owned()),
+                "C:\\Temp\\reference.png".to_owned(),
+            )],
+        );
     }
 
     #[test]
@@ -351,6 +1095,10 @@ mod tests {
             "plugin/uninstall",
             "skills/config/write",
             "skills/list",
+            "thread/archive",
+            "thread/list",
+            "thread/turns/list",
+            "thread/unarchive",
             "thread/compact/start",
             "thread/goal/clear",
             "thread/goal/set",
