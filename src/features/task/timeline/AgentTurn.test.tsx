@@ -21,6 +21,133 @@ const idleRuntime: AgentRuntimeState = {
 };
 
 describe("AgentTurn completed reasoning", () => {
+  const renderTurn = (
+    turn: ConversationTurn,
+    runtime: AgentRuntimeState,
+    liveEligible = true,
+  ) => render(
+    <AgentTurn
+      turn={turn}
+      index={0}
+      runtime={runtime}
+      liveEligible={liveEligible}
+      taskId="task-1"
+      workspacePath="C:\\work\\xiao"
+      expandToolOutput={false}
+      showReasoningSummaries
+      canFork={false}
+      canUndo={false}
+      undoing={false}
+      onForkTask={() => undefined}
+      onOpenResource={() => true}
+      onReviewChanges={() => undefined}
+      onUndo={() => undefined}
+      onResolveApproval={async () => undefined}
+    />,
+  );
+
+  it("keeps later active work live after a successful interim response", () => {
+    const user: TimelineEntry = {
+      id: "user-live",
+      kind: "user",
+      title: "Run the checks",
+      turnId: "turn-1",
+      createdAt: 1_000,
+    };
+    const response: TimelineEntry = {
+      id: "response-live",
+      kind: "result",
+      title: "Agent response",
+      body: "Initial result.",
+      turnId: "turn-1",
+      status: "success",
+      createdAt: 2_000,
+    };
+    const command: TimelineEntry = {
+      id: "command-live",
+      kind: "command",
+      title: "Run tests",
+      command: "npm test",
+      turnId: "turn-1",
+      status: "active",
+      createdAt: 3_000,
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [command],
+      commentary: [],
+      work: [command],
+      response,
+      responseFlowIndex: 0,
+      files: [],
+      startIndex: 0,
+      endIndex: 2,
+    };
+
+    const { container } = renderTurn(turn, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnId: "turn-1",
+      turnStartedAt: Date.now() - 1_000,
+    });
+
+    expect(container.querySelector(".conversation-turn.is-live")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Working for/ }).getAttribute("aria-expanded"))
+      .toBe("true");
+    expect(screen.getByText("npm test")).toBeTruthy();
+  });
+
+  it("does not revive historical active work from a different runtime turn", () => {
+    const user: TimelineEntry = {
+      id: "user-complete",
+      kind: "user",
+      title: "Completed task",
+      turnId: "turn-old",
+    };
+    const response: TimelineEntry = {
+      id: "response-complete",
+      kind: "result",
+      title: "Agent response",
+      body: "Done.",
+      turnId: "turn-old",
+      status: "success",
+    };
+    const staleCommand: TimelineEntry = {
+      id: "command-stale",
+      kind: "command",
+      title: "Old command",
+      command: "npm test",
+      turnId: "turn-old",
+      status: "active",
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [staleCommand],
+      commentary: [],
+      work: [staleCommand],
+      response,
+      responseFlowIndex: 0,
+      files: [],
+      startIndex: 0,
+      endIndex: 2,
+    };
+
+    const { container } = renderTurn(turn, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnId: "turn-new",
+      turnStartedAt: Date.now() - 1_000,
+    });
+
+    expect(container.querySelector(".conversation-turn.is-live")).toBeNull();
+    expect(screen.getByRole("button", { name: "Worked" }).getAttribute("aria-expanded"))
+      .toBe("false");
+  });
+
   it("keeps a completed thought-only group available after expansion", () => {
     const user: TimelineEntry = {
       id: "user",
@@ -49,26 +176,7 @@ describe("AgentTurn completed reasoning", () => {
       endIndex: 1,
     };
 
-    render(
-      <AgentTurn
-        turn={turn}
-        index={0}
-        runtime={idleRuntime}
-        liveEligible={false}
-        taskId="task-1"
-        workspacePath="C:\\work\\xiao"
-        expandToolOutput={false}
-        showReasoningSummaries
-        canFork={false}
-        canUndo={false}
-        undoing={false}
-        onForkTask={() => undefined}
-        onOpenResource={() => true}
-        onReviewChanges={() => undefined}
-        onUndo={() => undefined}
-        onResolveApproval={async () => undefined}
-      />,
-    );
+    renderTurn(turn, idleRuntime, false);
 
     expect(screen.queryByText("Checking chronological projection")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Worked for 1s/ }));

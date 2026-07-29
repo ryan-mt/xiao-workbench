@@ -95,13 +95,25 @@ const liveThoughtLabel = (entry: TimelineEntry) =>
 
 export function AgentTurn(props: SharedProps) {
   const { turn, runtime, taskId } = props;
-  const live = props.liveEligible &&
-    runtime.phase === "working" &&
+  const responseFlowIndex = turn.responseFlowIndex ?? turn.flow.length;
+  const activeWorkAfterResponse = Boolean(
+    turn.response &&
+    turn.responseFlowIndex !== null &&
+    responseFlowIndex < turn.flow.length &&
+    turn.flow.slice(responseFlowIndex).some((entry) => entry.status === "active")
+  );
+  const turnIsLive = runtime.phase === "working" &&
     runtime.taskId === taskId &&
-    (!turn.response || turn.response.status === "active");
+    (
+      !runtime.turnId ||
+      [turn.user, ...turn.flow, ...(turn.response ? [turn.response] : [])]
+        .some((entry) => entry.turnId === runtime.turnId)
+    );
+  const live = props.liveEligible &&
+    turnIsLive &&
+    (!turn.response || turn.response.status === "active" || activeWorkAfterResponse);
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
-  const responseFlowIndex = turn.responseFlowIndex ?? turn.flow.length;
   const responseBeforeLaterFlow = Boolean(
     turn.response &&
     turn.responseFlowIndex !== null &&
