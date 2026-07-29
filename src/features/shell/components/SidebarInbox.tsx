@@ -195,7 +195,11 @@ function InboxRow({
             {item.kind === "task" ? item.projectName : item.projectName || "Codex"}
           </span>
           {status ? (
-            <span className={`sidebar-inbox__status is-${status.tone}`}>
+            <span
+              className={`sidebar-inbox__status is-${status.tone}`}
+              aria-label={status.label}
+              title={status.label}
+            >
               {item.working ? (
                 <XiaoIcon name="pending" size={11} />
               ) : (
