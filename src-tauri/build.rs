@@ -366,6 +366,7 @@ fn excluded_source_directory(relative: &str) -> bool {
                 | "node_modules"
                 | "plans"
                 | "target"
+                | "website-xiao"
         )
     })
 }
@@ -548,6 +549,27 @@ mod tests {
         let error = ticket03_source_manifest(&root)
             .expect_err("uncovered release source must fail certification");
         assert!(error.contains("unexpected/release.ts"), "{error}");
+
+        fs::remove_dir_all(root).expect("temporary source cleanup");
+    }
+
+    #[test]
+    fn source_manifest_ignores_the_standalone_website_project() {
+        let root = std::env::temp_dir().join(format!(
+            "xiao-build-certification-website-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("website-xiao")).expect("temporary website directory");
+        fs::write(
+            root.join("website-xiao/eslint.config.mjs"),
+            "export default [];\n",
+        )
+        .expect("temporary website source");
+
+        let manifest =
+            ticket03_source_manifest(&root).expect("standalone website source should be ignored");
+        assert!(manifest.is_empty());
 
         fs::remove_dir_all(root).expect("temporary source cleanup");
     }

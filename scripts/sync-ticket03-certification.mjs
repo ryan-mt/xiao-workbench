@@ -33,6 +33,7 @@ const excludedDirectories = new Set([
   "node_modules",
   "plans",
   "target",
+  "website-xiao",
 ]);
 const releaseSourceExtensions = new Set([
   "c",

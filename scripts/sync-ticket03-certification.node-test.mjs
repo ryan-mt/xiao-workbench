@@ -51,6 +51,20 @@ test("normalizes dated versions and checkout line endings", async () => {
   }
 });
 
+test("ignores the standalone website project", async () => {
+  const root = await createFixture();
+  try {
+    const before = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+    await mkdir(join(root, "website-xiao"), { recursive: true });
+    await writeFile(join(root, "website-xiao/eslint.config.mjs"), "export default [];\n");
+    const after = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+
+    assert.equal(after, before);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("matches the Rust source coverage boundaries", () => {
   assert.equal(isTicket03SourcePath("src/app/App.tsx"), true);
   assert.equal(isTicket03SourcePath("src-tauri/src/main.rs"), true);
