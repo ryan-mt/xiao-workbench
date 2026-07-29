@@ -190,6 +190,59 @@ describe("TaskTimeline turn canvas", () => {
     );
   });
 
+  it("keeps command batches between commentary and splits them at thought boundaries", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Fix the chronology",
+    }, {
+      id: "commentary-one",
+      kind: "result",
+      title: "Agent response",
+      meta: "Commentary",
+      body: "Inspecting the importer.",
+    }, {
+      id: "command-one",
+      kind: "command",
+      title: "Ran command",
+      command: "git status --short",
+    }, {
+      id: "thought",
+      kind: "thought",
+      title: "Reasoning",
+      body: "Checking the app-server sequence",
+    }, {
+      id: "terminal",
+      kind: "command",
+      title: "Read chat terminal",
+      meta: "Codex tool",
+      body: "No terminal session is attached.",
+    }, {
+      id: "commentary-two",
+      kind: "result",
+      title: "Agent response",
+      meta: "Commentary",
+      body: "Applying the measured fix.",
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 10_000,
+    });
+
+    expect(markup.indexOf("Inspecting the importer.")).toBeLessThan(
+      markup.indexOf("git status --short"),
+    );
+    expect(markup.indexOf("git status --short")).toBeLessThan(
+      markup.indexOf("Checking the app-server sequence"),
+    );
+    expect(markup.indexOf("Read chat terminal")).toBeLessThan(
+      markup.indexOf("Applying the measured fix."),
+    );
+    expect(markup.match(/class="execution-trace is-live"/g)).toHaveLength(2);
+    expect(markup).toContain('src="/codex-mark.png"');
+  });
+
   it("does not render the edited-files summary card before a final response", () => {
     const markup = render([{
       id: "user",

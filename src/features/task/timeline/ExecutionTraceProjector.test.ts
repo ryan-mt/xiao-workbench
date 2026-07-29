@@ -19,7 +19,7 @@ describe("execution trace projection", () => {
     ])).toEqual([
       {
         id: "execution-setup",
-        title: "Edited files, ran commands",
+        title: "Edited a file, ran commands",
         thoughtTitled: false,
         entries: [entry("setup", "command"), entry("edit", "change"), entry("test", "command")],
       },
@@ -31,7 +31,7 @@ describe("execution trace projection", () => {
       entry("trace", "thought", "Visible trace title\nHidden reasoning body"),
       entry("command", "command"),
     ]);
-    expect(traces[0].title).toBe("Ran commands");
+    expect(traces[0].title).toBe("Ran a command");
     expect(traces[0].entries.map((item) => item.id)).toEqual(["command"]);
   });
 

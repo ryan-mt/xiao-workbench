@@ -90,12 +90,16 @@ describe("Codex history activity", () => {
           type: "userMessage",
           content: [{ type: "text", text: "Fix it" }],
         }, {
-          id: "commentary-1",
+          id: "item-commentary-1",
           type: "agentMessage",
           phase: "commentary",
           text: "Inspecting the importer.",
         }, {
-          id: "commentary-2",
+          id: "item-reasoning-1",
+          type: "reasoning",
+          summary: ["Checking sequence", "Matching phases", "Preserving boundaries"],
+        }, {
+          id: "item-commentary-2",
           type: "agentMessage",
           phase: "commentary",
           text: "Fixing the chronology.",
@@ -103,7 +107,7 @@ describe("Codex history activity", () => {
       }],
     });
     vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
-      id: "commentary-1",
+      id: "msg-commentary-1",
       turnId: "turn-1",
       turnIndex: 0,
       activityKind: "timelineMarker",
@@ -120,7 +124,25 @@ describe("Codex history activity", () => {
       output: "clean",
       exitCode: 0,
     }, {
-      id: "commentary-2",
+      id: "rs-reasoning-1",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "timelineMarker",
+      label: "reasoning",
+      command: "",
+      createdAt: "1970-01-01T00:00:01.250Z",
+      markerSpan: 1,
+    }, {
+      id: "rs-reasoning-2",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "timelineMarker",
+      label: "reasoning",
+      command: "",
+      createdAt: "1970-01-01T00:00:01.270Z",
+      markerSpan: 2,
+    }, {
+      id: "msg-commentary-2",
       turnId: "turn-1",
       turnIndex: 0,
       activityKind: "timelineMarker",
@@ -145,9 +167,10 @@ describe("Codex history activity", () => {
 
     expect(timeline.map((entry) => entry.id)).toEqual([
       "user-1",
-      "commentary-1",
+      "item-commentary-1",
       "rollout-command:call-1",
-      "commentary-2",
+      "item-reasoning-1",
+      "item-commentary-2",
       "rollout-command:call-2",
     ]);
   });

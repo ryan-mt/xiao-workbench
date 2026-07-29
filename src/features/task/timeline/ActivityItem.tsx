@@ -526,8 +526,10 @@ export const ActivityItem = memo(function ActivityItem({
     const integration = Boolean(
       entry.meta === "Plugin tool" ||
       entry.meta === "Dynamic tool" ||
+      entry.meta === "Codex tool" ||
       entry.meta?.startsWith("Skill"),
     );
+    const codexTool = entry.meta === "Codex tool";
     const imageTool = entry.meta === "Image tool";
     const webSearch = entry.meta === "Web search";
     const skillName = entry.meta?.startsWith("Skill")
@@ -554,19 +556,23 @@ export const ActivityItem = memo(function ActivityItem({
     const summary = (
       <>
         <span className="activity__tool-icon" aria-hidden="true">
-          <XiaoIcon
-            className={active ? "spin" : undefined}
-            name={active
-              ? "pending"
-              : imageTool
-                ? "files"
-                : webSearch
-                  ? "browser"
-                  : integration
-                    ? "capability"
-                    : "command"}
-            size={13}
-          />
+          {codexTool && !active ? (
+            <img className="activity__codex-icon" src="/codex-mark.png" alt="" />
+          ) : (
+            <XiaoIcon
+              className={active ? "spin" : undefined}
+              name={active
+                ? "pending"
+                : imageTool
+                  ? "files"
+                  : webSearch
+                    ? "browser"
+                    : integration
+                      ? "capability"
+                      : "command"}
+              size={13}
+            />
+          )}
         </span>
         <span className="activity__tool-summary">
           <strong className={active ? "is-active" : undefined}>

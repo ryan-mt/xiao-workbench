@@ -24,19 +24,37 @@ export class ExecutionTraceProjector {
     const entries = this.entries.filter((entry) => entry.kind !== "thought");
     if (!entries.length) return [];
     const latestMarker = traceMarkers.at(-1);
-    const hasCommands = entries.some((entry) => entry.kind === "command");
-    const hasChanges = entries.some((entry) => entry.kind === "change");
-    const hasOtherTools = entries.some((entry) =>
+    const isToolEntry = (entry: TimelineEntry) =>
+      entry.kind === "command" && Boolean(
+        entry.meta === "Plugin tool" ||
+        entry.meta === "Dynamic tool" ||
+        entry.meta === "Codex tool" ||
+        entry.meta?.startsWith("Skill"),
+      );
+    const shellCommands = entries.filter((entry) =>
+      entry.kind === "command" && !isToolEntry(entry)
+    );
+    const changes = entries.filter((entry) => entry.kind === "change");
+    const otherTools = entries.filter((entry) =>
       entry.kind === "explore" ||
       entry.kind === "approval" ||
-      entry.kind === "agent"
+      entry.kind === "agent" ||
+      isToolEntry(entry)
     );
-    const summary = hasChanges
-      ? ["Edited files", hasCommands ? "ran commands" : "", hasOtherTools ? "used tools" : ""]
-          .filter(Boolean).join(", ")
-      : hasCommands
-        ? ["Ran commands", hasOtherTools ? "used tools" : ""].filter(Boolean).join(", ")
-        : hasOtherTools ? "Used tools" : "";
+    const actions = [
+      changes.length
+        ? changes.length === 1 && (shellCommands.length || otherTools.length)
+          ? "Edited a file"
+          : "Edited files"
+        : "",
+      shellCommands.length
+        ? shellCommands.length === 1
+          ? changes.length ? "ran a command" : "Ran a command"
+          : changes.length ? "ran commands" : "Ran commands"
+        : "",
+      ...otherTools.map((entry) => entry.title.toLocaleLowerCase()),
+    ].filter(Boolean);
+    const summary = actions.join(", ");
     return [{
       id: `execution-${entries[0].id}`,
       title: this.live && latestMarker

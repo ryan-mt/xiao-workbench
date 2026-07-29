@@ -313,13 +313,13 @@ export const readCodexThreadTimeline = async (
     rolloutCommandsPromise,
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
-  const rolloutItemTimes = new Map(
-    rolloutCommands.flatMap((activity) => {
-      if (activity.activityKind !== "timelineMarker") return [];
-      const createdAt = timestampMilliseconds(activity.createdAt);
-      return createdAt === null ? [] : [[activity.id, createdAt] as const];
-    }),
-  );
+  const rolloutMarkersByTurn = new Map<string, CodexRolloutCommand[]>();
+  for (const activity of rolloutCommands) {
+    if (activity.activityKind !== "timelineMarker" || !activity.turnId) continue;
+    const markers = rolloutMarkersByTurn.get(activity.turnId) ?? [];
+    markers.push(activity);
+    rolloutMarkersByTurn.set(activity.turnId, markers);
+  }
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
   const commandsByTurnIndex = new Map<number, CodexRolloutCommand[]>();
   const latestRolloutTurnIndex = rolloutCommands.reduce(
@@ -394,26 +394,65 @@ export const readCodexThreadTimeline = async (
         ? Math.max(0, turn.durationMs)
         : null;
     const items = Array.isArray(turn.items) ? turn.items : [];
+    const markers = rolloutMarkersByTurn.get(turnId) ?? [];
+    const exactMarkerTimes = new Map(markers.flatMap((marker) => {
+      const createdAt = timestampMilliseconds(marker.createdAt);
+      return createdAt === null ? [] : [[marker.id, createdAt] as const];
+    }));
+    const markerQueues = new Map<string, CodexRolloutCommand[]>();
+    for (const marker of markers) {
+      if (!marker.label) continue;
+      const queue = markerQueues.get(marker.label) ?? [];
+      queue.push(marker);
+      markerQueues.set(marker.label, queue);
+    }
+    const takeMarkerTime = (label: string) => {
+      const marker = markerQueues.get(label)?.shift();
+      return marker ? timestampMilliseconds(marker.createdAt) : null;
+    };
+    const takeReasoningTime = (summaryParts: number) => {
+      const queue = markerQueues.get("reasoning");
+      if (!queue?.length) return null;
+      let consumed = 0;
+      let createdAt: number | null = null;
+      while (queue.length && consumed < Math.max(1, summaryParts)) {
+        const marker = queue.shift()!;
+        createdAt ??= timestampMilliseconds(marker.createdAt);
+        consumed += Math.max(1, marker.markerSpan ?? 1);
+      }
+      return createdAt;
+    };
+    const rolloutTimestampForItem = (item: Record<string, unknown>) => {
+      const exact = typeof item.id === "string" ? exactMarkerTimes.get(item.id) : undefined;
+      if (exact !== undefined) return exact;
+      if (item.type === "userMessage") return takeMarkerTime("user");
+      if (item.type === "agentMessage" && typeof item.phase === "string") {
+        return takeMarkerTime(item.phase);
+      }
+      if (item.type === "reasoning") {
+        const summaryParts = Array.isArray(item.summary) ? item.summary.length : 0;
+        return takeReasoningTime(summaryParts);
+      }
+      return null;
+    };
     const mapped = items.flatMap((rawItem) => {
       if (!rawItem || typeof rawItem !== "object") return [];
       const item = rawItem as Record<string, unknown>;
-      if (item.type === "userMessage") {
-        const entry = userEntryFromItem(item, createdAt, turnId);
-        return entry ? [{ ...entry, ...(turnDurationMs !== null ? { turnDurationMs } : {}) }] : [];
-      }
-      const entry = timelineEntryFromItem(item);
       const explicitItemTimestamp = firstTimestamp(
         item,
         ["createdAt", "created_at", "timestamp", "updatedAt", "updated_at"],
       );
-      const rolloutItemTimestamp = typeof item.id === "string"
-        ? rolloutItemTimes.get(item.id)
-        : undefined;
+      const rolloutItemTimestamp = rolloutTimestampForItem(item);
       const itemCreatedAt = explicitItemTimestamp ?? rolloutItemTimestamp ?? (
         item.type === "agentMessage" && item.phase !== "commentary" && completedAt
           ? completedAt
           : createdAt
       );
+      if (item.type === "userMessage") {
+        const entry = userEntryFromItem(item, itemCreatedAt, turnId);
+        return entry ? [{ ...entry, ...(turnDurationMs !== null ? { turnDurationMs } : {}) }] : [];
+      }
+      const entry = timelineEntryFromItem(item);
       return entry ? [{
         ...entry,
         createdAt: itemCreatedAt,
@@ -442,7 +481,7 @@ export const readCodexThreadTimeline = async (
             : command.activityKind === "integration"
               ? "Plugin tool"
               : command.activityKind === "tool"
-                ? "Dynamic tool"
+                ? command.label === "Read chat terminal" ? "Codex tool" : "Dynamic tool"
                 : "Workspace";
         return {
           id: `rollout-command:${command.id}`,

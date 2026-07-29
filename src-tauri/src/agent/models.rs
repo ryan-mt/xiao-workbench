@@ -11,6 +11,7 @@ pub struct CodexRolloutCommand {
     pub command: String,
     pub output: Option<String>,
     pub created_at: Option<String>,
+    pub marker_span: Option<u64>,
     pub duration_ms: Option<u64>,
     pub exit_code: Option<i64>,
 }

@@ -231,6 +231,16 @@ fn tool_activities(name: &str, input: &str) -> Vec<(String, Option<String>, Stri
     if matches!(tool, "apply_patch" | "functions.apply_patch") {
         return Vec::new();
     }
+    if matches!(
+        tool,
+        "read_thread_terminal" | "codex_app__read_thread_terminal"
+    ) {
+        return vec![(
+            "tool".to_owned(),
+            Some("Read chat terminal".to_owned()),
+            "Read chat terminal".to_owned(),
+        )];
+    }
 
     if tool.contains("web__") || tool.starts_with("web_") || tool.contains("search_query") {
         let query = ["\"q\"", "q:", "\"query\"", "query:"]
@@ -319,12 +329,19 @@ fn rollout_turn_id(record: &Value, payload: &Value) -> Option<String> {
         .and_then(|metadata| metadata.get("turn_id"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| payload.get("turn_id").and_then(Value::as_str).map(str::to_owned))
-        .or_else(|| record
-        .get("internal_chat_message_metadata_passthrough")
-        .and_then(|metadata| metadata.get("turn_id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned))
+        .or_else(|| {
+            payload
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            record
+                .get("internal_chat_message_metadata_passthrough")
+                .and_then(|metadata| metadata.get("turn_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .or_else(|| {
             record
                 .get("turn_id")
@@ -345,34 +362,69 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
         .and_then(Value::as_str)
         .unwrap_or_default();
     if item_type == "message" && payload.get("role").and_then(Value::as_str) == Some("user") {
+        if let Some(id) = payload.get("id").and_then(Value::as_str) {
+            cache.completed.push(models::CodexRolloutCommand {
+                id: id.to_owned(),
+                turn_id: rollout_turn_id(&record, payload),
+                turn_index: cache.current_turn_index,
+                activity_kind: "timelineMarker".to_owned(),
+                label: Some("user".to_owned()),
+                command: String::new(),
+                output: None,
+                created_at: record
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                marker_span: None,
+                duration_ms: None,
+                exit_code: None,
+            });
+        }
         cache.current_turn_index = Some(
-            cache.current_turn_index
+            cache
+                .current_turn_index
                 .map_or(0, |index| index.saturating_add(1)),
         );
         return;
     }
-    if (item_type == "message"
-        && payload.get("role").and_then(Value::as_str) == Some("assistant"))
+    if (item_type == "message" && payload.get("role").and_then(Value::as_str) == Some("assistant"))
         || item_type == "reasoning"
     {
         let Some(id) = payload.get("id").and_then(Value::as_str) else {
             return;
         };
+        let marker_span = if item_type == "reasoning" {
+            payload
+                .get("summary")
+                .and_then(Value::as_array)
+                .map(|summary| summary.len() as u64)
+                .filter(|span| *span > 0)
+        } else {
+            None
+        };
+        if item_type == "reasoning" && marker_span.is_none() {
+            return;
+        }
         cache.completed.push(models::CodexRolloutCommand {
             id: id.to_owned(),
             turn_id: rollout_turn_id(&record, payload),
             turn_index: cache.current_turn_index,
             activity_kind: "timelineMarker".to_owned(),
-            label: payload
-                .get("phase")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            label: if item_type == "reasoning" {
+                Some("reasoning".to_owned())
+            } else {
+                payload
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            },
             command: String::new(),
             output: None,
             created_at: record
                 .get("timestamp")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            marker_span,
             duration_ms: None,
             exit_code: None,
         });
@@ -393,9 +445,6 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
             return;
         };
         let activities = tool_activities(name, &input);
-        if activities.is_empty() {
-            return;
-        }
         let Some(id) = payload
             .get("call_id")
             .or_else(|| payload.get("id"))
@@ -408,10 +457,27 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let turn_id = rollout_turn_id(&record, payload);
+        cache.completed.push(models::CodexRolloutCommand {
+            id: id.to_owned(),
+            turn_id: turn_id.clone(),
+            turn_index: cache.current_turn_index,
+            activity_kind: "timelineMarker".to_owned(),
+            label: Some("tool".to_owned()),
+            command: String::new(),
+            output: None,
+            created_at: created_at.clone(),
+            marker_span: None,
+            duration_ms: None,
+            exit_code: None,
+        });
+        if activities.is_empty() {
+            return;
+        }
         let commands = activities
             .into_iter()
             .enumerate()
-            .map(|(index, (activity_kind, label, command))| models::CodexRolloutCommand {
+            .map(
+                |(index, (activity_kind, label, command))| models::CodexRolloutCommand {
                     id: if index == 0 {
                         id.to_owned()
                     } else {
@@ -424,9 +490,11 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
                     command,
                     output: None,
                     created_at: created_at.clone(),
+                    marker_span: None,
                     duration_ms: None,
                     exit_code: None,
-                })
+                },
+            )
             .collect();
         cache.pending.insert(
             id.to_owned(),
@@ -845,8 +913,8 @@ mod tests {
     use super::{
         apply_execution_root, apply_rollout_record, command_from_tool_input,
         contains_execution_path_fields, native_run_method, output_text, renderer_agent_method,
-        strip_execution_path_fields, valid_codex_thread_id, validate_direct_command,
-        validate_renderer_agent_request, RolloutCommandCache,
+        strip_execution_path_fields, tool_activities, valid_codex_thread_id,
+        validate_direct_command, validate_renderer_agent_request, RolloutCommandCache,
     };
 
     #[test]
@@ -923,6 +991,38 @@ mod tests {
         assert_eq!(marker.label.as_deref(), Some("commentary"));
         assert!(marker.command.is_empty());
         assert!(marker.output.is_none());
+    }
+
+    #[test]
+    fn preserves_reasoning_span_and_direct_codex_terminal_tools() {
+        let mut cache = RolloutCommandCache::default();
+        apply_rollout_record(
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-29T12:45:29.932Z",
+                "payload": {
+                    "type": "reasoning",
+                    "id": "reasoning-1",
+                    "summary": [
+                        { "type": "summary_text", "text": "first" },
+                        { "type": "summary_text", "text": "second" }
+                    ],
+                    "turn_id": "turn-1"
+                }
+            }),
+            &mut cache,
+        );
+
+        assert_eq!(cache.completed[0].label.as_deref(), Some("reasoning"));
+        assert_eq!(cache.completed[0].marker_span, Some(2));
+        assert_eq!(
+            tool_activities("read_thread_terminal", "{}"),
+            vec![(
+                "tool".to_owned(),
+                Some("Read chat terminal".to_owned()),
+                "Read chat terminal".to_owned(),
+            )],
+        );
     }
 
     #[test]

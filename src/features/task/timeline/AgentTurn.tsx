@@ -62,6 +62,9 @@ const groupTurnFlow = (
     } else if (commentaryIds.has(entry.id)) {
       flushExecution();
       groups.push({ kind: "commentary", entry });
+    } else if (entry.kind === "thought") {
+      flushExecution();
+      execution.push(entry);
     } else {
       execution.push(entry);
     }

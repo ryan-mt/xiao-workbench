@@ -214,6 +214,7 @@ export type CodexRolloutCommand = {
   command: string;
   output?: string | null;
   createdAt?: string | null;
+  markerSpan?: number | null;
   durationMs?: number | null;
   exitCode?: number | null;
 };

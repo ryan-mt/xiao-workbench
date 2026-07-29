@@ -129,6 +129,13 @@
   min-width: 0;
 }
 
+.conversation-turn__execution .activity__codex-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  opacity: 0.78;
+}
+
 .conversation-turn__execution .activity__web-query {
   display: block;
   min-width: 0;
