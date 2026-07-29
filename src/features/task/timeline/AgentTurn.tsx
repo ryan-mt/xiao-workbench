@@ -4,6 +4,8 @@ import type { AgentRuntimeState } from "../../../core/models/agent";
 import { ActivityItem } from "./ActivityItem";
 import type { ConversationTurn } from "./ConversationTurnProjector";
 import { EditedFilesSummary } from "./EditedFilesSummary";
+import { ExecutionTraceGroup } from "./ExecutionTraceGroup";
+import { projectExecutionTraces } from "./ExecutionTraceProjector";
 import { toolCallRecovery } from "./ToolCallGroup";
 import { TurnDurationHeader } from "./TurnDurationHeader";
 
@@ -37,8 +39,9 @@ export function AgentTurn(props: SharedProps) {
     runtime.phase === "working" &&
     runtime.taskId === taskId &&
     (!turn.response || turn.response.status === "active");
-  const [expanded, setExpanded] = useState(props.liveEligible);
+  const [expanded, setExpanded] = useState(true);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
+  const executionGroups = projectExecutionTraces(turn.work, live);
 
   useEffect(() => {
     if (live) setExpanded(true);
@@ -80,18 +83,33 @@ export function AgentTurn(props: SharedProps) {
         expanded={expanded}
         onToggle={() => setExpanded((value) => !value)}
       />
+      {turn.commentary.map((entry, commentaryIndex) => (
+        <span className="timeline-entry-anchor conversation-turn__commentary" id={`timeline-entry-${entry.id}`} key={entry.id}>
+          {item(entry, commentaryIndex + 1)}
+        </span>
+      ))}
       {expanded && turn.work.length ? (
         <div className="conversation-turn__execution">
-          {turn.work.map((entry, offset) => (
-            <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
-              {item(entry, offset + 1)}
-            </span>
-          ))}
+          {executionGroups.map((group) => {
+            const content = group.entries.map((entry) => {
+              const offset = turn.work.indexOf(entry);
+              return (
+                <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
+                  {item(entry, turn.commentary.length + offset + 1)}
+                </span>
+              );
+            });
+            return group.title ? (
+              <ExecutionTraceGroup key={group.id} title={group.title} live={live}>
+                {content}
+              </ExecutionTraceGroup>
+            ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
+          })}
         </div>
       ) : null}
       {turn.response ? (
         <span className="timeline-entry-anchor" id={`timeline-entry-${turn.response.id}`}>
-          {item(turn.response, turn.work.length + 1, true)}
+          {item(turn.response, turn.commentary.length + turn.work.length + 1, true)}
         </span>
       ) : null}
       {turn.files.length ? (

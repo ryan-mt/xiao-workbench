@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 import { XiaoIcon, type XiaoIconName } from "../../../components/icons/XiaoIcon";
@@ -37,6 +37,42 @@ function AgentProgressIndicator() {
       ))}
     </svg>
   );
+}
+
+const formatCommandDuration = (milliseconds: number) => {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${remainder}s` : `${seconds}s`;
+};
+
+function CommandExecutionTitle({
+  active,
+  startedAt,
+  durationMs,
+  fallback,
+}: {
+  active: boolean;
+  startedAt?: number;
+  durationMs?: number;
+  fallback: string;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
+  if (active) {
+    return <>Running command for {formatCommandDuration(Math.max(0, now - (startedAt ?? now)))}</>;
+  }
+  if (typeof durationMs === "number" && durationMs > 0 && fallback === "Ran command") {
+    return <>Ran command in {formatCommandDuration(durationMs)}</>;
+  }
+  return <>{fallback}</>;
 }
 
 const directImageSource = (value: string | undefined) => {
@@ -522,7 +558,16 @@ export const ActivityItem = memo(function ActivityItem({
           />
         </span>
         <span className="activity__tool-summary">
-          <strong className={active ? "is-active" : undefined}>{toolTitle}</strong>
+          <strong className={active ? "is-active" : undefined}>
+            {entry.command ? (
+              <CommandExecutionTitle
+                active={active}
+                startedAt={entry.createdAt}
+                durationMs={entry.durationMs}
+                fallback={toolTitle}
+              />
+            ) : toolTitle}
+          </strong>
           {entry.command ? <span title={toolDetail}>{toolDetail}</span> : null}
           {attemptCount > 1 && (
             <small className="activity__tool-attempts">{attemptCount} attempts</small>
@@ -553,6 +598,12 @@ export const ActivityItem = memo(function ActivityItem({
                 <div className="activity__terminal">
                   <span className="activity__terminal-copy"><CopyButton text={terminalText} /></span>
                   <pre tabIndex={0} aria-label="Shell output"><code>{terminalText}</code></pre>
+                  {!active && entry.status === "success" ? (
+                    <span className="activity__terminal-success">
+                      <XiaoIcon name="check" size={11} />
+                      Completed{typeof entry.exitCode === "number" ? ` · exit ${entry.exitCode}` : ""}
+                    </span>
+                  ) : null}
                 </div>
               )}
             </div>
@@ -603,9 +654,10 @@ export const ActivityItem = memo(function ActivityItem({
               ? normalizedPath.slice(normalizedWorkspace.length + 1)
               : normalizedPath;
             return (
-              <div className="patch-activity__row" key={file.path}>
+              <div className={`patch-activity__row is-${created ? "created" : deleted ? "deleted" : "edited"}`} key={file.path}>
                 <span className="activity__tool-icon" aria-hidden="true">
-                  <XiaoIcon name="edit" size={13} />
+                  <XiaoIcon name={created ? "mutation" : deleted ? "trash" : "edit"} size={13} />
+                  {created || deleted ? <i className="patch-activity__operation-dot" /> : null}
                 </span>
                 <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
                   {verb}

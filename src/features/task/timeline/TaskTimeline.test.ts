@@ -11,10 +11,15 @@ const entry = (
 ): TimelineEntry => ({ id, kind, title: id, createdAt });
 
 describe("conversation projection", () => {
-  it("projects exactly one stable turn and removes reasoning from the visible canvas", () => {
+  it("projects exactly one stable turn and keeps commentary flat outside execution", () => {
     const rows = projectConversation([
       entry("user", "user", 1_000),
       entry("thought", "thought", 2_000),
+      {
+        ...entry("commentary", "result", 2_500),
+        title: "Agent response",
+        meta: "Commentary",
+      },
       entry("command", "command", 3_000),
       {
         ...entry("response", "result", 6_000),
@@ -28,7 +33,8 @@ describe("conversation projection", () => {
       kind: "turn",
       turn: {
         user: { id: "user" },
-        work: [{ id: "command" }],
+        commentary: [{ id: "commentary" }],
+        work: [{ id: "thought" }, { id: "command" }],
         response: { id: "response" },
       },
     });

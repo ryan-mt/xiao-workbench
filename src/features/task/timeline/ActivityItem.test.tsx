@@ -385,6 +385,23 @@ describe("ActivityItem timeline disclosures", () => {
     expect(markup).not.toContain("<details class=\"activity__tool-disclosure\" open=\"\"");
   });
 
+  it("shows app-server command duration and successful exit state", () => {
+    const markup = renderCompaction({
+      id: "command-complete",
+      kind: "command",
+      title: "Command completed",
+      command: "npm run check",
+      body: "TypeScript passed",
+      status: "success",
+      durationMs: 24_300,
+      exitCode: 0,
+    }, 1, false);
+
+    expect(markup).toContain("Ran command in 24s");
+    expect(markup).toContain("Completed · exit 0");
+    expect(markup).toContain("$ npm run check");
+  });
+
   it("renders a compact flat file row without line metadata or disclosure chrome", () => {
     const markup = renderCompaction({
       id: "patch-1",

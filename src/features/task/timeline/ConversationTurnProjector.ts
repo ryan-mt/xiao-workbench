@@ -3,6 +3,7 @@ import type { TimelineEntry } from "../../../core/models/agent";
 export type ConversationTurn = {
   id: string;
   user: TimelineEntry;
+  commentary: TimelineEntry[];
   work: TimelineEntry[];
   response: TimelineEntry | null;
   files: NonNullable<TimelineEntry["files"]>;
@@ -19,6 +20,10 @@ const isResponse = (entry: TimelineEntry) =>
   entry.kind === "result" &&
   entry.title === "Agent response" &&
   entry.meta !== "Commentary";
+const isCommentary = (entry: TimelineEntry) =>
+  entry.kind === "result" &&
+  entry.title === "Agent response" &&
+  entry.meta === "Commentary";
 
 const mergeFiles = (entries: TimelineEntry[]) => {
   const files = new Map<string, NonNullable<TimelineEntry["files"]>[number]>();
@@ -60,6 +65,7 @@ export class ConversationTurnProjector {
 
       const startIndex = index;
       const user = entry;
+      const commentary: TimelineEntry[] = [];
       const work: TimelineEntry[] = [];
       let response: TimelineEntry | null = null;
       index += 1;
@@ -67,7 +73,8 @@ export class ConversationTurnProjector {
       while (index < this.timeline.length && !isUser(this.timeline[index])) {
         const candidate = this.timeline[index];
         if (isResponse(candidate)) response = candidate;
-        else if (candidate.kind !== "thought") work.push(candidate);
+        else if (isCommentary(candidate)) commentary.push(candidate);
+        else work.push(candidate);
         index += 1;
       }
 
@@ -76,6 +83,7 @@ export class ConversationTurnProjector {
         turn: {
           id: user.id,
           user,
+          commentary,
           work,
           response,
           files: mergeFiles(work),
@@ -91,4 +99,3 @@ export class ConversationTurnProjector {
 
 export const projectConversation = (timeline: TimelineEntry[]) =>
   new ConversationTurnProjector(timeline).project();
-

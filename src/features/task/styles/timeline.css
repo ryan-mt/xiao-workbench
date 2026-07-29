@@ -835,6 +835,78 @@
   display: none;
 }
 
+.timeline .activity__terminal-success {
+  display: flex;
+  width: fit-content;
+  margin: 2px 4px 2px auto;
+  align-items: center;
+  gap: 4px;
+  color: color-mix(in srgb, var(--success) 82%, var(--muted));
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.timeline .execution-trace {
+  min-width: 0;
+  margin: 7px 0 9px;
+}
+
+.timeline .execution-trace > summary {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 530;
+  list-style: none;
+}
+
+.timeline .execution-trace > summary::-webkit-details-marker {
+  display: none;
+}
+
+.timeline .execution-trace > summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline .execution-trace__icon {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.timeline .execution-trace__caret {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transform: rotate(0deg);
+  transition: transform 150ms ease;
+}
+
+.timeline .execution-trace[open] .execution-trace__caret {
+  transform: rotate(90deg);
+}
+
+.timeline .execution-trace__content,
+.timeline .execution-trace__ungrouped {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.timeline .execution-trace__content {
+  max-height: min(340px, 42vh);
+  margin: 7px 0 0 8px;
+  padding-left: 12px;
+  overflow: auto;
+  border-left: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
 /* Edit parts */
 
 .timeline .activity--patch {

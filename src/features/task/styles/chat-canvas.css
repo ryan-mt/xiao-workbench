@@ -42,12 +42,17 @@
 
 .turn-duration__caret {
   flex: 0 0 auto;
-  transform: rotate(90deg);
+  transform: rotate(0deg);
   transition: transform 150ms ease;
 }
 
 .turn-duration[aria-expanded="true"] .turn-duration__caret {
-  transform: rotate(-90deg);
+  transform: rotate(90deg);
+}
+
+.conversation-turn__commentary {
+  display: block;
+  margin: 0 0 18px;
 }
 
 .turn-duration.is-live > span {
@@ -153,8 +158,32 @@
 }
 
 .conversation-turn__execution .patch-activity__row .activity__tool-icon {
+  position: relative;
   width: 18px;
   height: 18px;
+}
+
+.conversation-turn__execution .patch-activity__row.is-created .activity__tool-icon {
+  color: #70cce2;
+}
+
+.conversation-turn__execution .patch-activity__row.is-deleted .activity__tool-icon {
+  color: #e77a82;
+}
+
+.conversation-turn__execution .patch-activity__operation-dot {
+  position: absolute;
+  right: -1px;
+  bottom: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #70cce2;
+  box-shadow: 0 0 0 1px var(--surface);
+}
+
+.conversation-turn__execution .is-deleted .patch-activity__operation-dot {
+  background: #ef6872;
 }
 
 .conversation-turn__execution .patch-activity__verb {
