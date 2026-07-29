@@ -130,58 +130,6 @@ const collaboratorStatusLabel: Record<NonNullable<TimelineEntry["collaborators"]
   unknown: "Status unavailable",
 };
 
-type PatchLine = {
-  kind: "add" | "delete" | "context" | "meta" | "fold";
-  text: string;
-  oldLine?: number;
-  newLine?: number;
-};
-
-const patchLines = (patch: string): PatchLine[] => {
-  const result: PatchLine[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-  let initialized = false;
-
-  for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
-    const hunk = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
-    if (hunk) {
-      const nextOld = Number(hunk[1]);
-      const nextNew = Number(hunk[2]);
-      const hidden = initialized
-        ? Math.max(0, Math.min(nextOld - oldLine, nextNew - newLine))
-        : Math.max(0, Math.min(nextOld - 1, nextNew - 1));
-      if (hidden > 0) result.push({ kind: "fold", text: `${hidden} unmodified lines` });
-      oldLine = nextOld;
-      newLine = nextNew;
-      initialized = true;
-      result.push({ kind: "meta", text: line });
-      continue;
-    }
-    if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
-      continue;
-    }
-    if (line.startsWith("+")) {
-      result.push({ kind: "add", text: line.slice(1), newLine });
-      newLine += 1;
-      continue;
-    }
-    if (line.startsWith("-")) {
-      result.push({ kind: "delete", text: line.slice(1), oldLine });
-      oldLine += 1;
-      continue;
-    }
-    if (line.startsWith("\\")) {
-      result.push({ kind: "meta", text: line });
-      continue;
-    }
-    result.push({ kind: "context", text: line.startsWith(" ") ? line.slice(1) : line, oldLine, newLine });
-    oldLine += 1;
-    newLine += 1;
-  }
-  return result;
-};
-
 const reasoningHeading = (body?: string) =>
   body
     ?.match(/(?:^|\n)\s*(?:#{1,6}\s+|\*\*|__)?([^\n*_]{3,80})/)?.[1]
@@ -637,7 +585,6 @@ export const ActivityItem = memo(function ActivityItem({
       >
         <div className="patch-activity__files">
           {entry.files.map((file) => {
-            const lines = file.patch ? patchLines(file.patch) : [];
             const created = /---\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
             const deleted = /\+\+\+\s+(?:\/dev\/null|NUL)/i.test(file.patch ?? "");
             const verb = entry.status === "error"
@@ -655,61 +602,27 @@ export const ActivityItem = memo(function ActivityItem({
             const displayPath = normalizedPath.toLowerCase().startsWith(`${normalizedWorkspace.toLowerCase()}/`)
               ? normalizedPath.slice(normalizedWorkspace.length + 1)
               : normalizedPath;
-            const firstChangedLine = lines.find((line) => line.kind === "add" || line.kind === "delete");
-            const lineNumber = firstChangedLine?.newLine ?? firstChangedLine?.oldLine;
             return (
-              <details key={file.path} open={expandToolOutput}>
-                <summary>
-                  <span className="patch-activity__title">
-                    <span className="activity__tool-icon" aria-hidden="true">
-                      <XiaoIcon name="mutation" size={13} />
-                    </span>
-                    <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
-                      {verb}
-                    </strong>
-                    <span
-                      className={`patch-activity__path is-${created ? "created" : deleted ? "deleted" : "edited"}`}
-                      title={`Open ${absolutePath}`}
-                      role="link"
-                      tabIndex={0}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onOpenResource(absolutePath);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        onOpenResource(absolutePath);
-                      }}
-                    >
-                      <strong>{displayPath}</strong>
-                      {lineNumber ? <small>line {lineNumber}</small> : null}
-                    </span>
-                  </span>
-                  <span className="patch-activity__stats"><b>+{file.additions}</b><em>-{file.deletions}</em></span>
-                  <XiaoIcon className="patch-activity__caret" name="caret" size={13} />
-                </summary>
-                <div className="patch-activity__diff">
-                  {lines.length ? lines.map((line, lineIndex) => (
-                    <div className={`is-${line.kind}`} key={`${lineIndex}-${line.text}`}>
-                      {line.kind === "fold" ? (
-                        <span className="patch-activity__fold">{line.text}</span>
-                      ) : (
-                        <>
-                          <span>{line.oldLine ?? ""}</span>
-                          <span>{line.newLine ?? ""}</span>
-                          <i>{line.kind === "add" ? "+" : line.kind === "delete" ? "-" : ""}</i>
-                          <code>{line.text || " "}</code>
-                        </>
-                      )}
-                    </div>
-                  )) : (
-                    <p>No textual patch is available for this file.</p>
-                  )}
-                </div>
-              </details>
+              <div className="patch-activity__row" key={file.path}>
+                <span className="activity__tool-icon" aria-hidden="true">
+                  <XiaoIcon name="edit" size={13} />
+                </span>
+                <strong className={`patch-activity__verb${entry.status === "active" && isLive ? " is-active" : ""}`}>
+                  {verb}
+                </strong>
+                <button
+                  className="patch-activity__path"
+                  type="button"
+                  title={`Open ${absolutePath}`}
+                  onClick={() => onOpenResource(absolutePath)}
+                >
+                  {displayPath}
+                </button>
+                <span className="patch-activity__stats">
+                  <b>+{file.additions}</b>
+                  <em>-{file.deletions}</em>
+                </span>
+              </div>
             );
           })}
         </div>

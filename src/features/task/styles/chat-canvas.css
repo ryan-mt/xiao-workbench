@@ -126,12 +126,7 @@
 }
 
 .conversation-turn__execution .patch-activity__path::before {
-  width: 5px;
-  height: 5px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #8a8b88;
-  content: "";
+  content: none;
 }
 
 .conversation-turn__execution .patch-activity__path.is-created::before {
@@ -140,6 +135,62 @@
 
 .conversation-turn__execution .patch-activity__path.is-deleted::before {
   background: #ff6868;
+}
+
+.conversation-turn__execution .patch-activity__files {
+  gap: 1px;
+}
+
+.conversation-turn__execution .patch-activity__row {
+  display: flex;
+  min-width: 0;
+  min-height: 25px;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.conversation-turn__execution .patch-activity__row .activity__tool-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.conversation-turn__execution .patch-activity__verb {
+  flex: 0 0 auto;
+  color: var(--muted-strong);
+  font-size: inherit;
+  font-weight: 520;
+}
+
+.conversation-turn__execution .patch-activity__path {
+  min-width: 0;
+  max-width: min(70%, 660px);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font: 500 inherit var(--font-sans);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-turn__execution .patch-activity__path:hover,
+.conversation-turn__execution .patch-activity__path:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.conversation-turn__execution .patch-activity__stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  font: 520 11px var(--font-mono);
 }
 
 .conversation-turn__execution .patch-activity__path strong {

@@ -385,7 +385,7 @@ describe("ActivityItem timeline disclosures", () => {
     expect(markup).not.toContain("<details class=\"activity__tool-disclosure\" open=\"\"");
   });
 
-  it("shows an absolute patch path and first changed line", () => {
+  it("renders a compact flat file row without line metadata or disclosure chrome", () => {
     const markup = renderCompaction({
       id: "patch-1",
       kind: "change",
@@ -400,10 +400,13 @@ describe("ActivityItem timeline disclosures", () => {
     });
 
     expect(markup).toContain("C:\\work\\xiao\\src\\index.html");
-    expect(markup).toContain("line 10");
     expect(markup).toContain(">Edited<");
     expect(markup).toContain("patch-activity__verb is-active");
-    expect(markup).not.toContain("<details open=\"\"");
+    expect(markup).toContain("patch-activity__row");
+    expect(markup).toContain("<button class=\"patch-activity__path\"");
+    expect(markup).not.toContain("line 10");
+    expect(markup).not.toContain("patch-activity__caret");
+    expect(markup).not.toContain("<details");
   });
 
   it("keeps completed-turn actions compact without repeating edited files", () => {
