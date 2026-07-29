@@ -203,7 +203,13 @@ export type CodexRolloutCommand = {
   id: string;
   turnId?: string | null;
   turnIndex?: number | null;
-  activityKind: "command" | "webSearch" | "integration" | "skill" | "tool";
+  activityKind:
+    | "command"
+    | "webSearch"
+    | "integration"
+    | "skill"
+    | "tool"
+    | "timelineMarker";
   label?: string | null;
   command: string;
   output?: string | null;

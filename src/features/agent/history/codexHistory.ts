@@ -313,6 +313,13 @@ export const readCodexThreadTimeline = async (
     rolloutCommandsPromise,
   ]);
   const turns = Array.isArray(response.data) ? [...response.data].reverse() : [];
+  const rolloutItemTimes = new Map(
+    rolloutCommands.flatMap((activity) => {
+      if (activity.activityKind !== "timelineMarker") return [];
+      const createdAt = timestampMilliseconds(activity.createdAt);
+      return createdAt === null ? [] : [[activity.id, createdAt] as const];
+    }),
+  );
   const commandsByTurn = new Map<string, CodexRolloutCommand[]>();
   const commandsByTurnIndex = new Map<number, CodexRolloutCommand[]>();
   const latestRolloutTurnIndex = rolloutCommands.reduce(
@@ -347,6 +354,7 @@ export const readCodexThreadTimeline = async (
       : [{ id: turn.id, startedAt, completedAt, nextStartedAt }];
   });
   for (const command of rolloutCommands) {
+    if (command.activityKind === "timelineMarker") continue;
     const commandAt = timestampMilliseconds(command.createdAt);
     const inferredTurn = commandAt === null ? null : [...turnWindows]
       .reverse()
@@ -398,7 +406,10 @@ export const readCodexThreadTimeline = async (
         item,
         ["createdAt", "created_at", "timestamp", "updatedAt", "updated_at"],
       );
-      const itemCreatedAt = explicitItemTimestamp ?? (
+      const rolloutItemTimestamp = typeof item.id === "string"
+        ? rolloutItemTimes.get(item.id)
+        : undefined;
+      const itemCreatedAt = explicitItemTimestamp ?? rolloutItemTimestamp ?? (
         item.type === "agentMessage" && item.phase !== "commentary" && completedAt
           ? completedAt
           : createdAt

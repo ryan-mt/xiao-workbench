@@ -79,6 +79,79 @@ describe("Codex history activity", () => {
     ]));
   });
 
+  it("preserves rollout chronology between commentary and recovered commands", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-1",
+        status: "inProgress",
+        startedAt: 1,
+        items: [{
+          id: "user-1",
+          type: "userMessage",
+          content: [{ type: "text", text: "Fix it" }],
+        }, {
+          id: "commentary-1",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "Inspecting the importer.",
+        }, {
+          id: "commentary-2",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "Fixing the chronology.",
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
+      id: "commentary-1",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "timelineMarker",
+      label: "commentary",
+      command: "",
+      createdAt: "1970-01-01T00:00:01.100Z",
+    }, {
+      id: "call-1",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "command",
+      command: "git status --short",
+      createdAt: "1970-01-01T00:00:01.200Z",
+      output: "clean",
+      exitCode: 0,
+    }, {
+      id: "commentary-2",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "timelineMarker",
+      label: "commentary",
+      command: "",
+      createdAt: "1970-01-01T00:00:01.300Z",
+    }, {
+      id: "call-2",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "command",
+      command: "npm run check",
+      createdAt: "1970-01-01T00:00:01.400Z",
+      output: "passed",
+      exitCode: 0,
+    }]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline.map((entry) => entry.id)).toEqual([
+      "user-1",
+      "commentary-1",
+      "rollout-command:call-1",
+      "commentary-2",
+      "rollout-command:call-2",
+    ]);
+  });
+
   it("opens app-server history when an optional local rollout no longer exists", async () => {
     vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
       data: [{

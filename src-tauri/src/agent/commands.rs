@@ -351,6 +351,33 @@ fn apply_rollout_record(record: Value, cache: &mut RolloutCommandCache) {
         );
         return;
     }
+    if (item_type == "message"
+        && payload.get("role").and_then(Value::as_str) == Some("assistant"))
+        || item_type == "reasoning"
+    {
+        let Some(id) = payload.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        cache.completed.push(models::CodexRolloutCommand {
+            id: id.to_owned(),
+            turn_id: rollout_turn_id(&record, payload),
+            turn_index: cache.current_turn_index,
+            activity_kind: "timelineMarker".to_owned(),
+            label: payload
+                .get("phase")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            command: String::new(),
+            output: None,
+            created_at: record
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            duration_ms: None,
+            exit_code: None,
+        });
+        return;
+    }
     if matches!(item_type, "custom_tool_call" | "function_call") {
         let name = payload
             .get("name")
@@ -816,9 +843,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_execution_root, command_from_tool_input, contains_execution_path_fields,
-        native_run_method, output_text, renderer_agent_method, strip_execution_path_fields,
-        valid_codex_thread_id, validate_direct_command, validate_renderer_agent_request,
+        apply_execution_root, apply_rollout_record, command_from_tool_input,
+        contains_execution_path_fields, native_run_method, output_text, renderer_agent_method,
+        strip_execution_path_fields, valid_codex_thread_id, validate_direct_command,
+        validate_renderer_agent_request, RolloutCommandCache,
     };
 
     #[test]
@@ -866,6 +894,35 @@ mod tests {
             output_text(&output).as_deref(),
             Some("Script completed\n\nOutput:\npassed")
         );
+    }
+
+    #[test]
+    fn records_rollout_timeline_markers_without_message_content() {
+        let mut cache = RolloutCommandCache::default();
+        apply_rollout_record(
+            json!({
+                "type": "response_item",
+                "timestamp": "2026-07-29T12:45:22.799Z",
+                "payload": {
+                    "type": "message",
+                    "id": "commentary-1",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [{ "type": "output_text", "text": "private commentary" }],
+                    "turn_id": "turn-1"
+                }
+            }),
+            &mut cache,
+        );
+
+        assert_eq!(cache.completed.len(), 1);
+        let marker = &cache.completed[0];
+        assert_eq!(marker.id, "commentary-1");
+        assert_eq!(marker.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(marker.activity_kind, "timelineMarker");
+        assert_eq!(marker.label.as_deref(), Some("commentary"));
+        assert!(marker.command.is_empty());
+        assert!(marker.output.is_none());
     }
 
     #[test]
