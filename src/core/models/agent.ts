@@ -209,6 +209,7 @@ export type CodexRolloutCommand = {
     | "integration"
     | "skill"
     | "tool"
+    | "imageView"
     | "timelineMarker";
   label?: string | null;
   command: string;

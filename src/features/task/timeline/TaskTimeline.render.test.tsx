@@ -239,8 +239,38 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup.indexOf("Read chat terminal")).toBeLessThan(
       markup.indexOf("Applying the measured fix."),
     );
-    expect(markup.match(/class="execution-trace is-live"/g)).toHaveLength(2);
+    expect(markup.match(/class="execution-trace is-live/g)).toHaveLength(1);
     expect(markup).toContain('src="/codex-mark.png"');
+  });
+
+  it("keeps steered user messages visible when completed work is collapsed", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Start the task",
+      turnId: "turn-1",
+    }, {
+      id: "command",
+      kind: "command",
+      title: "Ran command",
+      command: "npm run check",
+      turnId: "turn-1",
+    }, {
+      id: "steer",
+      kind: "user",
+      title: "Keep the layout compact",
+      turnId: "turn-1",
+    }, {
+      id: "response",
+      kind: "result",
+      title: "Agent response",
+      body: "Finished.",
+      turnId: "turn-1",
+    }]);
+
+    expect(markup).toContain("Keep the layout compact");
+    expect(markup).not.toContain("npm run check");
+    expect(markup).toContain("Finished.");
   });
 
   it("does not render the edited-files summary card before a final response", () => {

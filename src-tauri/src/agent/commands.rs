@@ -242,6 +242,18 @@ fn tool_activities(name: &str, input: &str) -> Vec<(String, Option<String>, Stri
         )];
     }
 
+    if matches!(tool, "view_image" | "functions_view_image") {
+        let path = ["\"path\"", "path:"]
+            .iter()
+            .find_map(|marker| quoted_value_after(input, marker))
+            .unwrap_or_else(|| "Viewed image".to_owned());
+        return vec![(
+            "imageView".to_owned(),
+            Some("Viewed an image".to_owned()),
+            path,
+        )];
+    }
+
     if tool.contains("web__") || tool.starts_with("web_") || tool.contains("search_query") {
         let query = ["\"q\"", "q:", "\"query\"", "query:"]
             .iter()
@@ -1021,6 +1033,14 @@ mod tests {
                 "tool".to_owned(),
                 Some("Read chat terminal".to_owned()),
                 "Read chat terminal".to_owned(),
+            )],
+        );
+        assert_eq!(
+            tool_activities("view_image", r#"{"path":"C:\\Temp\\reference.png"}"#),
+            vec![(
+                "imageView".to_owned(),
+                Some("Viewed an image".to_owned()),
+                "C:\\Temp\\reference.png".to_owned(),
             )],
         );
     }

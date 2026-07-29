@@ -471,9 +471,11 @@ export const readCodexThreadTimeline = async (
         command.activityKind !== "command" || !existingCommands.has(command.command)
       )
       .map((command) => {
-        const completed = command.output !== null && command.output !== undefined ||
-          command.durationMs !== null && command.durationMs !== undefined;
         const shell = command.activityKind === "command";
+        const imageView = command.activityKind === "imageView";
+        const completed = imageView ||
+          command.output !== null && command.output !== undefined ||
+          command.durationMs !== null && command.durationMs !== undefined;
         const meta = command.activityKind === "webSearch"
           ? "Web search"
           : command.activityKind === "skill"
@@ -482,7 +484,12 @@ export const readCodexThreadTimeline = async (
               ? "Plugin tool"
               : command.activityKind === "tool"
                 ? command.label === "Read chat terminal" ? "Codex tool" : "Dynamic tool"
+                : imageView
+                  ? "Image tool"
                 : "Workspace";
+        const imageName = imageView
+          ? command.command.split(/[\\/]/).filter(Boolean).at(-1) ?? "Viewed image"
+          : null;
         return {
           id: `rollout-command:${command.id}`,
           kind: "command" as const,
@@ -492,6 +499,12 @@ export const readCodexThreadTimeline = async (
           command: shell ? command.command : undefined,
           body: command.output ?? undefined,
           meta,
+          attachments: imageView ? [{
+            id: `rollout-image:${command.id}`,
+            name: imageName!,
+            path: command.command,
+            kind: "image" as const,
+          }] : undefined,
           createdAt: timestampMilliseconds(command.createdAt) ?? createdAt,
           durationMs: command.durationMs ?? undefined,
           exitCode: command.exitCode ?? undefined,

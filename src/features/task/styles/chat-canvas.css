@@ -61,6 +61,11 @@
   margin: 0 0 12px;
 }
 
+.conversation-turn__status {
+  display: block;
+  margin: 8px 0 14px;
+}
+
 .conversation-turn__follow-up {
   display: block;
   margin: 24px 0 34px;
@@ -108,6 +113,15 @@
   line-height: 1.55;
   text-overflow: ellipsis;
   white-space: nowrap;
+  animation: timeline-text-shimmer 1.65s linear infinite;
+}
+
+.timeline .execution-trace.is-live.is-thought > summary > span,
+.timeline .context-compaction[aria-busy="true"] > strong {
+  color: transparent;
+  background: linear-gradient(90deg, #858683 0%, #858683 34%, #f0f0ed 50%, #858683 66%, #858683 100%);
+  background-size: 240% 100%;
+  background-clip: text;
   animation: timeline-text-shimmer 1.65s linear infinite;
 }
 

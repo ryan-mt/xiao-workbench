@@ -19,8 +19,8 @@ describe("execution trace projection", () => {
     ])).toEqual([
       {
         id: "execution-setup",
-        title: "Edited a file, ran commands",
-        thoughtTitled: false,
+        title: "Planning staged commits with patch hunks",
+        thoughtTitled: true,
         entries: [entry("setup", "command"), entry("edit", "change"), entry("test", "command")],
       },
     ]);
@@ -31,11 +31,11 @@ describe("execution trace projection", () => {
       entry("trace", "thought", "Visible trace title\nHidden reasoning body"),
       entry("command", "command"),
     ]);
-    expect(traces[0].title).toBe("Ran a command");
+    expect(traces[0].title).toBe("Visible trace title");
     expect(traces[0].entries.map((item) => item.id)).toEqual(["command"]);
   });
 
-  it("uses the latest trace title only while the turn is live", () => {
+  it("uses the latest trace title for the disclosure", () => {
     const traces = projectExecutionTraces([
       entry("trace", "thought", "Investigating missing command entries"),
       entry("command", "command"),

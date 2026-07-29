@@ -14,10 +14,7 @@ const traceTitle = (entry: TimelineEntry) =>
     .find(Boolean) ?? entry.title;
 
 export class ExecutionTraceProjector {
-  constructor(
-    private readonly entries: TimelineEntry[],
-    private readonly live = false,
-  ) {}
+  constructor(private readonly entries: TimelineEntry[]) {}
 
   project(): ExecutionTrace[] {
     const traceMarkers = this.entries.filter((entry) => entry.kind === "thought");
@@ -57,14 +54,14 @@ export class ExecutionTraceProjector {
     const summary = actions.join(", ");
     return [{
       id: `execution-${entries[0].id}`,
-      title: this.live && latestMarker
+      title: latestMarker
         ? traceTitle(latestMarker)
         : summary || "Execution details",
-      thoughtTitled: Boolean(this.live && latestMarker),
+      thoughtTitled: Boolean(latestMarker),
       entries,
     }];
   }
 }
 
-export const projectExecutionTraces = (entries: TimelineEntry[], live = false) =>
-  new ExecutionTraceProjector(entries, live).project();
+export const projectExecutionTraces = (entries: TimelineEntry[], _live = false) =>
+  new ExecutionTraceProjector(entries).project();

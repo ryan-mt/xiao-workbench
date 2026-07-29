@@ -79,6 +79,48 @@ describe("Codex history activity", () => {
     ]));
   });
 
+  it("restores imported image-view activity with its local thumbnail", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        id: "turn-1",
+        status: "completed",
+        startedAt: 1_000,
+        items: [{
+          id: "user-1",
+          type: "userMessage",
+          content: [{ type: "text", text: "Inspect the reference" }],
+        }],
+      }],
+    });
+    vi.spyOn(nativeBridge, "readCodexRolloutCommands").mockResolvedValue([{
+      id: "call-image",
+      turnId: "turn-1",
+      turnIndex: 0,
+      activityKind: "imageView",
+      label: "Viewed an image",
+      command: "C:\\Temp\\reference.png",
+      output: null,
+      createdAt: "1970-01-01T00:00:01.100Z",
+    }]);
+
+    const timeline = await readCodexThreadTimeline(
+      "thread-1",
+      { projectPath: "D:\\Project Archive\\xiao-workbench", taskId: "task-1" },
+    );
+
+    expect(timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "Viewed an image",
+        meta: "Image tool",
+        attachments: [expect.objectContaining({
+          name: "reference.png",
+          path: "C:\\Temp\\reference.png",
+          kind: "image",
+        })],
+      }),
+    ]));
+  });
+
   it("preserves rollout chronology between commentary and recovered commands", async () => {
     vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
       data: [{

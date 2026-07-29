@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 
@@ -15,13 +15,9 @@ export function ExecutionTraceGroup({
 }) {
   const [expanded, setExpanded] = useState(live);
 
-  useEffect(() => {
-    setExpanded(live);
-  }, [live]);
-
   return (
     <details
-      className={`execution-trace${live ? " is-live" : ""}`}
+      className={`execution-trace${live ? " is-live" : ""}${thought ? " is-thought" : ""}`}
       open={expanded}
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
