@@ -1,0 +1,167 @@
+.stashed-prompts {
+  position: relative;
+}
+
+.stashed-prompts__trigger {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.stashed-prompts__trigger:hover,
+.stashed-prompts__trigger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.stashed-prompts__trigger b {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--info);
+  color: var(--canvas);
+  font: 650 9px var(--font-mono);
+}
+
+.stashed-prompts__popover {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + 9px);
+  left: 0;
+  width: min(390px, calc(100vw - 48px));
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-raised) 97%, var(--canvas));
+  box-shadow: 0 18px 50px color-mix(in srgb, var(--backdrop) 42%, transparent);
+  animation: stashed-prompts-in 140ms ease-out;
+}
+
+.stashed-prompts__popover > header {
+  display: flex;
+  min-height: 41px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.stashed-prompts__popover > header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.stashed-prompts__popover > header small {
+  color: var(--muted);
+  font: 500 10px var(--font-mono);
+}
+
+.stashed-prompts__save {
+  display: flex;
+  width: calc(100% - 14px);
+  align-items: center;
+  gap: 9px;
+  margin: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-soft);
+  text-align: left;
+}
+
+.stashed-prompts__save:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.stashed-prompts__save span {
+  display: grid;
+  gap: 2px;
+}
+
+.stashed-prompts__save small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.stashed-prompts__list {
+  max-height: min(310px, 46vh);
+  padding: 3px 7px 7px;
+  overflow: auto;
+}
+
+.stashed-prompts__list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  border-radius: 9px;
+}
+
+.stashed-prompts__list article:hover {
+  background: var(--surface-hover);
+}
+
+.stashed-prompts__list article > button:first-child {
+  display: flex;
+  min-width: 0;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  text-align: left;
+}
+
+.stashed-prompts__list article > button:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stashed-prompts__list article > button:first-child small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font: 500 9px var(--font-mono);
+}
+
+.stashed-prompts__list article > button:last-child {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.stashed-prompts__list article:hover > button:last-child,
+.stashed-prompts__list article > button:last-child:focus-visible {
+  opacity: 1;
+}
+
+.stashed-prompts__list article > button:last-child:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+@keyframes stashed-prompts-in {
+  from { opacity: 0; transform: translateY(5px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}

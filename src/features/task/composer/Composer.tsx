@@ -41,6 +41,7 @@ import {
 } from "./promptHistory";
 import { QuestionDock } from "./QuestionDock";
 import { SteerMessageBar } from "./SteerMessageBar";
+import { StashedPrompts } from "./StashedPrompts";
 import { ComposerPrimaryAction } from "./ComposerPrimaryAction";
 import {
   filterSlashCommands,
@@ -1498,6 +1499,28 @@ export function Composer({
               />
             ) : null}
             {mode === "plan" && <span className="composer-mode">Plan</span>}
+            <StashedPrompts
+              taskId={taskId}
+              prompt={value}
+              attachments={attachments}
+              disabled={disabled || submitting || compacting || undoing}
+              onClear={() => {
+                updateValue("");
+                onAttachmentsChange([]);
+                if (textarea.current) textarea.current.style.height = "auto";
+              }}
+              onRestore={(prompt, restoredAttachments) => {
+                updateValue(prompt);
+                onAttachmentsChange(restoredAttachments);
+                window.requestAnimationFrame(() => {
+                  textarea.current?.focus();
+                  if (!textarea.current) return;
+                  textarea.current.style.height = "auto";
+                  textarea.current.style.height = `${Math.min(textarea.current.scrollHeight, 150)}px`;
+                  textarea.current.setSelectionRange(prompt.length, prompt.length);
+                });
+              }}
+            />
             <ModelPicker
               models={models}
               selectedModel={selectedModel}
