@@ -664,6 +664,10 @@ describe("control-model application shell journey", () => {
     const firstMount = render(<App />);
 
     await screen.findByText("Ready");
+    fireEvent.click(screen.getByLabelText("Add context or task settings"));
+    fireEvent.click(screen.getByText("Run settings"));
+    fireEvent.click(screen.getByLabelText("Workspace mode"));
+    fireEvent.click(await screen.findByText("Isolated worktree"));
     const prompt = screen.getByLabelText("Prompt");
     fireEvent.change(prompt, { target: { value: "Journey Task A" } });
     const firstSend = screen.getByRole("button", { name: "Send task" }) as HTMLButtonElement;
@@ -693,6 +697,8 @@ describe("control-model application shell journey", () => {
     fireEvent.click(screen.getByText("Run settings"));
     fireEvent.click(screen.getByLabelText("Approval policy"));
     fireEvent.click(await screen.findByText("Never ask"));
+    fireEvent.click(screen.getByLabelText("Workspace mode"));
+    fireEvent.click(await screen.findByText("Isolated worktree"));
     const secondPrompt = screen.getByLabelText("Prompt");
     fireEvent.change(secondPrompt, { target: { value: "Journey Task B" } });
     const secondSend = screen.getByRole("button", { name: "Send task" }) as HTMLButtonElement;

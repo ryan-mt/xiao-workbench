@@ -20,8 +20,8 @@ const worktree = (overrides: Partial<ManagedWorktreeSummary> = {}): ManagedWorkt
 });
 
 describe("task environment cleanup", () => {
-  it("defaults Git Tasks to isolation only when the host can provide it", () => {
-    expect(defaultTaskWorkspaceMode(true)).toBe("managed-worktree");
+  it("defaults new Tasks to the project checkout", () => {
+    expect(defaultTaskWorkspaceMode(true)).toBe("local");
     expect(defaultTaskWorkspaceMode(false)).toBe("local");
   });
 

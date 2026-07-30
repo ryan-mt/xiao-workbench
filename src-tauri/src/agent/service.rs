@@ -8,6 +8,9 @@ use super::runtime::AgentRuntime;
 use crate::xiao::models::XiaoThreadBinding;
 
 const MODEL_PAGE_SIZE: u64 = 100;
+const MAX_REHYDRATED_HISTORY_BYTES: usize = 256 * 1024;
+const HISTORY_TRUNCATION_NOTICE: &str = "[Xiao context notice: older messages were not re-injected after the runtime restarted. The complete Task history remains available in Xiao.]";
+const HISTORY_ITEM_TRUNCATION_SUFFIX: &str = "\n[...message truncated by Xiao...]";
 
 pub async fn read_account(runtime: &AgentRuntime) -> Result<AgentAccountSummary, String> {
     let result = runtime
@@ -287,11 +290,67 @@ fn xiao_thread_start_request(
 }
 
 fn history_items_for_injection(history: Vec<XiaoHistoryItem>) -> Result<Vec<Value>, String> {
-    history
+    let history = history
         .into_iter()
-        .filter(|item| !item.text.trim().is_empty())
-        .map(history_item_to_response_item)
-        .collect()
+        .filter_map(|item| {
+            let text = item.text.trim();
+            (!text.is_empty()).then(|| XiaoHistoryItem {
+                role: item.role,
+                text: text.to_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let total_bytes = history
+        .iter()
+        .fold(0usize, |total, item| total.saturating_add(item.text.len()));
+    if total_bytes <= MAX_REHYDRATED_HISTORY_BYTES {
+        return history
+            .into_iter()
+            .map(history_item_to_response_item)
+            .collect();
+    }
+
+    let available_bytes =
+        MAX_REHYDRATED_HISTORY_BYTES.saturating_sub(HISTORY_TRUNCATION_NOTICE.len());
+    let mut retained = Vec::new();
+    let mut retained_bytes = 0usize;
+    for mut item in history.into_iter().rev() {
+        let remaining = available_bytes.saturating_sub(retained_bytes);
+        if item.text.len() > remaining {
+            if retained.is_empty() && remaining > HISTORY_ITEM_TRUNCATION_SUFFIX.len() {
+                let text_limit = remaining - HISTORY_ITEM_TRUNCATION_SUFFIX.len();
+                item.text
+                    .truncate(floor_char_boundary(&item.text, text_limit));
+                item.text.push_str(HISTORY_ITEM_TRUNCATION_SUFFIX);
+                retained.push(item);
+            }
+            break;
+        }
+        retained_bytes += item.text.len();
+        retained.push(item);
+    }
+    retained.reverse();
+
+    let mut items = Vec::with_capacity(retained.len() + 1);
+    items.push(history_item_to_response_item(XiaoHistoryItem {
+        role: "user".to_owned(),
+        text: HISTORY_TRUNCATION_NOTICE.to_owned(),
+    })?);
+    items.extend(
+        retained
+            .into_iter()
+            .map(history_item_to_response_item)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    Ok(items)
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 fn history_item_to_response_item(item: XiaoHistoryItem) -> Result<Value, String> {
@@ -332,8 +391,11 @@ mod tests {
         assert_eq!(params["serviceName"], "Xiao Workbench");
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["C:/workspace"]));
         assert_eq!(params["serviceTier"], "priority");
-        assert_eq!(params["dynamicTools"][0]["name"], "xiao_lsp");
-        assert_eq!(params["dynamicTools"][1]["name"], "xiao_runtime");
+        assert_eq!(params["dynamicTools"][0]["name"], "xiao_lsp_definition");
+        assert_eq!(
+            params["dynamicTools"][4]["name"],
+            "xiao_runtime_diagnostics"
+        );
     }
 
     #[test]
@@ -441,6 +503,37 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["role"], "user");
         assert_eq!(items[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn recreated_sessions_bound_long_history_to_recent_messages() {
+        let items = history_items_for_injection(vec![
+            XiaoHistoryItem {
+                role: "user".to_owned(),
+                text: "a".repeat(256 * 1024),
+            },
+            XiaoHistoryItem {
+                role: "assistant".to_owned(),
+                text: "Old answer".to_owned(),
+            },
+            XiaoHistoryItem {
+                role: "user".to_owned(),
+                text: "Recent question".to_owned(),
+            },
+            XiaoHistoryItem {
+                role: "assistant".to_owned(),
+                text: "Recent answer".to_owned(),
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(items.len(), 4);
+        assert!(items[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("older messages were not re-injected"));
+        assert_eq!(items[2]["content"][0]["text"], "Recent question");
+        assert_eq!(items[3]["content"][0]["text"], "Recent answer");
     }
 
     #[test]

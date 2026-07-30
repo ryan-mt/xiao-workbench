@@ -2,8 +2,8 @@ import type { ManagedWorktreeSummary } from "../../core/models/workspace";
 import type { XiaoWorkspaceMode } from "../../core/models/xiao";
 
 export const defaultTaskWorkspaceMode = (
-  isolationAvailable: boolean,
-): XiaoWorkspaceMode => isolationAvailable ? "managed-worktree" : "local";
+  _isolationAvailable: boolean,
+): XiaoWorkspaceMode => "local";
 
 export const formatDiskBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;

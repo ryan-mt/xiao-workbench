@@ -1825,6 +1825,25 @@ fn execute_runtime_tool(
     Ok(runtime_diagnostics_payload(route, events))
 }
 
+fn resolve_dynamic_tool_route(
+    namespace: Option<&str>,
+    tool: &str,
+) -> Result<(String, String), String> {
+    if let Some(namespace) = namespace {
+        return Ok((namespace.to_owned(), tool.to_owned()));
+    }
+    for (prefix, namespace) in [
+        ("xiao_lsp_", "xiao_lsp"),
+        ("xiao_runtime_", "xiao_runtime"),
+        ("xiao_preview_", "xiao_preview"),
+    ] {
+        if let Some(tool) = tool.strip_prefix(prefix).filter(|tool| !tool.is_empty()) {
+            return Ok((namespace.to_owned(), tool.to_owned()));
+        }
+    }
+    Err("Codex dynamic tool call did not name a known Xiao tool.".to_owned())
+}
+
 fn dispatch_dynamic_tool_call(
     app: &AppHandle,
     route: &RunRecord,
@@ -1839,16 +1858,12 @@ fn dispatch_dynamic_tool_call(
         .get("params")
         .and_then(Value::as_object)
         .ok_or("Codex dynamic tool call did not include parameters.")?;
-    let namespace = params
-        .get("namespace")
-        .and_then(Value::as_str)
-        .ok_or("Codex dynamic tool call did not name a namespace.")?
-        .to_owned();
     let tool = params
         .get("tool")
         .and_then(Value::as_str)
-        .ok_or("Codex dynamic tool call did not name a tool.")?
-        .to_owned();
+        .ok_or("Codex dynamic tool call did not name a tool.")?;
+    let (namespace, tool) =
+        resolve_dynamic_tool_route(params.get("namespace").and_then(Value::as_str), tool)?;
     let arguments = params
         .get("arguments")
         .cloned()
@@ -2470,6 +2485,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn dynamic_tool_routes_accept_portable_and_legacy_names() {
+        assert_eq!(
+            resolve_dynamic_tool_route(None, "xiao_lsp_workspace_symbols").unwrap(),
+            ("xiao_lsp".to_owned(), "workspace_symbols".to_owned())
+        );
+        assert_eq!(
+            resolve_dynamic_tool_route(Some("xiao_preview"), "targets").unwrap(),
+            ("xiao_preview".to_owned(), "targets".to_owned())
+        );
+        assert!(resolve_dynamic_tool_route(None, "unknown").is_err());
     }
 
     fn running_service_test_app() -> (

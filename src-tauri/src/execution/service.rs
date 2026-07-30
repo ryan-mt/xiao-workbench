@@ -61,7 +61,7 @@ pub fn resolve_execution_context(
             if record.status != ManagedWorktreeStatus::Active {
                 return Err("The managed task execution root is being removed.".to_owned());
             }
-            let verified = verify_managed_ownership(repository, &binding, record)?;
+            let verified = verify_managed_ownership(repository, &binding, record, false)?;
             let summary = summarize_record(record);
             (verified, Some(summary))
         }
@@ -249,7 +249,7 @@ pub fn remove_managed_task_environment(
         finalize_interrupted_removal(repository, &binding, &record)?;
         return resolve_execution_context(repository, project_path, Some(task_id));
     }
-    verify_managed_ownership(repository, &binding, &record)?;
+    verify_managed_ownership(repository, &binding, &record, true)?;
     let checkout = canonical_directory(&record.checkout_path, "managed checkout")?;
     remove_managed_worktree(Path::new(&record.repository_root), &checkout)?;
     crash_at_test_failpoint("after-git-remove");
@@ -590,6 +590,7 @@ fn verify_managed_ownership(
     repository: &XiaoRepository,
     binding: &TaskExecutionBinding,
     record: &ManagedWorktreeRecord,
+    allow_missing_git_evidence_during_removal: bool,
 ) -> Result<PathBuf, String> {
     if !matches!(
         record.status,
@@ -640,10 +641,17 @@ fn verify_managed_ownership(
     {
         return Err("Managed worktree repository identity does not match the project.".to_owned());
     }
-    let evidence = find_worktree_evidence(&project_git.repository_root, &checkout)?
-        .ok_or("Git no longer reports the managed checkout.")?;
-    if evidence.path != checkout || evidence.branch != record.branch || evidence.head.is_empty() {
-        return Err("Git worktree evidence does not match the ownership record.".to_owned());
+    match find_worktree_evidence(&project_git.repository_root, &checkout)? {
+        Some(evidence)
+            if evidence.path == checkout
+                && evidence.branch == record.branch
+                && !evidence.head.is_empty() => {}
+        None if allow_missing_git_evidence_during_removal
+            && record.status == ManagedWorktreeStatus::Removing => {}
+        Some(_) => {
+            return Err("Git worktree evidence does not match the ownership record.".to_owned())
+        }
+        None => return Err("Git no longer reports the managed checkout.".to_owned()),
     }
     Ok(execution_root)
 }
@@ -1617,6 +1625,8 @@ mod tests {
         remove_managed_worktree(&git.repository_root, Path::new(&record.checkout_path)).unwrap();
         assert!(!checkout.exists());
         assert!(ownership.exists());
+        fs::create_dir(&checkout).unwrap();
+        fs::write(checkout.join("cleanup-residue.txt"), "residue").unwrap();
 
         let local =
             remove_managed_task_environment(&repository, &display_path(&project), "task", id, true)

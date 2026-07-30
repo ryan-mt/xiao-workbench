@@ -1660,7 +1660,7 @@ pub(crate) fn remove_managed_worktree(
     repository_root: &Path,
     checkout_path: &Path,
 ) -> Result<(), String> {
-    run_git_checked(
+    let removal = run_git_checked(
         repository_root,
         &[
             "worktree".to_owned(),
@@ -1668,8 +1668,12 @@ pub(crate) fn remove_managed_worktree(
             "--force".to_owned(),
             display_path(checkout_path),
         ],
-    )?;
-    Ok(())
+    );
+    match removal {
+        Ok(_) => Ok(()),
+        Err(_) if !worktree_path_registered(repository_root, checkout_path)? => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub fn list_worktrees(workspace_path: &str) -> Result<Vec<GitWorktree>, String> {
@@ -1843,7 +1847,7 @@ mod tests {
         discard_workspace_checkpoint, find_pull_request, find_pull_request_observation,
         finish_workspace_checkpoint, finish_workspace_checkpoint_capture, list_branches,
         parse_pull_request_checks, parse_pull_requests, publish_current_branch,
-        read_git_comparison, read_git_summary, read_pull_request_checks,
+        read_git_comparison, read_git_summary, read_pull_request_checks, remove_managed_worktree,
         restore_workspace_checkpoints, restore_workspace_checkpoints_with_rollback,
         rollback_workspace_restore, run_git_action,
     };
@@ -1888,6 +1892,20 @@ mod tests {
     #[test]
     fn current_workspace_has_a_git_summary() {
         assert!(read_git_summary(Path::new(env!("CARGO_MANIFEST_DIR"))).is_some());
+    }
+
+    #[test]
+    fn managed_worktree_removal_recovers_after_git_drops_registration() {
+        let root = temporary_directory("partial-worktree-removal");
+        fs::create_dir_all(&root).unwrap();
+        run(&root, &["init"]);
+        let residue = root.join("unregistered-checkout");
+        fs::create_dir_all(&residue).unwrap();
+
+        remove_managed_worktree(&root, &residue).unwrap();
+
+        assert!(residue.is_dir());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

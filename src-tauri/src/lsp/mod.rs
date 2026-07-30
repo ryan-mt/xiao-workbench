@@ -17,64 +17,55 @@ pub(crate) fn codex_supports_dynamic_tools(version: &str) -> bool {
 }
 
 pub(crate) fn dynamic_tool_specs() -> Value {
-    json!([{
-        "type": "namespace",
-        "name": "xiao_lsp",
-        "description": "Read-only semantic code intelligence scoped to the active Xiao execution root.",
-        "tools": [
-            {
-                "type": "function",
-                "name": "definition",
-                "description": "Find the definition at a one-based UTF-16 position in a TypeScript, JavaScript, or Rust file.",
-                "inputSchema": position_schema(false),
-            },
-            {
-                "type": "function",
-                "name": "references",
-                "description": "Find references at a one-based UTF-16 position in a TypeScript, JavaScript, or Rust file.",
-                "inputSchema": position_schema(true),
-            },
-            {
-                "type": "function",
-                "name": "workspace_symbols",
-                "description": "Search semantic symbols in the active execution root. Choose typescript or rust explicitly.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "language": {
-                            "type": "string",
-                            "enum": ["typescript", "rust"]
-                        },
-                        "query": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    },
-                    "required": ["language", "query"],
-                    "additionalProperties": false
-                },
-            },
-            {
-                "type": "function",
-                "name": "diagnostics",
-                "description": "Read diagnostics for a TypeScript, JavaScript, or Rust file after synchronizing its current disk contents.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                },
-            }
-        ]
-    }, {
-        "type": "namespace",
-        "name": "xiao_runtime",
-        "description": "Read-only diagnostics for the active Xiao run and its effective access policy.",
-        "tools": [{
+    json!([
+        {
             "type": "function",
-            "name": "diagnostics",
-            "description": "Read the active run snapshot, effective sandbox policy, and recent sanitized run events.",
+            "name": "xiao_lsp_definition",
+            "description": "Find the definition at a one-based UTF-16 position in a TypeScript, JavaScript, or Rust file.",
+            "inputSchema": position_schema(false),
+        },
+        {
+            "type": "function",
+            "name": "xiao_lsp_references",
+            "description": "Find references at a one-based UTF-16 position in a TypeScript, JavaScript, or Rust file.",
+            "inputSchema": position_schema(true),
+        },
+        {
+            "type": "function",
+            "name": "xiao_lsp_workspace_symbols",
+            "description": "Search semantic symbols in the active execution root. Choose typescript or rust explicitly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["typescript", "rust"]
+                    },
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                },
+                "required": ["language", "query"],
+                "additionalProperties": false
+            },
+        },
+        {
+            "type": "function",
+            "name": "xiao_lsp_diagnostics",
+            "description": "Read diagnostics for a TypeScript, JavaScript, or Rust file after synchronizing its current disk contents.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            },
+        },
+        {
+            "type": "function",
+            "name": "xiao_runtime_diagnostics",
+            "description": "Read the active Xiao run snapshot, effective sandbox policy, and recent sanitized run events.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -82,23 +73,20 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                 },
                 "additionalProperties": false
             }
-        }]
-    }, {
-        "type": "namespace",
-        "name": "xiao_preview",
-        "description": "Task-scoped inspection and bounded automation for Preview targets registered by the Xiao host.",
-        "tools": [{
+        },
+        {
             "type": "function",
-            "name": "targets",
+            "name": "xiao_preview_targets",
             "description": "List Preview targets registered for the active Task and its frozen execution root.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
                 "additionalProperties": false
             }
-        }, {
+        },
+        {
             "type": "function",
-            "name": "automate",
+            "name": "xiao_preview_automate",
             "description": "Click, focus, or fill one selector in a registered Preview target for the active Task.",
             "inputSchema": {
                 "type": "object",
@@ -122,8 +110,8 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                 }],
                 "additionalProperties": false
             }
-        }]
-    }])
+        }
+    ])
 }
 
 fn position_schema(include_declaration: bool) -> Value {
@@ -190,38 +178,37 @@ mod tests {
     }
 
     #[test]
-    fn tool_specs_are_read_only_and_namespaced() {
+    fn tool_specs_use_portable_top_level_functions() {
         let specs = dynamic_tool_specs();
-        let namespace = &specs[0];
-        assert_eq!(namespace["name"], "xiao_lsp");
-        let names = namespace["tools"]
+        let specs = specs
             .as_array()
-            .unwrap()
+            .expect("dynamic tool specs should be an array");
+        assert!(specs.iter().all(|tool| tool["type"] == "function"));
+        let names = specs
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             names,
             [
-                "definition",
-                "references",
-                "workspace_symbols",
-                "diagnostics"
+                "xiao_lsp_definition",
+                "xiao_lsp_references",
+                "xiao_lsp_workspace_symbols",
+                "xiao_lsp_diagnostics",
+                "xiao_runtime_diagnostics",
+                "xiao_preview_targets",
+                "xiao_preview_automate",
             ]
         );
-        assert!(!specs.to_string().contains("rename"));
-        assert!(!specs.to_string().contains("code_action"));
-        assert_eq!(specs[1]["name"], "xiao_runtime");
-        assert_eq!(specs[1]["tools"][0]["name"], "diagnostics");
-        assert_eq!(specs[2]["name"], "xiao_preview");
-        assert_eq!(specs[2]["tools"][0]["name"], "targets");
-        assert_eq!(specs[2]["tools"][1]["name"], "automate");
+        let encoded = serde_json::to_string(specs).unwrap();
+        assert!(!encoded.contains("rename"));
+        assert!(!encoded.contains("code_action"));
         assert_eq!(
-            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["if"]["properties"]["action"]["const"],
+            specs[6]["inputSchema"]["allOf"][0]["if"]["properties"]["action"]["const"],
             "fill"
         );
         assert_eq!(
-            specs[2]["tools"][1]["inputSchema"]["allOf"][0]["then"]["required"],
+            specs[6]["inputSchema"]["allOf"][0]["then"]["required"],
             json!(["value"])
         );
     }

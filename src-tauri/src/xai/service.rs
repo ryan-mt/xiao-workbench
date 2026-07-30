@@ -427,6 +427,21 @@ pub fn is_xai_profile(profile: &CodexProfile) -> bool {
         == Some(PROVIDER_ID)
 }
 
+pub fn refresh_model_catalog(profile: &CodexProfile) -> Result<(), String> {
+    require_xai_profile(profile)?;
+    let codex_home = profile
+        .codex_home
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or("The Grok profile has no managed Codex home.")?;
+    std::fs::write(
+        Path::new(codex_home).join("models.json"),
+        serde_json::to_vec_pretty(&build_model_catalog())
+            .map_err(|error| format!("Could not encode the Grok model catalog: {error}"))?,
+    )
+    .map_err(|error| format!("Could not refresh the Grok model catalog: {error}"))
+}
+
 pub fn create_codex_profile(repository: &XiaoRepository) -> Result<CodexProfile, String> {
     let profile_id = format!("grok-{}", Uuid::now_v7());
     let codex_home = repository
@@ -616,12 +631,12 @@ fn build_model_catalog() -> Value {
             "priority": 1,
             "availability_nux": null,
             "upgrade": null,
-            "base_instructions": "You are a careful coding agent working in Xiao. Follow the system and developer instructions, use tools carefully, and complete the user's task.",
+            "base_instructions": "You are a careful coding agent working in Xiao. Follow the system and developer instructions and complete the user's task. Use only tools provided in the current request. Client-side tools use JSON function arguments. Use shell_command for command execution and file edits; never emit or request custom or freeform tool calls.",
             "supports_reasoning_summary_parameter": true,
             "default_reasoning_summary": "auto",
             "support_verbosity": false,
             "default_verbosity": null,
-            "apply_patch_tool_type": "freeform",
+            "apply_patch_tool_type": null,
             "truncation_policy": { "mode": "tokens", "limit": 10000 },
             "supports_parallel_tool_calls": true,
             "context_window": 500000,
@@ -866,9 +881,9 @@ mod tests {
 
     use super::{
         build_codex_config, build_model_catalog, create_codex_profile, credential_status,
-        validate_discovery, OAuthDiscovery, StoredXaiCredential, TokenResponse, XaiCredentialStore,
-        XaiOAuthService, DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER, OAUTH_SCOPES,
-        XAI_CLIENT_ID,
+        refresh_model_catalog, validate_discovery, OAuthDiscovery, StoredXaiCredential,
+        TokenResponse, XaiCredentialStore, XaiOAuthService, DEFAULT_TOKEN_LIFETIME_SECONDS,
+        OAUTH_REFERRER, OAUTH_SCOPES, XAI_CLIENT_ID,
     };
     use crate::xiao::repository::XiaoRepository;
 
@@ -918,6 +933,11 @@ mod tests {
         let model = &catalog["models"][0];
         assert_eq!(model["slug"], "grok-4.5");
         assert_eq!(model["default_reasoning_level"], "high");
+        assert!(model["apply_patch_tool_type"].is_null());
+        assert!(model["base_instructions"]
+            .as_str()
+            .unwrap()
+            .contains("shell_command"));
         assert_eq!(
             model["supported_reasoning_levels"]
                 .as_array()
@@ -975,6 +995,13 @@ mod tests {
             assert_eq!(profile.environment["XIAO_MODEL_PROVIDER"], "xai");
             assert!(profile.environment.get("XAI_OAUTH_CLIENT_ID").is_none());
             assert!(profile.environment.get("XAI_API_KEY").is_none());
+            let catalog_path =
+                Path::new(profile.codex_home.as_deref().unwrap()).join("models.json");
+            std::fs::write(&catalog_path, r#"{"models":[]}"#).unwrap();
+            refresh_model_catalog(&profile).unwrap();
+            let catalog: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(catalog_path).unwrap()).unwrap();
+            assert!(catalog["models"][0]["apply_patch_tool_type"].is_null());
             let config = std::fs::read_to_string(
                 Path::new(profile.codex_home.as_deref().unwrap()).join("config.toml"),
             )

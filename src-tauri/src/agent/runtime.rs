@@ -223,13 +223,9 @@ impl AgentRuntime {
             .join("codex-runtime")
             .join(environment_id);
         std::fs::create_dir_all(&runtime_state_dir).map_err(|error| error.to_string())?;
+        let portable_tool_schema = profile.is_some_and(crate::xai::service::is_xai_profile);
         command
-            .args([
-                "app-server",
-                "--stdio",
-                "--enable",
-                "default_mode_request_user_input",
-            ])
+            .args(codex_app_server_args(portable_tool_schema))
             .env("CODEX_SQLITE_HOME", runtime_state_dir);
         *self.profile_id.lock().map_err(|error| error.to_string())? =
             profile.map(|profile| profile.id.clone());
@@ -653,6 +649,9 @@ impl EnvironmentRuntimeRegistry {
         environment_id: &str,
         profile: &crate::xiao::models::CodexProfile,
     ) -> Result<StartResult, String> {
+        if crate::xai::service::is_xai_profile(profile) {
+            crate::xai::service::refresh_model_catalog(profile)?;
+        }
         self.runtime(environment_id)?.start_for_environment_profile(
             app,
             environment_id,
@@ -866,6 +865,22 @@ fn codex_version() -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn codex_app_server_args(portable_tool_schema: bool) -> Vec<&'static str> {
+    let mut args = vec![
+        "app-server",
+        "--stdio",
+        "--enable",
+        "default_mode_request_user_input",
+    ];
+    if portable_tool_schema {
+        args.extend(["-c", "web_search=\"disabled\""]);
+        for feature in ["multi_agent", "plugins", "apps"] {
+            args.extend(["--disable", feature]);
+        }
+    }
+    args
+}
+
 #[cfg(windows)]
 fn hide_window(command: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -894,6 +909,29 @@ mod tests {
         for key in ["XIAO_MODEL_PROVIDER", "xai_oauth_client_id", "XAI_API_KEY"] {
             assert!(is_reserved_profile_environment_key(key));
         }
+    }
+
+    #[test]
+    fn xai_runtime_uses_only_portable_tool_schemas() {
+        let args = codex_app_server_args(true);
+
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["-c", "web_search=\"disabled\""]));
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["--disable", "multi_agent"]));
+        assert!(args.windows(2).any(|args| args == ["--disable", "plugins"]));
+        assert!(args.windows(2).any(|args| args == ["--disable", "apps"]));
+        assert_eq!(
+            codex_app_server_args(false),
+            [
+                "app-server",
+                "--stdio",
+                "--enable",
+                "default_mode_request_user_input"
+            ]
+        );
     }
 
     #[test]
