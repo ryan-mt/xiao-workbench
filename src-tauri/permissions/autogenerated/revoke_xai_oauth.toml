@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-revoke-xai-oauth"
+description = "Enables the revoke_xai_oauth command without any pre-configured scope."
+commands.allow = ["revoke_xai_oauth"]
+
+[[permission]]
+identifier = "deny-revoke-xai-oauth"
+description = "Denies the revoke_xai_oauth command without any pre-configured scope."
+commands.deny = ["revoke_xai_oauth"]

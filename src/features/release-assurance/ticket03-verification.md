@@ -1,10 +1,10 @@
 # Ticket 03 verification evidence
 
-Verified on 2026-07-29 for the frozen T3 Code v0.0.28 baseline at
+Verified on 2026-07-30 for the frozen T3 Code v0.0.28 baseline at
 `fda6486233e0b2f07ecfea166e1a94533cb923c4`.
 
 Certified Ticket 03 source fingerprint:
-`sha256:c7fb428c91c9f79329633de99922d6328a769fc3d4148f819224944522570af4`.
+`sha256:6e4ef9fda4083026ad6c8f62e39b116ba57e278ad012498bac8f56d4ee1b3c80`.
 
 The combined release gate passed:
 

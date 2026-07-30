@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-poll-xai-device-oauth"
+description = "Enables the poll_xai_device_oauth command without any pre-configured scope."
+commands.allow = ["poll_xai_device_oauth"]
+
+[[permission]]
+identifier = "deny-poll-xai-device-oauth"
+description = "Denies the poll_xai_device_oauth command without any pre-configured scope."
+commands.deny = ["poll_xai_device_oauth"]

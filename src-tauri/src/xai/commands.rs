@@ -10,10 +10,12 @@ use super::service::{
 };
 
 #[tauri::command]
-pub fn create_xai_codex_profile(
-    repository: State<'_, XiaoRepository>,
-) -> Result<CodexProfile, String> {
-    create_codex_profile(&repository)
+pub async fn create_xai_codex_profile(app: AppHandle) -> Result<CodexProfile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_codex_profile(&app.state::<XiaoRepository>())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

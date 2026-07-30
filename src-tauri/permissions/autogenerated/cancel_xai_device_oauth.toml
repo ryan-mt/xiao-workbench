@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-xai-device-oauth"
+description = "Enables the cancel_xai_device_oauth command without any pre-configured scope."
+commands.allow = ["cancel_xai_device_oauth"]
+
+[[permission]]
+identifier = "deny-cancel-xai-device-oauth"
+description = "Denies the cancel_xai_device_oauth command without any pre-configured scope."
+commands.deny = ["cancel_xai_device_oauth"]

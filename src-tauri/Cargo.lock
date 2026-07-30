@@ -5806,7 +5806,7 @@ dependencies = [
 
 [[package]]
 name = "xiao-workbench"
-version = "0.0.0-day07292026"
+version = "0.0.0-day07302026"
 dependencies = [
  "axum",
  "axum-server",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-xai-codex-profile"
+description = "Enables the create_xai_codex_profile command without any pre-configured scope."
+commands.allow = ["create_xai_codex_profile"]
+
+[[permission]]
+identifier = "deny-create-xai-codex-profile"
+description = "Denies the create_xai_codex_profile command without any pre-configured scope."
+commands.deny = ["create_xai_codex_profile"]
