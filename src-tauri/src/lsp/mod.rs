@@ -87,7 +87,7 @@ pub(crate) fn dynamic_tool_specs() -> Value {
         {
             "type": "function",
             "name": "xiao_preview_automate",
-            "description": "Click, focus, or fill one selector in a registered Preview target for the active Task.",
+            "description": "Click, focus, or fill one selector in a registered Preview target for the active Task. For action=fill, include value.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -97,17 +97,6 @@ pub(crate) fn dynamic_tool_specs() -> Value {
                     "value": { "type": "string", "maxLength": 2000 }
                 },
                 "required": ["label", "action", "selector"],
-                "allOf": [{
-                    "if": {
-                        "properties": {
-                            "action": { "const": "fill" }
-                        },
-                        "required": ["action"]
-                    },
-                    "then": {
-                        "required": ["value"]
-                    }
-                }],
                 "additionalProperties": false
             }
         }
@@ -203,14 +192,20 @@ mod tests {
         let encoded = serde_json::to_string(specs).unwrap();
         assert!(!encoded.contains("rename"));
         assert!(!encoded.contains("code_action"));
+        assert!(!encoded.contains("allOf"));
+        assert!(!encoded.contains("\"const\""));
         assert_eq!(
-            specs[6]["inputSchema"]["allOf"][0]["if"]["properties"]["action"]["const"],
-            "fill"
+            specs[6]["inputSchema"]["properties"]["action"]["enum"],
+            json!(["click", "focus", "fill"])
         );
         assert_eq!(
-            specs[6]["inputSchema"]["allOf"][0]["then"]["required"],
-            json!(["value"])
+            specs[6]["inputSchema"]["required"],
+            json!(["label", "action", "selector"])
         );
+        assert!(specs[6]["description"]
+            .as_str()
+            .unwrap()
+            .contains("action=fill"));
     }
 
     #[test]

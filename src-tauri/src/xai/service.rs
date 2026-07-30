@@ -1136,17 +1136,100 @@ fn project_xai_tool_schemas(request: &mut Value) {
         return;
     };
     for tool in tools {
-        if tool.get("type").and_then(Value::as_str) != Some("function")
-            || tool.get("name").and_then(Value::as_str) != Some("shell_command")
-        {
+        if tool.get("type").and_then(Value::as_str) != Some("function") {
             continue;
         }
-        let Some(timeout_type) = tool.pointer_mut("/parameters/properties/timeout_ms/type") else {
-            continue;
-        };
-        if timeout_type.as_str() == Some("number") {
-            *timeout_type = Value::String("integer".to_owned());
+        project_xai_function_tool(tool);
+    }
+}
+
+fn project_xai_function_tool(tool: &mut Value) {
+    let Some(object) = tool.as_object_mut() else {
+        return;
+    };
+
+    // Codex dynamic tools and some client tools use inputSchema; xAI Responses expects parameters.
+    if !object.contains_key("parameters") {
+        if let Some(schema) = object.remove("inputSchema") {
+            object.insert("parameters".to_owned(), schema);
         }
+    } else {
+        object.remove("inputSchema");
+    }
+
+    if let Some(parameters) = object.get_mut("parameters") {
+        sanitize_portable_json_schema(parameters);
+        coerce_known_integer_schema_types(parameters);
+    }
+}
+
+fn sanitize_portable_json_schema(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            // Keep anyOf/oneOf: common portable unions in function schemas.
+            // Strip only conditional/ref constructs that break xAI tool validation.
+            for key in [
+                "allOf",
+                "if",
+                "then",
+                "else",
+                "$ref",
+                "$defs",
+                "definitions",
+            ] {
+                object.remove(key);
+            }
+            // Keep enum/const only on simple leaf enums that xAI already tolerates.
+            // Nested conditionals are stripped above; bare const is uncommon and non-portable.
+            if object.get("const").is_some() && !object.contains_key("enum") {
+                if let Some(constant) = object.remove("const") {
+                    object.insert("enum".to_owned(), Value::Array(vec![constant]));
+                }
+            }
+            for child in object.values_mut() {
+                sanitize_portable_json_schema(child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                sanitize_portable_json_schema(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn coerce_known_integer_schema_types(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        match value {
+            Value::Array(values) => {
+                for child in values {
+                    coerce_known_integer_schema_types(child);
+                }
+            }
+            _ => {}
+        }
+        return;
+    };
+
+    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, schema) in properties.iter_mut() {
+            if matches!(name.as_str(), "timeout_ms" | "line" | "character" | "limit") {
+                if let Some(type_value) = schema.get_mut("type") {
+                    if type_value.as_str() == Some("number") {
+                        *type_value = Value::String("integer".to_owned());
+                    }
+                }
+            }
+            coerce_known_integer_schema_types(schema);
+        }
+    }
+
+    for (key, child) in object.iter_mut() {
+        if key == "properties" {
+            continue;
+        }
+        coerce_known_integer_schema_types(child);
     }
 }
 
@@ -1168,7 +1251,7 @@ fn build_model_catalog() -> Value {
             "priority": 1,
             "availability_nux": null,
             "upgrade": null,
-            "base_instructions": "You are a careful coding agent working in Xiao. Follow the system and developer instructions and complete the user's task. Use only tools provided in the current request. Client-side tools use JSON function arguments. Use shell_command for command execution and file edits; never emit or request custom or freeform tool calls.",
+            "base_instructions": "You are a careful coding agent working in Xiao. Follow the system and developer instructions and complete the user's task.\n\n# Shared tools\n\nUse only tools provided in the current request. Do not invent tools that are not listed. Client-side tools use JSON function arguments.\n\nCore tools you should expect and prefer when available:\n- shell_command: run shell commands, inspect the workspace, and make file edits when apply_patch is unavailable. Prefer rg for search. On Windows PowerShell, prefer single-quoted paths/regexes; backslash does not escape quotes.\n- view_image: inspect a local image path the user attached or that already exists on disk.\n- update_plan: publish and continuously update multi-step task plans.\n- request_user_input: ask a short multiple-choice question only when a decision truly blocks progress.\n- get_goal / update_goal: when a Xiao goal is active, read it first and update completion status only when truly done.\n- xiao_lsp_definition, xiao_lsp_references, xiao_lsp_workspace_symbols, xiao_lsp_diagnostics: read-only semantic code intelligence for TypeScript/JavaScript/Rust.\n- xiao_runtime_diagnostics: inspect the active Xiao run snapshot, sandbox policy, and recent events.\n- xiao_preview_targets / xiao_preview_automate: inspect and perform bounded clicks/focus/fill on Task Preview targets. For action=fill, include value.\n\nParallel tool calls are supported when independent. Never emit custom or freeform tool calls outside the provided tool list. If apply_patch is not listed, do not attempt freeform patch calls; edit files with shell_command instead.\n\nWeb search, multi-agent orchestration, plugins, and apps may be unavailable in this profile. Stay inside the tools actually provided for the turn.",
             "supports_reasoning_summary_parameter": true,
             "default_reasoning_summary": "auto",
             "support_verbosity": false,
@@ -1480,10 +1563,19 @@ mod tests {
             serde_json::json!(["text", "image"])
         );
         assert!(model["apply_patch_tool_type"].is_null());
-        assert!(model["base_instructions"]
-            .as_str()
-            .unwrap()
-            .contains("shell_command"));
+        let instructions = model["base_instructions"].as_str().unwrap();
+        assert!(instructions.contains("Shared tools"));
+        assert!(instructions.contains("shell_command"));
+        assert!(instructions.contains("view_image"));
+        assert!(instructions.contains("update_plan"));
+        assert!(instructions.contains("request_user_input"));
+        assert!(instructions.contains("get_goal"));
+        assert!(instructions.contains("update_goal"));
+        assert!(instructions.contains("xiao_lsp_definition"));
+        assert!(instructions.contains("xiao_runtime_diagnostics"));
+        assert!(instructions.contains("xiao_preview_automate"));
+        assert!(instructions.contains("Parallel tool calls are supported"));
+        assert!(instructions.contains("If apply_patch is not listed"));
         assert_eq!(
             model["supported_reasoning_levels"]
                 .as_array()
@@ -1614,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_responses_bridge_projects_only_the_shell_timeout_as_an_integer() {
+    fn xai_responses_bridge_projects_shared_function_tools_to_portable_schemas() {
         let sanitized = sanitize_responses_request(serde_json::json!({
             "input": [{ "type": "message", "role": "user" }],
             "tools": [
@@ -1632,11 +1724,33 @@ mod tests {
                 {
                     "type": "function",
                     "name": "xiao_lsp_definition",
-                    "parameters": {
+                    "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "line": { "type": "number" }
-                        }
+                            "line": { "type": "number" },
+                            "character": { "type": "number" }
+                        },
+                        "allOf": [{
+                            "if": { "properties": { "line": { "const": 1 } } },
+                            "then": { "required": ["character"] }
+                        }]
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "xiao_preview_automate",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "action": { "type": "string" },
+                            "value": {
+                                "anyOf": [
+                                    { "type": "string" },
+                                    { "type": "null" }
+                                ]
+                            }
+                        },
+                        "required": ["action"]
                     }
                 }
             ]
@@ -1651,9 +1765,24 @@ mod tests {
             sanitized["tools"][0]["parameters"]["properties"]["delay_seconds"]["type"],
             "number"
         );
+        assert!(sanitized["tools"][1].get("inputSchema").is_none());
         assert_eq!(
             sanitized["tools"][1]["parameters"]["properties"]["line"]["type"],
-            "number"
+            "integer"
+        );
+        assert_eq!(
+            sanitized["tools"][1]["parameters"]["properties"]["character"]["type"],
+            "integer"
+        );
+        assert!(sanitized["tools"][1]["parameters"].get("allOf").is_none());
+        assert!(sanitized["tools"][2].get("inputSchema").is_none());
+        assert_eq!(
+            sanitized["tools"][2]["parameters"]["required"],
+            serde_json::json!(["action"])
+        );
+        assert_eq!(
+            sanitized["tools"][2]["parameters"]["properties"]["value"]["anyOf"],
+            serde_json::json!([{ "type": "string" }, { "type": "null" }])
         );
         assert_eq!(
             sanitize_responses_request(sanitized.clone()).unwrap(),

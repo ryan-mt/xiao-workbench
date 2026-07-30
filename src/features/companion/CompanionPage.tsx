@@ -184,7 +184,7 @@ export function CompanionPage() {
   };
 
   return (
-    <>
+    <div className="companion-shell">
       <nav className="companion__mode" aria-label="Companion mode">
         <button type="button" aria-pressed={mode === "host"} onClick={() => setMode("host")}>
           Primary host
@@ -206,44 +206,48 @@ export function CompanionPage() {
                 onChange={(event) => setRotationCode(event.currentTarget.value)}
               />
             </label>
-            <button
-              type="button"
-              disabled={!rotationCode.trim() || installingRotation}
-              onClick={() => {
-                setInstallingRotation(true);
-                setError(null);
-                void nativeCompanionClient.installRotation(session, rotationCode).then((next) => {
-                  localStorage.setItem(SESSION_KEY, JSON.stringify(next));
-                  setSession(next);
-                  setRotationCode("");
-                  publish(companionReducer(stateRef.current, { type: "disconnected" }));
-                }).catch((reason) => {
-                  setError(reason instanceof Error ? reason.message : String(reason));
-                }).finally(() => setInstallingRotation(false));
-              }}
-            >
-              {installingRotation ? "Installing…" : "Install rotated credential"}
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                setError(null);
-                try {
-                  await nativeCompanionClient.delete(session);
-                  localStorage.removeItem(SESSION_KEY);
-                  setSession(null);
-                  publish(initialCompanionState());
-                } catch (reason) {
-                  setError(
-                    `The credential may still remain in the native keyring. Retry forgetting this host. ${
-                      reason instanceof Error ? reason.message : String(reason)
-                    }`,
-                  );
-                }
-              }}
-            >
-              Forget this host
-            </button>
+            <div className="companion__client-actions">
+              <button
+                type="button"
+                className="companion__primary-action"
+                disabled={!rotationCode.trim() || installingRotation}
+                onClick={() => {
+                  setInstallingRotation(true);
+                  setError(null);
+                  void nativeCompanionClient.installRotation(session, rotationCode).then((next) => {
+                    localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+                    setSession(next);
+                    setRotationCode("");
+                    publish(companionReducer(stateRef.current, { type: "disconnected" }));
+                  }).catch((reason) => {
+                    setError(reason instanceof Error ? reason.message : String(reason));
+                  }).finally(() => setInstallingRotation(false));
+                }}
+              >
+                {installingRotation ? "Installing…" : "Install rotated credential"}
+              </button>
+              <button
+                type="button"
+                className="companion__danger-action"
+                onClick={async () => {
+                  setError(null);
+                  try {
+                    await nativeCompanionClient.delete(session);
+                    localStorage.removeItem(SESSION_KEY);
+                    setSession(null);
+                    publish(initialCompanionState());
+                  } catch (reason) {
+                    setError(
+                      `The credential may still remain in the native keyring. Retry forgetting this host. ${
+                        reason instanceof Error ? reason.message : String(reason)
+                      }`,
+                    );
+                  }
+                }}
+              >
+                Forget this host
+              </button>
+            </div>
           </div>
           {error ? <p className="companion__client-error" role="alert">{error}</p> : null}
           <CompanionSurface
@@ -289,6 +293,6 @@ export function CompanionPage() {
           />
         </main>
       )}
-    </>
+    </div>
   );
 }

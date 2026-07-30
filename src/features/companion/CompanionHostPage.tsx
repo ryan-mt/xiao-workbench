@@ -117,7 +117,7 @@ export function CompanionHostPage() {
   return (
     <main className="companion" aria-labelledby="companion-host-heading">
       <header className="companion__header">
-        <div>
+        <div className="companion__header-copy">
           <span className="companion__eyebrow">Primary-host authority</span>
           <h1 id="companion-host-heading" ref={headingRef} tabIndex={-1}>Companion access</h1>
           <p>Pair, inspect, rotate, and revoke bounded Companion sessions.</p>

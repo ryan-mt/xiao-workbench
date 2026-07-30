@@ -171,7 +171,12 @@ export function CompanionHostAuthorityPanel({
           <h2 id="companion-devices">Devices and sessions</h2>
           <p>Primary-host administration. Owner pairing credentials are short-lived and single-use.</p>
         </div>
-        <button type="button" onClick={onCreatePairing} disabled={pairing.status === "creating"}>
+        <button
+          type="button"
+          className="companion__primary-action"
+          onClick={onCreatePairing}
+          disabled={pairing.status === "creating"}
+        >
           {pairing.status === "creating" ? "Creating…" : "Create pairing bundle"}
         </button>
       </div>
@@ -204,6 +209,7 @@ export function CompanionHostAuthorityPanel({
               {!device.revokedAt ? (
                 <button
                   type="button"
+                  className="companion__danger-action"
                   onClick={() => onRevokeDevice(device.id, device.version)}
                 >
                   Revoke device
@@ -339,7 +345,7 @@ export function CompanionSurface({
   return (
     <main className="companion" aria-labelledby="companion-heading">
       <header className="companion__header">
-        <div>
+        <div className="companion__header-copy">
           <span className="companion__eyebrow">Companion access</span>
           <h1 id="companion-heading" ref={headingRef} tabIndex={-1}>
             Xiao Companion
@@ -360,6 +366,13 @@ export function CompanionSurface({
         {state.lastAnnouncement}
       </p>
 
+      <nav className="companion__nav-jump" aria-label="Companion sections">
+        <a href="#companion-projects">Projects</a>
+        <a href="#companion-runs">Runs</a>
+        <a href="#companion-attention">Attention</a>
+        <a href="#companion-timeline">Timeline</a>
+      </nav>
+
       {state.stale ? (
         <section className="companion__notice" aria-label="Stale Companion data">
           <div>
@@ -371,7 +384,7 @@ export function CompanionSurface({
             </span>
           </div>
           {state.connection === "disconnected" ? (
-            <button type="button" onClick={onReconnect}>Reconnect</button>
+            <button type="button" className="companion__primary-action" onClick={onReconnect}>Reconnect</button>
           ) : null}
         </section>
       ) : null}
@@ -424,6 +437,7 @@ export function CompanionSurface({
                         {task.outcomeAcceptancePermitted ? (
                           <button
                             type="button"
+                            className="companion__primary-action"
                             disabled={!isWritable}
                             onClick={() => send(
                               { kind: "accept_outcome", taskId: task.id },
@@ -467,6 +481,7 @@ export function CompanionSurface({
                       {run.canStop ? (
                         <button
                           type="button"
+                          className="companion__danger-action"
                           disabled={!isWritable}
                           onClick={() => send(
                             { kind: "stop_run", runId: run.id },
@@ -550,6 +565,7 @@ export function CompanionSurface({
                       />
                       <button
                         type="button"
+                        className="companion__primary-action"
                         disabled={!isWritable || !followUp.trim()}
                         onClick={() => send(
                           { kind: "follow_up", runId: run.id, message: followUp.trim() },

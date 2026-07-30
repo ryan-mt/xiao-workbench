@@ -5,6 +5,20 @@
   right: 12px;
 }
 
+/*
+ * Steer/queue sits on the shared top seam and covers the floating chip.
+ * Park Stash fully inside the composer card so actions stay clickable.
+ */
+.composer.has-steer-message .stashed-prompts {
+  top: 8px;
+  right: 10px;
+}
+
+.composer.has-steer-message .stashed-prompts__trigger {
+  box-shadow: none;
+  background: color-mix(in srgb, var(--surface-raised) 88%, var(--canvas));
+}
+
 .stashed-prompts__trigger {
   display: inline-flex;
   min-height: 30px;
