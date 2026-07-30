@@ -1389,10 +1389,44 @@ impl XiaoRepository {
             return Err("The default Codex profile cannot be deleted.".to_owned());
         }
         self.with_connection(|connection| {
-            connection
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("Could not start Codex profile deletion: {error}"))?;
+            let active_runs: i64 = transaction
+                .query_row(
+                    r#"SELECT COUNT(*) FROM runs
+                       WHERE codex_profile_id = ?1
+                         AND status IN (
+                             'queued', 'preparing', 'running',
+                             'waiting_for_input', 'verifying'
+                         )"#,
+                    [profile_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not inspect Codex profile Runs: {error}"))?;
+            if active_runs > 0 {
+                return Err(
+                    "Stop active Runs that use this Codex profile before deleting it.".to_owned(),
+                );
+            }
+            transaction
+                .execute(
+                    "UPDATE tasks SET codex_profile_id = NULL WHERE codex_profile_id = ?1",
+                    [profile_id],
+                )
+                .map_err(|error| format!("Could not clear Task Codex profiles: {error}"))?;
+            transaction
+                .execute(
+                    "UPDATE runs SET codex_profile_id = NULL WHERE codex_profile_id = ?1",
+                    [profile_id],
+                )
+                .map_err(|error| format!("Could not clear Run Codex profiles: {error}"))?;
+            transaction
                 .execute("DELETE FROM codex_profiles WHERE id = ?1", [profile_id])
                 .map_err(|error| format!("Could not delete Codex profile: {error}"))?;
-            Ok(())
+            transaction
+                .commit()
+                .map_err(|error| format!("Could not commit Codex profile deletion: {error}"))
         })
     }
 
@@ -6822,6 +6856,65 @@ mod tests {
         assert!(repository
             .bind_task_codex_profile(&workspace.to_string_lossy(), "task", "default", 1, false,)
             .is_err());
+
+        let binding = repository
+            .task_execution_binding(&workspace.to_string_lossy(), "task")
+            .unwrap();
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        r#"INSERT INTO runs(
+                               id, workspace_id, task_id, idempotency_key, status,
+                               agent_outcome, verification_outcome, execution_root,
+                               queued_at, version, execution_environment_id, codex_profile_id
+                           ) VALUES (
+                               'profile-run', ?1, 'task', 'profile-run-key', 'running',
+                               'pending', 'not_requested', ?2, 1, 0, ?3, 'work'
+                           )"#,
+                        params![
+                            binding.workspace_id,
+                            workspace.to_string_lossy().into_owned(),
+                            binding.environment.id,
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(repository
+            .delete_codex_profile("work")
+            .unwrap_err()
+            .contains("Stop active Runs"));
+        repository
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        r#"UPDATE runs
+                           SET status = 'completed', agent_outcome = 'completed'
+                           WHERE id = 'profile-run'"#,
+                        [],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        repository.delete_codex_profile("work").unwrap();
+
+        assert!(repository
+            .list_codex_profiles()
+            .unwrap()
+            .iter()
+            .all(|profile| profile.id != "work"));
+        assert_eq!(
+            full_workspace(&repository, &workspace).tasks[0].codex_profile_id,
+            None
+        );
+        assert_eq!(
+            repository.get_run("profile-run").unwrap().codex_profile_id,
+            None
+        );
     }
 
     #[test]

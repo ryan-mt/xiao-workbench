@@ -27,6 +27,7 @@ import {
   captureTaskOperationScope,
   clearProjectGroup,
   clearVisibleTaskUnread,
+  codexProfileAvailabilityAfterRuntimeSync,
   codexThreadSelectionTarget,
   codexTimelineImportRequestIsCurrent,
   completeUndoRecovery,
@@ -190,6 +191,17 @@ describe("pending-input Attention routing", () => {
 });
 
 describe("profile and project group state", () => {
+  it("keeps native xAI authentication state authoritative during runtime sync", () => {
+    expect(codexProfileAvailabilityAfterRuntimeSync({
+      currentAvailability: "unauthenticated",
+      providerId: "xai",
+      codexAvailable: true,
+      accountAuthenticated: true,
+      requiresOpenaiAuth: false,
+      runtimeError: "401 No credentials presented.",
+    })).toBe("unauthenticated");
+  });
+
   it("deduplicates runtime synchronization per profile", () => {
     const snapshot = { availability: "available" };
 

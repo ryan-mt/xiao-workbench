@@ -1569,6 +1569,32 @@ export const codexProfileRuntimeSignature = (
   runtimeSnapshot: unknown,
 ) => JSON.stringify({ profileId, runtimeSnapshot });
 
+export const codexProfileAvailabilityAfterRuntimeSync = ({
+  currentAvailability,
+  providerId,
+  codexAvailable,
+  accountAuthenticated,
+  requiresOpenaiAuth,
+  runtimeError,
+}: {
+  currentAvailability: CodexProfile["availability"];
+  providerId: string;
+  codexAvailable: boolean;
+  accountAuthenticated: boolean;
+  requiresOpenaiAuth: boolean | null;
+  runtimeError: string | null;
+}): CodexProfile["availability"] => {
+  if (!codexAvailable) return "unavailable";
+  if (providerId === "xai") {
+    const missingCredentials = runtimeError?.includes("401 Unauthorized")
+      || runtimeError?.includes("unauthenticated:no-credentials")
+      || runtimeError?.includes("No credentials presented");
+    return missingCredentials ? "unauthenticated" : currentAvailability;
+  }
+  if (accountAuthenticated || requiresOpenaiAuth === false) return "available";
+  return runtimeError ? "unknown" : "unauthenticated";
+};
+
 export const createContinuationTask = (
   source: WorkbenchTask,
   identity: { id: string; createdAt: number },
@@ -3052,13 +3078,14 @@ export function App() {
     const profile = codexProfiles.find((item) => item.id === agent.runtime.profileId);
     if (!profile || agent.runtime.profileId !== effectiveCodexProfileId) return;
     const runtimeSnapshot = {
-      availability: !system.codexVersion
-        ? "unavailable" as const
-        : agent.account?.authenticated || agent.account?.requiresOpenaiAuth === false
-          ? "available" as const
-          : agent.runtime.error
-            ? "unknown" as const
-            : "unauthenticated" as const,
+      availability: codexProfileAvailabilityAfterRuntimeSync({
+        currentAvailability: profile.availability,
+        providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
+        codexAvailable: Boolean(system.codexVersion),
+        accountAuthenticated: Boolean(agent.account?.authenticated),
+        requiresOpenaiAuth: agent.account?.requiresOpenaiAuth ?? null,
+        runtimeError: agent.runtime.error,
+      }),
       authenticatedIdentity: profile.environment.XIAO_MODEL_PROVIDER === "xai"
         ? profile.authenticatedIdentity
         : agent.account,
@@ -5516,9 +5543,18 @@ export function App() {
               }}
               onDeleteCodexProfile={(profile) => {
                 if (!window.confirm(`Delete Codex profile "${profile.displayName}"?`)) return;
+                setXaiOAuthError(null);
                 void nativeBridge.deleteXiaoCodexProfile(profile.id).then(() => {
                   setCodexProfiles((current) => current.filter((item) => item.id !== profile.id));
-                }).catch((reason) => console.error("Could not delete Codex profile.", reason));
+                  setTasks((current) => current.map((task) => task.codexProfileId === profile.id
+                    ? { ...task, codexProfileId: null }
+                    : task));
+                  setDraftTask((current) => current.codexProfileId === profile.id
+                    ? { ...current, codexProfileId: null }
+                    : current);
+                }).catch((reason) => {
+                  setXaiOAuthError(reason instanceof Error ? reason.message : String(reason));
+                });
               }}
               onClose={() => setActivePage("tasks")}
               activeSection={settingsSection}
