@@ -200,56 +200,87 @@ export function CompanionHostAuthorityPanel({
       ) : null}
       {devices.length ? (
         <ul className="companion__device-list">
-          {devices.map((device) => (
-            <li key={device.id}>
-              <div>
-                <strong>{device.name}</strong>
-                <span>{device.revokedAt ? "Revoked" : "Authorized"} · {device.grants.join(", ")}</span>
-              </div>
-              {!device.revokedAt ? (
-                <button
-                  type="button"
-                  className="companion__danger-action"
-                  onClick={() => onRevokeDevice(device.id, device.version)}
-                >
-                  Revoke device
-                </button>
-              ) : null}
-              <ul aria-label={`${device.name} sessions`}>
-                {device.sessions.map((session) => (
-                  <li key={session.id}>
-                    <span>
-                      Session {session.id} · {session.revokedAt ? "Revoked" : "Active"}
-                    </span>
-                    {!device.revokedAt && !session.revokedAt ? (
-                      <span className="companion__row-actions">
-                        <button
-                          type="button"
-                          onClick={() => onRotateSession(
-                            device.id,
-                            session.id,
-                            session.version,
-                          )}
-                        >
-                          Rotate
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onRevokeSession(
-                            device.id,
-                            session.id,
-                            session.version,
-                          )}
-                        >
-                          Revoke
-                        </button>
+          {devices.map((device) => {
+            const activeSessions = device.sessions.filter((session) => session.revokedAt === null).length;
+            const mark = device.name
+              .split(/\s+/)
+              .filter(Boolean)
+              .slice(0, 2)
+              .map((part) => part[0]?.toUpperCase() ?? "")
+              .join("") || "?";
+            return (
+              <li key={device.id} className="companion__device">
+                <div className="companion__device-head">
+                  <div className="companion__device-identity">
+                    <span className="companion__device-mark" aria-hidden="true">{mark}</span>
+                    <div className="companion__device-copy">
+                      <div className="companion__device-title">
+                        <strong>{device.name}</strong>
+                        <span className={`companion__pill ${device.revokedAt ? "is-revoked" : "is-ok"}`}>
+                          {device.revokedAt ? "Revoked" : "Authorized"}
+                        </span>
+                      </div>
+                      <span className="companion__device-meta">
+                        {activeSessions} active session{activeSessions === 1 ? "" : "s"}
+                        {device.grants.length
+                          ? ` · ${device.grants.length} grant${device.grants.length === 1 ? "" : "s"}`
+                          : ""}
                       </span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
+                    </div>
+                  </div>
+                  {!device.revokedAt ? (
+                    <button
+                      type="button"
+                      className="companion__danger-action"
+                      onClick={() => onRevokeDevice(device.id, device.version)}
+                    >
+                      Revoke device
+                    </button>
+                  ) : null}
+                </div>
+                {device.grants.length ? (
+                  <ul className="companion__grant-list" aria-label={`${device.name} grants`}>
+                    {device.grants.map((grant) => (
+                      <li key={grant}>{grant}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                <ul className="companion__session-list" aria-label={`${device.name} sessions`}>
+                  {device.sessions.map((session) => (
+                    <li key={session.id} className="companion__session">
+                      <span className="companion__session-label">
+                        Session {session.id} · {session.revokedAt ? "Revoked" : "Active"}
+                      </span>
+                      {!device.revokedAt && !session.revokedAt ? (
+                        <span className="companion__row-actions">
+                          <button
+                            type="button"
+                            onClick={() => onRotateSession(
+                              device.id,
+                              session.id,
+                              session.version,
+                            )}
+                          >
+                            Rotate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRevokeSession(
+                              device.id,
+                              session.id,
+                              session.version,
+                            )}
+                          >
+                            Revoke
+                          </button>
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            );
+          })}
         </ul>
       ) : <p className="companion__empty">No paired devices.</p>}
     </section>

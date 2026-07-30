@@ -186,17 +186,22 @@ export function CompanionPage() {
   return (
     <div className="companion-shell">
       <nav className="companion__mode" aria-label="Companion mode">
-        <button type="button" aria-pressed={mode === "host"} onClick={() => setMode("host")}>
-          Primary host
-        </button>
-        <button type="button" aria-pressed={mode === "client"} onClick={() => setMode("client")}>
-          Connected device
-        </button>
+        <div className="companion__mode-track">
+          <button type="button" aria-pressed={mode === "host"} onClick={() => setMode("host")}>
+            Primary host
+          </button>
+          <button type="button" aria-pressed={mode === "client"} onClick={() => setMode("client")}>
+            Connected device
+          </button>
+        </div>
       </nav>
       {mode === "host" ? <CompanionHostPage /> : session ? (
         <>
           <div className="companion__client-controls">
-            <span>Paired with {session.endpoint}</span>
+            <div className="companion__client-meta">
+              <span className="companion__client-label">Paired host</span>
+              <span>Paired with {session.endpoint}</span>
+            </div>
             <label>
               Rotation code
               <input

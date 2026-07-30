@@ -34,6 +34,7 @@ percent-encoding = "2"
 rcgen = "0.14"
 regex = "1"
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }

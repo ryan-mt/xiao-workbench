@@ -58,29 +58,36 @@ export function CompanionPairingForm({
           new single-use pairing bundle.
         </p>
       ) : null}
-      <form onSubmit={submit}>
-        <label htmlFor="companion-pairing-code">Primary host pairing bundle</label>
-        <textarea
-          ref={pairingCodeRef}
-          id="companion-pairing-code"
-          autoComplete="off"
-          value={pairingCode}
-          onChange={(event) => setPairingCode(event.currentTarget.value)}
-          disabled={busy}
-          aria-describedby="companion-pairing-code-help"
-        />
-        <small id="companion-pairing-code-help">
-          This single-use bundle fixes the HTTPS address, TLS server name, and certificate trust.
-        </small>
-        <label htmlFor="companion-device-name">Device name</label>
-        <input
-          id="companion-device-name"
-          value={deviceName}
-          onChange={(event) => setDeviceName(event.currentTarget.value)}
-          disabled={busy}
-          maxLength={80}
-        />
-        <button type="submit" disabled={busy}>
+      <form className="companion__pair-form" onSubmit={submit}>
+        <div className="companion__field">
+          <label htmlFor="companion-pairing-code">Primary host pairing bundle</label>
+          <textarea
+            ref={pairingCodeRef}
+            id="companion-pairing-code"
+            autoComplete="off"
+            value={pairingCode}
+            onChange={(event) => setPairingCode(event.currentTarget.value)}
+            disabled={busy}
+            aria-describedby="companion-pairing-code-help"
+            rows={6}
+            spellCheck={false}
+          />
+          <small id="companion-pairing-code-help">
+            This single-use bundle fixes the HTTPS address, TLS server name, and certificate trust.
+          </small>
+        </div>
+        <div className="companion__field">
+          <label htmlFor="companion-device-name">Device name</label>
+          <input
+            id="companion-device-name"
+            value={deviceName}
+            onChange={(event) => setDeviceName(event.currentTarget.value)}
+            disabled={busy}
+            maxLength={80}
+            placeholder="Operator phone"
+          />
+        </div>
+        <button type="submit" className="companion__primary-action" disabled={busy}>
           {busy ? "Pairing…" : "Pair device"}
         </button>
       </form>
