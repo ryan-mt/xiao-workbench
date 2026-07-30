@@ -10,6 +10,7 @@ import type { ConversationTurn } from "./ConversationTurnProjector";
 import { EditedFilesSummary } from "./EditedFilesSummary";
 import { ExecutionTraceGroup } from "./ExecutionTraceGroup";
 import { projectExecutionTraces } from "./ExecutionTraceProjector";
+import { ThinkingBlock } from "./ThinkingBlock";
 import { toolCallRecovery } from "./ToolCallGroup";
 import { TurnDurationHeader } from "./TurnDurationHeader";
 
@@ -87,12 +88,6 @@ const groupTurnFlow = (
   return groups;
 };
 
-const liveThoughtLabel = (entry: TimelineEntry) =>
-  entry.body
-    ?.split(/\r?\n/)
-    .map((line) => line.replace(/^#{1,6}\s+|^\s*[-*]\s+|\*\*|__/g, "").trim())
-    .find(Boolean) ?? entry.title;
-
 const sameEntries = (left: TimelineEntry[], right: TimelineEntry[]) =>
   left.length === right.length &&
   left.every((entry, index) => entry === right[index]);
@@ -139,7 +134,26 @@ const sameAgentTurnProps = (left: SharedProps, right: SharedProps) =>
 function AgentTurnView(props: SharedProps) {
   const { turn, runtime, taskId } = props;
   const responseFlowIndex = turn.responseFlowIndex ?? turn.flow.length;
+  // Latest turn stays live for the whole runtime turn — including after interim
+  // assistant text — so the header keeps "Working for Xs" instead of flipping
+  // to "Worked" while tools/thinking continue.
+  const belongsToRuntimeTurn = (() => {
+    if (!runtime.turnId) return true;
+    const stamped = [
+      turn.user.turnId,
+      turn.response?.turnId,
+      ...turn.flow.map((entry) => entry.turnId),
+      ...turn.work.map((entry) => entry.turnId),
+    ].filter((value): value is string => Boolean(value));
+    if (!stamped.length) return true;
+    return stamped.includes(runtime.turnId);
+  })();
+  const live = props.liveEligible &&
+    runtime.phase === "working" &&
+    runtime.taskId === taskId &&
+    belongsToRuntimeTurn;
   const activeWorkAfterResponse = Boolean(
+    live &&
     turn.response &&
     turn.responseFlowIndex !== null &&
     responseFlowIndex < turn.flow.length &&
@@ -148,10 +162,6 @@ function AgentTurnView(props: SharedProps) {
       (!runtime.turnId || entry.turnId === runtime.turnId)
     )
   );
-  const live = props.liveEligible &&
-    runtime.phase === "working" &&
-    runtime.taskId === taskId &&
-    (!turn.response || turn.response.status === "active" || activeWorkAfterResponse);
   const [expanded, setExpanded] = useState(live);
   const recovery = toolCallRecovery(turn.work.filter((entry) => entry.kind === "command"));
   const responseBeforeLaterFlow = Boolean(
@@ -250,65 +260,61 @@ function AgentTurnView(props: SharedProps) {
       );
     }
 
-    let executionEnd = flowGroup.entries.length;
-    while (executionEnd > 0 && flowGroup.entries[executionEnd - 1].kind === "thought") {
-      executionEnd -= 1;
-    }
     const groupLive = live && flowGroupIndex === latestExecutionGroupIndex;
-    const latestThought = groupLive
-      ? flowGroup.entries.slice(executionEnd).at(-1)
-      : null;
-    const executionGroups = projectExecutionTraces(
-      latestThought ? flowGroup.entries.slice(0, executionEnd) : flowGroup.entries,
-      latestThought ? false : groupLive,
-    );
-    const completedThought = !groupLive &&
-      !executionGroups.length &&
-      flowGroup.entries.every((entry) => entry.kind === "thought")
-        ? flowGroup.entries.at(-1)
-        : null;
-    if (!executionGroups.length && !latestThought && !completedThought) return null;
+    // Keep chronological order: Thought blocks stand alone; tools/commands
+    // get their own action-titled groups — never nested under Thought.
+    const segments: Array<
+      | { kind: "thought"; entry: TimelineEntry }
+      | { kind: "work"; entries: TimelineEntry[] }
+    > = [];
+    for (const entry of flowGroup.entries) {
+      if (entry.kind === "thought") {
+        segments.push({ kind: "thought", entry });
+        continue;
+      }
+      const last = segments.at(-1);
+      if (last?.kind === "work") last.entries.push(entry);
+      else segments.push({ kind: "work", entries: [entry] });
+    }
+    if (!segments.length) return null;
     return (
       <div className="conversation-turn__execution" key={flowGroup.id}>
-        {executionGroups.map((group) => {
-          const content = group.entries.map((entry) => (
-            <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
-              {item(entry, turn.flow.indexOf(entry) + 1)}
-            </span>
-          ));
-          return group.title ? (
-            <ExecutionTraceGroup
-              key={group.id}
-              title={group.title}
-              live={groupLive}
-              thought={group.thoughtTitled}
-            >
-              {content}
-            </ExecutionTraceGroup>
-          ) : <div className="execution-trace__ungrouped" key={group.id}>{content}</div>;
-        })}
-        {completedThought ? (
-          <ExecutionTraceGroup
-            title={liveThoughtLabel(completedThought)}
-            live={false}
-            thought
-          >
-            {flowGroup.entries.map((entry) => (
+        {segments.map((segment, segmentIndex) => {
+          if (segment.kind === "thought") {
+            const thoughtLive = groupLive &&
+              segmentIndex === segments.length - 1 &&
+              segment.entry.status === "active";
+            return (
+              <ThinkingBlock
+                key={segment.entry.id}
+                entry={segment.entry}
+                live={thoughtLive || (groupLive && segment.entry.status === "active")}
+                showBody={props.showReasoningSummaries}
+                onOpenResource={props.onOpenResource}
+              />
+            );
+          }
+          const executionGroups = projectExecutionTraces(segment.entries, groupLive);
+          return executionGroups.map((group) => {
+            const content = group.entries.map((entry) => (
               <span className="timeline-entry-anchor" id={`timeline-entry-${entry.id}`} key={entry.id}>
                 {item(entry, turn.flow.indexOf(entry) + 1)}
               </span>
-            ))}
-          </ExecutionTraceGroup>
-        ) : null}
-        {latestThought ? (
-          <div
-            className="conversation-turn__thinking"
-            id={`timeline-entry-${latestThought.id}`}
-            role="status"
-          >
-            {liveThoughtLabel(latestThought)}
-          </div>
-        ) : null}
+            ));
+            return group.title ? (
+              <ExecutionTraceGroup
+                key={group.id}
+                title={group.title}
+                live={groupLive}
+                thought={false}
+              >
+                {content}
+              </ExecutionTraceGroup>
+            ) : (
+              <div className="execution-trace__ungrouped" key={group.id}>{content}</div>
+            );
+          });
+        })}
       </div>
     );
   });

@@ -900,7 +900,21 @@ pub async fn read_agent_account(
 ) -> Result<models::AgentAccountSummary, String> {
     let context = resolve_execution_context(&repository, &project_path, task_id.as_deref())?;
     let runtime = runtimes.runtime(&context.environment.id)?;
-    service::read_account(&runtime).await
+    let mut account = service::read_account(&runtime).await?;
+    // xAI profiles authenticate via managed device OAuth, not Codex CLI / ChatGPT login.
+    if let Some(profile_id) = runtime.current_profile_id()? {
+        if let Ok(profile) = repository.codex_profile(&profile_id) {
+            if crate::xai::service::is_xai_profile(&profile) {
+                account.requires_openai_auth = false;
+                account.authenticated =
+                    profile.availability == "available" || profile.authenticated_identity.is_some();
+                if account.auth_mode.is_none() {
+                    account.auth_mode = Some("xai".to_owned());
+                }
+            }
+        }
+    }
+    Ok(account)
 }
 
 #[tauri::command]

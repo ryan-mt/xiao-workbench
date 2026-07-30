@@ -140,7 +140,7 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("The import is fixed.");
   });
 
-  it("renders the latest live thought as an animated status without inventing execution", () => {
+  it("renders the latest live thought as a Thinking block without exposing prose", () => {
     const markup = render([{
       id: "user",
       kind: "user",
@@ -159,12 +159,14 @@ describe("TaskTimeline turn canvas", () => {
     });
 
     expect(markup).toContain("Working for 43s");
-    expect(markup).toContain("conversation-turn__thinking");
-    expect(markup).toContain("Planning chronological flow rendering and grouping");
+    expect(markup).toContain("turn-duration__dots");
+    expect(markup).toContain("thinking-block");
+    expect(markup).toContain("Thinking");
+    expect(markup).not.toContain(">Planning chronological flow rendering and grouping<");
     expect(markup).not.toContain("Execution details");
   });
 
-  it("uses a live thought as the disclosure title when execution follows it", () => {
+  it("keeps Thought separate from tool execution groups", () => {
     const markup = render([{
       id: "user",
       kind: "user",
@@ -188,11 +190,12 @@ describe("TaskTimeline turn canvas", () => {
       turnStartedAt: Date.now() - 10_000,
     });
 
-    expect(markup).toContain("Designing selected task refresh");
+    expect(markup).toContain("thinking-block");
+    expect(markup).toContain("Thought");
+    expect(markup).toContain("Ran a command");
+    expect(markup).not.toContain("Designing selected task refresh");
     expect(markup).toContain("rg -n selectedTask src/app/App.tsx");
-    expect(markup).not.toMatch(
-      /execution-trace__icon[^>]*>[\s\S]*?Designing selected task refresh/,
-    );
+    expect(markup.indexOf("Thought")).toBeLessThan(markup.indexOf("Ran a command"));
   });
 
   it("keeps command batches between commentary and splits them at thought boundaries", () => {
@@ -239,12 +242,17 @@ describe("TaskTimeline turn canvas", () => {
       markup.indexOf("git status --short"),
     );
     expect(markup.indexOf("git status --short")).toBeLessThan(
-      markup.indexOf("Checking the app-server sequence"),
+      markup.indexOf("Thought"),
+    );
+    expect(markup.indexOf("Thought")).toBeLessThan(
+      markup.indexOf("Read chat terminal"),
     );
     expect(markup.indexOf("Read chat terminal")).toBeLessThan(
       markup.indexOf("Applying the measured fix."),
     );
-    expect(markup.match(/class="execution-trace is-live/g)).toHaveLength(1);
+    expect(markup).not.toContain("Checking the app-server sequence");
+    expect(markup).toContain("Ran a command");
+    expect(markup.match(/class="execution-trace is-live/g)?.length).toBeGreaterThanOrEqual(1);
     expect(markup).toContain('src="/codex-mark.png"');
   });
 

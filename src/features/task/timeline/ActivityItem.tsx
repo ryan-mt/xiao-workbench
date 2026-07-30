@@ -12,6 +12,7 @@ import {
 import { CopyButton, MarkdownBody } from "./MarkdownBody";
 import { InlineMessageEditor, MessageActions } from "./MessageActions";
 import { MessageImage } from "./MessageImage";
+import { ThinkingBlock } from "./ThinkingBlock";
 
 const agentProgressDots = Array.from({ length: 25 }, (_, index) => ({
   index,
@@ -172,41 +173,6 @@ const collaboratorStatusLabel: Record<NonNullable<TimelineEntry["collaborators"]
   unknown: "Status unavailable",
 };
 
-const reasoningHeading = (body?: string) =>
-  body
-    ?.match(/(?:^|\n)\s*(?:#{1,6}\s+|\*\*|__)?([^\n*_]{3,80})/)?.[1]
-    ?.trim();
-
-const ReasoningActivity = memo(function ReasoningActivity({
-  entry,
-  index,
-  isLive,
-  onOpenResource,
-}: {
-  entry: TimelineEntry;
-  index: number;
-  isLive: boolean;
-  onOpenResource: (target: string) => boolean;
-}) {
-  const active = isLive && entry.status === "active";
-
-  return (
-    <article
-      className={`activity activity--reasoning activity--${entry.status ?? "idle"}`}
-      style={{ "--activity-index": index } as React.CSSProperties}
-      aria-busy={active}
-    >
-      {entry.body ? (
-        <MarkdownBody
-          content={entry.body}
-          streaming={active}
-          onOpenResource={onOpenResource}
-        />
-      ) : null}
-    </article>
-  );
-});
-
 export const ActivityItem = memo(function ActivityItem({
   entry,
   index,
@@ -243,14 +209,18 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (entry.kind === "thought" && !showReasoningSummaries) {
     if (entry.status !== "active" || !isLive) return null;
-    const heading = reasoningHeading(entry.body);
     return (
       <article
-        className="activity activity--thinking-projection"
+        className="activity activity--reasoning"
         style={{ "--activity-index": index } as React.CSSProperties}
+        aria-busy
       >
-        <strong className="is-active">Thinking</strong>
-        {heading && <span>{heading}</span>}
+        <ThinkingBlock
+          entry={entry}
+          live
+          showBody={false}
+          onOpenResource={onOpenResource}
+        />
       </article>
     );
   }
@@ -455,12 +425,18 @@ export const ActivityItem = memo(function ActivityItem({
 
   if (entry.kind === "thought") {
     return (
-      <ReasoningActivity
-        entry={entry}
-        index={index}
-        isLive={isLive}
-        onOpenResource={onOpenResource}
-      />
+      <article
+        className={`activity activity--reasoning activity--${entry.status ?? "idle"}`}
+        style={{ "--activity-index": index } as React.CSSProperties}
+        aria-busy={isLive && entry.status === "active"}
+      >
+        <ThinkingBlock
+          entry={entry}
+          live={isLive}
+          showBody={showReasoningSummaries}
+          onOpenResource={onOpenResource}
+        />
+      </article>
     );
   }
 

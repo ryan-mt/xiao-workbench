@@ -195,6 +195,7 @@ impl AgentRuntime {
         let mut command = codex_command().ok_or_else(|| {
             "Codex CLI was not found. Install it before connecting the agent runtime.".to_owned()
         })?;
+        let portable_tool_schema = profile.is_some_and(crate::xai::service::is_xai_profile);
         command.env_remove("USER");
         command.env_remove("USERNAME");
         command.env_remove("LOGNAME");
@@ -217,13 +218,31 @@ impl AgentRuntime {
                 }
             }
         }
+        if portable_tool_schema {
+            let inherited_no_proxy = [std::env::var("NO_PROXY"), std::env::var("no_proxy")]
+                .into_iter()
+                .flatten()
+                .chain(
+                    profile
+                        .and_then(|profile| profile.environment.as_object())
+                        .into_iter()
+                        .flatten()
+                        .filter(|(key, _)| key.eq_ignore_ascii_case("NO_PROXY"))
+                        .filter_map(|(_, value)| value.as_str().map(str::to_owned)),
+                )
+                .collect::<Vec<_>>()
+                .join(",");
+            let no_proxy = loopback_no_proxy_value(
+                (!inherited_no_proxy.is_empty()).then_some(inherited_no_proxy.as_str()),
+            );
+            command.env("NO_PROXY", &no_proxy).env("no_proxy", no_proxy);
+        }
         let runtime_state_dir = app
             .state::<XiaoRepository>()
             .app_data_dir()
             .join("codex-runtime")
             .join(environment_id);
         std::fs::create_dir_all(&runtime_state_dir).map_err(|error| error.to_string())?;
-        let portable_tool_schema = profile.is_some_and(crate::xai::service::is_xai_profile);
         command
             .args(codex_app_server_args(portable_tool_schema))
             .env("CODEX_SQLITE_HOME", runtime_state_dir);
@@ -378,6 +397,14 @@ impl AgentRuntime {
             generation,
             profile_id: profile.map(|profile| profile.id.clone()),
         })
+    }
+
+    pub fn current_profile_id(&self) -> Result<Option<String>, String> {
+        Ok(self
+            .profile_id
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone())
     }
 
     pub fn stop(&self) -> Result<(), String> {
@@ -650,7 +677,11 @@ impl EnvironmentRuntimeRegistry {
         profile: &crate::xiao::models::CodexProfile,
     ) -> Result<StartResult, String> {
         if crate::xai::service::is_xai_profile(profile) {
-            crate::xai::service::refresh_model_catalog(profile)?;
+            let responses_base_url = app
+                .state::<crate::xai::service::XaiOAuthService>()
+                .responses_base_url()
+                .to_owned();
+            crate::xai::service::refresh_model_catalog(profile, &responses_base_url)?;
         }
         self.runtime(environment_id)?.start_for_environment_profile(
             app,
@@ -873,12 +904,29 @@ fn codex_app_server_args(portable_tool_schema: bool) -> Vec<&'static str> {
         "default_mode_request_user_input",
     ];
     if portable_tool_schema {
+        // xAI accepts Responses wire format but not OpenAI remote-compaction blobs.
         args.extend(["-c", "web_search=\"disabled\""]);
-        for feature in ["multi_agent", "plugins", "apps"] {
+        for feature in ["multi_agent", "plugins", "apps", "remote_compaction_v2"] {
             args.extend(["--disable", feature]);
         }
     }
     args
+}
+
+fn loopback_no_proxy_value(existing: Option<&str>) -> String {
+    let mut entries = Vec::new();
+    for entry in existing
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .chain(["127.0.0.1", "localhost"])
+    {
+        if !entries.iter().any(|existing| existing == entry) {
+            entries.push(entry.to_owned());
+        }
+    }
+    entries.join(",")
 }
 
 #[cfg(windows)]
@@ -923,6 +971,9 @@ mod tests {
             .any(|args| args == ["--disable", "multi_agent"]));
         assert!(args.windows(2).any(|args| args == ["--disable", "plugins"]));
         assert!(args.windows(2).any(|args| args == ["--disable", "apps"]));
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["--disable", "remote_compaction_v2"]));
         assert_eq!(
             codex_app_server_args(false),
             [
@@ -932,6 +983,15 @@ mod tests {
                 "default_mode_request_user_input"
             ]
         );
+    }
+
+    #[test]
+    fn xai_runtime_preserves_proxy_exclusions_and_adds_loopback() {
+        assert_eq!(
+            loopback_no_proxy_value(Some("internal.example,localhost")),
+            "internal.example,localhost,127.0.0.1"
+        );
+        assert_eq!(loopback_no_proxy_value(None), "127.0.0.1,localhost");
     }
 
     #[test]

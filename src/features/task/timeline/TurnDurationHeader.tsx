@@ -83,6 +83,13 @@ export function TurnDurationHeader({
       aria-expanded={expanded}
       onClick={onToggle}
     >
+      {live ? (
+        <span className="turn-duration__dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      ) : null}
       <span ref={labelRef}>{label()}</span>
       <XiaoIcon className="turn-duration__caret" name="caret" size={12} />
       <i aria-hidden="true" />

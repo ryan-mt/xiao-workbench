@@ -10,7 +10,7 @@ const entry = (
 ): TimelineEntry => ({ id, kind, title: id, body });
 
 describe("execution trace projection", () => {
-  it("groups the full execution stream beneath one latest trace heading", () => {
+  it("groups tools under an action summary and ignores thought markers", () => {
     expect(projectExecutionTraces([
       entry("setup", "command"),
       entry("trace", "thought", "Planning staged commits with patch hunks\nprivate detail"),
@@ -19,29 +19,27 @@ describe("execution trace projection", () => {
     ])).toEqual([
       {
         id: "execution-setup",
-        title: "Planning staged commits with patch hunks",
-        thoughtTitled: true,
+        title: "Edited a file, ran commands",
+        thoughtTitled: false,
         entries: [entry("setup", "command"), entry("edit", "change"), entry("test", "command")],
       },
     ]);
   });
 
-  it("never exposes the full reasoning body as an execution row", () => {
+  it("never uses reasoning text as an execution title", () => {
     const traces = projectExecutionTraces([
       entry("trace", "thought", "Visible trace title\nHidden reasoning body"),
       entry("command", "command"),
     ]);
-    expect(traces[0].title).toBe("Visible trace title");
+    expect(traces[0].title).toBe("Ran a command");
+    expect(traces[0].thoughtTitled).toBe(false);
     expect(traces[0].entries.map((item) => item.id)).toEqual(["command"]);
   });
 
-  it("uses the latest trace title for the disclosure", () => {
-    const traces = projectExecutionTraces([
-      entry("trace", "thought", "Investigating missing command entries"),
-      entry("command", "command"),
-    ], true);
-    expect(traces[0].title).toBe("Investigating missing command entries");
-    expect(traces[0].thoughtTitled).toBe(true);
+  it("returns no trace when the segment is thought-only", () => {
+    expect(projectExecutionTraces([
+      entry("trace", "thought", "**Investigating**\n\nPrivate detail"),
+    ])).toEqual([]);
   });
 
   it("keeps the disclosure identity stable when a newer live thought arrives", () => {
@@ -57,7 +55,7 @@ describe("execution trace projection", () => {
 
     expect(before[0].id).toBe("execution-command");
     expect(after[0].id).toBe(before[0].id);
-    expect(after[0].title).toBe("Optimizing the canvas");
+    expect(after[0].title).toBe("Ran a command");
   });
 
   it("keeps duration-bearing dynamic tools and image views out of shell counts", () => {

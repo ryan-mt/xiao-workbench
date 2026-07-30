@@ -7,20 +7,13 @@ export type ExecutionTrace = {
   entries: TimelineEntry[];
 };
 
-const traceTitle = (entry: TimelineEntry) =>
-  entry.body
-    ?.split(/\r?\n/)
-    .map((line) => line.replace(/^#{1,6}\s+|^\s*[-*]\s+|\*\*|__/g, "").trim())
-    .find(Boolean) ?? entry.title;
-
 export class ExecutionTraceProjector {
   constructor(private readonly entries: TimelineEntry[]) {}
 
   project(): ExecutionTrace[] {
-    const traceMarkers = this.entries.filter((entry) => entry.kind === "thought");
+    // Thoughts are rendered as separate ThinkingBlocks — never as tool-group titles.
     const entries = this.entries.filter((entry) => entry.kind !== "thought");
     if (!entries.length) return [];
-    const latestMarker = traceMarkers.at(-1);
     const isWebSearch = (entry: TimelineEntry) =>
       entry.meta === "Browser tool" || entry.meta === "Web search";
     const isToolEntry = (entry: TimelineEntry) =>
@@ -59,10 +52,8 @@ export class ExecutionTraceProjector {
     const summary = actions.join(", ");
     return [{
       id: `execution-${entries[0].id}`,
-      title: latestMarker
-        ? traceTitle(latestMarker)
-        : summary || "Execution details",
-      thoughtTitled: Boolean(latestMarker),
+      title: summary || "Execution details",
+      thoughtTitled: false,
       entries,
     }];
   }

@@ -46,6 +46,48 @@ describe("AgentTurn completed reasoning", () => {
     />,
   );
 
+  it("stays live after interim assistant text while the runtime turn continues", () => {
+    const user: TimelineEntry = {
+      id: "user-interim",
+      kind: "user",
+      title: "Rewrite the shell",
+      turnId: "turn-interim",
+      createdAt: 1_000,
+    };
+    const response: TimelineEntry = {
+      id: "response-interim",
+      kind: "result",
+      title: "Agent response",
+      body: "Starting the rewrite.",
+      turnId: "turn-interim",
+      status: "success",
+      createdAt: 2_000,
+    };
+    const turn: ConversationTurn = {
+      id: user.id,
+      user,
+      flow: [],
+      commentary: [],
+      work: [],
+      response,
+      responseFlowIndex: null,
+      files: [],
+      startIndex: 0,
+      endIndex: 1,
+    };
+
+    const { container } = renderTurn(turn, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnId: "turn-interim",
+      turnStartedAt: Date.now() - 53_000,
+    });
+
+    expect(container.querySelector(".conversation-turn.is-live")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Working for/ }).textContent).toMatch(/Working for/);
+  });
+
   it("keeps later active work live after a successful interim response", () => {
     const user: TimelineEntry = {
       id: "user-live",
@@ -226,9 +268,10 @@ describe("AgentTurn completed reasoning", () => {
       turnId: "turn-thought-live",
     });
 
-    expect(container.querySelector("#timeline-entry-thought-live")?.textContent).toContain(
-      "Inspecting the active flow",
-    );
+    const node = container.querySelector("#timeline-entry-thought-live");
+    expect(node?.className).toContain("thinking-block");
+    expect(node?.textContent).toContain("Thinking");
+    expect(node?.textContent).not.toContain("Inspecting the active flow");
   });
 
   it("preserves live behavior before entries acquire a runtime turn id", () => {
@@ -298,9 +341,12 @@ describe("AgentTurn completed reasoning", () => {
 
     renderTurn(turn, idleRuntime, false);
 
-    expect(screen.queryByText("Checking chronological projection")).toBeNull();
+    expect(screen.queryByText("Thought")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Worked for 1s/ }));
 
-    expect(screen.getAllByText("Checking chronological projection").length).toBeGreaterThan(0);
+    expect(screen.getByText("Thought")).toBeTruthy();
+    expect(screen.queryByText("Checking chronological projection")).toBeNull();
+    fireEvent.click(screen.getByText("Thought"));
+    expect(screen.getByText("Checking chronological projection")).toBeTruthy();
   });
 });

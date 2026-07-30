@@ -16,6 +16,7 @@ import {
   contextUsedPercent,
   visiblePromptFromSelectedContext,
   type AgentAttachment,
+  type AgentModelSummary,
   type CodexThreadSummary,
   type AgentFollowUp,
   type AgentGoal,
@@ -1595,6 +1596,33 @@ export const codexProfileAvailabilityAfterRuntimeSync = ({
   return runtimeError ? "unknown" : "unauthenticated";
 };
 
+/** Runtime model/list can briefly (or incorrectly) return another provider's catalog. */
+export const modelsBelongToProvider = (
+  providerId: string,
+  models: Array<{ model: string }>,
+): boolean => {
+  if (!models.length) return false;
+  if (providerId === "xai") {
+    return models.every((model) => model.model.toLocaleLowerCase().startsWith("grok"));
+  }
+  return models.every((model) => !model.model.toLocaleLowerCase().startsWith("grok"));
+};
+
+export const codexProfileModelsAfterRuntimeSync = ({
+  providerId,
+  currentModels,
+  runtimeModels,
+}: {
+  providerId: string;
+  currentModels: unknown;
+  runtimeModels: AgentModelSummary[];
+}): unknown => {
+  if (modelsBelongToProvider(providerId, runtimeModels)) {
+    return runtimeModels;
+  }
+  return currentModels;
+};
+
 export const createContinuationTask = (
   source: WorkbenchTask,
   identity: { id: string; createdAt: number },
@@ -3089,7 +3117,11 @@ export function App() {
       authenticatedIdentity: profile.environment.XIAO_MODEL_PROVIDER === "xai"
         ? profile.authenticatedIdentity
         : agent.account,
-      models: agent.models,
+      models: codexProfileModelsAfterRuntimeSync({
+        providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
+        currentModels: profile.models,
+        runtimeModels: agent.models,
+      }),
       capabilities: {
         providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
         codexVersion: system.codexVersion,
@@ -3240,13 +3272,18 @@ export function App() {
     if (codexProfiles.length <= 1) return [];
     return codexProfiles.map((profile) => {
       const isActive = profile.id === effectiveCodexProfileId;
-      const sourceModels = isActive && agent.models.length
-        ? agent.models
-        : parseCodexProfileModels(profile.models);
+      const providerId = profile.environment.XIAO_MODEL_PROVIDER ?? "openai";
+      const storedModels = parseCodexProfileModels(profile.models);
+      const runtimeModels = isActive && agent.models.length ? agent.models : [];
+      const sourceModels = modelsBelongToProvider(providerId, runtimeModels)
+        ? runtimeModels
+        : storedModels.length
+          ? storedModels
+          : runtimeModels;
       return {
         id: profile.id,
         displayName: profile.displayName,
-        providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
+        providerId,
         availability: profile.availability,
         models: sourceModels.filter(
           (model) =>

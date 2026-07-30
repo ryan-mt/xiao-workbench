@@ -358,7 +358,8 @@ describe("live turn presentation", () => {
       />,
     );
 
-    expect(markup).toContain(">Thinking<");
+    expect(markup).toContain("Thinking for");
+    expect(markup).toContain("live-turn-status__dots");
     expect(markup).not.toContain("Finishing");
   });
 

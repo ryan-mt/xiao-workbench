@@ -170,7 +170,7 @@ pub fn run() {
             app.manage(RunService::default());
             app.manage(VerificationService::default());
             app.manage(RoutineService::default());
-            app.manage(XaiOAuthService::new()?);
+            app.manage(XaiOAuthService::new(app_data_dir.clone())?);
             app.manage(CompanionPinnedClient::new(Arc::new(KeyringCredentialStore)));
             app.manage(CompanionExecutionGate::default());
             let companion_runtime = match discover_lan_bind_address(4318).and_then(|bind| {

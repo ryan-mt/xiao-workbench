@@ -28,6 +28,7 @@ import {
   clearProjectGroup,
   clearVisibleTaskUnread,
   codexProfileAvailabilityAfterRuntimeSync,
+  codexProfileModelsAfterRuntimeSync,
   codexThreadSelectionTarget,
   codexTimelineImportRequestIsCurrent,
   completeUndoRecovery,
@@ -200,6 +201,18 @@ describe("profile and project group state", () => {
       requiresOpenaiAuth: false,
       runtimeError: "401 No credentials presented.",
     })).toBe("unauthenticated");
+  });
+
+  it("does not let OpenAI runtime models overwrite an xAI profile catalog", () => {
+    const current = [{ id: "grok-4.5", model: "grok-4.5", displayName: "Grok 4.5" }];
+    const runtime = [
+      { id: "gpt-5.6-sol", model: "gpt-5.6-sol", displayName: "GPT-5.6-Sol" },
+    ];
+    expect(codexProfileModelsAfterRuntimeSync({
+      providerId: "xai",
+      currentModels: current,
+      runtimeModels: runtime as never,
+    })).toEqual(current);
   });
 
   it("deduplicates runtime synchronization per profile", () => {

@@ -1702,13 +1702,21 @@ export function useAgentRuntime(
       setModels(nextModels);
       void refreshAccountUsage();
       void refreshAccountRateLimits();
-      setRuntime((current) => ({
-        ...current,
-        error:
-          !nextAccount.authenticated && nextAccount.requiresOpenaiAuth
-            ? "Sign in with Codex CLI, then reconnect Xiao."
-            : null,
-      }));
+      setRuntime((current) => {
+        const requiresCodexCliLogin =
+          !nextAccount.authenticated && nextAccount.requiresOpenaiAuth;
+        // Don't clobber an existing runtime error with a generic Codex CLI prompt
+        // when the active profile is already authenticated via another provider.
+        const nextError = requiresCodexCliLogin
+          ? "Sign in with Codex CLI, then reconnect Xiao."
+          : current.error?.includes("Sign in with Codex CLI")
+            ? null
+            : current.error;
+        return {
+          ...current,
+          error: nextError,
+        };
+      });
     } catch (reason) {
       if (!agentRuntimeWorkspaceScopeMatches(
         workspaceScopeRef.current,
