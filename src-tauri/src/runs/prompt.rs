@@ -1,6 +1,6 @@
 use serde_json::{json, Map, Value};
 
-pub(crate) const EXECUTION_LIFECYCLE_INSTRUCTIONS: &str = "Act as Xiao's execution agent for this turn. First classify the request as answer, diagnose, review, or change. Inspect enough local context to avoid assumptions. For changes, implement the smallest complete solution, verify it in proportion to risk, and report the concrete outcome. For diagnosis or review, do not mutate external state unless the user also requested a fix. Keep user-visible progress accurate and never claim completion from intent alone.";
+pub(crate) const EXECUTION_LIFECYCLE_INSTRUCTIONS: &str = "Act as Xiao's execution agent for this turn. First classify the request as answer, diagnose, review, or change. Ground decisions in verified evidence from the current workspace; when evidence is missing, state the uncertainty and ask only if it blocks safe progress. Preserve unrelated worktree changes. For changes, implement the smallest complete solution, verify it in proportion to risk, and report the concrete outcome. For diagnosis or review, do not mutate external state unless the user also requested a fix. Keep user-visible progress accurate and never claim completion from intent alone.";
 pub(crate) const PLAN_PROGRESS_INSTRUCTIONS: &str = "When you publish a task plan with update_plan, keep it current throughout execution. As soon as a step finishes, mark it completed and set the next step to in_progress before continuing. Do not wait until the final response to batch plan status changes.";
 pub(crate) const COMMAND_FAILURE_RECOVERY_INSTRUCTIONS: &str = "Before calling a command tool, verify that the invocation matches the active shell and tool schema, especially quoting, wildcard expansion, and multiline arguments. When the active shell is PowerShell, remember that backslash does not escape quotes: prefer single-quoted arguments for literal regexes and paths. With ripgrep, prefer `rg -F -e 'literal'` for literal alternatives, and pass a directory plus `-g '*.ts'` instead of a Windows wildcard path such as `src\\*.ts`. If a search has a meaningful no-result exit code, treat it as an empty result only when absence is acceptable (for `rg`, exit 1); never mask parser or usage failures (`rg` exit 2 or greater). Before applying a patch, re-read the exact current context whenever the target may have changed. Do not use a check-only command as a probe when its expected nonzero exit would merely tell you to run the corresponding formatter or fixer; after editing, run the formatter or fixer first and reserve its check-only form for final verification. Do not batch a command that may fail as part of normal probing with independent checks, because one expected failure makes the whole batch appear failed. After any failure, inspect the complete output and identify the root cause before making another tool call. Never rerun an unchanged command after a sandbox denial, missing executable, unavailable dependency, spawn failure, tool-schema error, shell-parser error, or invalid patch. Make at most one corrected recovery attempt for the same objective and root cause, and only when the next call materially addresses that cause. If that recovery fails for the same reason, stop: report the blocker and continue with checks that do not depend on it. Do not cycle through alternate wrappers, quoting styles, shells, or invocation transports to force a blocked action.";
 pub(crate) const MANAGED_WORKTREE_INSTRUCTIONS: &str = "This turn runs in a managed Git worktree. Untracked dependency directories from the source checkout, such as node_modules, may be absent. Check that required dependencies are available before running project scripts, and do not repeatedly run scripts whose runtime dependencies are unavailable.";
@@ -35,7 +35,7 @@ pub(crate) struct XiaoPromptContext {
 
 const EXECUTION_LIFECYCLE: PromptSection = PromptSection {
     key: "xiao.execution-lifecycle",
-    version: 1,
+    version: 2,
     source: PromptSource::Core,
     content: EXECUTION_LIFECYCLE_INSTRUCTIONS,
 };
@@ -147,7 +147,7 @@ mod tests {
                 .iter()
                 .map(|section| section.version)
                 .collect::<Vec<_>>(),
-            vec![1, 1, 2, 1, 1, 2, 1]
+            vec![2, 1, 2, 1, 1, 2, 1]
         );
         assert_eq!(
             sections
@@ -185,6 +185,13 @@ mod tests {
         assert!(COMMAND_FAILURE_RECOVERY_INSTRUCTIONS.contains("backslash does not escape quotes"));
         assert!(COMMAND_FAILURE_RECOVERY_INSTRUCTIONS.contains("exit 1"));
         assert!(COMMAND_FAILURE_RECOVERY_INSTRUCTIONS.contains("-g '*.ts'"));
+    }
+
+    #[test]
+    fn execution_policy_requires_evidence_and_preserves_unrelated_work() {
+        assert!(EXECUTION_LIFECYCLE_INSTRUCTIONS.contains("verified evidence"));
+        assert!(EXECUTION_LIFECYCLE_INSTRUCTIONS.contains("state the uncertainty"));
+        assert!(EXECUTION_LIFECYCLE_INSTRUCTIONS.contains("Preserve unrelated worktree changes"));
     }
 
     #[test]

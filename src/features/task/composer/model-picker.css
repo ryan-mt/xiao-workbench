@@ -210,6 +210,58 @@
   font-weight: 590;
 }
 
+.picker-menu__back {
+  display: grid !important;
+  min-height: 36px !important;
+  grid-template-columns: 16px minmax(0, 1fr) !important;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px !important;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0 !important;
+  color: var(--muted-strong);
+  font-weight: 540;
+}
+
+.picker-menu__back > svg {
+  transform: rotate(180deg);
+  justify-self: start !important;
+  color: var(--muted) !important;
+}
+
+.model-picker__profile-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.model-picker__profile-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.model-picker__profile-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-picker__profile-copy > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-weight: 440;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__tools-left .picker-menu button:has(.model-picker__profile-row) {
+  grid-template-columns: minmax(0, 1fr) 18px;
+}
+
 .picker-menu__list {
   max-height: min(310px, 46vh);
   padding: 2px 5px 5px;

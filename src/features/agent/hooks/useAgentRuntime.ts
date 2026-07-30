@@ -3042,6 +3042,27 @@ export function useAgentRuntime(
     return () => window.clearTimeout(timer);
   }, [autoConnect, connect, listenersReady, runtime.phase]);
 
+  useEffect(() => {
+    if (
+      !isTauriHost() ||
+      !autoConnect ||
+      !listenersReady ||
+      runtime.phase !== "ready" ||
+      !selectedCodexProfileId ||
+      runtime.profileId === selectedCodexProfileId
+    ) {
+      return;
+    }
+    void connect();
+  }, [
+    autoConnect,
+    connect,
+    listenersReady,
+    runtime.phase,
+    runtime.profileId,
+    selectedCodexProfileId,
+  ]);
+
   const submit = useCallback(
     async (
       prompt: string,

@@ -58,9 +58,14 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     let mut command = {
+        // Do not use explorer.exe: it often treats https URLs (especially with
+        // query strings) as shell paths and opens File Explorer instead of the
+        // default browser. FileProtocolHandler routes http(s) correctly.
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let mut command = Command::new("explorer");
-        command.arg(&url).creation_flags(CREATE_NO_WINDOW);
+        let mut command = Command::new("rundll32");
+        command
+            .args(["url.dll,FileProtocolHandler", &url])
+            .creation_flags(CREATE_NO_WINDOW);
         command
     };
 
@@ -740,6 +745,17 @@ mod tests {
         );
         assert!(external_web_url("javascript:alert(1)").is_err());
         assert!(external_web_url("xiao-preview://token/index.html").is_err());
+    }
+
+    #[test]
+    fn external_browser_accepts_oauth_verification_urls_with_query_strings() {
+        let url = external_web_url("https://accounts.x.ai/sign-in?user_code=ABCD-EFGH&client=xiao")
+            .unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("accounts.x.ai"));
+        assert!(url
+            .query()
+            .is_some_and(|query| query.contains("user_code=")));
     }
 
     #[test]

@@ -64,6 +64,24 @@ describe("workflow prompt templates", () => {
     )).toBe(true);
   });
 
+  it("keeps workflow prompts evidence-led and protects unrelated work", () => {
+    const templates = Object.fromEntries(
+      SLASH_COMMANDS
+        .filter((command) => command.prompt)
+        .map((command) => [command.id, command.prompt!]),
+    );
+
+    expect(templates.review).toContain("Do not change code.");
+    expect(templates.review).toContain("verified");
+    expect(templates.test).toContain("Do not fix unrelated failures");
+    expect(templates.fix).toContain("Preserve unrelated worktree changes");
+    expect(templates.build).toContain("Preserve unrelated worktree changes");
+    expect(templates.refactor).toContain("Preserve unrelated worktree changes");
+    expect(["test", "init", "fix", "build", "refactor"].every((id) =>
+      templates[id]?.includes("Do not commit or push unless I ask.")
+    )).toBe(true);
+  });
+
   it("finds each template by its slash trigger", () => {
     for (const id of ["fix", "build", "explain", "refactor"] as const) {
       expect(filterSlashCommands(SLASH_COMMANDS, id).map((command) => command.id))

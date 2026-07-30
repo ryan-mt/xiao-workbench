@@ -39,7 +39,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Find bugs, regressions, security risks, and missing tests",
     group: "Workflow",
     icon: "changes",
-    prompt: "Review the current workspace changes. Prioritize bugs, behavioral regressions, security risks, and missing tests. Report findings first with file and line references.",
+    prompt: "Review the current workspace changes. Prioritize bugs, behavioral regressions, security risks, and missing tests. Report verified findings first with file and line references, and separate evidence from inference. Do not change code.",
   },
   {
     id: "test",
@@ -48,7 +48,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Verify the current work and fix failures caused by it",
     group: "Workflow",
     icon: "check",
-    prompt: "Run the relevant checks and tests for the current changes. Fix failures caused by the changes, then report exactly what passed and what could not be verified.",
+    prompt: "Run the relevant checks and tests for the current changes. Fix failures caused by the changes. Do not fix unrelated failures; diagnose and report them. Preserve unrelated worktree changes. Report exactly what passed and what could not be verified. Do not commit or push unless I ask.",
   },
   {
     id: "init",
@@ -57,7 +57,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Create a compact, verified AGENTS.md for future sessions",
     group: "Workflow",
     icon: "brief",
-    prompt: "Create or update AGENTS.md for this repository. Inspect executable configuration and existing instructions first. Keep only verified, high-signal commands, architecture facts, conventions, and operational gotchas that a future coding agent would otherwise miss.",
+    prompt: "Create or update AGENTS.md for this repository. Inspect executable configuration and existing instructions first. Keep only verified, high-signal commands, architecture facts, conventions, and operational gotchas that a future coding agent would otherwise miss. Preserve existing high-signal guidance and unrelated worktree changes. Do not commit or push unless I ask.",
   },
   {
     id: "fix",
@@ -72,7 +72,7 @@ Observed behavior:
 Expected behavior:
 Steps to reproduce:
 
-Before editing, reproduce the issue and identify the root cause. Make the smallest safe change, add or update a regression test, run the relevant checks, and report the cause, changed files, and verification. Do not commit or push unless I ask.`,
+Before editing, reproduce the issue and identify the root cause. Preserve unrelated worktree changes. Make the smallest safe change, add or update a regression test, run the relevant checks, and report the cause, changed files, and verification. Do not commit or push unless I ask.`,
   },
   {
     id: "build",
@@ -88,7 +88,7 @@ Scope:
 Constraints:
 Acceptance checks:
 
-Inspect the current architecture and existing patterns before editing. Make the smallest coherent change, preserve unrelated behavior, add or update tests, and report what changed and how it was verified. Do not commit or push unless I ask.`,
+Inspect the current architecture and existing patterns before editing. Preserve unrelated worktree changes. Make the smallest coherent change, preserve unrelated behavior, add or update tests, and report what changed and how it was verified. Do not commit or push unless I ask.`,
   },
   {
     id: "explain",
@@ -113,7 +113,7 @@ Trace the user-facing entry point, state ownership, data flow, side effects, and
 Target:
 Reason:
 
-Inspect the existing style and run the relevant baseline tests first. Keep the diff focused, avoid speculative abstractions, preserve public behavior, add regression coverage where needed, then rerun the checks and summarize the trade-offs. Do not commit or push unless I ask.`,
+Inspect the existing style and run the relevant baseline tests first. Preserve unrelated worktree changes. Keep the diff focused, avoid speculative abstractions, preserve public behavior, add regression coverage where needed, then rerun the checks and summarize the trade-offs. Do not commit or push unless I ask.`,
   },
   { id: "plan", trigger: "plan", title: "Toggle plan mode", description: "Plan the approach before implementation", group: "Task", icon: "plan" },
   { id: "goal", trigger: "goal", title: "Set task goal", description: "Keep a persistent objective above the conversation", group: "Task", icon: "target" },

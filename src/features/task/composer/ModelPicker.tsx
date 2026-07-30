@@ -12,19 +12,89 @@ import { reasoningLabel } from "./ReasoningControl";
 import { WeeklyUsageIndicator } from "./WeeklyUsageIndicator";
 import "./model-picker.css";
 
+export type ModelPickerProfile = {
+  id: string;
+  displayName: string;
+  providerId: string;
+  availability: string;
+  models: AgentModelSummary[];
+};
+
 type ModelPickerProps = {
   models: AgentModelSummary[];
+  profiles?: ModelPickerProfile[];
+  selectedProfileId?: string | null;
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
   fastMode: boolean;
   rateLimits: AgentRateLimitSnapshot | null;
   disabled: boolean;
   onModelChange: (model: string | null) => void;
+  onProfileModelSelect?: (selection: {
+    profileId: string;
+    model: string | null;
+  }) => boolean | void;
   onReasoningEffortChange: (effort: string | null) => void;
   onFastModeChange: (fastMode: boolean) => void;
 };
 
 type OpenMenu = "model" | "reasoning" | null;
+type ModelMenuView = "profiles" | "models";
+
+export function parseCodexProfileModels(value: unknown): AgentModelSummary[] {
+  if (!Array.isArray(value)) return [];
+  const models: AgentModelSummary[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const model = typeof record.model === "string" ? record.model.trim() : "";
+    if (!model) continue;
+    const id = typeof record.id === "string" && record.id.trim() ? record.id.trim() : model;
+    const displayName =
+      typeof record.displayName === "string" && record.displayName.trim()
+        ? record.displayName.trim()
+        : model;
+    const description = typeof record.description === "string" ? record.description : "";
+    const defaultReasoningEffort =
+      typeof record.defaultReasoningEffort === "string" ? record.defaultReasoningEffort : "";
+    const supportedReasoningEfforts = Array.isArray(record.supportedReasoningEfforts)
+      ? record.supportedReasoningEfforts.flatMap((option) => {
+          if (!option || typeof option !== "object") return [];
+          const effort = option as Record<string, unknown>;
+          if (typeof effort.reasoningEffort !== "string") return [];
+          return [{
+            reasoningEffort: effort.reasoningEffort,
+            description: typeof effort.description === "string" ? effort.description : "",
+          }];
+        })
+      : [];
+    const serviceTiers = Array.isArray(record.serviceTiers)
+      ? record.serviceTiers.flatMap((tier) => {
+          if (!tier || typeof tier !== "object") return [];
+          const item = tier as Record<string, unknown>;
+          if (typeof item.id !== "string" || typeof item.name !== "string") return [];
+          return [{
+            id: item.id,
+            name: item.name,
+            description: typeof item.description === "string" ? item.description : "",
+          }];
+        })
+      : [];
+    models.push({
+      id,
+      model,
+      displayName,
+      description,
+      isDefault: Boolean(record.isDefault),
+      defaultReasoningEffort,
+      supportedReasoningEfforts,
+      serviceTiers,
+      contextWindow:
+        typeof record.contextWindow === "number" ? record.contextWindow : null,
+    });
+  }
+  return models;
+}
 
 function OpenAIIcon() {
   return (
@@ -42,27 +112,85 @@ function OpenAIIcon() {
   );
 }
 
+function XaiIcon() {
+  return (
+    <svg
+      className="model-picker__provider-icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        fill="currentColor"
+        d="M4.2 3.5h4.1L12 9.1l3.7-5.6h4.1L13.9 12l6.4 8.5h-4.2L12 14.9l-4.1 5.6H3.7L10.1 12 4.2 3.5z"
+      />
+    </svg>
+  );
+}
+
+function ProviderIcon({ providerId }: { providerId: string }) {
+  return providerId === "xai" ? <XaiIcon /> : <OpenAIIcon />;
+}
+
+function profileFooter(profile: ModelPickerProfile | null) {
+  if (!profile) return "Synced from your Codex account";
+  if (profile.providerId === "xai") {
+    return profile.availability === "available"
+      ? "xAI Grok profile"
+      : "Connect xAI in Settings → Runtime";
+  }
+  return "Synced from your Codex account";
+}
+
 export function ModelPicker({
   models,
+  profiles = [],
+  selectedProfileId = null,
   selectedModel,
   selectedReasoningEffort,
   fastMode,
   rateLimits,
   disabled,
   onModelChange,
+  onProfileModelSelect,
   onReasoningEffortChange,
   onFastModeChange,
 }: ModelPickerProps) {
+  const multiProfile = profiles.length > 1;
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
+  const [menuView, setMenuView] = useState<ModelMenuView>(
+    multiProfile ? "profiles" : "models",
+  );
+  const [browsingProfileId, setBrowsingProfileId] = useState<string | null>(
+    selectedProfileId ?? profiles[0]?.id ?? null,
+  );
   const [query, setQuery] = useState("");
   const root = useRef<HTMLDivElement>(null);
   const modelTrigger = useRef<HTMLButtonElement>(null);
   const reasoningTrigger = useRef<HTMLButtonElement>(null);
   const modelSearch = useRef<HTMLInputElement>(null);
-  const defaultModel = models.find((model) => model.isDefault);
+
+  const activeProfile =
+    profiles.find((profile) => profile.id === selectedProfileId) ??
+    profiles[0] ??
+    null;
+  const browsingProfile =
+    profiles.find((profile) => profile.id === browsingProfileId) ??
+    activeProfile;
+  const catalogModels = multiProfile
+    ? (browsingProfile?.models ?? [])
+    : models;
+  const displayModels = multiProfile
+    ? profiles.flatMap((profile) => profile.models)
+    : models;
+  const defaultModel =
+    (activeProfile?.models ?? models).find((model) => model.isDefault) ??
+    displayModels.find((model) => model.isDefault);
   const activeModel =
-    (selectedModel ? models.find((model) => model.model === selectedModel) : defaultModel) ??
-    defaultModel;
+    (selectedModel
+      ? displayModels.find((model) => model.model === selectedModel) ??
+        models.find((model) => model.model === selectedModel)
+      : defaultModel) ?? defaultModel;
   const reasoningOptions = [
     ...new Map(
       (activeModel?.supportedReasoningEfforts ?? []).map((option) => [option.reasoningEffort, option]),
@@ -84,15 +212,21 @@ export function ModelPicker({
     : `${activeModel?.displayName ?? "This model"} does not offer Fast mode.`;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredModels = normalizedQuery
-    ? models.filter((model) =>
+    ? catalogModels.filter((model) =>
         `${model.displayName} ${model.description}`.toLocaleLowerCase().includes(normalizedQuery),
       )
-    : models;
+    : catalogModels;
+  const hasAnyModels = multiProfile
+    ? profiles.some((profile) => profile.models.length > 0)
+    : models.length > 0;
+  const activeProviderId = activeProfile?.providerId ?? "openai";
 
   const closeMenu = (restoreFocus = false) => {
     const trigger = openMenu === "model" ? modelTrigger.current : reasoningTrigger.current;
     setOpenMenu(null);
     setQuery("");
+    setMenuView(multiProfile ? "profiles" : "models");
+    setBrowsingProfileId(selectedProfileId ?? profiles[0]?.id ?? null);
     if (restoreFocus) window.requestAnimationFrame(() => trigger?.focus());
   };
 
@@ -102,11 +236,24 @@ export function ModelPicker({
       if (!root.current?.contains(event.target as Node)) closeMenu();
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu(true);
+      if (event.key !== "Escape") return;
+      if (openMenu === "model" && multiProfile && menuView === "models") {
+        event.preventDefault();
+        setMenuView("profiles");
+        setQuery("");
+        return;
+      }
+      closeMenu(true);
     };
     const focusFrame = window.requestAnimationFrame(() => {
       if (openMenu === "model") {
-        modelSearch.current?.focus({ preventScroll: true });
+        if (menuView === "models") {
+          modelSearch.current?.focus({ preventScroll: true });
+          return;
+        }
+        root.current
+          ?.querySelector<HTMLButtonElement>('.model-picker__menu [aria-selected="true"], .model-picker__menu button')
+          ?.focus({ preventScroll: true });
         return;
       }
       root.current
@@ -120,11 +267,11 @@ export function ModelPicker({
       document.removeEventListener("pointerdown", closeOnOutsideClick);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [openMenu]);
+  }, [menuView, multiProfile, openMenu]);
 
   useEffect(() => {
-    if (disabled || !models.length) closeMenu();
-  }, [disabled, models.length]);
+    if (disabled || !hasAnyModels) closeMenu();
+  }, [disabled, hasAnyModels]);
 
   useEffect(() => {
     if (activeModel && selectedReasoningEffort && !selectedEffortSupported) {
@@ -155,8 +302,14 @@ export function ModelPicker({
     items[nextIndex]?.focus();
   };
 
-  const chooseModel = (model: AgentModelSummary) => {
-    onModelChange(model.isDefault ? null : model.model);
+  const chooseModel = (profileId: string | null, model: AgentModelSummary) => {
+    const nextModel = model.isDefault ? null : model.model;
+    if (profileId && onProfileModelSelect) {
+      const accepted = onProfileModelSelect({ profileId, model: nextModel });
+      if (accepted === false) return;
+    } else {
+      onModelChange(nextModel);
+    }
     closeMenu(true);
   };
 
@@ -165,12 +318,22 @@ export function ModelPicker({
     closeMenu(true);
   };
 
+  const openProfileModels = (profileId: string) => {
+    setBrowsingProfileId(profileId);
+    setMenuView("models");
+    setQuery("");
+  };
+
   const toggleMenu = (menu: Exclude<OpenMenu, null>) => {
     if (openMenu === menu) {
       closeMenu();
       return;
     }
-    if (menu === "model") setQuery("");
+    if (menu === "model") {
+      setQuery("");
+      setMenuView(multiProfile ? "profiles" : "models");
+      setBrowsingProfileId(selectedProfileId ?? profiles[0]?.id ?? null);
+    }
     setOpenMenu(menu);
   };
 
@@ -184,10 +347,10 @@ export function ModelPicker({
           aria-label="Choose model"
           aria-haspopup="dialog"
           aria-expanded={openMenu === "model"}
-          disabled={disabled || !models.length}
+          disabled={disabled || !hasAnyModels}
           onClick={() => toggleMenu("model")}
         >
-          <OpenAIIcon />
+          <ProviderIcon providerId={activeProviderId} />
           <span>{activeModel?.displayName ?? "Codex default"}</span>
           <XiaoIcon name="caret" size={12} />
         </button>
@@ -196,43 +359,110 @@ export function ModelPicker({
           <div
             className="picker-menu model-picker__menu"
             role="dialog"
-            aria-label="Available models"
+            aria-label={menuView === "profiles" ? "Available profiles" : "Available models"}
             onKeyDown={handleMenuKeyDown}
           >
-            <label className="picker-menu__search">
-              <XiaoIcon name="search" size={14} />
-              <input
-                ref={modelSearch}
-                type="search"
-                value={query}
-                aria-label="Search models"
-                placeholder="Search models"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
-            <span className="picker-menu__label">Models</span>
-            <div className="picker-menu__list" role="listbox" aria-label="Models">
-              {filteredModels.map((model) => {
-                const selected = selectedModel
-                  ? model.model === selectedModel
-                  : model.isDefault;
-                return (
+            {menuView === "profiles" && multiProfile ? (
+              <>
+                <span className="picker-menu__label">Profiles</span>
+                <div className="picker-menu__list" role="listbox" aria-label="Profiles">
+                  {profiles.map((profile) => {
+                    const selected = profile.id === selectedProfileId;
+                    const modelCount = profile.models.length;
+                    return (
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        title={profile.availability === "available"
+                          ? undefined
+                          : profile.availability}
+                        key={profile.id}
+                        onClick={() => openProfileModels(profile.id)}
+                      >
+                        <span className="model-picker__profile-row">
+                          <ProviderIcon providerId={profile.providerId} />
+                          <span className="model-picker__profile-copy">
+                            <span>{profile.displayName}</span>
+                            <small>
+                              {modelCount === 1
+                                ? "1 model"
+                                : `${modelCount} models`}
+                              {profile.availability !== "available"
+                                ? ` · ${profile.availability}`
+                                : ""}
+                            </small>
+                          </span>
+                        </span>
+                        {selected ? <XiaoIcon name="check" size={14} strokeWidth={2} /> : (
+                          <XiaoIcon name="caret" size={12} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <small className="picker-menu__footer">
+                  Choose a profile to browse its models
+                </small>
+              </>
+            ) : (
+              <>
+                {multiProfile && browsingProfile ? (
                   <button
                     type="button"
-                    role="option"
-                    aria-selected={selected}
-                    title={model.description || undefined}
-                    key={model.id}
-                    onClick={() => chooseModel(model)}
+                    className="picker-menu__back"
+                    onClick={() => {
+                      setMenuView("profiles");
+                      setQuery("");
+                    }}
                   >
-                    <span>{model.displayName}</span>
-                    {selected ? <XiaoIcon name="check" size={14} strokeWidth={2} /> : null}
+                    <XiaoIcon name="caret" size={12} />
+                    <span>{browsingProfile.displayName}</span>
                   </button>
-                );
-              })}
-              {!filteredModels.length ? <p>No matching models</p> : null}
-            </div>
-            <small className="picker-menu__footer">Synced from your Codex account</small>
+                ) : null}
+                <label className="picker-menu__search">
+                  <XiaoIcon name="search" size={14} />
+                  <input
+                    ref={modelSearch}
+                    type="search"
+                    value={query}
+                    aria-label="Search models"
+                    placeholder="Search models"
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </label>
+                <span className="picker-menu__label">Models</span>
+                <div className="picker-menu__list" role="listbox" aria-label="Models">
+                  {filteredModels.map((model) => {
+                    const selected = selectedModel
+                      ? model.model === selectedModel &&
+                        (!multiProfile || browsingProfileId === selectedProfileId)
+                      : model.isDefault &&
+                        (!multiProfile || browsingProfileId === selectedProfileId);
+                    return (
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        title={model.description || undefined}
+                        key={`${browsingProfileId ?? "default"}:${model.id}`}
+                        onClick={() => chooseModel(
+                          browsingProfileId ?? selectedProfileId ?? null,
+                          model,
+                        )}
+                      >
+                        <span>{model.displayName}</span>
+                        {selected ? <XiaoIcon name="check" size={14} strokeWidth={2} /> : null}
+                      </button>
+                    );
+                  })}
+                  {!filteredModels.length ? <p>No matching models</p> : null}
+                </div>
+                <small className="picker-menu__footer">
+                  {profileFooter(multiProfile ? browsingProfile : activeProfile)}
+                </small>
+              </>
+            )}
           </div>
         )}
       </div>

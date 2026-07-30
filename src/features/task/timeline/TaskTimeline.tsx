@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo, useRef } from "react";
 
 import { XiaoIcon } from "../../../components/icons/XiaoIcon";
 import type {
@@ -61,6 +61,57 @@ function TaskTimelineView({
   onUndo,
   onEditUserMessage,
 }: TaskTimelineProps) {
+  const handlers = useRef({
+    onEditUserMessage,
+    onForkTask,
+    onOpenResource,
+    onResolveApproval,
+    onReviewChanges,
+    onUndo,
+  });
+  handlers.current = {
+    onEditUserMessage,
+    onForkTask,
+    onOpenResource,
+    onResolveApproval,
+    onReviewChanges,
+    onUndo,
+  };
+  const handleEditUserMessage = useCallback(
+    (text: string, attachments: AgentAttachment[]) =>
+      handlers.current.onEditUserMessage?.(text, attachments),
+    [],
+  );
+  const handleForkTask = useCallback(
+    (entryId: string) => handlers.current.onForkTask(entryId),
+    [],
+  );
+  const handleOpenResource = useCallback(
+    (target: string) => handlers.current.onOpenResource(target),
+    [],
+  );
+  const handleResolveApproval = useCallback(
+    (
+      targetTaskId: string,
+      entryId: string,
+      requestId: number | string,
+      decision: "accept" | "decline",
+    ) => handlers.current.onResolveApproval(
+      targetTaskId,
+      entryId,
+      requestId,
+      decision,
+    ),
+    [],
+  );
+  const handleReviewChanges = useCallback(
+    () => handlers.current.onReviewChanges(),
+    [],
+  );
+  const handleUndo = useCallback(
+    () => handlers.current.onUndo(),
+    [],
+  );
   const rows = useMemo(() => projectConversation(timeline), [timeline]);
   const lastTurnIndex = rows.reduce(
     (latest, row, index) => row.kind === "turn" ? index : latest,
@@ -95,12 +146,16 @@ function TaskTimelineView({
               canFork={canFork}
               canUndo={canUndo && rowIndex === lastTurnIndex && Boolean(row.turn.response)}
               undoing={undoing && rowIndex === lastTurnIndex}
-              onForkTask={onForkTask}
-              onOpenResource={onOpenResource}
-              onReviewChanges={onReviewChanges}
-              onUndo={onUndo}
-              onEditUserMessage={rowIndex === lastTurnIndex ? onEditUserMessage : undefined}
-              onResolveApproval={onResolveApproval}
+              onForkTask={handleForkTask}
+              onOpenResource={handleOpenResource}
+              onReviewChanges={handleReviewChanges}
+              onUndo={handleUndo}
+              onEditUserMessage={
+                rowIndex === lastTurnIndex && onEditUserMessage
+                  ? handleEditUserMessage
+                  : undefined
+              }
+              onResolveApproval={handleResolveApproval}
             />
           );
         }
@@ -113,12 +168,12 @@ function TaskTimelineView({
               showReasoningSummaries={showReasoningSummaries}
               expandToolOutput={expandToolOutput}
               workspacePath={workspacePath}
-              onOpenResource={onOpenResource}
+              onOpenResource={handleOpenResource}
               taskId={taskId}
               canFork={canFork}
-              onForkTask={onForkTask}
-              onResolveApproval={onResolveApproval}
-              onReviewChanges={onReviewChanges}
+              onForkTask={handleForkTask}
+              onResolveApproval={handleResolveApproval}
+              onReviewChanges={handleReviewChanges}
               canUndo={false}
               undoing={false}
               isLive={false}

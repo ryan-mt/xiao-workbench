@@ -1,8 +1,12 @@
+// @vitest-environment jsdom
+
+import { createElement } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentModelSummary, AgentRateLimitSnapshot } from "../../../core/models/agent";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, parseCodexProfileModels } from "./ModelPicker";
 
 const model: AgentModelSummary = {
   id: "gpt-test",
@@ -16,6 +20,19 @@ const model: AgentModelSummary = {
     { reasoningEffort: "ultra", description: "Maximum reasoning" },
   ],
   serviceTiers: [{ id: "priority", name: "Fast", description: "Faster responses" }],
+};
+
+const grokModel: AgentModelSummary = {
+  id: "grok-4.5",
+  model: "grok-4.5",
+  displayName: "Grok 4.5",
+  description: "xAI reasoning model",
+  isDefault: true,
+  defaultReasoningEffort: "high",
+  supportedReasoningEfforts: [
+    { reasoningEffort: "high", description: "Deep reasoning" },
+  ],
+  serviceTiers: [],
 };
 
 const renderPicker = (
@@ -95,5 +112,100 @@ describe("ModelPicker Fast control", () => {
 
     expect(markup.indexOf("fast-mode")).toBeLessThan(markup.indexOf("weekly-usage-chip"));
     expect(markup).toContain("<strong>83%</strong><span>left</span>");
+  });
+});
+
+describe("ModelPicker multi-profile catalog", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("lists profiles first, then the selected profile's models", () => {
+    const onProfileModelSelect = vi.fn(() => true);
+    render(
+      createElement(ModelPicker, {
+        models: [model],
+        profiles: [
+          {
+            id: "default",
+            displayName: "Default Codex",
+            providerId: "openai",
+            availability: "available",
+            models: [model],
+          },
+          {
+            id: "grok",
+            displayName: "Grok 4.5 (xAI)",
+            providerId: "xai",
+            availability: "available",
+            models: [grokModel],
+          },
+        ],
+        selectedProfileId: "default",
+        selectedModel: model.model,
+        selectedReasoningEffort: null,
+        fastMode: false,
+        rateLimits: null,
+        disabled: false,
+        onModelChange: vi.fn(),
+        onProfileModelSelect,
+        onReasoningEffortChange: vi.fn(),
+        onFastModeChange: vi.fn(),
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText("Choose model"));
+    expect(screen.getByLabelText("Profiles")).toBeTruthy();
+    expect(screen.getByText("Default Codex")).toBeTruthy();
+    expect(screen.getByText("Grok 4.5 (xAI)")).toBeTruthy();
+    expect(screen.queryByText("Grok 4.5")).toBeNull();
+
+    fireEvent.click(screen.getByText("Grok 4.5 (xAI)"));
+    const modelList = screen.getByLabelText("Models");
+    expect(modelList).toBeTruthy();
+    expect(modelList.textContent).toContain("Grok 4.5");
+    expect(modelList.textContent).not.toContain("GPT Test");
+
+    fireEvent.click(screen.getByRole("option", { name: "Grok 4.5" }));
+    expect(onProfileModelSelect).toHaveBeenCalledWith({
+      profileId: "grok",
+      model: null,
+    });
+  });
+
+  it("parses durable Codex profile model snapshots", () => {
+    const models = parseCodexProfileModels([
+      {
+        id: "grok-4.5",
+        model: "grok-4.5",
+        displayName: "Grok 4.5",
+        description: "xAI reasoning model",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "high", description: "Deep reasoning" },
+        ],
+        serviceTiers: [],
+        contextWindow: 500_000,
+      },
+      { model: "" },
+      null,
+    ]);
+
+    expect(models).toEqual([
+      {
+        id: "grok-4.5",
+        model: "grok-4.5",
+        displayName: "Grok 4.5",
+        description: "xAI reasoning model",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "high", description: "Deep reasoning" },
+        ],
+        serviceTiers: [],
+        contextWindow: 500_000,
+      },
+    ]);
   });
 });

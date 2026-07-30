@@ -39,6 +39,7 @@ import type {
 import { workspacePathComparisonKey } from "../../../core/workspacePath";
 import type { FocusView } from "../../focus-rail/focus-rail.types";
 import { Composer } from "../composer/Composer";
+import type { ModelPickerProfile } from "../composer/ModelPicker";
 import { projectLiveFileChanges } from "../composer/liveFileChanges";
 import { TaskTimeline } from "../timeline/TaskTimeline";
 import { TaskHeader } from "./TaskHeader";
@@ -150,6 +151,8 @@ type TaskWorkspaceProps = {
   rateLimits: AgentRateLimitSnapshot | null;
   latestRun: RunSnapshot | null;
   models: AgentModelSummary[];
+  modelProfiles?: ModelPickerProfile[];
+  selectedCodexProfileId?: string | null;
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
   fastMode: boolean;
@@ -212,6 +215,10 @@ type TaskWorkspaceProps = {
     response: AgentMcpElicitationResponse,
   ) => Promise<boolean>;
   onModelChange: (model: string | null) => void;
+  onProfileModelSelect?: (selection: {
+    profileId: string;
+    model: string | null;
+  }) => boolean | void;
   onReasoningEffortChange: (effort: string | null) => void;
   onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
@@ -291,6 +298,8 @@ export function TaskWorkspace({
   rateLimits,
   latestRun,
   models,
+  modelProfiles = [],
+  selectedCodexProfileId = null,
   selectedModel,
   selectedReasoningEffort,
   fastMode,
@@ -347,6 +356,7 @@ export function TaskWorkspace({
   onResolveQuestion,
   onResolveMcpElicitation,
   onModelChange,
+  onProfileModelSelect,
   onReasoningEffortChange,
   onFastModeChange,
   onModeChange,
@@ -555,6 +565,8 @@ export function TaskWorkspace({
       runtime={runtime}
       rateLimits={rateLimits}
       models={models}
+      modelProfiles={modelProfiles}
+      selectedCodexProfileId={selectedCodexProfileId}
       selectedModel={selectedModel}
       selectedReasoningEffort={selectedReasoningEffort}
       fastMode={fastMode}
@@ -589,6 +601,7 @@ export function TaskWorkspace({
       definitionOfDone={definitionOfDone}
       autoFocus={launchMode}
       onModelChange={onModelChange}
+      onProfileModelSelect={onProfileModelSelect}
       onReasoningEffortChange={onReasoningEffortChange}
       onFastModeChange={onFastModeChange}
       onModeChange={onModeChange}

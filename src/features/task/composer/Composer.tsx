@@ -35,7 +35,7 @@ import { fileMentionAtCursor, removeFileMention, type FileMention } from "./file
 import { DefinitionOfDonePanel } from "./DefinitionOfDonePanel";
 import { LiveFileChangePill } from "./LiveFileChangePill";
 import type { LiveFileChangeSummary } from "./liveFileChanges";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, type ModelPickerProfile } from "./ModelPicker";
 import { McpElicitationDock } from "./McpElicitationDock";
 import {
   canNavigatePromptHistory,
@@ -73,6 +73,8 @@ type ComposerProps = {
   runtime: AgentRuntimeState;
   rateLimits: AgentRateLimitSnapshot | null;
   models: AgentModelSummary[];
+  modelProfiles?: ModelPickerProfile[];
+  selectedCodexProfileId?: string | null;
   selectedModel: string | null;
   selectedReasoningEffort: string | null;
   fastMode: boolean;
@@ -106,6 +108,10 @@ type ComposerProps = {
   definitionOfDoneAvailable: boolean;
   definitionOfDone: AcceptanceContractDraft | null;
   onModelChange: (model: string | null) => void;
+  onProfileModelSelect?: (selection: {
+    profileId: string;
+    model: string | null;
+  }) => boolean | void;
   onReasoningEffortChange: (effort: string | null) => void;
   onFastModeChange: (fastMode: boolean) => void;
   onModeChange: (mode: AgentMode) => void;
@@ -234,6 +240,8 @@ export function Composer({
   runtime,
   rateLimits,
   models,
+  modelProfiles = [],
+  selectedCodexProfileId = null,
   selectedModel,
   selectedReasoningEffort,
   fastMode,
@@ -267,6 +275,7 @@ export function Composer({
   definitionOfDoneAvailable,
   definitionOfDone,
   onModelChange,
+  onProfileModelSelect,
   onReasoningEffortChange,
   onFastModeChange,
   onModeChange,
@@ -1625,12 +1634,15 @@ export function Composer({
             {mode === "plan" && <span className="composer-mode">Plan</span>}
             <ModelPicker
               models={models}
+              profiles={modelProfiles}
+              selectedProfileId={selectedCodexProfileId}
               selectedModel={selectedModel}
               selectedReasoningEffort={selectedReasoningEffort}
               fastMode={fastMode}
               rateLimits={rateLimits}
               disabled={disabled || undoing || runtime.phase === "starting"}
               onModelChange={onModelChange}
+              onProfileModelSelect={onProfileModelSelect}
               onReasoningEffortChange={onReasoningEffortChange}
               onFastModeChange={onFastModeChange}
             />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 import type {
   AgentAttachment,
@@ -93,7 +93,50 @@ const liveThoughtLabel = (entry: TimelineEntry) =>
     .map((line) => line.replace(/^#{1,6}\s+|^\s*[-*]\s+|\*\*|__/g, "").trim())
     .find(Boolean) ?? entry.title;
 
-export function AgentTurn(props: SharedProps) {
+const sameEntries = (left: TimelineEntry[], right: TimelineEntry[]) =>
+  left.length === right.length &&
+  left.every((entry, index) => entry === right[index]);
+
+const sameTurn = (left: ConversationTurn, right: ConversationTurn) =>
+  left.id === right.id &&
+  left.user === right.user &&
+  left.response === right.response &&
+  left.responseFlowIndex === right.responseFlowIndex &&
+  left.startIndex === right.startIndex &&
+  left.endIndex === right.endIndex &&
+  sameEntries(left.flow, right.flow) &&
+  sameEntries(left.commentary, right.commentary) &&
+  sameEntries(left.work, right.work);
+
+const sameRuntimeState = (
+  left: AgentRuntimeState,
+  right: AgentRuntimeState,
+) =>
+  left.phase === right.phase &&
+  left.taskId === right.taskId &&
+  left.turnId === right.turnId &&
+  left.turnStartedAt === right.turnStartedAt;
+
+const sameAgentTurnProps = (left: SharedProps, right: SharedProps) =>
+  sameTurn(left.turn, right.turn) &&
+  left.index === right.index &&
+  left.liveEligible === right.liveEligible &&
+  (!left.liveEligible || sameRuntimeState(left.runtime, right.runtime)) &&
+  left.taskId === right.taskId &&
+  left.workspacePath === right.workspacePath &&
+  left.expandToolOutput === right.expandToolOutput &&
+  left.showReasoningSummaries === right.showReasoningSummaries &&
+  left.canFork === right.canFork &&
+  left.canUndo === right.canUndo &&
+  left.undoing === right.undoing &&
+  left.onForkTask === right.onForkTask &&
+  left.onOpenResource === right.onOpenResource &&
+  left.onReviewChanges === right.onReviewChanges &&
+  left.onUndo === right.onUndo &&
+  left.onEditUserMessage === right.onEditUserMessage &&
+  left.onResolveApproval === right.onResolveApproval;
+
+function AgentTurnView(props: SharedProps) {
   const { turn, runtime, taskId } = props;
   const responseFlowIndex = turn.responseFlowIndex ?? turn.flow.length;
   const activeWorkAfterResponse = Boolean(
@@ -306,3 +349,6 @@ export function AgentTurn(props: SharedProps) {
     </section>
   );
 }
+
+export const AgentTurn = memo(AgentTurnView, sameAgentTurnProps);
+AgentTurn.displayName = "AgentTurn";

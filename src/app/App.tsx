@@ -44,6 +44,10 @@ import type { XaiDeviceAuthorization } from "../core/models/xai";
 import { workspacePathComparisonKey as comparableWorkspacePath } from "../core/workspacePath";
 import { serviceTierForFastMode } from "../features/agent/hooks/agentProtocol";
 import {
+  parseCodexProfileModels,
+  type ModelPickerProfile,
+} from "../features/task/composer/ModelPicker";
+import {
   codexPlanFromTimeline,
   codexTimelineHasFinalResponse,
   codexTimelineIsWorking,
@@ -3205,8 +3209,37 @@ export function App() {
   const visibleModels = agent.models.filter(
     (model) => !preferences.hiddenModels.includes(model.model) || model.model === activeTask.model,
   );
+  const modelPickerProfiles = useMemo((): ModelPickerProfile[] => {
+    if (codexProfiles.length <= 1) return [];
+    return codexProfiles.map((profile) => {
+      const isActive = profile.id === effectiveCodexProfileId;
+      const sourceModels = isActive && agent.models.length
+        ? agent.models
+        : parseCodexProfileModels(profile.models);
+      return {
+        id: profile.id,
+        displayName: profile.displayName,
+        providerId: profile.environment.XIAO_MODEL_PROVIDER ?? "openai",
+        availability: profile.availability,
+        models: sourceModels.filter(
+          (model) =>
+            !preferences.hiddenModels.includes(model.model) ||
+            model.model === activeTask.model,
+        ),
+      };
+    });
+  }, [
+    activeTask.model,
+    agent.models,
+    codexProfiles,
+    effectiveCodexProfileId,
+    preferences.hiddenModels,
+  ]);
   const statusModel =
     agent.models.find((model) => model.model === activeTask.model) ??
+    modelPickerProfiles
+      .flatMap((profile) => profile.models)
+      .find((model) => model.model === activeTask.model) ??
     agent.models.find((model) => model.isDefault) ??
     agent.models[0];
   const statusContextPercent = contextUsedPercent(
@@ -4973,7 +5006,9 @@ export function App() {
   ]);
 
   const changeCodexProfile = (codexProfileId: string) => {
+    if (codexProfileId === effectiveCodexProfileId) return;
     if (activeTask.stage === "draft" || !executionTaskId) {
+      // Runtime reconnects via selectedCodexProfileId mismatch in useAgentRuntime.
       patchActiveTask({ codexProfileId });
       return;
     }
@@ -4995,6 +5030,50 @@ export function App() {
       .catch((reason) => {
         window.alert(reason instanceof Error ? reason.message : String(reason));
       });
+  };
+
+  const selectProfileModel = (selection: {
+    profileId: string;
+    model: string | null;
+  }): boolean => {
+    const applyModel = (codexProfileId: string | null) => {
+      patchActiveTask({
+        ...(codexProfileId ? { codexProfileId } : {}),
+        model: selection.model,
+        reasoningEffort: null,
+      });
+      updateTaskRunDefaults({ model: selection.model, reasoningEffort: null });
+    };
+    if (selection.profileId === effectiveCodexProfileId) {
+      applyModel(null);
+      return true;
+    }
+    if (activeTask.stage === "draft" || !executionTaskId) {
+      // Runtime reconnects via selectedCodexProfileId mismatch in useAgentRuntime.
+      applyModel(selection.profileId);
+      return true;
+    }
+    if (!window.confirm(
+      "Switch this Task to the selected Codex profile? Xiao will validate compatibility and restart the Task runtime.",
+    )) {
+      return false;
+    }
+    void nativeBridge.stopAgent(workspace.path, executionTaskId)
+      .then(() => nativeBridge.bindXiaoTaskCodexProfile(
+        workspace.path,
+        executionTaskId,
+        selection.profileId,
+        activeTask.stageVersion,
+        true,
+      ))
+      .then(() => {
+        applyModel(selection.profileId);
+        void agent.connect();
+      })
+      .catch((reason) => {
+        window.alert(reason instanceof Error ? reason.message : String(reason));
+      });
+    return true;
   };
 
   const connectXaiProfile = (profile: CodexProfile) => {
@@ -5476,6 +5555,8 @@ export function App() {
               rateLimits={agent.rateLimits}
               latestRun={agent.latestRun}
               models={visibleModels}
+              modelProfiles={modelPickerProfiles}
+              selectedCodexProfileId={effectiveCodexProfileId}
               selectedModel={activeTask.model}
               selectedReasoningEffort={activeTask.reasoningEffort}
               fastMode={preferences.fastMode}
@@ -5526,6 +5607,7 @@ export function App() {
                 patchActiveTask({ model, reasoningEffort: null });
                 updateTaskRunDefaults({ model, reasoningEffort: null });
               }}
+              onProfileModelSelect={selectProfileModel}
               onReasoningEffortChange={(reasoningEffort) => {
                 patchActiveTask({ reasoningEffort });
                 updateTaskRunDefaults({ reasoningEffort });
