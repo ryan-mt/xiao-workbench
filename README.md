@@ -87,7 +87,18 @@ ask you to approve that certificate the first time. Pairing credentials stay in
 the URL fragment, are removed from the address bar before pairing, and are never
 sent to a search provider or server request URL.
 
-To verify the same paths used for this beta:
+To verify the same paths used for this beta, run the aggregate gate:
+
+```powershell
+npm run verify
+```
+
+That command covers Ticket 03 certification, desktop typecheck/tests, Rust
+format/tests/check, the standalone website, dependency audits, production
+build, and git diff integrity. Source changes that affect the Ticket 03
+fingerprint must first be recertified with `npm run certification:commit`.
+
+Individual commands remain available for selective troubleshooting:
 
 ```powershell
 npm run check

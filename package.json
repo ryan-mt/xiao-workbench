@@ -31,7 +31,8 @@
     "app:official": "node scripts/run-dev-release.mjs official",
     "app:build:official": "npm run tauri -- build",
     "check": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "@shikijs/core": "^4.3.1",

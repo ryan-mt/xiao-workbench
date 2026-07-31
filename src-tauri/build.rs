@@ -345,7 +345,8 @@ fn certified_source_file(relative: &str) -> bool {
         "tsconfig.node.json",
         "vite.config.ts",
     ];
-    (relative.starts_with("public/")
+    (relative.starts_with(".github/")
+        || relative.starts_with("public/")
         || relative.starts_with("scripts/")
         || relative.starts_with("src/")
         || relative.starts_with("src-tauri/"))
@@ -541,6 +542,7 @@ mod tests {
         assert!(manifest.contains("src-tauri/src/time_travel/repository.rs"));
         assert!(manifest.contains("scripts/sync-build-version.mjs"));
         assert!(manifest.contains("src-tauri/tests/build_certification.rs"));
+        assert!(manifest.contains(".github/workflows/verify.yml"));
         assert!(!manifest.contains("src/features/release-assurance/ticket03-certification.json"));
         assert!(!manifest.contains("src/features/release-assurance/ticket03-verification.md"));
     }

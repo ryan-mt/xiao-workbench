@@ -64,7 +64,8 @@ export const isTicket03SourcePath = (relativePath) =>
   !relativePath.split("/").some((component) => excludedDirectories.has(component))
   && (
     (
-      relativePath.startsWith("public/")
+      relativePath.startsWith(".github/")
+      || relativePath.startsWith("public/")
       || relativePath.startsWith("scripts/")
       || relativePath.startsWith("src/")
       || relativePath.startsWith("src-tauri/")

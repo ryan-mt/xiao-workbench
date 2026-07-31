@@ -70,6 +70,7 @@ test("matches the Rust source coverage boundaries", () => {
   assert.equal(isTicket03SourcePath("src-tauri/src/main.rs"), true);
   assert.equal(isTicket03SourcePath("scripts/sync-build-version.mjs"), true);
   assert.equal(isTicket03SourcePath("package.json"), true);
+  assert.equal(isTicket03SourcePath(".github/workflows/verify.yml"), true);
   assert.equal(isTicket03SourcePath(certification.evidence), false);
   assert.equal(
     isTicket03SourcePath("src/features/release-assurance/ticket03-certification.json"),
@@ -77,6 +78,54 @@ test("matches the Rust source coverage boundaries", () => {
   );
   assert.equal(isTicket03SourcePath("docs/adr/0001-keep-xiao-codex-native.md"), false);
   assert.equal(isTicket03SourcePath("src-tauri/target/generated.rs"), false);
+});
+
+test("includes GitHub workflow files in the Ticket 03 fingerprint", async () => {
+  const root = await createFixture();
+  try {
+    const before = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+    await mkdir(join(root, ".github/workflows"), { recursive: true });
+    await writeFile(
+      join(root, ".github/workflows/verify.yml"),
+      "name: verify\non: [push]\njobs: {}\n",
+    );
+    const after = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+    assert.notEqual(after, before);
+    assert.equal(isTicket03SourcePath(".github/workflows/verify.yml"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("still rejects uncovered release-source files outside approved roots", async () => {
+  const root = await createFixture();
+  try {
+    await mkdir(join(root, "untracked-tools"), { recursive: true });
+    await writeFile(join(root, "untracked-tools/release.js"), "export {};\n");
+    await assert.rejects(
+      computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) }),
+      /Release source lies outside Ticket 03 fingerprint coverage: untracked-tools\/release\.js/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps ignored local artifacts outside the fingerprint", async () => {
+  const root = await createFixture();
+  try {
+    const before = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+    await mkdir(join(root, ".scratch"), { recursive: true });
+    await writeFile(join(root, ".scratch/note.yml"), "scratch: true\n");
+    await mkdir(join(root, "plans"), { recursive: true });
+    await writeFile(join(root, "plans/example.md"), "# plan\n");
+    const after = await computeTicket03SourceFingerprint({ root: pathToFileURL(`${root}/`) });
+    assert.equal(after, before);
+    assert.equal(isTicket03SourcePath(".scratch/note.yml"), false);
+    assert.equal(isTicket03SourcePath("plans/example.md"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("marks changed source pending without rewriting verified evidence", async () => {
