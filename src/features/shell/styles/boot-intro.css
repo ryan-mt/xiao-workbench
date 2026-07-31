@@ -1,0 +1,490 @@
+.xiao-boot-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+  isolation: isolate;
+  --xiao-boot-duration: 2450ms;
+  --xiao-boot-filament: color-mix(in srgb, var(--brand) 72%, white 28%);
+  --xiao-boot-overlay: color-mix(in srgb, var(--bg) 92%, #120f18 8%);
+}
+
+:root[data-theme="dark"] .xiao-boot-root {
+  --xiao-boot-filament: color-mix(in srgb, var(--brand) 80%, white 20%);
+  --xiao-boot-overlay: color-mix(in srgb, var(--bg) 88%, #050506 12%);
+}
+
+.xiao-boot-app {
+  width: 100%;
+  height: 100%;
+  min-height: 100dvh;
+}
+
+.xiao-boot-app[data-boot-veil="held"] {
+  filter: saturate(0.88) brightness(0.96);
+}
+
+.xiao-boot-app[data-boot-veil="lifting"] {
+  animation: xiao-boot-app-reveal 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.xiao-boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% 42%, transparent 0%, var(--xiao-boot-overlay) 72%),
+    linear-gradient(180deg, var(--xiao-boot-overlay), var(--xiao-boot-overlay));
+  color: var(--text);
+  pointer-events: none;
+  user-select: none;
+}
+
+.xiao-boot-overlay[data-phase="playing"] {
+  animation: xiao-boot-overlay-hold var(--xiao-boot-duration) linear both;
+}
+
+.xiao-boot-overlay[data-phase="exiting"] {
+  animation: xiao-boot-overlay-exit 520ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.xiao-boot-overlay[data-reduced="true"][data-phase="playing"] {
+  animation: xiao-boot-fade-quick var(--xiao-boot-duration) ease both;
+}
+
+.xiao-boot-overlay[data-reduced="true"][data-phase="exiting"] {
+  animation: xiao-boot-overlay-exit 120ms ease forwards;
+}
+
+.xiao-boot-atmosphere {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.xiao-boot-glow {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(48px);
+  opacity: 0;
+  transform: scale(0.72);
+}
+
+.xiao-boot-glow--a {
+  top: 18%;
+  left: 50%;
+  width: min(52vw, 420px);
+  height: min(52vw, 420px);
+  background: color-mix(in srgb, var(--brand) 34%, transparent);
+  translate: -50% -10%;
+}
+
+.xiao-boot-glow--b {
+  bottom: 12%;
+  left: 50%;
+  width: min(40vw, 320px);
+  height: min(28vw, 220px);
+  background: color-mix(in srgb, var(--brand-soft) 80%, transparent);
+  translate: -50% 0;
+}
+
+.xiao-boot-grain {
+  position: absolute;
+  inset: -20%;
+  opacity: 0.035;
+  background-image:
+    radial-gradient(circle at 20% 20%, #fff 0.6px, transparent 0.7px),
+    radial-gradient(circle at 80% 30%, #fff 0.5px, transparent 0.65px),
+    radial-gradient(circle at 40% 70%, #fff 0.55px, transparent 0.7px),
+    radial-gradient(circle at 70% 80%, #fff 0.45px, transparent 0.6px);
+  background-size: 140px 140px, 180px 180px, 160px 160px, 200px 200px;
+  mix-blend-mode: soft-light;
+  animation: xiao-boot-grain-drift 8s linear infinite;
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-glow--a {
+  animation: xiao-boot-glow-in 1100ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both;
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-glow--b {
+  animation: xiao-boot-glow-in 1200ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both;
+}
+
+.xiao-boot-mycelium {
+  position: absolute;
+  width: min(92vw, 760px);
+  height: auto;
+  color: var(--xiao-boot-filament);
+  opacity: 0.95;
+  overflow: visible;
+}
+
+.xiao-boot-filament {
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  opacity: 0.22;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--brand) 35%, transparent));
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--1 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 40ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--2 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 90ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--3 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 130ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--4 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 170ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--5 { animation: xiao-boot-draw 900ms cubic-bezier(0.4, 0, 0.2, 1) 70ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--6 { animation: xiao-boot-draw 900ms cubic-bezier(0.4, 0, 0.2, 1) 110ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--7 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 150ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--8 { animation: xiao-boot-draw 980ms cubic-bezier(0.4, 0, 0.2, 1) 190ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--9 { animation: xiao-boot-draw 860ms cubic-bezier(0.4, 0, 0.2, 1) 100ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-filament--10 { animation: xiao-boot-draw 860ms cubic-bezier(0.4, 0, 0.2, 1) 140ms both; }
+
+.xiao-boot-node {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(0.2);
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--1 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--2 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 220ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--3 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 260ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--4 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--5 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 210ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--6 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 250ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--7 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 290ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--8 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 330ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--9 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--10 { animation: xiao-boot-node-pop 520ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both; }
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-node--core {
+  animation: xiao-boot-node-core 900ms cubic-bezier(0.22, 1, 0.36, 1) 620ms both;
+}
+
+.xiao-boot-mark-stage {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: min(48vw, 220px);
+  height: min(48vw, 220px);
+  margin-top: -18px;
+}
+
+.xiao-boot-mark-ring,
+.xiao-boot-mark-bloom {
+  position: absolute;
+  inset: 4%;
+  border-radius: 999px;
+  opacity: 0;
+}
+
+.xiao-boot-mark-ring {
+  border: 1px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand) 12%, transparent),
+    0 0 40px color-mix(in srgb, var(--brand) 18%, transparent);
+}
+
+.xiao-boot-mark-bloom {
+  inset: 18%;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--brand) 28%, transparent) 0%, transparent 70%);
+  filter: blur(8px);
+}
+
+.xiao-boot-mark {
+  position: relative;
+  z-index: 1;
+  width: min(42vw, 168px);
+  height: min(42vw, 168px);
+  opacity: 0;
+  transform: translateY(18px) scale(0.78);
+  filter: drop-shadow(0 22px 36px rgba(28, 20, 40, 0.22));
+}
+
+.xiao-boot-mark__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-mark {
+  animation: xiao-boot-mark-fruit 980ms cubic-bezier(0.16, 1, 0.3, 1) 720ms both;
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-mark-ring {
+  animation: xiao-boot-ring 1200ms cubic-bezier(0.22, 1, 0.36, 1) 860ms both;
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-mark-bloom {
+  animation: xiao-boot-bloom 1100ms cubic-bezier(0.22, 1, 0.36, 1) 820ms both;
+}
+
+.xiao-boot-copy {
+  position: absolute;
+  left: 50%;
+  bottom: max(12vh, 72px);
+  z-index: 2;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: min(88vw, 420px);
+  translate: -50% 0;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.xiao-boot-overlay[data-phase="playing"] .xiao-boot-copy {
+  animation: xiao-boot-copy-in 700ms cubic-bezier(0.22, 1, 0.36, 1) 980ms both;
+}
+
+.xiao-boot-kicker {
+  margin: 0;
+  color: var(--muted-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.xiao-boot-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: clamp(22px, 3.4vw, 30px);
+  font-weight: 620;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+
+.xiao-boot-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  letter-spacing: 0.01em;
+}
+
+.xiao-boot-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 40%, transparent);
+  animation: xiao-boot-pulse 1.2s ease-out infinite;
+}
+
+/* Reduced motion: no filament theatre, just a calm branded settle. */
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-mycelium,
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-grain,
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-mark-ring,
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-mark-bloom,
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-status__dot {
+  animation: none !important;
+  opacity: 0 !important;
+}
+
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-glow {
+  animation: none !important;
+  opacity: 0.35;
+  transform: scale(1);
+}
+
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-mark,
+.xiao-boot-overlay[data-reduced="true"] .xiao-boot-copy {
+  animation: none !important;
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes xiao-boot-draw {
+  0% {
+    stroke-dashoffset: 1;
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.55;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0.78;
+  }
+}
+
+@keyframes xiao-boot-node-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.15);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  100% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+}
+
+@keyframes xiao-boot-node-core {
+  0% {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.55);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes xiao-boot-mark-fruit {
+  0% {
+    opacity: 0;
+    transform: translateY(22px) scale(0.68);
+    filter: blur(4px) drop-shadow(0 18px 28px rgba(28, 20, 40, 0.1));
+  }
+  58% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.04);
+    filter: blur(0) drop-shadow(0 20px 30px rgba(28, 20, 40, 0.2));
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0) drop-shadow(0 18px 28px rgba(28, 20, 40, 0.18));
+  }
+}
+
+@keyframes xiao-boot-ring {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  45% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.28);
+  }
+}
+
+@keyframes xiao-boot-bloom {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  40% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0.15;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes xiao-boot-copy-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes xiao-boot-glow-in {
+  from {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  to {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+}
+
+@keyframes xiao-boot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 42%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes xiao-boot-grain-drift {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-24px, 16px, 0);
+  }
+}
+
+@keyframes xiao-boot-overlay-hold {
+  0%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes xiao-boot-overlay-exit {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(1.03);
+  }
+}
+
+@keyframes xiao-boot-fade-quick {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes xiao-boot-app-reveal {
+  from {
+    filter: saturate(0.88) brightness(0.96);
+  }
+  to {
+    filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xiao-boot-grain,
+  .xiao-boot-status__dot {
+    animation: none !important;
+  }
+}
