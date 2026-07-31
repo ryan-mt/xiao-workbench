@@ -32,7 +32,7 @@ fn persisted_task_root(
 }
 
 #[tauri::command]
-pub fn mutate_git(
+pub async fn mutate_git(
     project_path: String,
     task_id: Option<String>,
     action: String,
@@ -49,17 +49,24 @@ pub fn mutate_git(
     {
         return Err("Branch switching is disabled inside a Xiao-managed worktree.".to_owned());
     }
-    run_git_action(&context.execution_root, &action, &paths, message.as_deref())
+    let root = context.execution_root;
+    tauri::async_runtime::spawn_blocking(move || {
+        run_git_action(&root, &action, &paths, message.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn get_git_branches(
+pub async fn get_git_branches(
     project_path: String,
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<GitBranch>, String> {
     let root = task_root(&repository, &project_path, task_id.as_deref())?;
-    list_branches(&root)
+    tauri::async_runtime::spawn_blocking(move || list_branches(&root))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -76,13 +83,15 @@ pub async fn compare_git_branch(
 }
 
 #[tauri::command]
-pub fn get_git_worktrees(
+pub async fn get_git_worktrees(
     project_path: String,
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<Vec<GitWorktree>, String> {
     let root = task_root(&repository, &project_path, task_id.as_deref())?;
-    list_worktrees(&root)
+    tauri::async_runtime::spawn_blocking(move || list_worktrees(&root))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -229,16 +238,20 @@ pub async fn get_git_pull_request_checks(
 }
 
 #[tauri::command]
-pub fn add_git_worktree(
+pub async fn add_git_worktree(
     project_path: String,
     target_path: String,
     branch: String,
 ) -> Result<(), String> {
-    create_worktree(&project_path, &target_path, &branch)
+    tauri::async_runtime::spawn_blocking(move || {
+        create_worktree(&project_path, &target_path, &branch)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn apply_git_patch(
+pub async fn apply_git_patch(
     project_path: String,
     task_id: Option<String>,
     patch: String,
@@ -247,31 +260,41 @@ pub fn apply_git_patch(
     repository: State<'_, XiaoRepository>,
 ) -> Result<(), String> {
     let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    apply_workspace_patch(&root, &patch, reverse, check_only)
+    tauri::async_runtime::spawn_blocking(move || {
+        apply_workspace_patch(&root, &patch, reverse, check_only)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn create_git_checkpoint(
+pub async fn create_git_checkpoint(
     project_path: String,
     task_id: Option<String>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<String, String> {
     let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    create_workspace_checkpoint(&root)
+    tauri::async_runtime::spawn_blocking(move || create_workspace_checkpoint(&root))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn finish_git_checkpoint(
+pub async fn finish_git_checkpoint(
     project_path: String,
     task_id: Option<String>,
     token: String,
     repository: State<'_, XiaoRepository>,
 ) -> Result<String, String> {
     let root = persisted_task_root(&repository, &project_path, task_id.as_deref())?;
-    finish_workspace_checkpoint(&root, &token)
+    tauri::async_runtime::spawn_blocking(move || finish_workspace_checkpoint(&root, &token))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn discard_git_checkpoint(token: String) -> Result<(), String> {
-    discard_workspace_checkpoint(&token)
+pub async fn discard_git_checkpoint(token: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || discard_workspace_checkpoint(&token))
+        .await
+        .map_err(|error| error.to_string())?
 }
