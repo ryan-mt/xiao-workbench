@@ -5,6 +5,7 @@ import {
   appendLiveTimelineDelta,
   applyLiveTimelineDeltas,
   reconcileCompletedStreamBody,
+  settleTimelineReasoningEntry,
   type LiveTimelineDelta,
 } from "./liveTimelineDeltas";
 
@@ -65,6 +66,48 @@ describe("live timeline deltas", () => {
     });
 
     expect(applyLiveTimelineDeltas([], queue)[0].body).toBe("Public summary");
+  });
+
+  it("does not reactivate settled reasoning when a late delta arrives", () => {
+    const reasoning: TimelineEntry = {
+      id: "reasoning",
+      kind: "thought",
+      title: "Reasoning complete",
+      body: "Checked the code",
+      meta: "Xiao",
+      status: "success",
+    };
+
+    expect(applyLiveTimelineDeltas([reasoning], [{
+      kind: "reasoning",
+      entryId: "reasoning",
+      delta: " and tests",
+      replace: false,
+    }], 20)).toEqual([{
+      ...reasoning,
+      body: "Checked the code and tests",
+    }]);
+  });
+
+  it("settles an older reasoning row without touching the active newer row", () => {
+    const oldReasoning: TimelineEntry = {
+      id: "reasoning-old",
+      kind: "thought",
+      title: "Thinking",
+      status: "active",
+    };
+    const newReasoning: TimelineEntry = {
+      id: "reasoning-new",
+      kind: "thought",
+      title: "Thinking",
+      body: "New work",
+      status: "active",
+    };
+
+    expect(settleTimelineReasoningEntry(
+      [oldReasoning, newReasoning],
+      "reasoning-old",
+    )).toEqual([newReasoning]);
   });
 
   it("uses the completed item as the authoritative repair for missing or duplicate chunks", () => {

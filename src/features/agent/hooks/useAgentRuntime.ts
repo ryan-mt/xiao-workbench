@@ -74,6 +74,7 @@ import {
   appendLiveTimelineDelta,
   applyLiveTimelineDeltas,
   reconcileCompletedStreamBody,
+  settleTimelineReasoningEntry,
   type LiveTimelineDelta,
 } from "./liveTimelineDeltas";
 import { collaborationTimelineEntry } from "./collaborationTimeline";
@@ -123,6 +124,20 @@ export const agentRuntimeEnvelopeMatches = (
   envelope.environmentId === expectedEnvironmentId &&
   (expectedGeneration === null || envelope.generation === expectedGeneration)
 );
+
+export const takeActiveReasoningEntry = (
+  entries: Map<string, string>,
+  taskId: string,
+  expectedEntryId?: string,
+) => {
+  const entryId = entries.get(taskId);
+  if (!entryId || (expectedEntryId !== undefined && entryId !== expectedEntryId)) return null;
+  entries.delete(taskId);
+  return entryId;
+};
+
+export const reasoningDeltaIsLate = (settledItems: Set<string>, itemId: string | null) =>
+  itemId !== null && settledItems.has(itemId);
 
 const initialRuntime: AgentRuntimeState = {
   phase: "offline",
@@ -1186,6 +1201,7 @@ export function useAgentRuntime(
   const activeThinkingEntries = useRef(new Map<string, string>());
   const reasoningEntries = useRef(new Map<string, string>());
   const reasoningChannels = useRef(new Map<string, "summary" | "content">());
+  const settledReasoningItems = useRef(new Set<string>());
   const autoTitledTasks = useRef(new Set<string>());
   const activeTurnIds = useRef(new Map<string, string>());
   const activeTurnDiffs = useRef(new Map<string, string>());
@@ -1263,6 +1279,7 @@ export function useAgentRuntime(
     activeThinkingEntries.current.clear();
     reasoningEntries.current.clear();
     reasoningChannels.current.clear();
+    settledReasoningItems.current.clear();
     autoTitledTasks.current.clear();
     activeTurnIds.current.clear();
     activeTurnDiffs.current.clear();
@@ -1406,17 +1423,15 @@ export function useAgentRuntime(
   );
 
   const settleThinking = useCallback(
-    (taskId: string) => {
-      const entryId = activeThinkingEntries.current.get(taskId);
-      if (!entryId) return;
-      activeThinkingEntries.current.delete(taskId);
-      updateTimeline(taskId, (current) =>
-        current.flatMap((entry) => {
-          if (entry.id !== entryId) return [entry];
-          if (!entry.body?.trim()) return [];
-          return [{ ...entry, title: "Reasoning complete", meta: "Xiao", status: "success" }];
-        }),
+    (taskId: string, expectedEntryId?: string) => {
+      const activeEntryId = takeActiveReasoningEntry(
+        activeThinkingEntries.current,
+        taskId,
+        expectedEntryId,
       );
+      const entryId = expectedEntryId ?? activeEntryId;
+      if (!entryId) return;
+      updateTimeline(taskId, (current) => settleTimelineReasoningEntry(current, entryId));
     },
     [updateTimeline],
   );
@@ -1493,6 +1508,12 @@ export function useAgentRuntime(
       method === "item/reasoning/textDelta"
     ) {
       const itemId = readItemId(message);
+      if (reasoningDeltaIsLate(settledReasoningItems.current, itemId)) {
+        if (!liveDeltaTimer.current) {
+          liveDeltaTimer.current = setTimeout(flushLiveDeltas, LIVE_DELTA_FLUSH_MS);
+        }
+        return true;
+      }
       const channel = method === "item/reasoning/summaryTextDelta" ? "summary" : "content";
       const previousChannel = itemId ? reasoningChannels.current.get(itemId) : undefined;
       if (previousChannel === "summary" && channel === "content") {
@@ -2119,6 +2140,7 @@ export function useAgentRuntime(
         }
         if (item.type === "reasoning") {
           const itemId = typeof item.id === "string" ? item.id : crypto.randomUUID();
+          settledReasoningItems.current.delete(itemId);
           const entryId = reasoningEntries.current.get(itemId) ?? itemId;
           activeThinkingEntries.current.set(taskId, entryId);
           reasoningEntries.current.set(itemId, entryId);
@@ -2165,11 +2187,15 @@ export function useAgentRuntime(
         if (!entry) return;
 
         if (item.type === "reasoning" && !entry.body?.trim()) {
+          const reasoningEntryId = typeof item.id === "string"
+            ? reasoningEntries.current.get(item.id) ?? item.id
+            : null;
           if (typeof item.id === "string") {
+            settledReasoningItems.current.add(item.id);
             reasoningEntries.current.delete(item.id);
             reasoningChannels.current.delete(item.id);
           }
-          settleThinking(taskId);
+          if (reasoningEntryId) settleThinking(taskId, reasoningEntryId);
           return;
         }
 
@@ -2191,10 +2217,15 @@ export function useAgentRuntime(
         if (item.type === "agentMessage") liveAgentEntries.current.delete(taskId);
         if (item.type === "reasoning") {
           if (typeof item.id === "string") {
+            settledReasoningItems.current.add(item.id);
             reasoningEntries.current.delete(item.id);
             reasoningChannels.current.delete(item.id);
           }
-          activeThinkingEntries.current.delete(taskId);
+          takeActiveReasoningEntry(
+            activeThinkingEntries.current,
+            taskId,
+            reasoningEntryId ?? timestampedEntry.id,
+          );
         }
         updateTimeline(taskId, (current) => {
           const timeline = item.type === "contextCompaction"
@@ -2664,6 +2695,7 @@ export function useAgentRuntime(
             activeThinkingEntries.current.clear();
             reasoningEntries.current.clear();
             reasoningChannels.current.clear();
+            settledReasoningItems.current.clear();
             compactingTasks.current.clear();
             syncedGoals.current.clear();
             questionRequestRef.current = null;

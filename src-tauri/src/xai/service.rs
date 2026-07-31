@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
@@ -906,29 +906,25 @@ async fn forward_xai_response(
     let headers = upstream.headers().clone();
     let stream = upstream.bytes_stream();
     let mapped = futures_util::stream::unfold(
-        (stream, String::new()),
-        |(mut stream, mut carry)| async move {
+        (stream, XaiSseTransformState::default()),
+        |(mut stream, mut transform)| async move {
             use futures_util::StreamExt;
             match stream.next().await {
                 Some(Ok(bytes)) => {
-                    let chunk = String::from_utf8_lossy(&bytes);
-                    let mapped = transform_xai_sse_chunk(&mut carry, &chunk);
+                    let mapped = transform_xai_sse_chunk(&mut transform, &bytes);
                     Some((
-                        Ok::<_, reqwest::Error>(axum::body::Bytes::from(mapped.into_bytes())),
-                        (stream, carry),
+                        Ok::<_, reqwest::Error>(axum::body::Bytes::from(mapped)),
+                        (stream, transform),
                     ))
                 }
-                Some(Err(error)) => Some((Err(error), (stream, carry))),
+                Some(Err(error)) => Some((Err(error), (stream, transform))),
                 None => {
-                    if carry.is_empty() {
+                    if transform.buffer.is_empty() {
                         None
                     } else {
                         // Flush a trailing unterminated line without transformation.
-                        let rest = std::mem::take(&mut carry);
-                        Some((
-                            Ok(axum::body::Bytes::from(rest.into_bytes())),
-                            (stream, carry),
-                        ))
+                        let rest = std::mem::take(&mut transform.buffer);
+                        Some((Ok(axum::body::Bytes::from(rest)), (stream, transform)))
                     }
                 }
             }
@@ -1346,42 +1342,184 @@ fn extract_apply_patch_input_from_arguments(arguments: &str) -> String {
     trimmed.to_owned()
 }
 
-fn transform_xai_sse_chunk(buffer: &mut String, chunk: &str) -> String {
-    buffer.push_str(chunk);
-    let mut output = String::new();
-    while let Some(index) = buffer.find('\n') {
-        let mut line = buffer[..index].to_owned();
-        if line.ends_with('\r') {
-            line.pop();
+#[derive(Default)]
+struct XaiSseTransformState {
+    buffer: Vec<u8>,
+    pending_tool_calls: HashMap<String, Value>,
+    pending_tool_order: Vec<String>,
+}
+
+fn xai_tool_call_key(item: &Value) -> Option<String> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn xai_tool_call(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call" | "custom_tool_call")
+    )
+}
+
+fn xai_completed_tool_call(item: &Value) -> bool {
+    if item
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status != "completed")
+    {
+        return false;
+    }
+    if item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+        || item
+            .get("name")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return false;
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") => {
+            let Some(arguments) = item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+                .and_then(|arguments| arguments.as_object().cloned())
+            else {
+                return false;
+            };
+            item.get("name").and_then(Value::as_str) != Some("apply_patch")
+                || arguments.get("input").is_some_and(Value::is_string)
         }
-        let rest = buffer[index + 1..].to_owned();
-        *buffer = rest;
-        if let Some(data) = line.strip_prefix("data:") {
-            let payload = data.trim_start();
-            if payload.is_empty() || payload == "[DONE]" {
-                output.push_str(&line);
-                output.push('\n');
-                continue;
-            }
-            if let Ok(event) = serde_json::from_str::<Value>(payload) {
-                let mapped = map_xai_response_event_to_codex(event);
-                match serde_json::to_string(&mapped) {
-                    Ok(serialized) => {
-                        output.push_str("data: ");
-                        output.push_str(&serialized);
-                        output.push('\n');
-                        continue;
-                    }
-                    Err(_) => {
-                        output.push_str(&line);
-                        output.push('\n');
-                        continue;
-                    }
-                }
-            }
+        Some("custom_tool_call") => item.get("input").is_some_and(Value::is_string),
+        _ => false,
+    }
+}
+
+fn transform_xai_response_event(state: &mut XaiSseTransformState, event: Value) -> Vec<Value> {
+    let event_type = event.get("type").and_then(Value::as_str);
+    if event_type == Some("response.output_item.done") {
+        let item = event.get("item");
+        if item.is_some_and(xai_tool_call) && !item.is_some_and(xai_completed_tool_call) {
+            return Vec::new();
         }
-        output.push_str(&line);
-        output.push('\n');
+        let mapped = map_xai_response_event_to_codex(event);
+        let Some(key) = mapped.get("item").and_then(xai_tool_call_key) else {
+            return vec![mapped];
+        };
+        if !state.pending_tool_calls.contains_key(&key) {
+            state.pending_tool_order.push(key.clone());
+        }
+        state.pending_tool_calls.insert(key, mapped);
+        return Vec::new();
+    }
+
+    if event_type == Some("response.completed") {
+        let output = event
+            .pointer("/response/output")
+            .and_then(Value::as_array)
+            .cloned();
+        let mapped = map_xai_response_event_to_codex(event);
+        let mut events = match output {
+            Some(output) => {
+                let mut emitted = HashSet::new();
+                output
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(output_index, mut item)| {
+                        if !xai_completed_tool_call(&item) {
+                            return None;
+                        }
+                        let key = xai_tool_call_key(&item)?;
+                        if !emitted.insert(key) {
+                            return None;
+                        }
+                        map_xai_output_item_to_codex(&mut item);
+                        Some(json!({
+                            "type": "response.output_item.done",
+                            "output_index": output_index,
+                            "item": item,
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            }
+            None => state
+                .pending_tool_order
+                .iter()
+                .filter_map(|key| state.pending_tool_calls.get(key).cloned())
+                .collect(),
+        };
+        events.push(mapped);
+        state.pending_tool_calls.clear();
+        state.pending_tool_order.clear();
+        return events;
+    }
+
+    if matches!(event_type, Some("response.incomplete" | "response.failed")) {
+        state.pending_tool_calls.clear();
+        state.pending_tool_order.clear();
+    }
+    vec![map_xai_response_event_to_codex(event)]
+}
+
+fn xai_sse_frame_end(buffer: &[u8]) -> Option<(usize, usize)> {
+    for index in 0..buffer.len() {
+        if buffer[index..].starts_with(b"\r\n\r\n") {
+            return Some((index, 4));
+        }
+        if buffer[index..].starts_with(b"\n\n") || buffer[index..].starts_with(b"\r\r") {
+            return Some((index, 2));
+        }
+    }
+    None
+}
+
+fn transform_xai_sse_frame(state: &mut XaiSseTransformState, frame: &[u8]) -> Vec<u8> {
+    let Ok(frame_text) = std::str::from_utf8(frame) else {
+        return frame.to_vec();
+    };
+    let normalized = frame_text.replace("\r\n", "\n").replace('\r', "\n");
+    let data = normalized
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>();
+    if data.is_empty() {
+        return frame.to_vec();
+    }
+    let payload = data.join("\n");
+    if payload.is_empty() || payload == "[DONE]" {
+        return frame.to_vec();
+    }
+    let Ok(event) = serde_json::from_str::<Value>(&payload) else {
+        return frame.to_vec();
+    };
+    let mapped_events = transform_xai_response_event(state, event);
+    let mut output = Vec::new();
+    for mapped in mapped_events {
+        let Ok(serialized) = serde_json::to_vec(&mapped) else {
+            return frame.to_vec();
+        };
+        output.extend_from_slice(b"data: ");
+        output.extend_from_slice(&serialized);
+        output.extend_from_slice(b"\n\n");
+    }
+    output
+}
+
+fn transform_xai_sse_chunk(state: &mut XaiSseTransformState, chunk: &[u8]) -> Vec<u8> {
+    state.buffer.extend_from_slice(chunk);
+    let mut output = Vec::new();
+    while let Some((frame_end, delimiter_len)) = xai_sse_frame_end(&state.buffer) {
+        let frame = state
+            .buffer
+            .drain(..frame_end + delimiter_len)
+            .collect::<Vec<_>>();
+        output.extend(transform_xai_sse_frame(state, &frame));
     }
     output
 }
@@ -1728,10 +1866,11 @@ mod tests {
         app_data_dir_from_codex_home, build_codex_config, build_model_catalog,
         create_codex_profile, credential_status, map_xai_response_event_to_codex,
         normalize_xai_image_inputs, refresh_model_catalog, sanitize_responses_request,
-        start_responses_bridge, validate_discovery, BlockingClient, OAuthDiscovery,
-        ProfileFileXaiCredentialStore, StatusCode, StoredXaiCredential, TokenResponse,
-        XaiCredentialStore, XaiOAuthService, DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER,
-        OAUTH_SCOPES, XAI_API_BASE_URL, XAI_BRIDGE_MAX_REQUEST_BYTES, XAI_CLIENT_ID,
+        start_responses_bridge, transform_xai_sse_chunk, validate_discovery, BlockingClient,
+        OAuthDiscovery, ProfileFileXaiCredentialStore, StatusCode, StoredXaiCredential,
+        TokenResponse, XaiCredentialStore, XaiOAuthService, XaiSseTransformState,
+        DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER, OAUTH_SCOPES, XAI_API_BASE_URL,
+        XAI_BRIDGE_MAX_REQUEST_BYTES, XAI_CLIENT_ID,
     };
     use crate::xiao::repository::XiaoRepository;
 
@@ -2075,6 +2214,282 @@ mod tests {
             mapped["item"]["input"],
             "*** Begin Patch\n*** Add File: b.txt\n+yo\n*** End Patch"
         );
+    }
+
+    #[test]
+    fn xai_responses_bridge_emits_each_completed_tool_once() {
+        let item = serde_json::json!({
+            "id": "item-patch",
+            "type": "function_call",
+            "call_id": "call-patch",
+            "name": "apply_patch",
+            "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}"
+        });
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": item
+        });
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "response-1",
+                "output": [item]
+            }
+        });
+        let mut state = XaiSseTransformState::default();
+
+        let duplicate_done = format!("data: {done}\n\ndata: {done}\n\n");
+        let buffered = transform_xai_sse_chunk(&mut state, duplicate_done.as_bytes());
+        assert!(buffered.iter().all(|byte| byte.is_ascii_whitespace()));
+
+        let completion = format!("data: {completed}\n\n");
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, completion.as_bytes())).unwrap();
+        let event_types = mapped
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|event| event["type"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            event_types,
+            ["response.output_item.done", "response.completed"]
+        );
+    }
+
+    #[test]
+    fn xai_responses_bridge_recovers_a_missing_tool_done_before_completion() {
+        let event = serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "response-1",
+                "output": [{
+                    "id": "item-patch",
+                    "type": "function_call",
+                    "call_id": "call-patch",
+                    "name": "apply_patch",
+                    "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}"
+                }]
+            }
+        });
+        let mut state = XaiSseTransformState::default();
+
+        let chunk = format!("data: {event}\n\n");
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, chunk.as_bytes())).unwrap();
+        let frames = mapped
+            .split("\n\n")
+            .filter(|frame| !frame.is_empty())
+            .collect::<Vec<_>>();
+        let events = mapped
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .collect::<Vec<_>>();
+
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|frame| frame.lines().count() == 1));
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["response.output_item.done", "response.completed"]
+        );
+        assert_eq!(events[0]["item"]["type"], "custom_tool_call");
+        assert_eq!(events[0]["item"]["call_id"], "call-patch");
+    }
+
+    #[test]
+    fn xai_responses_bridge_reconciles_parallel_tools_by_call_id() {
+        let shell = serde_json::json!({
+            "id": "item-shell",
+            "type": "function_call",
+            "call_id": "call-shell",
+            "name": "shell_command",
+            "arguments": "{\"command\":\"npm test\"}"
+        });
+        let patch = serde_json::json!({
+            "id": "item-patch",
+            "type": "function_call",
+            "call_id": "call-patch",
+            "name": "apply_patch",
+            "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\"}"
+        });
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": shell
+        });
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "response-1",
+                "output": [shell, patch]
+            }
+        });
+        let chunk = format!("data: {done}\n\ndata: {completed}\n\n");
+        let mut state = XaiSseTransformState::default();
+
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, chunk.as_bytes())).unwrap();
+        let events = mapped
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "response.output_item.done",
+                "response.output_item.done",
+                "response.completed"
+            ]
+        );
+        assert_eq!(events[0]["item"]["call_id"], "call-shell");
+        assert_eq!(events[0]["item"]["type"], "function_call");
+        assert_eq!(events[1]["item"]["call_id"], "call-patch");
+        assert_eq!(events[1]["item"]["type"], "custom_tool_call");
+    }
+
+    #[test]
+    fn xai_responses_bridge_rejects_malformed_apply_patch_arguments() {
+        let item = serde_json::json!({
+            "id": "item-patch",
+            "type": "function_call",
+            "call_id": "call-patch",
+            "name": "apply_patch",
+            "arguments": "not-json"
+        });
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": item
+        });
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "response-1", "output": [item] }
+        });
+        let chunk = format!("data: {done}\n\ndata: {completed}\n\n");
+        let mut state = XaiSseTransformState::default();
+
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, chunk.as_bytes())).unwrap();
+        let event_types = mapped
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|event| event["type"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+
+        assert_eq!(event_types, ["response.completed"]);
+    }
+
+    #[test]
+    fn xai_responses_bridge_parses_multiline_and_cr_only_sse_frames() {
+        let item = serde_json::json!({
+            "id": "item-shell",
+            "type": "function_call",
+            "call_id": "call-shell",
+            "name": "shell_command",
+            "arguments": "{\"command\":\"npm test\"}"
+        });
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "response": { "id": "response-1", "output": [item] }
+        });
+        let multiline_done = concat!(
+            "data: {\"type\":\"response.output_item.done\",\n",
+            "data: \"output_index\":0,\"item\":{\"id\":\"item-shell\",",
+            "\"type\":\"function_call\",\"call_id\":\"call-shell\",",
+            "\"name\":\"shell_command\",",
+            "\"arguments\":\"{\\\"command\\\":\\\"npm test\\\"}\"}}\r\n\r\n"
+        );
+        let chunk = format!("{multiline_done}data: {completed}\r\r");
+        let mut state = XaiSseTransformState::default();
+
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, chunk.as_bytes())).unwrap();
+        let event_types = mapped
+            .split("\n\n")
+            .filter_map(|frame| frame.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|event| event["type"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            event_types,
+            ["response.output_item.done", "response.completed"]
+        );
+    }
+
+    #[test]
+    fn xai_responses_bridge_preserves_utf8_split_across_network_chunks() {
+        let event = serde_json::json!({
+            "type": "response.output_text.delta",
+            "item_id": "message-1",
+            "delta": "Chao Xiao: tiếng Việt"
+        });
+        let chunk = format!("data: {event}\n\n").into_bytes();
+        let split = chunk
+            .windows("ế".len())
+            .position(|window| window == "ế".as_bytes())
+            .unwrap()
+            + 1;
+        let mut state = XaiSseTransformState::default();
+
+        let first = transform_xai_sse_chunk(&mut state, &chunk[..split]);
+        let second = transform_xai_sse_chunk(&mut state, &chunk[split..]);
+        let mapped = String::from_utf8([first, second].concat()).unwrap();
+        let payload = mapped
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let mapped_event: serde_json::Value = serde_json::from_str(payload).unwrap();
+
+        assert_eq!(mapped_event["delta"], "Chao Xiao: tiếng Việt");
+    }
+
+    #[test]
+    fn xai_responses_bridge_does_not_execute_partial_tools_after_failure() {
+        let item = serde_json::json!({
+            "id": "item-shell",
+            "type": "function_call",
+            "call_id": "call-shell",
+            "name": "shell_command",
+            "arguments": "{\"command\":\"npm test\"}"
+        });
+        let done = serde_json::json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": item
+        });
+        let failed = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "id": "response-1",
+                "output": [item]
+            }
+        });
+        let chunk = format!("data: {done}\n\ndata: {failed}\n\n");
+        let mut state = XaiSseTransformState::default();
+
+        let mapped =
+            String::from_utf8(transform_xai_sse_chunk(&mut state, chunk.as_bytes())).unwrap();
+        let event_types = mapped
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter_map(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+            .filter_map(|event| event["type"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+
+        assert_eq!(event_types, ["response.failed"]);
     }
 
     #[test]

@@ -33,6 +33,7 @@ import {
   projectFileChangePatchUpdate,
   projectAgentRateLimitsUpdate,
   reconcileFetchedAgentRateLimits,
+  reasoningDeltaIsLate,
   removeAgentQuestionRequest,
   projectTimelineRunSnapshot,
   projectTimelineRunStatus,
@@ -45,6 +46,7 @@ import {
   shouldReportInvalidInteractiveRequest,
   shouldClearAgentPlan,
   shouldRestoreTaskRunState,
+  takeActiveReasoningEntry,
   timelineEntryFromItem,
   type AgentRuntimeTaskScope,
   type AgentRuntimeWorkspaceScope,
@@ -77,6 +79,21 @@ describe("live runtime transport", () => {
       method: "item/completed",
       params: { delta: "final" },
     })).toBe(false);
+  });
+
+  it("does not let a late completion clear a newer reasoning block", () => {
+    const active = new Map([["task-1", "reasoning-new"]]);
+
+    expect(takeActiveReasoningEntry(active, "task-1", "reasoning-old")).toBeNull();
+    expect(active.get("task-1")).toBe("reasoning-new");
+    expect(takeActiveReasoningEntry(active, "task-1", "reasoning-new")).toBe("reasoning-new");
+    expect(active.has("task-1")).toBe(false);
+  });
+
+  it("rejects deltas for reasoning items that already completed", () => {
+    expect(reasoningDeltaIsLate(new Set(["reasoning-old"]), "reasoning-old")).toBe(true);
+    expect(reasoningDeltaIsLate(new Set(["reasoning-old"]), "reasoning-new")).toBe(false);
+    expect(reasoningDeltaIsLate(new Set(["reasoning-old"]), null)).toBe(false);
   });
 });
 

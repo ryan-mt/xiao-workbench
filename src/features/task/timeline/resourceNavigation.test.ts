@@ -32,6 +32,17 @@ describe("resolveTimelineResource", () => {
     });
   });
 
+  it("routes files inside filesystem-root workspaces", () => {
+    expect(resolveTimelineResource("/src/main.ts", "/")).toEqual({
+      kind: "file",
+      relativePath: "src/main.ts",
+    });
+    expect(resolveTimelineResource("C:/src/main.ts", "C:/")).toEqual({
+      kind: "file",
+      relativePath: "src/main.ts",
+    });
+  });
+
   it("routes absolute UNC paths within a UNC workspace", () => {
     const uncRoot = "\\\\SERVER\\share\\project";
 

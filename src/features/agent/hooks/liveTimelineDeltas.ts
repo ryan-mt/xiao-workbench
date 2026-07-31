@@ -19,7 +19,7 @@ export type LiveTimelineDelta =
       delta: string;
     };
 
-const settleThinking = (timeline: TimelineEntry[], entryId: string) => {
+export const settleTimelineReasoningEntry = (timeline: TimelineEntry[], entryId: string) => {
   const index = timeline.findIndex((entry) => entry.id === entryId);
   if (index < 0) return timeline;
   const entry = timeline[index];
@@ -76,7 +76,7 @@ export const applyLiveTimelineDeltas = (
   for (const delta of deltas) {
     if (delta.kind === "assistant") {
       if (delta.settleThinkingEntryId) {
-        next = settleThinking(next, delta.settleThinkingEntryId);
+        next = settleTimelineReasoningEntry(next, delta.settleThinkingEntryId);
       }
       const index = next.findIndex((entry) => entry.id === delta.entryId);
       if (index < 0) {
@@ -121,13 +121,16 @@ export const applyLiveTimelineDeltas = (
       } else {
         const updated = [...next];
         const entry = updated[index];
-        updated[index] = {
-          ...entry,
-          title: "Thinking",
-          body: delta.replace ? delta.delta : `${entry.body ?? ""}${delta.delta}`,
-          meta: "Live reasoning",
-          status: "active",
-        };
+        const body = delta.replace ? delta.delta : `${entry.body ?? ""}${delta.delta}`;
+        updated[index] = entry.status === "active"
+          ? {
+              ...entry,
+              title: "Thinking",
+              body,
+              meta: "Live reasoning",
+              status: "active",
+            }
+          : { ...entry, body };
         next = updated;
       }
       continue;

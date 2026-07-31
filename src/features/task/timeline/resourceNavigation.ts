@@ -87,9 +87,12 @@ export const resolveTimelineResource = (
   const windowsPath = /^[a-z]:\//i.test(root) || root.startsWith("//");
   const comparableRoot = windowsPath ? root.toLocaleLowerCase() : root;
   const comparableCandidate = windowsPath ? candidate.toLocaleLowerCase() : candidate;
+  const rootPrefix = comparableRoot.endsWith("/")
+    ? comparableRoot
+    : `${comparableRoot}/`;
   if (
     comparableCandidate !== comparableRoot
-    && !comparableCandidate.startsWith(`${comparableRoot}/`)
+    && !comparableCandidate.startsWith(rootPrefix)
   ) {
     return null;
   }
