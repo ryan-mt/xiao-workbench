@@ -91,7 +91,7 @@ pub struct TransportIdentity {
 
 pub struct CompanionHostRuntime {
     identity: Option<TransportIdentity>,
-    _server: Option<server::CompanionHttpsServer>,
+    server: Option<server::CompanionHttpsServer>,
     unavailable_reason: Option<String>,
 }
 
@@ -99,7 +99,7 @@ impl CompanionHostRuntime {
     pub fn available(identity: TransportIdentity, server: server::CompanionHttpsServer) -> Self {
         Self {
             identity: Some(identity),
-            _server: Some(server),
+            server: Some(server),
             unavailable_reason: None,
         }
     }
@@ -107,12 +107,21 @@ impl CompanionHostRuntime {
     pub fn unavailable(reason: String) -> Self {
         Self {
             identity: None,
-            _server: None,
+            server: None,
             unavailable_reason: Some(reason),
         }
     }
 
     pub fn identity(&self) -> Result<&TransportIdentity, String> {
+        if self
+            .server
+            .as_ref()
+            .is_some_and(|server| !server.is_running())
+        {
+            return Err(
+                "Companion hosting is unavailable: the primary host transport stopped.".to_owned(),
+            );
+        }
         self.identity.as_ref().ok_or_else(|| {
             format!(
                 "Companion hosting is unavailable: {}",
