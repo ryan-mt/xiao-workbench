@@ -303,6 +303,49 @@ fn pairing_grants_default_empty_and_accept_empty_request() {
 }
 
 #[test]
+fn empty_max_grants_refuses_nonempty_request_without_consuming() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let pairing = service
+        .issue_pairing(
+            &mut connection,
+            IssuePairingRequest {
+                max_grants: Vec::new(),
+                ttl_seconds: 60,
+                now: NOW,
+            },
+        )
+        .unwrap();
+    let refusal = match service.exchange_pairing(
+        &mut connection,
+        ExchangePairingRequest {
+            owner_credential: pairing.owner_credential.clone(),
+            device_id: "escalate-empty-device".to_owned(),
+            device_name: "Escalate empty device".to_owned(),
+            grants: vec![CompanionGrant::ReadTasks],
+            now: NOW + 1,
+        },
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("Empty max_grants unexpectedly accepted a non-empty grant set."),
+    };
+    assert_eq!(
+        refusal,
+        "The Companion pairing credential is invalid, expired, or already used."
+    );
+    let (consumed_at, session_count): (Option<i64>, i64) = connection
+        .query_row(
+            "SELECT pairing.consumed_at, (SELECT COUNT(*) FROM companion_sessions)
+             FROM companion_pairings pairing WHERE pairing.id = ?1",
+            [&pairing.pairing_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(consumed_at, None);
+    assert_eq!(session_count, 0);
+}
+
+#[test]
 fn reconnect_is_ordered_grant_filtered_and_requires_reconciliation() {
     let mut connection = test_connection();
     let service = CompanionService;
