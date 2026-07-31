@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::companion::repository::COMPANION_SCHEMA_SQL;
+use crate::companion::repository::{COMPANION_MIGRATION_2_SQL, COMPANION_SCHEMA_SQL};
 use crate::execution::models::{
     ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
     NewManagedWorktreeRecord, TaskExecutionBinding,
@@ -2538,6 +2538,11 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
             "companion_and_release_assurance",
             COMPANION_SCHEMA_SQL,
         ),
+        (
+            11_i64,
+            "companion_pairing_grant_ceiling",
+            COMPANION_MIGRATION_2_SQL,
+        ),
     ];
     for (version, name, sql) in migrations {
         let already_applied = connection
@@ -4900,6 +4905,15 @@ mod tests {
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
                         .map_err(|error| error.to_string())?;
+                    let companion_pairing_grant_ceiling: (i64, Option<String>) = connection
+                        .query_row(
+                            "SELECT [notnull], dflt_value
+                             FROM pragma_table_info('companion_pairings')
+                             WHERE name = 'max_grants_json'",
+                            [],
+                            |row| Ok((row.get(0)?, row.get(1)?)),
+                        )
+                        .map_err(|error| error.to_string())?;
                     let task_control_columns: i64 = connection
                         .query_row(
                             "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('task_stage', 'task_stage_version', 'codex_profile_id', 'workbench_state_json')",
@@ -4916,6 +4930,7 @@ mod tests {
                     assert_eq!(outcome_supervision_tables, 2);
                     assert_eq!(outcome_supervision_capability, (1, 1));
                     assert_eq!(companion_tables, 6);
+                    assert_eq!(companion_pairing_grant_ceiling, (1, Some("'[]'".to_owned())));
                     assert_eq!(
                         companion_capability,
                         (
@@ -4946,6 +4961,84 @@ mod tests {
                     })
                     .map_err(|error| error.to_string())?;
                 assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn schema_v10_upgrade_adds_companion_pairing_grant_ceiling() {
+        let directory = TestDirectory::new("schema-v10-companion-grants-upgrade");
+        let database_path = directory.path.join(DATABASE_FILE_NAME);
+        {
+            let mut connection = Connection::open(&database_path).unwrap();
+            configure_connection(&mut connection).unwrap();
+            connection
+                .execute_batch(
+                    r#"CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        applied_at INTEGER NOT NULL
+                    );"#,
+                )
+                .unwrap();
+            for (version, name, sql) in [
+                (1_i64, "v1", MIGRATION_1_SQL),
+                (2_i64, "v2", MIGRATION_2_SQL),
+                (3_i64, "v3", MIGRATION_3_SQL),
+                (4_i64, "v4", MIGRATION_4_SQL),
+                (5_i64, "v5", MIGRATION_5_SQL),
+                (6_i64, "v6", MIGRATION_6_SQL),
+                (7_i64, "v7", MIGRATION_7_SQL),
+                (8_i64, "v8", MIGRATION_8_SQL),
+                (9_i64, "v9", MIGRATION_9_SQL),
+                (10_i64, "v10", COMPANION_SCHEMA_SQL),
+            ] {
+                let transaction = connection.transaction().unwrap();
+                transaction.execute_batch(sql).unwrap();
+                if version == 2 {
+                    backfill_execution_environments(&transaction).unwrap();
+                }
+                if version == 7 {
+                    backfill_queued_run_profiles(&transaction).unwrap();
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO schema_migrations(version, name, applied_at)
+                         VALUES (?1, ?2, ?3)",
+                        params![version, name, version],
+                    )
+                    .unwrap();
+                transaction.commit().unwrap();
+            }
+            connection
+                .execute(
+                    "INSERT INTO companion_pairings(
+                        id, secret_hash, expires_at, consumed_at, created_at
+                     ) VALUES ('pairing-v10', 'hash-v10', 100, NULL, 1)",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let repository = XiaoRepository::open(&directory.path).unwrap();
+        repository
+            .with_connection(|connection| {
+                crate::companion::repository::CompanionRepository::verify_schema(connection)?;
+                let migration_count: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(|error| error.to_string())?;
+                let max_grants_json: String = connection
+                    .query_row(
+                        "SELECT max_grants_json FROM companion_pairings WHERE id = 'pairing-v10'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
+                assert_eq!(max_grants_json, "[]");
                 Ok(())
             })
             .unwrap();

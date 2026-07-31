@@ -463,8 +463,11 @@ export const nativeBridge = {
     return invoke<void>("set_browser_muted", { label, muted });
   },
 
-  issueCompanionPairingBundle(ttlSeconds = 300) {
-    return invoke<CompanionPairingBundle>("issue_companion_pairing_bundle", { ttlSeconds });
+  issueCompanionPairingBundle(ttlSeconds: number, grants: CompanionGrant[]) {
+    return invoke<CompanionPairingBundle>("issue_companion_pairing_bundle", {
+      ttlSeconds,
+      grants,
+    });
   },
 
   listCompanionSessions() {

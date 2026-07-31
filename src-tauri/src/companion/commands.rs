@@ -106,6 +106,7 @@ pub fn execute_command(
 #[tauri::command]
 pub fn issue_companion_pairing(
     ttl_seconds: Option<i64>,
+    grants: Option<Vec<CompanionGrant>>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<PairingCredential, String> {
     repository.with_connection(|connection| {
@@ -113,6 +114,7 @@ pub fn issue_companion_pairing(
             &CompanionService,
             connection,
             IssuePairingRequest {
+                max_grants: grants.unwrap_or_default(),
                 ttl_seconds: ttl_seconds.unwrap_or(300),
                 now: now_seconds()?,
             },
@@ -123,6 +125,7 @@ pub fn issue_companion_pairing(
 #[tauri::command]
 pub fn issue_companion_pairing_bundle(
     ttl_seconds: Option<i64>,
+    grants: Option<Vec<CompanionGrant>>,
     repository: State<'_, XiaoRepository>,
     runtime: State<'_, CompanionHostRuntime>,
 ) -> Result<PairingBundle, String> {
@@ -132,6 +135,7 @@ pub fn issue_companion_pairing_bundle(
             &CompanionService,
             connection,
             IssuePairingRequest {
+                max_grants: grants.unwrap_or_default(),
                 ttl_seconds: ttl_seconds.unwrap_or(300),
                 now: now_seconds()?,
             },

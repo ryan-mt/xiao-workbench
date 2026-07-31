@@ -67,6 +67,7 @@ fn pairing_is_single_use_and_rotation_rejects_old_generations() {
         .issue_pairing(
             &mut connection,
             IssuePairingRequest {
+                max_grants: vec![CompanionGrant::ReadTasks, CompanionGrant::StopRun],
                 ttl_seconds: 60,
                 now: NOW,
             },
@@ -127,6 +128,178 @@ fn pairing_is_single_use_and_rotation_rejects_old_generations() {
         .sync(&mut connection, &rotated.credential, None, NOW + 6,)
         .unwrap_err()
         .contains("revoked"));
+}
+
+#[test]
+fn standalone_schema_installs_pairing_grant_ceiling() {
+    let connection = test_connection();
+    CompanionRepository::verify_schema(&connection).unwrap();
+    let (not_null, default_value): (i64, Option<String>) = connection
+        .query_row(
+            "SELECT [notnull], dflt_value
+             FROM pragma_table_info('companion_pairings')
+             WHERE name = 'max_grants_json'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(not_null, 1);
+    assert_eq!(default_value.as_deref(), Some("'[]'"));
+    connection
+        .execute(
+            "INSERT INTO companion_pairings(
+                id, secret_hash, expires_at, consumed_at, created_at
+             ) VALUES ('pairing-default', 'hash-default', ?1, NULL, ?2)",
+            [NOW + 60, NOW],
+        )
+        .unwrap();
+    let stored: String = connection
+        .query_row(
+            "SELECT max_grants_json FROM companion_pairings WHERE id = 'pairing-default'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "[]");
+    assert!(connection
+        .execute(
+            "UPDATE companion_pairings SET max_grants_json = 'not-json'
+             WHERE id = 'pairing-default'",
+            [],
+        )
+        .is_err());
+}
+
+#[test]
+fn pairing_grants_accept_exact_requests_and_canonicalize_duplicates() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let pairing = service
+        .issue_pairing(
+            &mut connection,
+            IssuePairingRequest {
+                max_grants: vec![
+                    CompanionGrant::StopRun,
+                    CompanionGrant::ReadTasks,
+                    CompanionGrant::StopRun,
+                ],
+                ttl_seconds: 60,
+                now: NOW,
+            },
+        )
+        .unwrap();
+    let stored: String = connection
+        .query_row(
+            "SELECT max_grants_json FROM companion_pairings WHERE id = ?1",
+            [&pairing.pairing_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, r#"["read_tasks","stop_run"]"#);
+
+    let exchange = service
+        .exchange_pairing(
+            &mut connection,
+            ExchangePairingRequest {
+                owner_credential: pairing.owner_credential,
+                device_id: "exact-device".to_owned(),
+                device_name: "Exact device".to_owned(),
+                grants: vec![
+                    CompanionGrant::StopRun,
+                    CompanionGrant::ReadTasks,
+                    CompanionGrant::StopRun,
+                ],
+                now: NOW + 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        exchange.session.grants,
+        vec![CompanionGrant::ReadTasks, CompanionGrant::StopRun]
+    );
+}
+
+#[test]
+fn pairing_grant_superset_refusal_does_not_consume_before_subset_retry() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let pairing = service
+        .issue_pairing(
+            &mut connection,
+            IssuePairingRequest {
+                max_grants: vec![CompanionGrant::ReadTasks, CompanionGrant::StopRun],
+                ttl_seconds: 60,
+                now: NOW,
+            },
+        )
+        .unwrap();
+    let refusal = match service.exchange_pairing(
+        &mut connection,
+        ExchangePairingRequest {
+            owner_credential: pairing.owner_credential.clone(),
+            device_id: "superset-device".to_owned(),
+            device_name: "Superset device".to_owned(),
+            grants: vec![CompanionGrant::ReadTasks, CompanionGrant::ReadRuns],
+            now: NOW + 1,
+        },
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("A grant superset unexpectedly created a Companion session."),
+    };
+    assert_eq!(
+        refusal,
+        "The Companion pairing credential is invalid, expired, or already used."
+    );
+    let (consumed_at, session_count): (Option<i64>, i64) = connection
+        .query_row(
+            "SELECT pairing.consumed_at, (SELECT COUNT(*) FROM companion_sessions)
+             FROM companion_pairings pairing WHERE pairing.id = ?1",
+            [&pairing.pairing_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(consumed_at, None);
+    assert_eq!(session_count, 0);
+
+    let exchange = service
+        .exchange_pairing(
+            &mut connection,
+            ExchangePairingRequest {
+                owner_credential: pairing.owner_credential,
+                device_id: "subset-device".to_owned(),
+                device_name: "Subset device".to_owned(),
+                grants: vec![CompanionGrant::ReadTasks, CompanionGrant::ReadTasks],
+                now: NOW + 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(exchange.session.grants, vec![CompanionGrant::ReadTasks]);
+}
+
+#[test]
+fn pairing_grants_default_empty_and_accept_empty_request() {
+    let mut connection = test_connection();
+    let service = CompanionService;
+    let request: IssuePairingRequest = serde_json::from_value(json!({
+        "ttlSeconds": 60,
+        "now": NOW,
+    }))
+    .unwrap();
+    assert!(request.max_grants.is_empty());
+    let pairing = service.issue_pairing(&mut connection, request).unwrap();
+    let exchange = service
+        .exchange_pairing(
+            &mut connection,
+            ExchangePairingRequest {
+                owner_credential: pairing.owner_credential,
+                device_id: "empty-device".to_owned(),
+                device_name: "Empty device".to_owned(),
+                grants: Vec::new(),
+                now: NOW + 1,
+            },
+        )
+        .unwrap();
+    assert!(exchange.session.grants.is_empty());
 }
 
 #[test]
@@ -1402,6 +1575,7 @@ fn paired_session_for(
         .issue_pairing(
             connection,
             IssuePairingRequest {
+                max_grants: grants.clone(),
                 ttl_seconds: 60,
                 now: NOW - 2,
             },

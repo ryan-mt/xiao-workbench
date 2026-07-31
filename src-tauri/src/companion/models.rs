@@ -157,6 +157,8 @@ pub struct TargetScope {
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuePairingRequest {
+    #[serde(default)]
+    pub max_grants: Vec<CompanionGrant>,
     pub ttl_seconds: i64,
     pub now: i64,
 }

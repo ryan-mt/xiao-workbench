@@ -152,6 +152,16 @@ const hostAuthorityProps = (): CompanionHostAuthorityPanelProps => ({
     expiresAt: 1_800_000_060_000,
     error: null,
   },
+  pairingGrants: [
+    "read_projects",
+    "read_tasks",
+    "read_runs",
+    "read_attention",
+    "read_safe_timeline",
+    "read_verification",
+    "read_observatory",
+  ],
+  onPairingGrantsChange: vi.fn(),
   onCreatePairing: vi.fn(),
   onDismissPairing: vi.fn(),
   onRotateSession: vi.fn(),
@@ -200,6 +210,23 @@ describe("CompanionSurface", () => {
     expect(hostProps.onRotateSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeSession).toHaveBeenCalledWith("device-2", "session-1", 3);
     expect(hostProps.onRevokeDevice).toHaveBeenCalledWith("device-2", 2);
+  });
+
+  it("renders accessible pairing grants and freezes them while a bundle is ready", () => {
+    const hostProps = hostAuthorityProps();
+    render(<CompanionHostAuthorityPanel {...hostProps} />);
+
+    expect((screen.getByRole("checkbox", { name: "Read projects" }) as HTMLInputElement).checked)
+      .toBe(true);
+    expect((screen.getByRole("checkbox", {
+      name: "Read conversation (opt-in)",
+    }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: "Stop runs" }) as HTMLInputElement).checked)
+      .toBe(false);
+    expect((screen.getByRole("group", { name: "Shared views" }) as HTMLDivElement)
+      .getAttribute("aria-labelledby")).toBe("pairing-read-grants");
+    const fieldset = screen.getByRole("group", { name: "Pairing grants" }) as HTMLFieldSetElement;
+    expect(fieldset.disabled).toBe(true);
   });
 
   it("keeps the pairing bundle concealed until the operator copies or reveals it", async () => {

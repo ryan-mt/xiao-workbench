@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
+import type { CompanionGrant } from "../../core/models/companion";
 import { buildCompanionBrowserPairingUrl } from "./companionClient";
 import type {
   CompanionAction,
@@ -10,6 +11,44 @@ import type {
   CompanionTargetScope,
 } from "./companionContract";
 import "./companion.css";
+
+type PairingGrantOption = {
+  grant: CompanionGrant;
+  label: string;
+};
+
+const PAIRING_READ_GRANTS: PairingGrantOption[] = [
+  { grant: "read_projects", label: "Read projects" },
+  { grant: "read_tasks", label: "Read tasks" },
+  { grant: "read_runs", label: "Read runs" },
+  { grant: "read_attention", label: "Read attention" },
+  { grant: "read_safe_timeline", label: "Read safe timeline" },
+  { grant: "read_verification", label: "Read verification" },
+  { grant: "read_observatory", label: "Read observatory" },
+  { grant: "read_conversation", label: "Read conversation (opt-in)" },
+];
+
+const PAIRING_ACTION_GRANTS: PairingGrantOption[] = [
+  { grant: "resolve_pending_input", label: "Resolve pending input" },
+  { grant: "stop_run", label: "Stop runs" },
+  { grant: "retry_run", label: "Retry runs" },
+  { grant: "send_follow_up", label: "Send follow-ups" },
+  { grant: "create_task", label: "Create tasks" },
+  { grant: "acknowledge_attention", label: "Acknowledge attention" },
+  { grant: "accept_outcome", label: "Accept outcomes" },
+];
+
+const PAIRING_GRANTS = [...PAIRING_READ_GRANTS, ...PAIRING_ACTION_GRANTS];
+
+export const DEFAULT_HOST_PAIRING_GRANTS: CompanionGrant[] = [
+  "read_projects",
+  "read_tasks",
+  "read_runs",
+  "read_attention",
+  "read_safe_timeline",
+  "read_verification",
+  "read_observatory",
+];
 
 export type CompanionSurfaceProps = {
   state: CompanionState;
@@ -28,6 +67,8 @@ export type CompanionHostAuthorityPanelProps = {
   authority: "primary_host";
   devices: CompanionDevice[];
   pairing: CompanionPairing;
+  pairingGrants: CompanionGrant[];
+  onPairingGrantsChange: (grants: CompanionGrant[]) => void;
   onCreatePairing: () => void;
   onDismissPairing: () => void;
   onRotateSession: (deviceId: string, sessionId: string, expectedVersion: number) => void;
@@ -154,12 +195,24 @@ export function CompanionHostAuthorityPanel({
   authority,
   devices,
   pairing,
+  pairingGrants,
+  onPairingGrantsChange,
   onCreatePairing,
   onDismissPairing,
   onRotateSession,
   onRevokeSession,
   onRevokeDevice,
 }: CompanionHostAuthorityPanelProps) {
+  const grantsFrozen = pairing.status === "creating" || pairing.status === "ready";
+  const updatePairingGrant = (grant: CompanionGrant, checked: boolean) => {
+    const selected = new Set(pairingGrants);
+    if (checked) selected.add(grant);
+    else selected.delete(grant);
+    onPairingGrantsChange(
+      PAIRING_GRANTS.map((option) => option.grant).filter((candidate) => selected.has(candidate)),
+    );
+  };
+
   return (
     <section
       className="companion__section companion__devices"
@@ -180,6 +233,49 @@ export function CompanionHostAuthorityPanel({
           {pairing.status === "creating" ? "Creating…" : "Create pairing bundle"}
         </button>
       </div>
+      <fieldset
+        className="companion__pairing-grants"
+        disabled={grantsFrozen}
+        aria-describedby="companion-pairing-grants-help"
+      >
+        <legend>Pairing grants</legend>
+        <p id="companion-pairing-grants-help">
+          Safe read-only views are selected by default. Conversation and bounded actions require
+          explicit opt-in before this bundle is created.
+        </p>
+        <div className="companion__pairing-grant-groups">
+          <div className="companion__pairing-grant-group" role="group" aria-labelledby="pairing-read-grants">
+            <strong id="pairing-read-grants">Shared views</strong>
+            <div className="companion__pairing-grant-options">
+              {PAIRING_READ_GRANTS.map((option) => (
+                <label key={option.grant}>
+                  <input
+                    type="checkbox"
+                    checked={pairingGrants.includes(option.grant)}
+                    onChange={(event) => updatePairingGrant(option.grant, event.currentTarget.checked)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="companion__pairing-grant-group" role="group" aria-labelledby="pairing-action-grants">
+            <strong id="pairing-action-grants">Bounded actions (opt-in)</strong>
+            <div className="companion__pairing-grant-options">
+              {PAIRING_ACTION_GRANTS.map((option) => (
+                <label key={option.grant}>
+                  <input
+                    type="checkbox"
+                    checked={pairingGrants.includes(option.grant)}
+                    onChange={(event) => updatePairingGrant(option.grant, event.currentTarget.checked)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      </fieldset>
       {pairing.status === "ready" && pairing.ownerCredential && pairing.expiresAt ? (
         <CompanionCredentialTransfer
           credential={pairing.ownerCredential}

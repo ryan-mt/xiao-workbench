@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { isTauriHost, nativeBridge } from "../../core/bridges/tauri";
-import type {
-  CompanionSession,
-} from "../../core/models/companion";
+import type { CompanionGrant, CompanionSession } from "../../core/models/companion";
 import {
   evaluateReleaseAssurance,
   RELEASE_ASSURANCE_MANIFEST,
@@ -12,6 +10,7 @@ import type { CompanionDevice, CompanionPairing } from "./companionContract";
 import {
   CompanionCredentialTransfer,
   CompanionHostAuthorityPanel,
+  DEFAULT_HOST_PAIRING_GRANTS,
 } from "./CompanionSurface";
 
 const releaseReport = evaluateReleaseAssurance(RELEASE_ASSURANCE_MANIFEST);
@@ -65,6 +64,9 @@ export function CompanionHostPage() {
     expiresAt: null,
     error: null,
   });
+  const [pairingGrants, setPairingGrants] = useState<CompanionGrant[]>(
+    () => [...DEFAULT_HOST_PAIRING_GRANTS],
+  );
   const [rotationCode, setRotationCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,12 +92,15 @@ export function CompanionHostPage() {
 
   useEffect(() => {
     if (pairing.status !== "ready" || pairing.expiresAt === null) return;
-    const expire = () => setPairing({
-      status: "expired",
-      ownerCredential: null,
-      expiresAt: null,
-      error: null,
-    });
+    const expire = () => {
+      setPairing({
+        status: "expired",
+        ownerCredential: null,
+        expiresAt: null,
+        error: null,
+      });
+      setPairingGrants([...DEFAULT_HOST_PAIRING_GRANTS]);
+    };
     const remaining = pairing.expiresAt - Date.now();
     if (remaining <= 0) {
       expire();
@@ -148,9 +153,11 @@ export function CompanionHostPage() {
         authority="primary_host"
         devices={groupCompanionDevices(sessions)}
         pairing={pairing}
+        pairingGrants={pairingGrants}
+        onPairingGrantsChange={setPairingGrants}
         onCreatePairing={() => {
           setPairing((current) => ({ ...current, status: "creating", error: null }));
-          void nativeBridge.issueCompanionPairingBundle().then((bundle) => {
+          void nativeBridge.issueCompanionPairingBundle(300, pairingGrants).then((bundle) => {
             setPairing({
               status: "ready",
               ownerCredential: JSON.stringify(bundle),
@@ -166,12 +173,15 @@ export function CompanionHostPage() {
             });
           });
         }}
-        onDismissPairing={() => setPairing({
-          status: "idle",
-          ownerCredential: null,
-          expiresAt: null,
-          error: null,
-        })}
+        onDismissPairing={() => {
+          setPairing({
+            status: "idle",
+            ownerCredential: null,
+            expiresAt: null,
+            error: null,
+          });
+          setPairingGrants([...DEFAULT_HOST_PAIRING_GRANTS]);
+        }}
         onRotateSession={(deviceId, sessionId, expectedVersion) => {
           const session = currentSession(sessionId, expectedVersion);
           if (!session || session.deviceId !== deviceId) return;

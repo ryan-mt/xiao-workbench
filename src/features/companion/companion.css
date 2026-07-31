@@ -418,6 +418,56 @@
   color: var(--danger);
 }
 
+/* Pairing grant ceiling */
+.companion__pairing-grants {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 14px;
+  border-color: var(--line);
+  background: var(--surface-raised);
+}
+
+.companion__pairing-grants > p {
+  color: var(--muted-strong);
+  font-size: var(--text-label);
+  line-height: 1.45;
+}
+
+.companion__pairing-grant-groups,
+.companion__pairing-grant-group,
+.companion__pairing-grant-options {
+  display: grid;
+  gap: 9px;
+}
+
+.companion__pairing-grant-groups {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.companion__pairing-grant-group > strong {
+  font-size: var(--text-label);
+  font-weight: 620;
+}
+
+.companion__pairing-grant-options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.companion__pairing-grant-options input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
 /* Credential transfer */
 .companion__credential,
 .companion__inline-error {
@@ -1067,6 +1117,10 @@
   .companion__devices,
   .companion__timeline {
     grid-column: 1 / -1;
+  }
+
+  .companion__pairing-grant-groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .companion__credential-heading {

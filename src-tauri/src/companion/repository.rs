@@ -9,7 +9,7 @@ use super::models::{
     TargetKind, TargetScope,
 };
 
-pub const COMPANION_SCHEMA_VERSION: i64 = 1;
+pub const COMPANION_SCHEMA_VERSION: i64 = 2;
 
 pub const COMPANION_SCHEMA_SQL: &str = r#"
 INSERT INTO rollout_capabilities(
@@ -567,6 +567,11 @@ SELECT 'verification:' || id || ':' || version, 1, 'verification',
 FROM verification_attempts;
 "#;
 
+pub const COMPANION_MIGRATION_2_SQL: &str = r#"
+ALTER TABLE companion_pairings ADD COLUMN max_grants_json TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(max_grants_json));
+"#;
+
 pub struct CompanionRepository;
 
 pub(crate) enum CommandReservation {
@@ -583,6 +588,9 @@ impl CompanionRepository {
             .execute_batch(COMPANION_SCHEMA_SQL)
             .map_err(|error| format!("Could not install the Companion schema: {error}"))?;
         transaction
+            .execute_batch(COMPANION_MIGRATION_2_SQL)
+            .map_err(|error| format!("Could not upgrade the Companion schema: {error}"))?;
+        transaction
             .commit()
             .map_err(|error| format!("Could not commit the Companion schema migration: {error}"))
     }
@@ -590,7 +598,7 @@ impl CompanionRepository {
     pub fn verify_schema(connection: &Connection) -> Result<(), String> {
         connection
             .prepare(
-                "SELECT id, secret_hash, expires_at, consumed_at, created_at
+                "SELECT id, secret_hash, expires_at, consumed_at, created_at, max_grants_json
                  FROM companion_pairings LIMIT 0",
             )
             .and_then(|_| {
@@ -631,14 +639,22 @@ impl CompanionRepository {
         connection: &mut Connection,
         pairing_id: &str,
         secret_hash: &str,
+        max_grants: &[CompanionGrant],
         expires_at: i64,
         created_at: i64,
     ) -> Result<(), String> {
         connection
             .execute(
-                "INSERT INTO companion_pairings(id, secret_hash, expires_at, consumed_at, created_at)
-                 VALUES (?1, ?2, ?3, NULL, ?4)",
-                params![pairing_id, secret_hash, expires_at, created_at],
+                "INSERT INTO companion_pairings(
+                    id, secret_hash, expires_at, consumed_at, created_at, max_grants_json
+                 ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+                params![
+                    pairing_id,
+                    secret_hash,
+                    expires_at,
+                    created_at,
+                    json_string(max_grants, "Companion maximum grants")?,
+                ],
             )
             .map(|_| ())
             .map_err(|error| format!("Could not persist the Companion pairing credential: {error}"))
@@ -654,18 +670,29 @@ impl CompanionRepository {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("Could not start Companion pairing: {error}"))?;
-        let pairing_id = transaction
+        let (pairing_id, max_grants_json) = transaction
             .query_row(
-                "SELECT id FROM companion_pairings
+                "SELECT id, max_grants_json FROM companion_pairings
                  WHERE secret_hash = ?1 AND consumed_at IS NULL AND expires_at >= ?2",
                 params![credential_hash, now],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .map_err(|error| {
                 format!("Could not inspect the Companion pairing credential: {error}")
             })?
             .ok_or("The Companion pairing credential is invalid, expired, or already used.")?;
+        let max_grants: Vec<CompanionGrant> =
+            parse_json(&max_grants_json, "Companion maximum grants")?;
+        if !session
+            .grants
+            .iter()
+            .all(|grant| max_grants.contains(grant))
+        {
+            return Err(
+                "The Companion pairing credential is invalid, expired, or already used.".to_owned(),
+            );
+        }
         let consumed = transaction
             .execute(
                 "UPDATE companion_pairings SET consumed_at = ?1

@@ -59,6 +59,7 @@ impl CompanionService {
         }
         let pairing_id = new_id();
         let owner_credential = new_secret();
+        let max_grants = canonical_grants(request.max_grants);
         let expires_at = request
             .now
             .checked_add(request.ttl_seconds)
@@ -67,6 +68,7 @@ impl CompanionService {
             connection,
             &pairing_id,
             &credential_hash(&owner_credential),
+            &max_grants,
             expires_at,
             request.now,
         )?;
