@@ -7,6 +7,8 @@ use crate::xiao::repository::{normalize_workspace_path, XiaoRepository};
 
 use super::models::{ImportHandoffResult, ValidatedHandoff, HANDOFF_SCHEMA_VERSION};
 
+const IMPORTED_SANDBOX_MODE: &str = "workspace-write";
+
 impl XiaoRepository {
     pub(crate) fn import_handoff_lineage(
         &self,
@@ -119,7 +121,7 @@ impl XiaoRepository {
                         handoff.task.model,
                         handoff.task.reasoning_effort,
                         safe_mode(&handoff.task.mode),
-                        safe_sandbox(&handoff.runtime.sandbox_mode),
+                        IMPORTED_SANDBOX_MODE,
                         goal_json,
                         timeline_sha256,
                         i64::try_from(timeline.len())
@@ -184,7 +186,7 @@ impl XiaoRepository {
                         handoff.runtime.reasoning_effort,
                         handoff.runtime.service_tier,
                         safe_mode(&handoff.runtime.mode),
-                        safe_sandbox(&handoff.runtime.sandbox_mode),
+                        IMPORTED_SANDBOX_MODE,
                         goal_json,
                         handoff.runtime.cli_version,
                     ],
@@ -200,6 +202,9 @@ impl XiaoRepository {
                     "bundleSha256": handoff.bundle_sha256,
                     "sourceTaskId": handoff.source_task_id,
                     "sourceRunId": handoff.source_run_id,
+                    "sourceSandboxMode": sanitized_source_sandbox_mode(
+                        &handoff.runtime.sandbox_mode,
+                    ),
                     "schemaVersion": HANDOFF_SCHEMA_VERSION,
                 }),
             )?;
@@ -281,10 +286,10 @@ fn safe_mode(value: &str) -> &str {
     }
 }
 
-fn safe_sandbox(value: &str) -> &str {
+fn sanitized_source_sandbox_mode(value: &str) -> &str {
     match value {
         "read-only" | "workspace-write" | "danger-full-access" => value,
-        _ => "workspace-write",
+        _ => IMPORTED_SANDBOX_MODE,
     }
 }
 
@@ -339,7 +344,7 @@ mod tests {
                 reasoning_effort: Some("medium".to_owned()),
                 service_tier: None,
                 mode: "default".to_owned(),
-                sandbox_mode: "workspace-write".to_owned(),
+                sandbox_mode: "danger-full-access".to_owned(),
                 cli_version: None,
             },
             continuation: HandoffContinuationPayload {
@@ -413,6 +418,18 @@ mod tests {
             Some(first.task_id.as_str())
         );
         assert_eq!(document.tasks[0].timeline.len(), 3);
+        assert_eq!(document.tasks[0].sandbox_mode, "workspace-write");
+        let imported_run = repository.get_run(&first.run_id).unwrap();
+        assert_eq!(imported_run.sandbox_mode, "workspace-write");
+        let events = repository
+            .list_run_events(&first.run_id, None, None)
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "handoff.imported");
+        assert_eq!(
+            events[0].safe_payload["sourceSandboxMode"],
+            json!("danger-full-access")
+        );
         let counts = repository
             .with_connection(|connection| {
                 connection
