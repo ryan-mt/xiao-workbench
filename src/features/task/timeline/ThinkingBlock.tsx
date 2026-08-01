@@ -19,6 +19,10 @@ export function ThinkingBlock({
   const [expanded, setExpanded] = useState(false);
   const active = live && entry.status === "active";
   const { title, body } = reasoningSummary(entry.body ?? "");
+  const liveSummary = active && entry.meta === "Reasoning summary"
+    ? body.trim().split(/\r?\n+/).filter(Boolean).at(-1) ?? null
+    : title;
+  if (active && !liveSummary) return null;
   const durationLabel =
     !active && typeof entry.durationMs === "number" && entry.durationMs >= 0
       ? formatThoughtDuration(entry.durationMs)
@@ -29,9 +33,9 @@ export function ThinkingBlock({
   const label = (
     <>
       <strong className={active ? "is-active" : undefined}>
-        {active ? "Thinking" : "Thought"}
+        {active ? liveSummary : "Thought"}
       </strong>
-      {title ? <span className="thinking-block__topic">{title}</span> : null}
+      {!active && title ? <span className="thinking-block__topic">{title}</span> : null}
       {durationLabel ? (
         <span className="thinking-block__duration">· {durationLabel}</span>
       ) : null}

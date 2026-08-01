@@ -150,17 +150,6 @@ pub(crate) async fn prepare_xiao_session(
 
     if let Some(binding) = reusable_xiao_binding(binding)? {
         if runtime.is_thread_bound(&binding.thread_id, project_path, task_id, workspace_path)? {
-            runtime
-                .request(
-                    "thread/settings/update".to_owned(),
-                    persistent_thread_settings_request(
-                        &binding.thread_id,
-                        workspace_path,
-                        approval_policy,
-                        sandbox,
-                    )?,
-                )
-                .await?;
             return Ok(AgentSession {
                 thread_id: binding.thread_id.clone(),
                 model: model.map(str::to_owned),
@@ -204,31 +193,6 @@ pub(crate) async fn prepare_xiao_session(
         model: response.model.or_else(|| model.map(str::to_owned)),
         materialized,
     })
-}
-
-fn persistent_thread_settings_request(
-    thread_id: &str,
-    workspace_path: &str,
-    approval_policy: &str,
-    sandbox: &str,
-) -> Result<Value, String> {
-    let sandbox_policy = match sandbox {
-        "danger-full-access" => json!({ "type": "dangerFullAccess" }),
-        "read-only" => json!({ "type": "readOnly" }),
-        "workspace-write" => json!({
-            "type": "workspaceWrite",
-            "writableRoots": [workspace_path],
-            "networkAccess": false,
-            "excludeTmpdirEnvVar": false,
-            "excludeSlashTmp": false,
-        }),
-        _ => return Err(format!("Unsupported Xiao sandbox mode `{sandbox}`.")),
-    };
-    Ok(json!({
-        "threadId": thread_id,
-        "approvalPolicy": approval_policy,
-        "sandboxPolicy": sandbox_policy,
-    }))
 }
 
 fn reusable_xiao_binding(
@@ -395,38 +359,6 @@ mod tests {
         assert_eq!(
             params["dynamicTools"][4]["name"],
             "xiao_runtime_diagnostics"
-        );
-    }
-
-    #[test]
-    fn bound_threads_refresh_the_effective_sandbox_before_the_next_turn() {
-        let full_access = persistent_thread_settings_request(
-            "thread",
-            "C:/workspace",
-            "never",
-            "danger-full-access",
-        )
-        .unwrap();
-        assert_eq!(full_access["approvalPolicy"], "never");
-        assert_eq!(
-            full_access["sandboxPolicy"],
-            json!({ "type": "dangerFullAccess" })
-        );
-
-        let workspace_write = persistent_thread_settings_request(
-            "thread",
-            "C:/workspace",
-            "on-request",
-            "workspace-write",
-        )
-        .unwrap();
-        assert_eq!(
-            workspace_write["sandboxPolicy"]["writableRoots"],
-            json!(["C:/workspace"])
-        );
-        assert!(
-            persistent_thread_settings_request("thread", "C:/workspace", "never", "invalid",)
-                .is_err()
         );
     }
 

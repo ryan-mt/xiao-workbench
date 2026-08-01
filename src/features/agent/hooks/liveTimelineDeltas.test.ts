@@ -57,12 +57,14 @@ describe("live timeline deltas", () => {
       entryId: "reasoning",
       delta: "private detail",
       replace: false,
+      summary: false,
     });
     appendLiveTimelineDelta(queue, {
       kind: "reasoning",
       entryId: "reasoning",
       delta: "Public summary",
       replace: true,
+      summary: true,
     });
 
     expect(applyLiveTimelineDeltas([], queue)[0].body).toBe("Public summary");
@@ -83,6 +85,7 @@ describe("live timeline deltas", () => {
       entryId: "reasoning",
       delta: " and tests",
       replace: false,
+      summary: false,
     }], 20)).toEqual([{
       ...reasoning,
       body: "Checked the code and tests",

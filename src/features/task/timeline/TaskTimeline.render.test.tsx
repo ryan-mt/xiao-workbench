@@ -140,7 +140,7 @@ describe("TaskTimeline turn canvas", () => {
     expect(markup).toContain("The import is fixed.");
   });
 
-  it("renders the latest live thought as a Thinking block without exposing prose", () => {
+  it("renders one live turn status without duplicating an unlabelled reasoning placeholder", () => {
     const markup = render([{
       id: "user",
       kind: "user",
@@ -160,10 +160,33 @@ describe("TaskTimeline turn canvas", () => {
 
     expect(markup).toContain("Working for 43s");
     expect(markup).toContain("turn-duration__dots");
-    expect(markup).toContain("thinking-block");
-    expect(markup).toContain("Thinking");
+    expect(markup).not.toContain("thinking-block");
     expect(markup).not.toContain(">Planning chronological flow rendering and grouping<");
     expect(markup).not.toContain("Execution details");
+  });
+
+  it("renders a public reasoning summary as the single animated work line", () => {
+    const markup = render([{
+      id: "user",
+      kind: "user",
+      title: "Fix chronological rendering",
+    }, {
+      id: "thinking",
+      kind: "thought",
+      title: "Reasoning",
+      body: "Planning chronological flow rendering and grouping",
+      meta: "Reasoning summary",
+      status: "active",
+    }], false, {
+      ...idleRuntime,
+      phase: "working",
+      taskId: "task-1",
+      turnStartedAt: Date.now() - 43_000,
+    });
+
+    expect(markup.match(/Working for/g)).toHaveLength(1);
+    expect(markup).toContain("Planning chronological flow rendering and grouping");
+    expect(markup).not.toContain(">Thinking<");
   });
 
   it("keeps Thought separate from tool execution groups", () => {

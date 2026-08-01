@@ -12,6 +12,7 @@ export type LiveTimelineDelta =
       entryId: string;
       delta: string;
       replace: boolean;
+      summary: boolean;
     }
   | {
       kind: "command-output";
@@ -57,6 +58,7 @@ export const appendLiveTimelineDelta = (
     return;
   }
   if (delta.kind === "reasoning" && previous.kind === "reasoning") {
+    previous.summary = delta.summary;
     if (delta.replace) {
       previous.delta = delta.delta;
       previous.replace = true;
@@ -114,7 +116,7 @@ export const applyLiveTimelineDeltas = (
             title: "Thinking",
             createdAt,
             body: delta.delta,
-            meta: "Live reasoning",
+            meta: delta.summary ? "Reasoning summary" : "Live reasoning",
             status: "active",
           },
         ];
@@ -127,7 +129,7 @@ export const applyLiveTimelineDeltas = (
               ...entry,
               title: "Thinking",
               body,
-              meta: "Live reasoning",
+              meta: delta.summary ? "Reasoning summary" : "Live reasoning",
               status: "active",
             }
           : { ...entry, body };

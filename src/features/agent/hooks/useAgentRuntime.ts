@@ -1559,6 +1559,7 @@ export function useAgentRuntime(
         entryId,
         delta,
         replace,
+        summary: channel === "summary",
       });
     } else {
       const itemId = readItemId(message);

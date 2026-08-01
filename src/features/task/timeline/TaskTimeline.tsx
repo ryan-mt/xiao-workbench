@@ -11,7 +11,6 @@ import { VerificationEvidenceCard } from "../../verification/VerificationEvidenc
 import { ActivityItem } from "./ActivityItem";
 import { AgentTurn } from "./AgentTurn";
 import { projectConversation } from "./ConversationTurnProjector";
-import { LiveTurnStatus } from "./LiveTurnStatus";
 
 type TaskTimelineProps = {
   timeline: TimelineEntry[];
@@ -181,7 +180,6 @@ function TaskTimelineView({
           </span>
         );
       })}
-      <LiveTurnStatus taskId={taskId} runtime={runtime} timeline={timeline} />
       {latestRun ? (
         <VerificationEvidenceCard
           run={latestRun}

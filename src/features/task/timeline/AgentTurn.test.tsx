@@ -269,9 +269,7 @@ describe("AgentTurn completed reasoning", () => {
     });
 
     const node = container.querySelector("#timeline-entry-thought-live");
-    expect(node?.className).toContain("thinking-block");
-    expect(node?.textContent).toContain("Thinking");
-    expect(node?.textContent).not.toContain("Inspecting the active flow");
+    expect(node).toBeNull();
   });
 
   it("preserves live behavior before entries acquire a runtime turn id", () => {
