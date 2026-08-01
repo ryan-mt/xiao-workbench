@@ -25,6 +25,19 @@ describe("command bindings", () => {
     expect(bindings["task.create"]).toBe("Ctrl+T");
   });
 
+  it("keeps a custom fallback when an updated shortcut conflicts", () => {
+    const existingBindings = normalizeCommandBindings({
+      "task.create": "Ctrl+N",
+    });
+
+    const bindings = normalizeCommandBindings({
+      ...existingBindings,
+      "task.create": "Ctrl+K",
+    }, existingBindings);
+
+    expect(bindings["task.create"]).toBe("Ctrl+N");
+  });
+
   it("resolves keyboard input to a stable command identifier", () => {
     expect(commandForKeyboardEvent({
       key: "k",

@@ -92,6 +92,40 @@ describe("conversation projection", () => {
     });
   });
 
+  it("preserves every assistant response in a steered backend turn", () => {
+    const rows = projectConversation([{
+      ...entry("user", "user"),
+      turnId: "turn-1",
+    }, {
+      ...entry("response-1", "result"),
+      title: "Agent response",
+      turnId: "turn-1",
+    }, {
+      ...entry("command", "command"),
+      turnId: "turn-1",
+    }, {
+      ...entry("steer", "user"),
+      turnId: "turn-1",
+    }, {
+      ...entry("response-2", "result"),
+      title: "Agent response",
+      turnId: "turn-1",
+    }]);
+
+    expect(rows).toMatchObject([{
+      kind: "turn",
+      turn: {
+        flow: [
+          { id: "response-1" },
+          { id: "command" },
+          { id: "steer" },
+        ],
+        response: { id: "response-2" },
+        responseFlowIndex: 3,
+      },
+    }]);
+  });
+
   it("records the final response source position when later entries share its timestamp", () => {
     const rows = projectConversation([{
       ...entry("user", "user", 1_000),

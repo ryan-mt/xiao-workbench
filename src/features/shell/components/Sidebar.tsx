@@ -21,7 +21,7 @@ import {
   type WorkbenchTask,
 } from "../../task/task.types";
 import type { AppPage } from "../shell.types";
-import { sidebarTaskPresentation } from "../sidebarProjection";
+import { activeSidebarProject, sidebarTaskPresentation } from "../sidebarProjection";
 import { SidebarStageBackdrop } from "./SidebarStageBackdrop";
 import { SidebarInbox } from "./SidebarInbox";
 
@@ -45,7 +45,6 @@ type SidebarProps = {
   attentionHydrationStatus: AttentionHydrationStatus;
   onOpenMenu: () => void;
   onOpenAttention: () => void;
-  onOpenCompanion?: () => void;
   onOpenProfile: () => void;
   onOpenSettings: () => void;
   onOpenTasks: () => void;
@@ -152,7 +151,6 @@ export function Sidebar({
   attentionHydrationStatus,
   onOpenMenu,
   onOpenAttention,
-  onOpenCompanion = () => {},
   onOpenProfile,
   onOpenSettings,
   onOpenTasks,
@@ -197,6 +195,7 @@ export function Sidebar({
   const taskMenuRef = useRef<HTMLDivElement>(null);
   const codexThreadMenuRef = useRef<HTMLDivElement>(null);
   const taskMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const menuGeneration = useRef(0);
   const visibleTasks = [...tasks]
     .filter((task) => !task.archived)
     .sort(
@@ -227,6 +226,7 @@ export function Sidebar({
         (right.projectGroupPosition ?? Number.MAX_SAFE_INTEGER) ||
       left.name.localeCompare(right.name);
   });
+  const activeProject = activeSidebarProject(projects, activeProjectPath);
   const navigationItems: ProjectNavigationItem[] = [...projectGroups]
     .sort((left, right) => left.position - right.position)
     .flatMap((group) => [
@@ -261,6 +261,7 @@ export function Sidebar({
     : `Attention, ${attentionHydrationStatus}, ${attentionCount} available`;
 
   const closeProjectMenu = (restoreFocus = false) => {
+    menuGeneration.current += 1;
     const trigger = projectMenuTriggerRef.current;
     projectMenuTriggerRef.current = null;
     setProjectMenu(null);
@@ -268,6 +269,7 @@ export function Sidebar({
   };
 
   const closeTaskMenu = (restoreFocus = false) => {
+    menuGeneration.current += 1;
     const trigger = taskMenuTriggerRef.current;
     taskMenuTriggerRef.current = null;
     setTaskMenu(null);
@@ -320,6 +322,7 @@ export function Sidebar({
       return;
     }
     projectMenuTriggerRef.current = trigger;
+    menuGeneration.current += 1;
     setProjectMenu({ projectPath, top, left, focusFirst: event.detail === 0 });
   };
 
@@ -331,6 +334,7 @@ export function Sidebar({
     event.stopPropagation();
     closeTaskMenu();
     projectMenuTriggerRef.current = event.currentTarget;
+    menuGeneration.current += 1;
     setProjectMenu({
       projectPath,
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - projectMenuHeight - 8)),
@@ -344,6 +348,7 @@ export function Sidebar({
     event.stopPropagation();
     closeProjectMenu();
     taskMenuTriggerRef.current = event.currentTarget;
+    menuGeneration.current += 1;
     setTaskMenu({
       taskId,
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - taskMenuHeight - 8)),
@@ -360,6 +365,7 @@ export function Sidebar({
     event.stopPropagation();
     closeProjectMenu();
     closeTaskMenu();
+    menuGeneration.current += 1;
     setCodexThreadMenu({
       threadId,
       top: Math.max(8, Math.min(event.clientY, window.innerHeight - 150)),
@@ -386,6 +392,7 @@ export function Sidebar({
       Math.min(bounds.right - 46, window.innerWidth - projectMenuWidth - 8),
     );
     taskMenuTriggerRef.current = trigger;
+    menuGeneration.current += 1;
     setTaskMenu({ taskId, top, left, focusFirst: event.detail === 0 });
   };
 
@@ -397,6 +404,7 @@ export function Sidebar({
   };
 
   const copyText = async (value: string) => {
+    const generation = menuGeneration.current;
     setCopyError(null);
     try {
       let copied = false;
@@ -422,9 +430,11 @@ export function Sidebar({
         }
       }
       if (!copied) throw new Error("Clipboard write failed");
+      if (generation !== menuGeneration.current) return;
       closeTaskMenu();
       setCodexThreadMenu(null);
     } catch {
+      if (generation !== menuGeneration.current) return;
       setCopyError("Could not copy to the clipboard. Check Xiao's clipboard permission and retry.");
     }
   };
@@ -659,7 +669,7 @@ export function Sidebar({
               );
             }
             const project = item.project;
-            const active = workspaceContainsPath(project.path, activeProjectPath);
+            const active = project.path === activeProject?.path;
             const expanded = active && (
               expandedProjectPath === project.path || expandedProjectPath === activeProjectPath
             );
@@ -1008,15 +1018,6 @@ export function Sidebar({
                     {attentionCount > 99 ? "99+" : attentionCount}
                   </span>
                 ) : null}
-              </button>
-              <button
-                className={`sidebar__footer-action ${activePage === "companion" ? "is-active" : ""}`}
-                type="button"
-                aria-current={activePage === "companion" ? "page" : undefined}
-                onClick={onOpenCompanion}
-              >
-                <XiaoIcon name="connect" size={16} />
-                <span>Companion</span>
               </button>
               <button
                 className={`sidebar__footer-action ${activePage === "settings" ? "is-active" : ""}`}

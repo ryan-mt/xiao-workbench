@@ -63,20 +63,6 @@ import type {
   TurnCheckpointSummary,
 } from "../models/observatory";
 import type {
-  CompanionAuditRecord,
-  CompanionCommandEnvelope,
-  CompanionCommandResult,
-  CompanionGrant,
-  CompanionNotificationCursor,
-  CompanionNotificationPage,
-  CompanionPairingBundle,
-  CompanionReconnectCursor,
-  CompanionSession,
-  CompanionSessionReference,
-  CompanionSyncBatch,
-  ExchangedCompanionSession,
-} from "../models/companion";
-import type {
   XaiDeviceAuthorization,
   XaiOAuthPollResult,
   XaiOAuthStatus,
@@ -461,106 +447,6 @@ export const nativeBridge = {
 
   setBrowserMuted(label: string, muted: boolean) {
     return invoke<void>("set_browser_muted", { label, muted });
-  },
-
-  issueCompanionPairingBundle(ttlSeconds: number, grants: CompanionGrant[]) {
-    return invoke<CompanionPairingBundle>("issue_companion_pairing_bundle", {
-      ttlSeconds,
-      grants,
-    });
-  },
-
-  listCompanionSessions() {
-    return invoke<CompanionSession[]>("list_companion_sessions");
-  },
-
-  rotateCompanionSession(sessionId: string) {
-    return invoke<ExchangedCompanionSession>("rotate_companion_session", { sessionId });
-  },
-
-  revokeCompanionSession(sessionId: string) {
-    return invoke<CompanionSession>("revoke_companion_session", { sessionId });
-  },
-
-  revokeCompanionDevice(deviceId: string) {
-    return invoke<{ deviceId: string; revokedSessions: CompanionSession[] }>(
-      "revoke_companion_device",
-      { deviceId },
-    );
-  },
-
-  replaceCompanionSessionGrants(sessionId: string, grants: CompanionGrant[]) {
-    return invoke<CompanionSession>("replace_companion_session_grants", { sessionId, grants });
-  },
-
-  pairRemoteCompanion(
-    pairingCode: string,
-    deviceId: string,
-    deviceName: string,
-    grants: CompanionGrant[],
-  ) {
-    return invoke<CompanionSessionReference>("pair_remote_companion", {
-      pairingCode,
-      deviceId,
-      deviceName,
-      grants,
-    });
-  },
-
-  pollRemoteCompanion(
-    referenceId: string,
-    cursor: CompanionReconnectCursor | null,
-    limit = 200,
-  ) {
-    return invoke<CompanionSyncBatch>("poll_remote_companion", {
-      referenceId,
-      cursor,
-      limit,
-    });
-  },
-
-  confirmRemoteCompanion(
-    referenceId: string,
-    cursor: CompanionReconnectCursor,
-  ) {
-    return invoke<CompanionSyncBatch>("confirm_remote_companion", { referenceId, cursor });
-  },
-
-  pollRemoteCompanionNotifications(
-    referenceId: string,
-    cursor: CompanionNotificationCursor | null,
-    limit = 50,
-  ) {
-    return invoke<CompanionNotificationPage>("poll_remote_companion_notifications", {
-      referenceId,
-      cursor,
-      limit,
-    });
-  },
-
-  executeRemoteCompanionCommand(
-    referenceId: string,
-    envelope: CompanionCommandEnvelope,
-  ) {
-    return invoke<CompanionCommandResult>("execute_remote_companion_command", {
-      referenceId,
-      envelope,
-    });
-  },
-
-  installRemoteCompanionRotation(referenceId: string, rotationCode: string) {
-    return invoke<CompanionSessionReference>("install_remote_companion_rotation", {
-      referenceId,
-      rotationCode,
-    });
-  },
-
-  forgetRemoteCompanion(referenceId: string) {
-    return invoke<void>("forget_remote_companion", { referenceId });
-  },
-
-  listCompanionAudit(deviceId: string | null = null, limit = 200) {
-    return invoke<CompanionAuditRecord[]>("list_companion_audit", { deviceId, limit });
   },
 
   openWorkspacePreview(projectPath: string, taskId: string | null, relativePath: string) {

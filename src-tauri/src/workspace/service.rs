@@ -125,12 +125,15 @@ fn validate_relative_path(path: &str) -> Result<&Path, String> {
 }
 
 fn resolve_workspace(path: Option<&str>) -> Result<PathBuf, String> {
+    let explicit_path = path.is_some();
     let candidate = match path {
         Some(path) => PathBuf::from(path),
         None => std::env::current_dir().map_err(|error| error.to_string())?,
     };
 
-    let candidate = if candidate.file_name().and_then(|name| name.to_str()) == Some("src-tauri") {
+    let candidate = if !explicit_path
+        && candidate.file_name().and_then(|name| name.to_str()) == Some("src-tauri")
+    {
         candidate.parent().unwrap_or(&candidate).to_path_buf()
     } else {
         candidate
@@ -260,5 +263,21 @@ mod tests {
     fn rejects_paths_outside_the_workspace() {
         let result = list_workspace_directory(&local_context().execution_root, "../");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn explicit_workspace_named_src_tauri_stays_scoped_to_itself() {
+        let parent =
+            std::env::temp_dir().join(format!("xiao-explicit-workspace-{}", uuid::Uuid::now_v7()));
+        let workspace = parent.join("src-tauri");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(parent.join("outside.txt"), "outside").unwrap();
+        std::fs::write(workspace.join("inside.txt"), "inside").unwrap();
+
+        let entries = list_workspace_directory(&workspace.to_string_lossy(), "").unwrap();
+
+        assert!(entries.iter().any(|entry| entry.name == "inside.txt"));
+        assert!(!entries.iter().any(|entry| entry.name == "outside.txt"));
+        std::fs::remove_dir_all(parent).unwrap();
     }
 }

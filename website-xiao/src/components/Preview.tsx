@@ -5,12 +5,16 @@ import { Reveal } from "@/components/Reveal";
 const shots = [
   {
     src: "/screenshots/settings.png",
+    width: 1440,
+    height: 900,
     alt: "Settings with theme and workspace preferences",
     fig: "Fig. settings",
     note: "Themes: light / dark / system",
   },
   {
     src: "/screenshots/profile.png",
+    width: 553,
+    height: 839,
     alt: "Local profile for on-device identity",
     fig: "Fig. profile",
     note: "Local identity on the host",
@@ -41,8 +45,8 @@ export function Preview() {
                 <Image
                   src={shot.src}
                   alt={shot.alt}
-                  width={1600}
-                  height={1000}
+                  width={shot.width}
+                  height={shot.height}
                   sizes="(max-width: 800px) 100vw, 50vw"
                 />
                 <div className="specimen-meta">

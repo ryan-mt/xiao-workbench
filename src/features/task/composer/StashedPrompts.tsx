@@ -12,6 +12,7 @@ type StashedPrompt = {
 };
 
 type StashedPromptsProps = {
+  workspacePath: string;
   taskId: string;
   prompt: string;
   attachments: AgentAttachment[];
@@ -20,7 +21,8 @@ type StashedPromptsProps = {
   onRestore: (prompt: string, attachments: AgentAttachment[]) => void;
 };
 
-const storageKey = (taskId: string) => `xiao.stashed-prompts.v1:${taskId}`;
+const storageKey = (workspacePath: string, taskId: string) =>
+  `xiao.stashed-prompts.v1:${encodeURIComponent(workspacePath)}:${encodeURIComponent(taskId)}`;
 const maxStashedPrompts = 24;
 const attachmentKinds = new Set<AgentAttachment["kind"]>([
   "directory",
@@ -46,9 +48,17 @@ const isAgentAttachment = (value: unknown): value is AgentAttachment => {
       typeof attachment.sourceRevision === "string");
 };
 
-const readStashedPrompts = (taskId: string): StashedPrompt[] => {
+const readStashedPrompts = (workspacePath: string, taskId: string): StashedPrompt[] => {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(storageKey(taskId)) ?? "[]") as unknown;
+    const scopedKey = storageKey(workspacePath, taskId);
+    const legacyKey = `xiao.stashed-prompts.v1:${taskId}`;
+    const scoped = window.localStorage.getItem(scopedKey);
+    const legacy = scoped === null ? window.localStorage.getItem(legacyKey) : null;
+    const stored = JSON.parse(scoped ?? legacy ?? "[]") as unknown;
+    if (legacy !== null) {
+      window.localStorage.setItem(scopedKey, legacy);
+      window.localStorage.removeItem(legacyKey);
+    }
     if (!Array.isArray(stored)) return [];
     return stored.flatMap((item) => {
       if (!item || typeof item !== "object") return [];
@@ -71,9 +81,16 @@ const readStashedPrompts = (taskId: string): StashedPrompt[] => {
   }
 };
 
-const writeStashedPrompts = (taskId: string, prompts: StashedPrompt[]) => {
+const writeStashedPrompts = (
+  workspacePath: string,
+  taskId: string,
+  prompts: StashedPrompt[],
+) => {
   try {
-    window.localStorage.setItem(storageKey(taskId), JSON.stringify(prompts.slice(0, maxStashedPrompts)));
+    window.localStorage.setItem(
+      storageKey(workspacePath, taskId),
+      JSON.stringify(prompts.slice(0, maxStashedPrompts)),
+    );
     return true;
   } catch {
     return false;
@@ -102,6 +119,7 @@ const imageSource = (item: StashedPrompt) => {
 };
 
 export function StashedPrompts({
+  workspacePath,
   taskId,
   prompt,
   attachments,
@@ -109,17 +127,19 @@ export function StashedPrompts({
   onClear,
   onRestore,
 }: StashedPromptsProps) {
-  const [items, setItems] = useState<StashedPrompt[]>(() => readStashedPrompts(taskId));
+  const [items, setItems] = useState<StashedPrompt[]>(() =>
+    readStashedPrompts(workspacePath, taskId)
+  );
   const [open, setOpen] = useState(false);
   const [storageError, setStorageError] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const canStash = Boolean(prompt.trim() || attachments.length);
 
   useEffect(() => {
-    setItems(readStashedPrompts(taskId));
+    setItems(readStashedPrompts(workspacePath, taskId));
     setOpen(false);
     setStorageError(false);
-  }, [taskId]);
+  }, [taskId, workspacePath]);
 
   useEffect(() => {
     if (!open) return;
@@ -138,7 +158,7 @@ export function StashedPrompts({
       attachments: [...attachments],
       createdAt: Date.now(),
     }, ...items].slice(0, maxStashedPrompts);
-    if (!writeStashedPrompts(taskId, next)) {
+    if (!writeStashedPrompts(workspacePath, taskId, next)) {
       setStorageError(true);
       setOpen(true);
       return;
@@ -151,7 +171,7 @@ export function StashedPrompts({
 
   const remove = (id: string) => {
     const next = items.filter((item) => item.id !== id);
-    if (!writeStashedPrompts(taskId, next)) {
+    if (!writeStashedPrompts(workspacePath, taskId, next)) {
       setStorageError(true);
       return false;
     }

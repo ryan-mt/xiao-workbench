@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -260,6 +260,31 @@ describe("Sidebar attention trigger", () => {
     expect(screen.queryByRole("button", { name: nestedTask.title })).toBeNull();
   });
 
+  it("expands only the most-specific nested project and renders its tasks once", () => {
+    const nestedProject = {
+      name: "Nested",
+      path: `${project.path}/nested`,
+      updatedAt: Date.now(),
+    };
+    const nestedTask = task("Nested task", Date.now());
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project, nestedProject],
+      tasks: [nestedTask],
+      activeTaskId: nestedTask.id,
+      activeProjectPath: `${nestedProject.path}/.xiao/worktrees/pr-12`,
+    }));
+
+    const parentButton = document.querySelector<HTMLButtonElement>(
+      `.sidebar-project__select[title="${project.path}"]`,
+    );
+    const nestedButton = document.querySelector<HTMLButtonElement>(
+      `.sidebar-project__select[title="${nestedProject.path}"]`,
+    );
+    expect(parentButton?.getAttribute("aria-expanded")).toBe("false");
+    expect(nestedButton?.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getAllByRole("button", { name: nestedTask.title })).toHaveLength(1);
+  });
+
   it("labels project and group creation actions", () => {
     const markup = renderSidebar(0, "tasks", "ready", { projects: [project] }, true);
 
@@ -308,15 +333,6 @@ describe("Sidebar attention trigger", () => {
     expect(markup).toContain('aria-label="Move Empty Group down"');
     expect(markup).toContain('aria-label="Delete Empty Group"');
     expect(markup).toContain(">Ungrouped</span>");
-  });
-});
-
-describe("Sidebar Companion trigger", () => {
-  it("exposes Companion as a keyboard-accessible utility page", () => {
-    const markup = renderSidebar(0, "companion");
-
-    expect(markup).toContain(">Companion</span>");
-    expect(markup).toContain('aria-current="page"');
   });
 });
 
@@ -414,6 +430,91 @@ describe("Sidebar task group disclosure", () => {
 });
 
 describe("Sidebar Codex thread menu", () => {
+  it("ignores a stale clipboard success after a newer menu opens", async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    let resolveCopy: (() => void) | undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn(() => new Promise<void>((resolve) => {
+          resolveCopy = resolve;
+        })),
+      },
+    });
+    const oldThread: CodexThreadSummary = {
+      id: "thread-old",
+      title: "Old chat",
+      preview: "",
+      cwd: workspace.path,
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    };
+    const newerTask = task("Newer task", Date.now());
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [newerTask],
+      codexThreads: [oldThread],
+    }));
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Old chat/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy title" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: newerTask.title }));
+    resolveCopy?.();
+
+    await waitFor(() => {
+      expect(screen.getByRole("menu", { name: `Actions for ${newerTask.title}` })).not.toBeNull();
+    });
+    if (originalClipboard) {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    } else {
+      delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
+  it("ignores a stale clipboard failure after a newer menu opens", async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    let rejectCopy: ((reason: Error) => void) | undefined;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn(() => new Promise<void>((_resolve, reject) => {
+          rejectCopy = reject;
+        })),
+      },
+    });
+    const oldThread: CodexThreadSummary = {
+      id: "thread-old",
+      title: "Old chat",
+      preview: "",
+      cwd: workspace.path,
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    };
+    const newerTask = task("Newer task", Date.now());
+    render(sidebarElement(0, "tasks", "ready", {
+      projects: [project],
+      tasks: [newerTask],
+      codexThreads: [oldThread],
+    }));
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /Old chat/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy title" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: newerTask.title }));
+    rejectCopy?.(new Error("denied"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("menu", { name: `Actions for ${newerTask.title}` })).not.toBeNull();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    if (originalClipboard) {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    } else {
+      delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
   it("reclamps against the rendered height when a copy error expands the menu", async () => {
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 300 });

@@ -157,7 +157,7 @@ impl LspManager {
         let path = resolve_document(root, relative_path)?;
         let language = Language::for_path(&path)?;
         let server = self.server(environment_id, root, language)?;
-        let uri = server.synchronize_document(&path, language.document_id(&path))?;
+        let (uri, _) = server.synchronize_document(&path, language.document_id(&path))?;
         let mut params = json!({
             "textDocument": { "uri": uri },
             "position": { "line": line, "character": character },
@@ -199,8 +199,8 @@ impl LspManager {
         let path = resolve_document(root, relative_path)?;
         let language = Language::for_path(&path)?;
         let server = self.server(environment_id, root, language)?;
-        let uri = server.synchronize_document(&path, language.document_id(&path))?;
-        let mut diagnostics = server.wait_for_diagnostics(&uri, DIAGNOSTIC_WAIT)?;
+        let (uri, version) = server.synchronize_document(&path, language.document_id(&path))?;
+        let mut diagnostics = server.wait_for_diagnostics(&uri, version, DIAGNOSTIC_WAIT)?;
         if diagnostics.is_none() {
             diagnostics = server
                 .request(
@@ -250,8 +250,14 @@ struct OpenDocument {
 
 #[derive(Default)]
 struct DiagnosticsState {
-    values: Mutex<HashMap<String, Vec<Value>>>,
+    values: Mutex<HashMap<String, PublishedDiagnostics>>,
     updated: Condvar,
+}
+
+#[derive(Clone)]
+struct PublishedDiagnostics {
+    version: Option<i64>,
+    items: Vec<Value>,
 }
 
 type PendingRequest = mpsc::Sender<Result<Value, String>>;
@@ -471,7 +477,11 @@ impl LspServer {
         write_message(stdin, message)
     }
 
-    fn synchronize_document(&self, path: &Path, language_id: &str) -> Result<String, String> {
+    fn synchronize_document(
+        &self,
+        path: &Path,
+        language_id: &str,
+    ) -> Result<(String, i64), String> {
         let metadata =
             fs::metadata(path).map_err(|error| io_error(error, "inspect the LSP file"))?;
         if metadata.len() > MAX_DOCUMENT_BYTES {
@@ -481,21 +491,21 @@ impl LspServer {
             fs::read_to_string(path).map_err(|error| io_error(error, "read the LSP file"))?;
         let uri = path_to_file_uri(path)?;
         let digest: [u8; 32] = Sha256::digest(text.as_bytes()).into();
-        let update = {
+        let (update, version) = {
             let mut documents = self
                 .open_documents
                 .lock()
                 .map_err(|error| error.to_string())?;
             match documents.get_mut(&uri) {
-                Some(document) if document.digest == digest => None,
+                Some(document) if document.digest == digest => (None, document.version),
                 Some(document) => {
                     document.version += 1;
                     document.digest = digest;
-                    Some((false, document.version))
+                    (Some((false, document.version)), document.version)
                 }
                 None => {
                     documents.insert(uri.clone(), OpenDocument { digest, version: 1 });
-                    Some((true, 1))
+                    (Some((true, 1)), 1)
                 }
             }
         };
@@ -527,12 +537,13 @@ impl LspServer {
             )?,
             None => {}
         }
-        Ok(uri)
+        Ok((uri, version))
     }
 
     fn wait_for_diagnostics(
         &self,
         uri: &str,
+        version: i64,
         timeout: Duration,
     ) -> Result<Option<Vec<Value>>, String> {
         let values = self
@@ -543,9 +554,16 @@ impl LspServer {
         let (values, _) = self
             .diagnostics
             .updated
-            .wait_timeout_while(values, timeout, |values| !values.contains_key(uri))
+            .wait_timeout_while(values, timeout, |values| {
+                !values.get(uri).is_some_and(|diagnostics| {
+                    diagnostics.version.is_none() || diagnostics.version == Some(version)
+                })
+            })
             .map_err(|error| error.to_string())?;
-        Ok(values.get(uri).cloned())
+        Ok(values.get(uri).and_then(|diagnostics| {
+            (diagnostics.version.is_none() || diagnostics.version == Some(version))
+                .then(|| diagnostics.items.clone())
+        }))
     }
 
     fn stderr(&self) -> String {
@@ -641,16 +659,35 @@ fn start_stdout_reader(
                             .and_then(|params| params.get("diagnostics"))
                             .and_then(Value::as_array),
                     ) {
-                        if let Ok(mut values) = diagnostics.values.lock() {
-                            values.insert(uri.to_owned(), items.clone());
-                            diagnostics.updated.notify_all();
-                        }
+                        let version = message
+                            .get("params")
+                            .and_then(|params| params.get("version"))
+                            .and_then(Value::as_i64);
+                        publish_diagnostics(&diagnostics, uri, version, items.clone());
                     }
                 }
             }
         })
         .map(|_| ())
         .map_err(|error| format!("Could not monitor language server stdout: {error}"))
+}
+
+fn publish_diagnostics(
+    diagnostics: &DiagnosticsState,
+    uri: &str,
+    version: Option<i64>,
+    items: Vec<Value>,
+) {
+    if let Ok(mut values) = diagnostics.values.lock() {
+        let is_stale = matches!(
+            (values.get(uri).and_then(|value| value.version), version),
+            (Some(current), Some(incoming)) if incoming < current
+        );
+        if !is_stale {
+            values.insert(uri.to_owned(), PublishedDiagnostics { version, items });
+            diagnostics.updated.notify_all();
+        }
+    }
 }
 
 fn resolve_response(pending: &Mutex<HashMap<u64, PendingRequest>>, id: u64, message: &Value) {
@@ -1076,6 +1113,28 @@ mod tests {
     }
 
     #[test]
+    fn versioned_diagnostics_do_not_regress_to_an_older_version() {
+        let diagnostics = DiagnosticsState::default();
+        publish_diagnostics(
+            &diagnostics,
+            "file:///test.rs",
+            Some(2),
+            vec![json!("current")],
+        );
+        publish_diagnostics(
+            &diagnostics,
+            "file:///test.rs",
+            Some(1),
+            vec![json!("stale")],
+        );
+
+        let values = diagnostics.values.lock().unwrap();
+        let published = values.get("file:///test.rs").unwrap();
+        assert_eq!(published.version, Some(2));
+        assert_eq!(published.items, vec![json!("current")]);
+    }
+
+    #[test]
     fn traversal_never_reaches_a_document() {
         let root = std::env::temp_dir().join(format!("xiao-lsp-root-{}", uuid::Uuid::now_v7()));
         fs::create_dir_all(&root).unwrap();
@@ -1143,7 +1202,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let uri = server.synchronize_document(&file, "rust").unwrap();
+        let (uri, version) = server.synchronize_document(&file, "rust").unwrap();
         let definition = server
             .request(
                 "textDocument/definition",
@@ -1162,14 +1221,30 @@ mod tests {
             .unwrap();
         assert_eq!(symbols[0]["name"], "example");
         let diagnostics = server
-            .wait_for_diagnostics(&uri, Duration::from_secs(1))
+            .wait_for_diagnostics(&uri, version, Duration::from_secs(1))
             .unwrap()
             .unwrap();
         assert_eq!(diagnostics[0]["message"], "fake diagnostic");
         fs::write(&file, "fn example() { let changed = true; }\n").unwrap();
-        server.synchronize_document(&file, "rust").unwrap();
+        let (_, version) = server.synchronize_document(&file, "rust").unwrap();
+        assert!(server
+            .wait_for_diagnostics(&uri, version, Duration::ZERO)
+            .unwrap()
+            .is_none());
+        publish_diagnostics(
+            &server.diagnostics,
+            &uri,
+            None,
+            vec![json!({
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 2 }
+                },
+                "message": "updated fake diagnostic"
+            })],
+        );
         let diagnostics = server
-            .wait_for_diagnostics(&uri, Duration::from_secs(1))
+            .wait_for_diagnostics(&uri, version, Duration::from_secs(1))
             .unwrap()
             .unwrap();
         assert_eq!(diagnostics[0]["message"], "updated fake diagnostic");
@@ -1210,29 +1285,26 @@ mod tests {
                     document_uri = message["params"]["textDocument"]["uri"]
                         .as_str()
                         .map(str::to_owned);
-                    let diagnostic = if method == "textDocument/didOpen" {
-                        "fake diagnostic"
-                    } else {
-                        "updated fake diagnostic"
-                    };
-                    write_message(
-                        &mut writer,
-                        &json!({
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": {
-                                "uri": document_uri,
-                                "diagnostics": [{
-                                    "range": {
-                                        "start": { "line": 0, "character": 0 },
-                                        "end": { "line": 0, "character": 2 }
-                                    },
-                                    "message": diagnostic
-                                }]
-                            }
-                        }),
-                    )
-                    .unwrap();
+                    if method == "textDocument/didOpen" {
+                        write_message(
+                            &mut writer,
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "method": "textDocument/publishDiagnostics",
+                                "params": {
+                                    "uri": document_uri,
+                                    "diagnostics": [{
+                                        "range": {
+                                            "start": { "line": 0, "character": 0 },
+                                            "end": { "line": 0, "character": 2 }
+                                        },
+                                        "message": "fake diagnostic"
+                                    }]
+                                }
+                            }),
+                        )
+                        .unwrap();
+                    }
                 }
                 "textDocument/definition" | "textDocument/references" => {
                     write_message(
@@ -1302,7 +1374,7 @@ mod tests {
             .expect("the LSP smoke marker moved");
         let command = language_server_command(&root, Language::Rust).unwrap();
         let server = LspServer::spawn(&root, Language::Rust, command, false).unwrap();
-        let uri = server.synchronize_document(&path, "rust").unwrap();
+        let (uri, _) = server.synchronize_document(&path, "rust").unwrap();
         let result = server
             .request_semantic(
                 "textDocument/definition",

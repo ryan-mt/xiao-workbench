@@ -13,7 +13,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::companion::repository::{COMPANION_MIGRATION_2_SQL, COMPANION_SCHEMA_SQL};
 use crate::execution::models::{
     ExecutionEnvironmentRecord, ManagedWorktreeRecord, ManagedWorktreeStatus,
     NewManagedWorktreeRecord, TaskExecutionBinding,
@@ -41,8 +40,41 @@ const MAX_TIMELINE_PAGE_SIZE: usize = 200;
 // frontend, Rust, type-check, and production-build gates pass for the slice.
 const VALIDATED_CONTROL_MODEL_CAPABILITY_VERSION: i64 = 1;
 const VALIDATED_OUTCOME_SUPERVISION_CAPABILITY_VERSION: i64 = 1;
-const VALIDATED_COMPANION_RELEASE_CERTIFICATION: Option<&str> =
-    option_env!("XIAO_TICKET03_RELEASE_CERTIFIED");
+// Keep the retired migration slots so databases created by older releases remain compatible.
+const REMOVED_COMPANION_MIGRATION_SQL: &str = "SELECT 1;";
+const RETIRE_COMPANION_MIGRATION_SQL: &str = r#"
+DROP TRIGGER IF EXISTS companion_projection_deduplicate;
+DROP TRIGGER IF EXISTS companion_projection_advance;
+DROP TRIGGER IF EXISTS companion_project_insert;
+DROP TRIGGER IF EXISTS companion_project_update;
+DROP TRIGGER IF EXISTS companion_project_delete;
+DROP TRIGGER IF EXISTS companion_task_insert;
+DROP TRIGGER IF EXISTS companion_task_update;
+DROP TRIGGER IF EXISTS companion_task_delete;
+DROP TRIGGER IF EXISTS companion_run_insert;
+DROP TRIGGER IF EXISTS companion_run_update;
+DROP TRIGGER IF EXISTS companion_run_delete;
+DROP TRIGGER IF EXISTS companion_attention_insert;
+DROP TRIGGER IF EXISTS companion_attention_update;
+DROP TRIGGER IF EXISTS companion_attention_delete;
+DROP TRIGGER IF EXISTS companion_timeline_insert;
+DROP TRIGGER IF EXISTS companion_timeline_delete;
+DROP TRIGGER IF EXISTS companion_pending_input_insert;
+DROP TRIGGER IF EXISTS companion_pending_input_update;
+DROP TRIGGER IF EXISTS companion_pending_input_delete;
+DROP TRIGGER IF EXISTS companion_verification_insert;
+DROP TRIGGER IF EXISTS companion_verification_update;
+DROP TRIGGER IF EXISTS companion_verification_delete;
+
+DROP TABLE IF EXISTS companion_command_outbox;
+DROP TABLE IF EXISTS companion_commands;
+DROP TABLE IF EXISTS companion_sessions;
+DROP TABLE IF EXISTS companion_pairings;
+DROP TABLE IF EXISTS companion_projection_updates;
+DROP TABLE IF EXISTS companion_projection_state;
+DROP TABLE IF EXISTS companion_audit;
+DROP TABLE IF EXISTS capability_rollouts;
+"#;
 
 const MIGRATION_1_SQL: &str = r#"
 CREATE TABLE legacy_imports (
@@ -1582,6 +1614,16 @@ impl XiaoRepository {
                 return existing.decode();
             }
 
+            type TaskTransitionState = (
+                i64,
+                String,
+                i64,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                bool,
+            );
             let (
                 workspace_id,
                 current_stage,
@@ -1591,16 +1633,7 @@ impl XiaoRepository {
                 latest_run_id,
                 latest_run_status,
                 has_active_run,
-            ): (
-                i64,
-                String,
-                i64,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                bool,
-            ) = transaction
+            ): TaskTransitionState = transaction
                 .query_row(
                     r#"SELECT tasks.workspace_id, tasks.task_stage, tasks.task_stage_version,
                               tasks.acceptance_contract_version_id,
@@ -2430,18 +2463,6 @@ fn open_connection(
         .map_err(|error| {
             format!("Could not enable validated outcome-supervision capability: {error}")
         })?;
-    if VALIDATED_COMPANION_RELEASE_CERTIFICATION.is_some() {
-        connection
-            .execute(
-                r#"UPDATE rollout_capabilities
-                   SET enabled = 1, enabled_at = ?1
-                   WHERE capability_id = 'companion-release-assurance' AND version = 1"#,
-                [now_millis()?],
-            )
-            .map_err(|error| {
-                format!("Could not enable validated Companion release capability: {error}")
-            })?;
-    }
     migrate_legacy_store(
         &mut connection,
         app_data_dir,
@@ -2536,12 +2557,17 @@ fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
         (
             10_i64,
             "companion_and_release_assurance",
-            COMPANION_SCHEMA_SQL,
+            REMOVED_COMPANION_MIGRATION_SQL,
         ),
         (
             11_i64,
             "companion_pairing_grant_ceiling",
-            COMPANION_MIGRATION_2_SQL,
+            REMOVED_COMPANION_MIGRATION_SQL,
+        ),
+        (
+            12_i64,
+            "retire_companion_runtime",
+            RETIRE_COMPANION_MIGRATION_SQL,
         ),
     ];
     for (version, name, sql) in migrations {
@@ -3814,7 +3840,7 @@ fn search_history_from_connection(
         let Some(text) = text else {
             continue;
         };
-        if !unicode_case_key(&text).contains(&normalized_query) {
+        if !unicode_case_key(text).contains(&normalized_query) {
             continue;
         }
         let Some(entry_id) = entry.get("id").and_then(serde_json::Value::as_str) else {
@@ -4579,6 +4605,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn retired_companion_migration_removes_legacy_storage_and_triggers() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE capability_rollouts (capability_id TEXT PRIMARY KEY);
+                CREATE TABLE tasks (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_pairings (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_sessions (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_projection_state (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_projection_updates (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_commands (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_command_outbox (id TEXT PRIMARY KEY);
+                CREATE TABLE companion_audit (id TEXT PRIMARY KEY);
+                CREATE TRIGGER companion_task_insert AFTER INSERT ON tasks BEGIN SELECT 1; END;
+                "#,
+            )
+            .unwrap();
+
+        connection
+            .execute_batch(RETIRE_COMPANION_MIGRATION_SQL)
+            .unwrap();
+
+        let legacy_objects: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'companion_%' OR name = 'capability_rollouts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_objects, 0);
+    }
+
     fn timeline_entry(index: usize) -> Value {
         serde_json::json!({
             "id": format!("entry-{index}"),
@@ -4891,29 +4951,6 @@ mod tests {
                             |row| Ok((row.get(0)?, row.get(1)?)),
                         )
                         .map_err(|error| error.to_string())?;
-                    let companion_tables: i64 = connection
-                        .query_row(
-                            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('companion_pairings', 'companion_sessions', 'companion_projection_state', 'companion_projection_updates', 'companion_commands', 'companion_audit')",
-                            [],
-                            |row| row.get(0),
-                        )
-                        .map_err(|error| error.to_string())?;
-                    let companion_capability: (i64, i64) = connection
-                        .query_row(
-                            "SELECT version, enabled FROM rollout_capabilities WHERE capability_id = 'companion-release-assurance'",
-                            [],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        )
-                        .map_err(|error| error.to_string())?;
-                    let companion_pairing_grant_ceiling: (i64, Option<String>) = connection
-                        .query_row(
-                            "SELECT [notnull], dflt_value
-                             FROM pragma_table_info('companion_pairings')
-                             WHERE name = 'max_grants_json'",
-                            [],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
-                        )
-                        .map_err(|error| error.to_string())?;
                     let task_control_columns: i64 = connection
                         .query_row(
                             "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name IN ('task_stage', 'task_stage_version', 'codex_profile_id', 'workbench_state_json')",
@@ -4929,15 +4966,6 @@ mod tests {
                     assert_eq!(control_model_capability, (1, 1));
                     assert_eq!(outcome_supervision_tables, 2);
                     assert_eq!(outcome_supervision_capability, (1, 1));
-                    assert_eq!(companion_tables, 6);
-                    assert_eq!(companion_pairing_grant_ceiling, (1, Some("'[]'".to_owned())));
-                    assert_eq!(
-                        companion_capability,
-                        (
-                            1,
-                            i64::from(VALIDATED_COMPANION_RELEASE_CERTIFICATION.is_some()),
-                        )
-                    );
                     assert_eq!(task_control_columns, 4);
                     assert_eq!(pending_inputs, 1);
                     assert_eq!(runtime_generations, 1);
@@ -4961,84 +4989,6 @@ mod tests {
                     })
                     .map_err(|error| error.to_string())?;
                 assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn schema_v10_upgrade_adds_companion_pairing_grant_ceiling() {
-        let directory = TestDirectory::new("schema-v10-companion-grants-upgrade");
-        let database_path = directory.path.join(DATABASE_FILE_NAME);
-        {
-            let mut connection = Connection::open(&database_path).unwrap();
-            configure_connection(&mut connection).unwrap();
-            connection
-                .execute_batch(
-                    r#"CREATE TABLE schema_migrations (
-                        version INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        applied_at INTEGER NOT NULL
-                    );"#,
-                )
-                .unwrap();
-            for (version, name, sql) in [
-                (1_i64, "v1", MIGRATION_1_SQL),
-                (2_i64, "v2", MIGRATION_2_SQL),
-                (3_i64, "v3", MIGRATION_3_SQL),
-                (4_i64, "v4", MIGRATION_4_SQL),
-                (5_i64, "v5", MIGRATION_5_SQL),
-                (6_i64, "v6", MIGRATION_6_SQL),
-                (7_i64, "v7", MIGRATION_7_SQL),
-                (8_i64, "v8", MIGRATION_8_SQL),
-                (9_i64, "v9", MIGRATION_9_SQL),
-                (10_i64, "v10", COMPANION_SCHEMA_SQL),
-            ] {
-                let transaction = connection.transaction().unwrap();
-                transaction.execute_batch(sql).unwrap();
-                if version == 2 {
-                    backfill_execution_environments(&transaction).unwrap();
-                }
-                if version == 7 {
-                    backfill_queued_run_profiles(&transaction).unwrap();
-                }
-                transaction
-                    .execute(
-                        "INSERT INTO schema_migrations(version, name, applied_at)
-                         VALUES (?1, ?2, ?3)",
-                        params![version, name, version],
-                    )
-                    .unwrap();
-                transaction.commit().unwrap();
-            }
-            connection
-                .execute(
-                    "INSERT INTO companion_pairings(
-                        id, secret_hash, expires_at, consumed_at, created_at
-                     ) VALUES ('pairing-v10', 'hash-v10', 100, NULL, 1)",
-                    [],
-                )
-                .unwrap();
-        }
-
-        let repository = XiaoRepository::open(&directory.path).unwrap();
-        repository
-            .with_connection(|connection| {
-                crate::companion::repository::CompanionRepository::verify_schema(connection)?;
-                let migration_count: i64 = connection
-                    .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
-                        row.get(0)
-                    })
-                    .map_err(|error| error.to_string())?;
-                let max_grants_json: String = connection
-                    .query_row(
-                        "SELECT max_grants_json FROM companion_pairings WHERE id = 'pairing-v10'",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .map_err(|error| error.to_string())?;
-                assert_eq!(migration_count, XIAO_DATABASE_SCHEMA_VERSION);
-                assert_eq!(max_grants_json, "[]");
                 Ok(())
             })
             .unwrap();

@@ -8,6 +8,8 @@ const folios = [
     title: "Focus Rail beside the conversation",
     body: "Files, diffs, repository actions, runtime context, and a real native terminal stay one reach away. The middle of the screen stays the task.",
     image: "/screenshots/sidebar.png",
+    width: 1440,
+    height: 900,
     alt: "Xiao sidebar and workbench",
     flip: false,
     fig: "Fig. rail",
@@ -17,6 +19,8 @@ const folios = [
     title: "Attention Center across projects",
     body: "Decisions, verification, failures, review, publication, and routine outcomes surface here instead of vanishing into scrollback.",
     image: "/screenshots/attention.png",
+    width: 553,
+    height: 839,
     alt: "Attention Center",
     flip: true,
     fig: "Fig. attention",
@@ -26,6 +30,8 @@ const folios = [
     title: "Command menu and local prefs",
     body: "Jump across projects and actions without leaving the desk. Themes stay light, dark, or system. Profile stays on the host.",
     image: "/screenshots/command-menu.png",
+    width: 1440,
+    height: 900,
     alt: "Command menu",
     flip: false,
     fig: "Fig. command",
@@ -40,10 +46,6 @@ const also = [
   {
     title: "Isolated Task workspaces",
     body: "Git projects default to a managed worktree so concurrent Runs do not share one checkout.",
-  },
-  {
-    title: "Companion on your phone",
-    body: "Pair on the same LAN to monitor, chat, assign a Task, and take bounded interventions. Host stays authoritative.",
   },
   {
     title: "Browser, terminal, Xiao Break",
@@ -85,8 +87,8 @@ export function Features() {
                   <Image
                     src={folio.image}
                     alt={folio.alt}
-                    width={1600}
-                    height={1000}
+                    width={folio.width}
+                    height={folio.height}
                     sizes="(max-width: 920px) 100vw, 55vw"
                   />
                   <div className="specimen-meta">

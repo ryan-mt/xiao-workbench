@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const VERIFY_GATES = Object.freeze([
   ["npm", ["run", "version:test"]],
   ["npm", ["run", "version:check"]],
-  ["npm", ["run", "certification:test"]],
-  ["npm", ["run", "certification:check"]],
   ["npm", ["run", "check"]],
   ["npm", ["test", "--", "--run"]],
   ["cargo", ["fmt", "--all", "--manifest-path", "src-tauri/Cargo.toml", "--", "--check"]],
@@ -23,6 +23,37 @@ export const VERIFY_GATES = Object.freeze([
 
 function formatCommand(command, args) {
   return `${command} ${args.join(" ")}`;
+}
+
+function assertValidReleaseDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("XIAO_RELEASE_DATE must be a valid YYYY-MM-DD UTC date.");
+  }
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new Error("XIAO_RELEASE_DATE must be a valid YYYY-MM-DD UTC date.");
+  }
+  return date;
+}
+
+export function releaseDateFromPackageVersion(version) {
+  const match = /^0\.0\.0-day(\d{2})(\d{2})(\d{4})$/.exec(version);
+  if (!match) {
+    throw new Error("Root package.json version must exactly match 0.0.0-dayMMDDYYYY.");
+  }
+  const [, month, day, year] = match;
+  return assertValidReleaseDate(`${year}-${month}-${day}`);
+}
+
+function verifyEnvironment(cwd, env) {
+  if (Object.hasOwn(env, "XIAO_RELEASE_DATE")) {
+    return { ...env, XIAO_RELEASE_DATE: assertValidReleaseDate(env.XIAO_RELEASE_DATE) };
+  }
+  const packageJson = JSON.parse(readFileSync(resolve(cwd, "package.json"), "utf8"));
+  return {
+    ...env,
+    XIAO_RELEASE_DATE: releaseDateFromPackageVersion(packageJson.version),
+  };
 }
 
 function spawnCommand(command, args, { spawn, cwd, env }) {
@@ -51,9 +82,10 @@ export function runVerify({
   env = process.env,
   write = (text) => process.stdout.write(text),
 } = {}) {
+  const gateEnv = verifyEnvironment(cwd, env);
   for (const [command, args] of gates) {
     write(`\n[verify] ${formatCommand(command, args)}\n`);
-    const result = spawnCommand(command, args, { spawn, cwd, env });
+    const result = spawnCommand(command, args, { spawn, cwd, env: gateEnv });
     if (result.error) {
       write(`[verify] failed to start: ${result.error.message}\n`);
       return 1;

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +16,23 @@ const MAX_CHANGES: usize = 300;
 const MAX_PATCH_BYTES: usize = 96 * 1024;
 const MAX_DIFF_PATHS_PER_COMMAND: usize = 32;
 const MAX_APPLY_PATCH_BYTES: usize = 8 * 1024 * 1024;
+const GIT_SELECTION_ENVIRONMENT_OVERRIDES: [&str; 15] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_NAMESPACE",
+    "GIT_SHALLOW_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
 static CHECKPOINT_COUNTER: AtomicU64 = AtomicU64::new(1);
 static GIT_INDEX_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CHECKPOINT_ADD_ARGUMENTS: &[&str] = &[
@@ -166,7 +183,7 @@ pub fn publish_current_branch(workspace_path: &str) -> Result<GitPushResult, Str
     }
     arguments.extend([remote.clone(), refspec]);
 
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg("-C")
         .arg(&root)
@@ -691,7 +708,7 @@ fn split_git_patch(patch: &str) -> Vec<String> {
 
 fn untracked_patch(workspace_root: &Path, path: &str) -> (String, bool, usize, usize) {
     let full_path = workspace_root.join(path);
-    let Ok(bytes) = fs::read(&full_path) else {
+    let Ok(metadata) = fs::symlink_metadata(&full_path) else {
         return (
             "Unable to read this untracked file.".to_owned(),
             false,
@@ -699,6 +716,44 @@ fn untracked_patch(workspace_root: &Path, path: &str) -> (String, bool, usize, u
             0,
         );
     };
+    if metadata.file_type().is_symlink() {
+        return (
+            "Symbolic link (preview unavailable).".to_owned(),
+            false,
+            0,
+            0,
+        );
+    }
+    let Ok(file) = fs::File::open(&full_path) else {
+        return (
+            "Unable to read this untracked file.".to_owned(),
+            false,
+            0,
+            0,
+        );
+    };
+    let mut bytes = Vec::with_capacity(MAX_PATCH_BYTES + 1);
+    if file
+        .take((MAX_PATCH_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return (
+            "Unable to read this untracked file.".to_owned(),
+            false,
+            0,
+            0,
+        );
+    }
+    let input_truncated = bytes.len() > MAX_PATCH_BYTES;
+    if input_truncated {
+        bytes.truncate(MAX_PATCH_BYTES);
+        if let Err(error) = std::str::from_utf8(&bytes) {
+            if error.error_len().is_none() {
+                bytes.truncate(error.valid_up_to());
+            }
+        }
+    }
     let Ok(text) = String::from_utf8(bytes) else {
         return ("Binary file (preview unavailable).".to_owned(), false, 0, 0);
     };
@@ -712,8 +767,8 @@ fn untracked_patch(workspace_root: &Path, path: &str) -> (String, bool, usize, u
             break;
         }
     }
-    let (patch, truncated) = truncate_patch(patch);
-    (patch, truncated, additions, 0)
+    let (patch, patch_truncated) = truncate_patch(patch);
+    (patch, input_truncated || patch_truncated, additions, 0)
 }
 
 fn truncate_patch(mut patch: String) -> (String, bool) {
@@ -743,7 +798,7 @@ fn count_patch_lines(patch: &str) -> (usize, usize) {
 }
 
 fn read_git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .args(["-c", "core.fsmonitor=false"])
         .arg("-C")
@@ -1003,7 +1058,7 @@ pub fn apply_workspace_patch(
         }
     }
 
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command.arg("-C").arg(command_root).arg("apply");
     if let Some(prefix) = workspace_prefix {
         command.arg(format!("--directory={prefix}"));
@@ -1065,7 +1120,7 @@ pub fn create_workspace_checkpoint(workspace_path: &str) -> Result<String, Strin
 
     let result = (|| {
         let repository = directory.join("repository.git");
-        let mut init = Command::new("git");
+        let mut init = git_command();
         init.arg("init").arg("--bare").arg(&repository);
         hide_window(&mut init);
         let output = init.output().map_err(|error| error.to_string())?;
@@ -1364,7 +1419,7 @@ fn snapshot_workspace(directory: &Path, repository: &Path, workspace: &Path) -> 
 }
 
 fn existing_tracked_workspace_paths(workspace: &Path) -> Result<Vec<u8>, String> {
-    let mut tracked_command = Command::new("git");
+    let mut tracked_command = git_command();
     tracked_command
         .arg("-C")
         .arg(workspace)
@@ -1377,7 +1432,7 @@ fn existing_tracked_workspace_paths(workspace: &Path) -> Result<Vec<u8>, String>
         return Ok(Vec::new());
     }
 
-    let mut deleted_command = Command::new("git");
+    let mut deleted_command = git_command();
     deleted_command
         .arg("-C")
         .arg(workspace)
@@ -1418,7 +1473,7 @@ fn run_checkpoint_git(
     workspace: &Path,
     arguments: &[&str],
 ) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg(format!("--git-dir={}", repository.to_string_lossy()))
         .arg(format!("--work-tree={}", workspace.to_string_lossy()))
@@ -1443,7 +1498,7 @@ fn run_checkpoint_git_with_input(
     arguments: &[&str],
     input: &[u8],
 ) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg(format!("--git-dir={}", repository.to_string_lossy()))
         .arg(format!("--work-tree={}", workspace.to_string_lossy()))
@@ -1754,6 +1809,9 @@ fn validate_git_paths(paths: &[String]) -> Result<(), String> {
         return Err("Select at least one workspace path.".to_owned());
     }
     for path in paths {
+        if path.is_empty() || path.starts_with(':') {
+            return Err("Git pathspec magic is not allowed.".to_owned());
+        }
         let candidate = Path::new(path);
         if candidate.is_absolute()
             || candidate.components().any(|component| {
@@ -1777,7 +1835,7 @@ fn run_git_checked(root: &Path, arguments: &[String]) -> Result<String, String> 
 }
 
 fn run_git_bytes_checked(root: &Path, arguments: &[String]) -> Result<Vec<u8>, String> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command.arg("-C").arg(root).args(arguments);
     hide_window(&mut command);
     let output = command.output().map_err(|error| error.to_string())?;
@@ -1794,7 +1852,7 @@ fn run_git_with_index(
     index: &Path,
     input: Option<&[u8]>,
 ) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg("-C")
         .arg(root)
@@ -1830,6 +1888,35 @@ fn run_git_with_index(
     }
 }
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    for variable in GIT_SELECTION_ENVIRONMENT_OVERRIDES {
+        command.env_remove(variable);
+    }
+    for variable in [
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+    ] {
+        command.env_remove(variable);
+    }
+    for (variable, _) in std::env::vars_os() {
+        let normalized = variable.to_string_lossy().to_ascii_uppercase();
+        if normalized.starts_with("GIT_CONFIG_KEY_") || normalized.starts_with("GIT_CONFIG_VALUE_")
+        {
+            command.env_remove(variable);
+        }
+    }
+    command.env("GIT_CONFIG_NOSYSTEM", "1").env(
+        "GIT_CONFIG_GLOBAL",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    );
+    command
+}
+
 #[cfg(windows)]
 fn hide_window(command: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -1853,7 +1940,6 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::sync::Mutex;
 
     static GH_TEST_ENVIRONMENT: Mutex<()> = Mutex::new(());
@@ -1988,6 +2074,54 @@ mod tests {
     }
 
     #[test]
+    fn untracked_preview_reads_only_a_bounded_prefix() {
+        let root = temporary_directory("bounded-untracked-preview");
+        fs::create_dir_all(&root).unwrap();
+        let mut contents = vec![b'a'; super::MAX_PATCH_BYTES];
+        contents.push(0xff);
+        fs::write(root.join("large.txt"), contents).unwrap();
+
+        let (patch, truncated, additions, deletions) = super::untracked_patch(&root, "large.txt");
+
+        assert!(patch.starts_with("--- /dev/null\n+++ b/large.txt\n+aaa"));
+        assert!(truncated);
+        assert_eq!(additions, 1);
+        assert_eq!(deletions, 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_preview_does_not_follow_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_directory("symlink-untracked-preview");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.with_extension("secret");
+        fs::write(&target, "secret outside contents\n").unwrap();
+        symlink(&target, root.join("link.txt")).unwrap();
+
+        let (patch, truncated, additions, deletions) = super::untracked_patch(&root, "link.txt");
+
+        assert_eq!(patch, "Symbolic link (preview unavailable).");
+        assert!(!truncated);
+        assert_eq!(additions, 0);
+        assert_eq!(deletions, 0);
+        let _ = fs::remove_file(target);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_commands_clear_repository_selection_environment() {
+        let command = super::git_command();
+        for variable in super::GIT_SELECTION_ENVIRONMENT_OVERRIDES {
+            assert!(command
+                .get_envs()
+                .any(|(key, value)| { key == std::ffi::OsStr::new(variable) && value.is_none() }));
+        }
+    }
+
+    #[test]
     fn publish_current_branch_sets_upstream_and_pushes_without_force() {
         let root = temporary_directory("publish-branch");
         let remote = temporary_directory("publish-remote");
@@ -1999,7 +2133,7 @@ mod tests {
         run(&root, &["add", "."]);
         run(&root, &["commit", "-m", "initial"]);
         run(&root, &["branch", "-M", "feature/ship-flow"]);
-        let output = Command::new("git")
+        let output = super::git_command()
             .args(["init", "--bare"])
             .arg(&remote)
             .output()
@@ -2067,7 +2201,7 @@ mod tests {
         run(&root, &["add", "."]);
         run(&root, &["commit", "-m", "initial"]);
         run(&root, &["branch", "-M", "feature/ship-flow"]);
-        let output = Command::new("git")
+        let output = super::git_command()
             .args(["init", "--bare"])
             .arg(&remote)
             .output()
@@ -2336,6 +2470,41 @@ if (args[0] === "pr" && args[1] === "list" && args.includes("open")) {
         let status = super::run_git(&root, &["status", "--porcelain"]).unwrap();
         assert_eq!(status.trim(), "?? first.txt");
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn mutating_actions_reject_git_pathspec_magic() {
+        let root = temporary_directory("pathspec-magic");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        run(&root, &["init"]);
+        run(&root, &["config", "user.email", "xiao@example.com"]);
+        run(&root, &["config", "user.name", "Xiao Test"]);
+        fs::write(root.join("outside.txt"), "before\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-m", "initial"]);
+        fs::write(root.join("outside.txt"), "after\n").unwrap();
+        run(&root, &["add", "outside.txt"]);
+
+        for action in ["stage", "unstage", "discard"] {
+            let result = run_git_action(
+                &workspace.to_string_lossy(),
+                action,
+                &[":(top)outside.txt".to_owned()],
+                None,
+            );
+            assert!(result.is_err(), "{action} accepted pathspec magic");
+        }
+
+        assert_eq!(git_text(&root, &["show", ":outside.txt"]), "after");
+        assert_eq!(read_text(&root.join("outside.txt")), "after\n");
+        assert_eq!(
+            super::run_git(&root, &["diff", "--cached", "--name-only"])
+                .unwrap()
+                .trim(),
+            "outside.txt"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2774,7 +2943,7 @@ if (args[0] === "pr" && args[1] === "list" && args.includes("open")) {
     }
 
     fn run(root: &PathBuf, arguments: &[&str]) {
-        let output = Command::new("git")
+        let output = super::git_command()
             .arg("-C")
             .arg(root)
             .args(arguments)

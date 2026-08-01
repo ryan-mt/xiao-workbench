@@ -1,27 +1,41 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { navItems, site } from "@/lib/site";
 
 export function SiteHeader() {
   const [open, setOpen] = useState(false);
   const panelId = useId();
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        toggleRef.current?.focus();
+      }
+    };
+    const desktop = window.matchMedia("(min-width: 880px)");
+    const onDesktop = (event: MediaQueryListEvent) => {
+      if (event.matches) setOpen(false);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    desktop.addEventListener("change", onDesktop);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      desktop.removeEventListener("change", onDesktop);
+    };
   }, [open]);
 
   useEffect(() => {
-    document.body.style.overflow = open ? "hidden" : "";
+    if (!open) return;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = overflow;
     };
   }, [open]);
 
@@ -58,6 +72,7 @@ export function SiteHeader() {
             Download
           </a>
           <button
+            ref={toggleRef}
             type="button"
             className="menu"
             aria-expanded={open}

@@ -880,7 +880,7 @@ export function SettingsPage({
                               shortcutBindings: normalizeCommandBindings({
                                 ...preferences.shortcutBindings,
                                 [shortcut.id]: event.target.value,
-                              }),
+                              }, preferences.shortcutBindings),
                             });
                           }}
                         />

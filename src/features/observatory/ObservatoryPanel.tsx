@@ -133,6 +133,7 @@ export function ObservatoryPanel({
   const [selectedAttachments, setSelectedAttachments] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const liveRunsRef = useRef(liveRuns);
+  const checkpointRequestRef = useRef(0);
   liveRunsRef.current = liveRuns;
 
   const runs = useMemo(() => mergeRuns(listedRuns, liveRuns), [listedRuns, liveRuns]);
@@ -209,10 +210,19 @@ export function ObservatoryPanel({
     };
   }, [selectedRun?.id, selectedRun?.status, selectedRunVersion, selectedPendingCount]);
 
-  const loadCheckpoints = () => nativeBridge
-    .listXiaoTurnCheckpoints(projectPath, taskId, 100)
-    .then(setCheckpoints)
-    .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  const loadCheckpoints = () => {
+    const request = ++checkpointRequestRef.current;
+    return nativeBridge
+      .listXiaoTurnCheckpoints(projectPath, taskId, 100)
+      .then((nextCheckpoints) => {
+        if (request === checkpointRequestRef.current) setCheckpoints(nextCheckpoints);
+      })
+      .catch((reason) => {
+        if (request === checkpointRequestRef.current) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
+  };
 
   useEffect(() => {
     if (view === "restore") void loadCheckpoints();

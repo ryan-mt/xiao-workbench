@@ -990,11 +990,20 @@ fn fingerprint_worktree_path(
         let target = fs::read_link(path).map_err(|error| {
             GitReadError::blocked(format!("Could not read a Git worktree symlink: {error}"))
         })?;
-        let bytes = target.to_string_lossy();
+        #[cfg(unix)]
+        let bytes = {
+            use std::os::unix::ffi::OsStrExt as _;
+
+            target.as_os_str().as_bytes()
+        };
+        #[cfg(not(unix))]
+        let target = target.to_string_lossy();
+        #[cfg(not(unix))]
+        let bytes = target.as_bytes();
         return Ok(GitWorktreeFingerprint {
             kind: GitWorktreePathKind::Symlink,
             byte_length: Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
-            sha256: Some(sha256_hex(bytes.as_bytes())),
+            sha256: Some(sha256_hex(bytes)),
         });
     }
     Ok(GitWorktreeFingerprint {
@@ -1410,21 +1419,7 @@ fn run_git_owned_with_timeout(
         if status.is_none() {
             match child.try_wait() {
                 Ok(Some(exit_status)) => status = Some(exit_status),
-                Ok(None) => {
-                    if cancellation.load(Ordering::Acquire) {
-                        forced_error = Some(GitReadError::cancelled(
-                            "Verification was cancelled while Git was running.",
-                        ));
-                        terminate_child(&mut child);
-                        status = child.try_wait().ok().flatten();
-                    } else if started.elapsed() >= timeout {
-                        forced_error = Some(GitReadError::blocked(
-                            "Git timed out while reading repository state.",
-                        ));
-                        terminate_child(&mut child);
-                        status = child.try_wait().ok().flatten();
-                    }
-                }
+                Ok(None) => {}
                 Err(error) => {
                     forced_error = Some(GitReadError::blocked(format!(
                         "Could not inspect Git: {error}"
@@ -1433,6 +1428,19 @@ fn run_git_owned_with_timeout(
                     status = child.try_wait().ok().flatten();
                 }
             }
+        }
+        if forced_error.is_none() && cancellation.load(Ordering::Acquire) {
+            forced_error = Some(GitReadError::cancelled(
+                "Verification was cancelled while Git was running.",
+            ));
+            terminate_child(&mut child);
+            status = status.or_else(|| child.try_wait().ok().flatten());
+        } else if forced_error.is_none() && started.elapsed() >= timeout {
+            forced_error = Some(GitReadError::blocked(
+                "Git timed out while reading repository state.",
+            ));
+            terminate_child(&mut child);
+            status = status.or_else(|| child.try_wait().ok().flatten());
         }
         if status.is_some() && readers_finished >= 2 {
             break;
@@ -1741,6 +1749,61 @@ mod tests {
                 thread::sleep(Duration::from_millis(25));
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_timeout_terminates_descendant_holding_output_after_direct_child_exits() {
+        let executable = std::env::current_exe().unwrap();
+        let root = std::env::current_dir().unwrap();
+        let arguments = vec![
+            "--ignored".to_owned(),
+            "--exact".to_owned(),
+            "verification::git::tests::fixture_git_descendant_holds_output".to_owned(),
+            "--nocapture".to_owned(),
+            "--test-threads=1".to_owned(),
+        ];
+        let started = Instant::now();
+        let error = run_git_owned_with_timeout(
+            &executable,
+            &root,
+            arguments,
+            &AtomicBool::new(false),
+            true,
+            None,
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.outcome, VerificationGateOutcome::Blocked);
+        assert!(error.diagnostic.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn fixture_git_descendant_holds_output() {
+        Command::new("sh").args(["-c", "sleep 10"]).spawn().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_fingerprint_hashes_non_utf8_target_losslessly() {
+        use std::os::unix::ffi::OsStringExt as _;
+        use std::os::unix::fs::symlink;
+
+        let repository = TestRepository::new("non-utf8-symlink");
+        let target = std::ffi::OsString::from_vec(vec![b't', 0x80, b'g']);
+        let link = repository.path.join("link");
+        symlink(&target, &link).unwrap();
+
+        let fingerprint =
+            fingerprint_worktree_path(&repository.path, &link, &AtomicBool::new(false)).unwrap();
+
+        assert_eq!(fingerprint.kind, GitWorktreePathKind::Symlink);
+        assert_eq!(fingerprint.byte_length, Some(3));
+        assert_eq!(fingerprint.sha256, Some(sha256_hex(&[b't', 0x80, b'g'])));
     }
 
     #[test]

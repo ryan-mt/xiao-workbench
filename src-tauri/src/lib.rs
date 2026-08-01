@@ -1,6 +1,5 @@
 mod agent;
 mod browser;
-pub mod companion;
 mod execution;
 mod git;
 mod handoff;
@@ -32,20 +31,6 @@ use browser::commands::{
     set_browser_muted, PREVIEW_CONSOLE_CAPTURE_SCRIPT,
 };
 use browser::preview::PreviewRegistry;
-use companion::adapter::{
-    start_runtime_outbox_reconciler, AppCompanionApi, CompanionExecutionGate,
-};
-use companion::commands::{
-    confirm_remote_companion, execute_remote_companion_command, forget_remote_companion,
-    install_remote_companion_rotation, issue_companion_pairing_bundle, list_companion_audit,
-    list_companion_sessions, pair_remote_companion, poll_remote_companion,
-    poll_remote_companion_notifications, replace_companion_session_grants, revoke_companion_device,
-    revoke_companion_session, rotate_companion_session,
-};
-use companion::transport::client::{CompanionPinnedClient, KeyringCredentialStore};
-use companion::transport::router::companion_router;
-use companion::transport::server::CompanionHttpsServer;
-use companion::transport::{discover_lan_bind_address, CompanionHostRuntime, TransportIdentity};
 use execution::commands::{
     get_xiao_execution_context, list_xiao_managed_worktrees, prepare_xiao_managed_worktree,
     remove_xiao_managed_worktree,
@@ -96,7 +81,6 @@ use xiao::commands::{
 };
 use xiao::repository::XiaoRepository;
 
-use std::sync::Arc;
 use tauri::Manager;
 
 pub fn run_runtime_supervisor_if_requested() -> Option<i32> {
@@ -171,30 +155,10 @@ pub fn run() {
             app.manage(VerificationService::default());
             app.manage(RoutineService::default());
             app.manage(XaiOAuthService::new(app_data_dir.clone())?);
-            app.manage(CompanionPinnedClient::new(Arc::new(KeyringCredentialStore)));
-            app.manage(CompanionExecutionGate::default());
-            let companion_runtime = match discover_lan_bind_address(4318).and_then(|bind| {
-                let endpoint = format!("https://{bind}");
-                let identity = TransportIdentity::load_or_create(
-                    &app_data_dir,
-                    endpoint,
-                    "xiao-companion.local".to_owned(),
-                )?;
-                let router = companion_router(Arc::new(AppCompanionApi::new(app.handle().clone())));
-                let server = tauri::async_runtime::block_on(CompanionHttpsServer::start(
-                    bind, &identity, router,
-                ))?;
-                Ok(CompanionHostRuntime::available(identity, server))
-            }) {
-                Ok(runtime) => runtime,
-                Err(reason) => CompanionHostRuntime::unavailable(reason),
-            };
-            app.manage(companion_runtime);
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             routines::service::configure_tray(app)?;
             app.state::<RunService>().start(app.handle().clone());
             app.state::<RoutineService>().start(app.handle().clone());
-            start_runtime_outbox_reconciler(app.handle().clone());
             Ok(())
         })
         .manage(TerminalManager::default())
@@ -274,20 +238,6 @@ pub fn run() {
             automate_task_preview,
             capture_task_preview,
             set_browser_muted,
-            issue_companion_pairing_bundle,
-            list_companion_sessions,
-            rotate_companion_session,
-            revoke_companion_session,
-            revoke_companion_device,
-            replace_companion_session_grants,
-            list_companion_audit,
-            pair_remote_companion,
-            poll_remote_companion,
-            confirm_remote_companion,
-            poll_remote_companion_notifications,
-            execute_remote_companion_command,
-            install_remote_companion_rotation,
-            forget_remote_companion,
             load_xiao_workspace,
             load_xiao_timeline_page,
             search_xiao_history,

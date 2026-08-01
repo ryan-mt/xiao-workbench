@@ -40,6 +40,13 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
+import {
+  AcceptanceContractEditor,
+  createBufferedFieldState,
+  isBufferedFieldReady,
+  parseExitCodesField,
+  transitionBufferedFieldState,
+} from "./AcceptanceContractEditor";
 import { routinePresetTaskId, SchedulePanel } from "./SchedulePanel";
 
 describe("routine preset discovery context", () => {
@@ -166,7 +173,13 @@ const textContent = (node: unknown): string => {
 const findButton = (tree: TestElement, label: string, occurrence = 0) =>
   elements(tree).filter((element) =>
     element.type === "button" && textContent(element).includes(label)
-  )[occurrence] as ReactElement<{ onClick: () => void }>;
+  )[occurrence] as ReactElement<{ disabled?: boolean; onClick: () => void }>;
+
+const findAcceptanceEditor = (tree: TestElement) =>
+  elements(tree).find((element) => element.type === AcceptanceContractEditor) as ReactElement<{
+    bufferResetRevision: number;
+    onReadyChange: (ready: boolean) => void;
+  }>;
 
 const findTitleInput = (tree: TestElement) =>
   elements(tree).find((element) =>
@@ -201,6 +214,54 @@ beforeEach(() => {
 });
 
 describe("schedule submit generation", () => {
+  it("does not update with stale exit codes while invalid buffered text is visible", () => {
+    const onUpdate = vi.fn(async () => undefined);
+    const scheduledRoutine = routine("a", "Routine A");
+    scheduledRoutine.acceptanceContract = {
+      versionId: "version-a",
+      contractId: "contract-a",
+      version: 1,
+      schema: 1,
+      name: "Acceptance checks",
+      gates: [{
+        type: "command",
+        executable: "npm",
+        argv: ["test"],
+        timeoutMs: 60_000,
+        expectedExitCodes: [0],
+      }],
+      hash: "hash-a",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const props = {
+      ...scheduleProps,
+      routines: [scheduledRoutine],
+      onUpdate,
+    };
+
+    let tree = renderWorkspace(props);
+    findAriaButton(tree, "Expand Routine A").props.onClick();
+    tree = renderWorkspace(props);
+    findButton(tree, "Edit").props.onClick();
+    tree = renderWorkspace(props);
+
+    let exitCodes = createBufferedFieldState("0", JSON.stringify([0]), "task-a\u00000");
+    const invalidText = "0,";
+    exitCodes = transitionBufferedFieldState(exitCodes, {
+      type: "edit",
+      text: invalidText,
+      valid: parseExitCodesField(invalidText) !== null,
+    });
+    findAcceptanceEditor(tree).props.onReadyChange(isBufferedFieldReady(exitCodes));
+
+    tree = renderWorkspace(props);
+    const saveButton = findButton(tree, "Save routine");
+    expect(saveButton.props.disabled).toBe(true);
+    saveButton.props.onClick();
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
   it("does not let update A completion wipe a newer edited B draft", async () => {
     const updateA = deferred();
     const onUpdate = vi.fn((id: string) =>

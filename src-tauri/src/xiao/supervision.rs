@@ -329,6 +329,7 @@ impl XiaoRepository {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_publication(
         &self,
         project_path: &str,
@@ -683,6 +684,7 @@ pub(crate) fn advance_task_after_verification(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn transition_task_in_transaction(
     transaction: &Transaction<'_>,
     workspace_id: i64,

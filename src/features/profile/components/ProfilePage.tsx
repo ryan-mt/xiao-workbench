@@ -136,6 +136,7 @@ export function ProfilePage({
   const [profileError, setProfileError] = useState<string | null>(null);
   const [inspectedDayIndex, setInspectedDayIndex] = useState<number | null>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const avatarRequestRef = useRef(0);
   const initials = profileInitials(profile.name);
   const accountDays = accountUsage?.dailyUsageBuckets.map((bucket) => ({
     date: bucket.startDate.slice(0, 10),
@@ -221,10 +222,14 @@ export function ProfilePage({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    const request = ++avatarRequestRef.current;
     try {
-      setDraftAvatar(await createAvatar(file));
+      const avatar = await createAvatar(file);
+      if (request !== avatarRequestRef.current) return;
+      setDraftAvatar(avatar);
       setProfileError(null);
     } catch (error) {
+      if (request !== avatarRequestRef.current) return;
       setProfileError(error instanceof Error ? error.message : "Xiao could not use that image.");
     }
   };
@@ -528,7 +533,10 @@ export function ProfilePage({
                     {draftAvatar ? "Change photo" : "Choose photo"}
                   </button>
                   {draftAvatar ? (
-                    <button type="button" onClick={() => setDraftAvatar(null)}>Remove</button>
+                    <button type="button" onClick={() => {
+                      avatarRequestRef.current += 1;
+                      setDraftAvatar(null);
+                    }}>Remove</button>
                   ) : null}
                 </div>
               </div>

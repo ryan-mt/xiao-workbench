@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkbenchTask } from "../task/task.types";
-import { projectSidebarTasks, sidebarTaskPresentation } from "./sidebarProjection";
+import {
+  activeSidebarProject,
+  projectSidebarTasks,
+  sidebarTaskPresentation,
+} from "./sidebarProjection";
 
 const task = (
   id: string,
@@ -73,6 +77,19 @@ describe("projectSidebarTasks", () => {
     ], []);
 
     expect(result).toEqual({ active: [], completed: [] });
+  });
+});
+
+describe("activeSidebarProject", () => {
+  it("chooses the exact or most-specific project for a nested workspace", () => {
+    const parent = { name: "Parent", path: "C:/work", updatedAt: 1 };
+    const nested = { name: "Nested", path: "C:/work/nested", updatedAt: 1 };
+
+    expect(activeSidebarProject([parent, nested], nested.path)).toBe(nested);
+    expect(activeSidebarProject(
+      [parent, nested],
+      "C:/work/nested/.xiao/worktrees/review",
+    )).toBe(nested);
   });
 });
 

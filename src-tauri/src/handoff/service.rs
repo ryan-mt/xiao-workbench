@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
@@ -10,9 +10,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use tempfile::NamedTempFile;
 
 use crate::execution::service::resolve_execution_context;
 use crate::runs::models::{RunEventRecord, RunRecord};
+#[cfg(test)]
 use crate::runs::repository::new_uuid_v7;
 use crate::xiao::models::XiaoTaskDocument;
 use crate::xiao::repository::XiaoRepository;
@@ -732,33 +734,28 @@ fn read_bounded_file(path: &Path, limit: usize, label: &str) -> Result<Vec<u8>, 
 }
 
 fn write_new_file_atomically(destination: &Path, bytes: &[u8]) -> Result<(), String> {
-    let temporary = destination.with_extension(format!(
-        "{}.{}.tmp",
-        destination
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("handoff"),
-        new_uuid_v7(),
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| format!("Could not create handoff archive: {error}"))?;
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|error| format!("Could not write handoff archive: {error}"))?;
-        fs::hard_link(&temporary, destination).map_err(|error| {
-            format!("Could not publish handoff archive without overwriting: {error}")
-        })?;
-        let _ = fs::remove_file(&temporary);
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    write_new_file_atomically_with(destination, |file| file.write_all(bytes))
+}
+
+fn write_new_file_atomically_with(
+    destination: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let parent = destination
+        .parent()
+        .ok_or("The handoff destination has no parent directory.")?;
+    let mut temporary = NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Could not create handoff archive: {error}"))?;
+    write(temporary.as_file_mut())
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|error| format!("Could not write handoff archive: {error}"))?;
+    temporary.persist_noclobber(destination).map_err(|error| {
+        format!(
+            "Could not publish handoff archive without overwriting: {}",
+            error.error
+        )
+    })?;
+    Ok(())
 }
 
 fn sanitize_value(value: &Value, root: &str, key: Option<&str>, depth: usize) -> Value {
@@ -1192,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_publish_is_atomic_and_never_overwrites_an_existing_bundle() {
+    fn handoff_publish_succeeds() {
         let directory = std::env::temp_dir().join(format!(
             "xiao-handoff-publish-{}-{}",
             std::process::id(),
@@ -1202,8 +1199,81 @@ mod tests {
         let destination = directory.join("task.xiao-handoff");
         super::write_new_file_atomically(&destination, b"first").unwrap();
         assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn handoff_publish_never_overwrites_an_existing_bundle() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-handoff-no-clobber-{}-{}",
+            std::process::id(),
+            super::new_uuid_v7(),
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("task.xiao-handoff");
+        std::fs::write(&destination, b"first").unwrap();
+
         assert!(super::write_new_file_atomically(&destination, b"second").is_err());
         assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn handoff_publish_cleans_up_after_an_injected_write_failure() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-handoff-write-failure-{}-{}",
+            std::process::id(),
+            super::new_uuid_v7(),
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("task.xiao-handoff");
+
+        let result = super::write_new_file_atomically_with(&destination, |file| {
+            use std::io::Write as _;
+
+            file.write_all(b"partial")?;
+            Err(std::io::Error::other("injected write failure"))
+        });
+
+        assert!(result.is_err());
+        assert!(!destination.exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn handoff_publish_is_observed_only_after_the_complete_write() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-handoff-ordering-{}-{}",
+            std::process::id(),
+            super::new_uuid_v7(),
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("task.xiao-handoff");
+        let worker_destination = destination.clone();
+        let (partial_tx, partial_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            super::write_new_file_atomically_with(&worker_destination, |file| {
+                use std::io::Write as _;
+
+                file.write_all(b"partial")?;
+                partial_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+                file.write_all(b"-complete")
+            })
+        });
+
+        partial_rx.recv().unwrap();
+        let destination_was_hidden = !destination.exists();
+        continue_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+
+        assert!(destination_was_hidden);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"partial-complete");
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

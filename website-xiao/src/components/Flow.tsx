@@ -57,8 +57,8 @@ export function Flow() {
               <Image
                 src="/screenshots/new-task.png"
                 alt="New task composer asking what should we work on"
-                width={1600}
-                height={1000}
+                width={1440}
+                height={900}
                 sizes="(max-width: 1024px) 100vw, 48vw"
               />
               <div className="specimen-meta">

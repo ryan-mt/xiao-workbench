@@ -74,29 +74,14 @@ Build channels use distinct sidebar artwork: hot-reload Tauri development and
 `npm run app:official` use the blue blueprint, Beta uses the purple Nightly sky,
 and `npm run app:build:official` produces the neutral monochrome production UI.
 
-## Connect a phone
-
-Keep the phone and primary Xiao host on the same local network. In
-**Companion**, create a pairing bundle, choose **Copy phone link**, and open that
-link in the phone browser. The host serves a responsive Companion view for
-reading the active conversation, continuing chat, assigning a new task, and
-performing the bounded actions allowed by the pairing.
-
-The Companion host uses a private, self-signed HTTPS identity. The browser may
-ask you to approve that certificate the first time. Pairing credentials stay in
-the URL fragment, are removed from the address bar before pairing, and are never
-sent to a search provider or server request URL.
-
 To verify the same paths used for this beta, run the aggregate gate:
 
 ```powershell
 npm run verify
 ```
 
-That command covers Ticket 03 certification, desktop typecheck/tests, Rust
-format/tests/check, the standalone website, dependency audits, production
-build, and git diff integrity. Source changes that affect the Ticket 03
-fingerprint must first be recertified with `npm run certification:commit`.
+That command covers desktop typecheck/tests, Rust format/tests/check, the
+standalone website, dependency audits, production build, and git diff integrity.
 
 Individual commands remain available for selective troubleshooting:
 

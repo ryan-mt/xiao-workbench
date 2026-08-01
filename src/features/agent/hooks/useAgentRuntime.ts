@@ -525,6 +525,30 @@ const messageFromPendingInput = (pending: PendingInputSnapshot): AgentMessage =>
   };
 };
 
+const interactiveRequestMethods = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+  "item/tool/requestUserInput",
+  "mcpServer/elicitation/request",
+]);
+
+export const pendingInputForRestoredMessage = (
+  message: AgentMessage,
+  runId: string,
+  pendingInputs: readonly PendingInputSnapshot[],
+): PendingInputSnapshot | null | undefined => {
+  if (!message.method || !interactiveRequestMethods.has(message.method)) return undefined;
+  return pendingInputs.find((pending) => {
+    const restored = messageFromPendingInput(pending);
+    return pending.runId === runId
+      && pending.resolvedAt === null
+      && pending.invalidatedAt === null
+      && restored.method === message.method
+      && String(restored.id) === String(message.id);
+  }) ?? null;
+};
+
 const messageFromRunEvent = (event: RunEventRecord): AgentMessage | null => {
   if (!event.safePayload || typeof event.safePayload !== "object") return null;
   if (event.eventType.startsWith("agent.")) return event.safePayload as AgentMessage;
@@ -2943,11 +2967,17 @@ export function useAgentRuntime(
           const accepted = acceptRunProtocol(runProjectionRef.current, envelope);
           if (!accepted.accepted) continue;
           publishRunProjection(accepted.projection);
-          if (run.turnId) activeTurnIds.current.set(run.taskId, run.turnId);
+          const restoredPending = pendingInputForRestoredMessage(
+            envelope.message,
+            run.id,
+            scopedPendingInputs,
+          );
+          if (restoredPending === null) continue;
+          if (restoredPending) replayedPendingInputs.current.add(restoredPending.id);
           await handleMessage(envelope.message, {
             taskId: run.taskId,
             runId: run.id,
-            pendingInput: null,
+            pendingInput: restoredPending ?? null,
             turnDiff: envelope.turnDiff,
             replayed: true,
           });

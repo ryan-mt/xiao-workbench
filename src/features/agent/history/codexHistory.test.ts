@@ -7,6 +7,7 @@ import {
   codexTimelineIsWorking,
   codexThreadActivityAt,
   isLegacyCodexImportPath,
+  readCodexThreadChangeSummary,
   readCodexThreadTimeline,
   sameCodexTimeline,
   sameWorkspacePath,
@@ -19,6 +20,25 @@ afterEach(() => {
 });
 
 describe("Codex history activity", () => {
+  it("counts raw file contents for added and deleted files", async () => {
+    vi.spyOn(nativeBridge, "agentRequest").mockResolvedValue({
+      data: [{
+        items: [{
+          type: "fileChange",
+          changes: [
+            { path: "added.txt", kind: "add", diff: "one\ntwo\n" },
+            { path: "deleted.txt", kind: "delete", diff: "old\n" },
+          ],
+        }],
+      }],
+    });
+
+    await expect(readCodexThreadChangeSummary(
+      "thread-1",
+      { projectPath: "C:/project", taskId: "task-1" },
+    )).resolves.toEqual({ additions: 2, deletions: 1 });
+  });
+
   it("paginates every turn and restores structured reasoning summaries", async () => {
     vi.spyOn(nativeBridge, "agentRequest")
       .mockResolvedValueOnce({

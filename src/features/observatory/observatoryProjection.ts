@@ -170,7 +170,9 @@ export const projectObservatory = (
   });
   const activities: ObservatoryActivity[] = [];
 
-  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+  for (const event of events
+    .filter((candidate) => candidate.runId === run.id)
+    .sort((left, right) => left.sequence - right.sequence)) {
     const message = protocolMessage(event);
     const method = typeof message?.method === "string" ? message.method : null;
     const params = objectValue(message?.params);

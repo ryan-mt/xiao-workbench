@@ -47,20 +47,6 @@ Run the full verification gate:
 npm run verify
 ```
 
-If you changed tracked source that is covered by Ticket 03 certification
-(desktop app, Tauri host, scripts, package manifests, or `.github` workflows),
-stage those files and recertify before verifying:
-
-```powershell
-git add -- <changed-source-files>
-npm run certification:commit
-npm run verify
-```
-
-`npm run certification:commit` regenerates the Ticket 03 fingerprint and
-evidence after the release gates pass. Do not hand-edit the certification JSON
-or verification Markdown.
-
 Individual commands remain available for selective troubleshooting:
 
 ```powershell

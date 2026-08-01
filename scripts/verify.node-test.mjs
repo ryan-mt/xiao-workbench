@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { VERIFY_GATES, runVerify } from "./verify.mjs";
+import { VERIFY_GATES, releaseDateFromPackageVersion, runVerify } from "./verify.mjs";
 
 test("exposes the exact full-gate command order", () => {
   assert.deepEqual(
@@ -9,8 +9,6 @@ test("exposes the exact full-gate command order", () => {
     [
       ["npm", "run", "version:test"],
       ["npm", "run", "version:check"],
-      ["npm", "run", "certification:test"],
-      ["npm", "run", "certification:check"],
       ["npm", "run", "check"],
       ["npm", "test", "--", "--run"],
       ["cargo", "fmt", "--all", "--manifest-path", "src-tauri/Cargo.toml", "--", "--check"],
@@ -66,4 +64,84 @@ test("returns zero only when every gate succeeds", () => {
   });
   assert.equal(status, 0);
   assert.deepEqual(started, ["one", "two"]);
+});
+
+test("derives a fixed release date from the checked-in package version across midnight", () => {
+  const RealDate = globalThis.Date;
+  let now = "2026-07-31T23:59:59.999Z";
+  globalThis.Date = class extends RealDate {
+    constructor(...args) {
+      super(...(args.length === 0 ? [now] : args));
+    }
+
+    static now() {
+      return new RealDate(now).valueOf();
+    }
+  };
+
+  try {
+    const beforeMidnight = releaseDateFromPackageVersion("0.0.0-day07312026");
+    now = "2026-08-01T00:00:00.000Z";
+    const afterMidnight = releaseDateFromPackageVersion("0.0.0-day07312026");
+
+    assert.equal(beforeMidnight, "2026-07-31");
+    assert.equal(afterMidnight, beforeMidnight);
+  } finally {
+    globalThis.Date = RealDate;
+  }
+});
+
+test("rejects malformed and impossible package version dates", () => {
+  for (const version of [
+    "0.0.0-day7312026",
+    "0.0.0-day02302026",
+    "1.0.0-day07312026",
+    "0.0.0-day07312026-extra",
+  ]) {
+    assert.throws(() => releaseDateFromPackageVersion(version));
+  }
+});
+
+test("passes the package-derived date to every gate including the final npm build", () => {
+  const environments = [];
+  const status = runVerify({
+    gates: [
+      ["node", ["first-gate"]],
+      ["npm", ["run", "build"]],
+    ],
+    env: { TEST_ENV: "preserved" },
+    spawn: (_command, _args, options) => {
+      environments.push(options.env);
+      return { status: 0 };
+    },
+    write: () => {},
+  });
+
+  assert.equal(status, 0);
+  assert.deepEqual(
+    environments.map(({ XIAO_RELEASE_DATE, TEST_ENV }) => ({ XIAO_RELEASE_DATE, TEST_ENV })),
+    [
+      { XIAO_RELEASE_DATE: "2026-07-31", TEST_ENV: "preserved" },
+      { XIAO_RELEASE_DATE: "2026-07-31", TEST_ENV: "preserved" },
+    ],
+  );
+});
+
+test("uses a valid explicit release date override and rejects invalid overrides", () => {
+  const environments = [];
+  assert.equal(runVerify({
+    gates: [["node", ["gate"]]],
+    env: { XIAO_RELEASE_DATE: "2026-08-01" },
+    spawn: (_command, _args, options) => {
+      environments.push(options.env);
+      return { status: 0 };
+    },
+    write: () => {},
+  }), 0);
+  assert.equal(environments[0].XIAO_RELEASE_DATE, "2026-08-01");
+
+  assert.throws(
+    () => runVerify({ gates: [], env: { XIAO_RELEASE_DATE: "2026-02-30" }, write: () => {} }),
+    /XIAO_RELEASE_DATE must be a valid YYYY-MM-DD UTC date/,
+  );
 });

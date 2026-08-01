@@ -153,6 +153,8 @@ function SchedulePanelWorkspace({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [evidenceRunId, setEvidenceRunId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [editorReady, setEditorReady] = useState(true);
+  const [bufferResetRevision, setBufferResetRevision] = useState(0);
   const formGeneration = useRef(0);
   const editingRoutine = useMemo(
     () => routines.find((routine) => routine.id === editingId) ?? null,
@@ -192,9 +194,12 @@ function SchedulePanelWorkspace({
     setForm(emptyForm());
     setEditingId(null);
     setFormError(null);
+    setEditorReady(true);
+    setBufferResetRevision((revision) => revision + 1);
   };
 
   const submit = async () => {
+    if (!editorReady) return;
     const prompt = form.prompt.trim();
     const timezone = form.timezone.trim();
     if (!prompt) {
@@ -260,6 +265,8 @@ function SchedulePanelWorkspace({
     setEditingId(routine.id);
     setForm(formFromRoutine(routine));
     setFormError(null);
+    setEditorReady(true);
+    setBufferResetRevision((revision) => revision + 1);
     window.requestAnimationFrame(() => {
       document.getElementById("routine-form")?.scrollIntoView({ block: "start" });
     });
@@ -325,6 +332,8 @@ function SchedulePanelWorkspace({
           taskId={routinePresetTaskId(editingRoutine)}
           value={form.acceptanceContract}
           disabled={!nativeAvailable || creating || Boolean(editingId && busyIds.has(editingId))}
+          bufferResetRevision={bufferResetRevision}
+          onReadyChange={setEditorReady}
           onChange={(acceptanceContract) => changeForm((current) => ({ ...current, acceptanceContract }))}
         />
 
@@ -424,7 +433,7 @@ function SchedulePanelWorkspace({
         <button
           className="button button--primary routine-form__submit"
           type="button"
-          disabled={!nativeAvailable || creating || Boolean(editingId && busyIds.has(editingId))}
+          disabled={!nativeAvailable || creating || !editorReady || Boolean(editingId && busyIds.has(editingId))}
           onClick={() => void submit()}
         >
           {creating || (editingId && busyIds.has(editingId)) ? (

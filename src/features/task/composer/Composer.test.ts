@@ -131,6 +131,7 @@ const deferred = <T,>() => {
 afterEach(() => {
   cleanup();
   bridge.agentRequest.mockReset();
+  vi.unstubAllGlobals();
 });
 
 describe("composer task dock lifecycle", () => {
@@ -250,6 +251,48 @@ describe("workspace file search", () => {
 
     expect(screen.queryByRole("option", { name: /stale\.ts/i })).toBeNull();
     expect(screen.getByText("File search needs the connected Xiao desktop runtime.")).toBeTruthy();
+  });
+});
+
+describe("composer attachments", () => {
+  it("merges concurrent async attachment completions against the latest attachments", async () => {
+    class ControlledFileReader {
+      static instances: ControlledFileReader[] = [];
+      error: DOMException | null = null;
+      onerror: (() => void) | null = null;
+      onload: (() => void) | null = null;
+      result: string | null = null;
+
+      constructor() {
+        ControlledFileReader.instances.push(this);
+      }
+
+      readAsDataURL() {}
+
+      resolve(result: string) {
+        this.result = result;
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal("FileReader", ControlledFileReader);
+    const onAttachmentsChange = vi.fn();
+    render(createElement(Composer, composerProps({ onAttachmentsChange })));
+    const textarea = screen.getByRole("textbox", { name: "Prompt" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [new File(["first"], "first.png", { type: "image/png" })] },
+    });
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [new File(["second"], "second.png", { type: "image/png" })] },
+    });
+    expect(ControlledFileReader.instances).toHaveLength(2);
+
+    await act(async () => ControlledFileReader.instances[1].resolve("data:image/png;base64,second"));
+    await act(async () => ControlledFileReader.instances[0].resolve("data:image/png;base64,first"));
+
+    expect(onAttachmentsChange.mock.calls.at(-1)?.[0].map(
+      (item: AgentAttachment) => item.name,
+    )).toEqual(["second.png", "first.png"]);
   });
 });
 

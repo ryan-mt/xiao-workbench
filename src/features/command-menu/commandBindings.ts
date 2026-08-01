@@ -12,8 +12,11 @@ export type CommandBindings = Record<CommandId, string>;
 const commandIds = Object.keys(DEFAULT_COMMAND_BINDINGS) as CommandId[];
 const normalizeKey = (binding: string) => binding.trim().toLowerCase();
 
-export const normalizeCommandBindings = (value: unknown): CommandBindings => {
-  const bindings: CommandBindings = { ...DEFAULT_COMMAND_BINDINGS };
+export const normalizeCommandBindings = (
+  value: unknown,
+  fallback: CommandBindings = DEFAULT_COMMAND_BINDINGS,
+): CommandBindings => {
+  const bindings: CommandBindings = { ...fallback };
   if (!value || typeof value !== "object") return bindings;
   const overrides = value as Record<string, unknown>;
   for (const commandId of commandIds) {

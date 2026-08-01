@@ -30,6 +30,7 @@ import {
   loadAllXiaoRunEvents,
   fileChangeTimelineEntry,
   normalizeFileChangeDiff,
+  pendingInputForRestoredMessage,
   projectFileChangePatchUpdate,
   projectAgentRateLimitsUpdate,
   reconcileFetchedAgentRateLimits,
@@ -643,6 +644,29 @@ const run = (workspacePath: string, patch: Partial<RunSnapshot> = {}): RunSnapsh
 });
 
 describe("agent runtime workspace scope", () => {
+  it("replays only interactive requests that still have an active pending input", () => {
+    const active = pendingInput({
+      id: "pending-active",
+      runId: "run-a",
+      requestId: "42",
+      kind: "command_approval",
+    });
+    const message = {
+      id: 42,
+      method: "item/commandExecution/requestApproval",
+      params: {},
+    };
+
+    expect(pendingInputForRestoredMessage(message, "run-a", [active])).toBe(active);
+    expect(pendingInputForRestoredMessage(message, "run-b", [active])).toBeNull();
+    expect(pendingInputForRestoredMessage(message, "run-a", [{
+      ...active,
+      resolvedAt: 30,
+    }])).toBeNull();
+    expect(pendingInputForRestoredMessage({ method: "turn/started" }, "run-a", [active]))
+      .toBeUndefined();
+  });
+
   it("continues later run restore work and reports isolated history failures", async () => {
     const first = run("C:/A", { id: "run-a" });
     const second = run("C:/A", { id: "run-b" });

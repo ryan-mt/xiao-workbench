@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   type CSSProperties,
   type ReactNode,
@@ -24,12 +25,23 @@ export function Reveal({
 }: RevealProps) {
   const ref = useRef<HTMLElement | null>(null);
 
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (
+      node &&
+      "IntersectionObserver" in window &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      node.classList.remove("is-visible");
+    }
+  }, []);
+
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
 
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (media.matches) {
+    if (media.matches || !("IntersectionObserver" in window)) {
       node.classList.add("is-visible");
       return;
     }
@@ -53,7 +65,7 @@ export function Reveal({
   return (
     <Tag
       ref={ref as never}
-      className={`reveal ${className}`.trim()}
+      className={`reveal is-visible ${className}`.trim()}
       style={{
         ...style,
         transitionDelay: delayMs ? `${delayMs}ms` : undefined,

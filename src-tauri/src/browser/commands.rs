@@ -255,12 +255,10 @@ pub async fn get_browser_console(
         .map_err(|error| format!("Could not decode Task Preview console: {error}"))
 }
 
-fn complete_webview_callback<T>(
-    sender: &std::sync::Arc<
-        std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<T, String>>>>,
-    >,
-    result: Result<T, String>,
-) {
+type WebviewCallback<T> =
+    std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Result<T, String>>>>>;
+
+fn complete_webview_callback<T>(sender: &WebviewCallback<T>, result: Result<T, String>) {
     if let Ok(mut sender) = sender.lock() {
         if let Some(sender) = sender.take() {
             let _ = sender.send(result);
@@ -407,6 +405,7 @@ async fn evaluate_webview_script(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn automate_task_preview(
     app: AppHandle,
     previews: State<'_, PreviewRegistry>,

@@ -5,6 +5,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Notify;
 
+use crate::agent::runtime::EnvironmentRuntimeRegistry;
 use crate::execution::service::{prepare_managed_task_environment, resolve_execution_context};
 use crate::runs::models::{PendingInputSnapshot, RunRecord, RunStatus, VerificationOutcome};
 use crate::runs::repository::{new_uuid_v7, now_millis};
@@ -245,6 +246,8 @@ impl RoutineService {
         idempotency_key: &str,
     ) -> Result<RoutineSummary, String> {
         let repository = app.state::<XiaoRepository>();
+        let registry = app.state::<EnvironmentRuntimeRegistry>();
+        let _admission = registry.admit_run()?;
         let reservation = repository.run_routine_now(routine_id, idempotency_key, now_millis()?)?;
         let record = publish_reservation(app, reservation)?;
         summarize_routine(&repository, record)
@@ -405,6 +408,11 @@ fn clean_prompt(prompt: &str) -> Result<String, String> {
 fn process_due_routines(app: &AppHandle) -> bool {
     for _ in 0..MAX_DUE_PER_WAKE {
         let reservation = {
+            let registry = app.state::<EnvironmentRuntimeRegistry>();
+            let _admission = match registry.admit_run() {
+                Ok(admission) => admission,
+                Err(_) => return false,
+            };
             let repository = app.state::<XiaoRepository>();
             repository.reserve_due_routine(now_millis().unwrap_or_default(), ON_TIME_GRACE_MS)
         };

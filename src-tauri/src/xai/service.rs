@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
 use std::io::{Cursor, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ pub const PROVIDER_MARKER_KEY: &str = "XIAO_MODEL_PROVIDER";
 const PROVIDER_ID: &str = "xai";
 const KEYRING_SERVICE: &str = "xiao-xai-oauth";
 const CREDENTIAL_FILE_NAME: &str = "xai-oauth.credential";
+const CREDENTIAL_GENERATION_FILE_NAME: &str = "xai-oauth.generation";
+const CREDENTIAL_LOCK_FILE_NAME: &str = "xai-oauth.lock";
 const MODEL_PROFILES_DIR: &str = "model-profiles";
 const OIDC_DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
 const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
@@ -47,20 +50,56 @@ const DEFAULT_TOKEN_LIFETIME_SECONDS: u64 = 3_600;
 const AUTH_HELPER_FLAG: &str = "--xiao-xai-auth";
 
 pub trait XaiCredentialStore: Send + Sync + 'static {
+    #[allow(dead_code)]
     fn save(&self, profile_id: &str, value: &str) -> Result<(), String>;
     fn load(&self, profile_id: &str) -> Result<Option<String>, String>;
     fn delete(&self, profile_id: &str) -> Result<(), String>;
+
+    fn load_versioned(&self, profile_id: &str) -> Result<(u64, Option<String>), String>;
+    fn save_if_generation(
+        &self,
+        profile_id: &str,
+        value: &str,
+        expected_generation: u64,
+    ) -> Result<bool, String>;
 }
 
 /// Stores xAI OAuth JSON next to the managed Codex profile.
 /// Windows Credential Manager is too small/unreliable for access+refresh JWTs.
+/// A save error may be returned after the generation has durably advanced; callers must reload
+/// before retrying because the credential may be either the previous or replacement value.
 pub struct ProfileFileXaiCredentialStore {
     app_data_dir: PathBuf,
+    legacy_credentials: Arc<dyn XaiCredentialStore>,
+    #[cfg(test)]
+    fail_next_credential_save: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_state_replace: std::sync::atomic::AtomicBool,
 }
 
 impl ProfileFileXaiCredentialStore {
     pub fn new(app_data_dir: PathBuf) -> Self {
-        Self { app_data_dir }
+        Self {
+            app_data_dir,
+            legacy_credentials: Arc::new(KeyringXaiCredentialStore),
+            #[cfg(test)]
+            fail_next_credential_save: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_state_replace: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_legacy_credentials(
+        app_data_dir: PathBuf,
+        legacy_credentials: Arc<dyn XaiCredentialStore>,
+    ) -> Self {
+        Self {
+            app_data_dir,
+            legacy_credentials,
+            fail_next_credential_save: std::sync::atomic::AtomicBool::new(false),
+            fail_next_state_replace: std::sync::atomic::AtomicBool::new(false),
+        }
     }
 
     fn credential_path(&self, profile_id: &str) -> Result<PathBuf, String> {
@@ -79,48 +118,318 @@ impl ProfileFileXaiCredentialStore {
             .join(profile_id)
             .join(CREDENTIAL_FILE_NAME))
     }
-}
 
-impl XaiCredentialStore for ProfileFileXaiCredentialStore {
-    fn save(&self, profile_id: &str, value: &str) -> Result<(), String> {
-        let path = self.credential_path(profile_id)?;
+    fn generation_path(&self, profile_id: &str) -> Result<PathBuf, String> {
+        Ok(self
+            .credential_path(profile_id)?
+            .with_file_name(CREDENTIAL_GENERATION_FILE_NAME))
+    }
+
+    fn lock_path(&self, profile_id: &str) -> Result<PathBuf, String> {
+        Ok(self
+            .credential_path(profile_id)?
+            .with_file_name(CREDENTIAL_LOCK_FILE_NAME))
+    }
+
+    fn open_lock(&self, profile_id: &str) -> Result<std::fs::File, String> {
+        let path = self.lock_path(profile_id)?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
+            create_credential_directory(parent).map_err(|error| {
                 format!("Could not create the xAI credential directory: {error}")
             })?;
         }
-        let temporary = path.with_extension("credential.tmp");
-        std::fs::write(&temporary, value.as_bytes())
-            .map_err(|error| format!("Could not write the xAI credential: {error}"))?;
-        std::fs::rename(&temporary, &path)
-            .map_err(|error| format!("Could not save the xAI credential: {error}"))?;
-        // Best-effort cleanup of any legacy keyring copy.
-        let _ = KeyringXaiCredentialStore.delete(profile_id);
-        Ok(())
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
+            .open(path)
+            .map_err(|error| format!("Could not open the xAI credential lock: {error}"))
     }
 
-    fn load(&self, profile_id: &str) -> Result<Option<String>, String> {
+    fn load_unlocked(
+        &self,
+        profile_id: &str,
+        state: CredentialState,
+    ) -> Result<Option<String>, String> {
+        if state.deleted {
+            return Ok(None);
+        }
         let path = self.credential_path(profile_id)?;
         match std::fs::read_to_string(&path) {
             Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
             Ok(_) => Err("The saved xAI credential is empty.".to_owned()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                KeyringXaiCredentialStore.load(profile_id)
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && state.generation == 0 => {
+                self.legacy_credentials.load(profile_id)
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("Could not load the xAI credential: {error}")),
         }
     }
 
-    fn delete(&self, profile_id: &str) -> Result<(), String> {
-        let path = self.credential_path(profile_id)?;
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!("Could not remove the xAI credential: {error}"));
-            }
+    fn save_unlocked(&self, profile_id: &str, value: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if self
+            .fail_next_credential_save
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err("Injected failure after generation advance.".to_owned());
         }
-        KeyringXaiCredentialStore.delete(profile_id)
+        let path = self.credential_path(profile_id)?;
+        let temporary = path.with_extension(format!("credential.{}.tmp", Uuid::now_v7()));
+        write_credential_file(&temporary, value.as_bytes()).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            format!("Could not write the xAI credential: {error}")
+        })?;
+        replace_credential_file(&temporary, &path).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            format!("Could not save the xAI credential: {error}")
+        })?;
+        // Best-effort cleanup of any legacy keyring copy.
+        let _ = self.legacy_credentials.delete(profile_id);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn fail_next_save_after_generation_advance(&self) {
+        self.fail_next_credential_save
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn fail_next_state_replace(&self) {
+        self.fail_next_state_replace
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn publish_state(&self, profile_id: &str, state: CredentialState) -> Result<(), String> {
+        let path = self.generation_path(profile_id)?;
+        let temporary = path.with_extension(format!("generation.{}.tmp", Uuid::now_v7()));
+        let value = serde_json::to_vec(&state)
+            .map_err(|error| format!("Could not encode the xAI credential state: {error}"))?;
+        write_credential_file(&temporary, &value).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            format!("Could not write the xAI credential state: {error}")
+        })?;
+        #[cfg(test)]
+        if self
+            .fail_next_state_replace
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err("Injected failure before xAI credential state replacement.".to_owned());
+        }
+        replace_credential_file(&temporary, &path).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            format!("Could not save the xAI credential state: {error}")
+        })
+    }
+
+    fn publish_active_state_and_save(
+        &self,
+        profile_id: &str,
+        value: &str,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.publish_state(
+            profile_id,
+            CredentialState {
+                generation: next_credential_generation(generation)?,
+                deleted: false,
+            },
+        )?;
+        self.save_unlocked(profile_id, value).map_err(|error| {
+            format!(
+                "The xAI credential generation was advanced, but the credential save did not complete: {error} Reload the credential before retrying."
+            )
+        })
+    }
+
+    fn save_if_generation_with_lock(
+        &self,
+        lock_file: std::fs::File,
+        profile_id: &str,
+        value: &str,
+        expected_generation: u64,
+    ) -> Result<bool, String> {
+        lock_file
+            .lock()
+            .map_err(|error| format!("Could not lock the xAI credential: {error}"))?;
+        let state = read_credential_state(&self.generation_path(profile_id)?)?;
+        if state.generation != expected_generation {
+            return Ok(false);
+        }
+        self.publish_active_state_and_save(profile_id, value, state.generation)?;
+        Ok(true)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+struct CredentialState {
+    generation: u64,
+    deleted: bool,
+}
+
+fn read_credential_state(path: &Path) -> Result<CredentialState, String> {
+    let value = match std::fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CredentialState::default())
+        }
+        Err(error) => return Err(format!("Could not read the xAI credential state: {error}")),
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(CredentialState::default());
+    }
+    if let Ok(generation) = value.parse() {
+        return Ok(CredentialState {
+            generation,
+            deleted: false,
+        });
+    }
+    serde_json::from_str(value)
+        .map_err(|error| format!("The xAI credential state is invalid: {error}"))
+}
+
+fn next_credential_generation(generation: u64) -> Result<u64, String> {
+    generation
+        .checked_add(1)
+        .ok_or("The xAI credential generation is exhausted.".to_owned())
+}
+
+#[cfg(unix)]
+fn create_credential_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700).create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn create_credential_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+fn write_credential_file(path: &Path, value: &[u8]) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(value)?;
+    file.sync_all()
+}
+
+#[cfg(windows)]
+fn replace_credential_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_credential_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)?;
+    if let Some(directory) = destination.parent() {
+        std::fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn remove_credential_file(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    #[cfg(unix)]
+    if let Some(directory) = path.parent() {
+        std::fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(())
+}
+
+impl XaiCredentialStore for ProfileFileXaiCredentialStore {
+    fn save(&self, profile_id: &str, value: &str) -> Result<(), String> {
+        let lock_file = self.open_lock(profile_id)?;
+        lock_file
+            .lock()
+            .map_err(|error| format!("Could not lock the xAI credential: {error}"))?;
+        let state = read_credential_state(&self.generation_path(profile_id)?)?;
+        self.publish_active_state_and_save(profile_id, value, state.generation)
+    }
+
+    fn load(&self, profile_id: &str) -> Result<Option<String>, String> {
+        self.load_versioned(profile_id).map(|(_, value)| value)
+    }
+
+    fn delete(&self, profile_id: &str) -> Result<(), String> {
+        let lock_file = self.open_lock(profile_id)?;
+        lock_file
+            .lock()
+            .map_err(|error| format!("Could not lock the xAI credential: {error}"))?;
+        let state = read_credential_state(&self.generation_path(profile_id)?)?;
+        self.publish_state(
+            profile_id,
+            CredentialState {
+                generation: next_credential_generation(state.generation)?,
+                deleted: true,
+            },
+        )?;
+        self.legacy_credentials.delete(profile_id)?;
+        let path = self.credential_path(profile_id)?;
+        remove_credential_file(&path)
+            .map_err(|error| format!("Could not remove the xAI credential: {error}"))
+    }
+
+    fn load_versioned(&self, profile_id: &str) -> Result<(u64, Option<String>), String> {
+        let lock_file = self.open_lock(profile_id)?;
+        lock_file
+            .lock_shared()
+            .map_err(|error| format!("Could not lock the xAI credential: {error}"))?;
+        let state = read_credential_state(&self.generation_path(profile_id)?)?;
+        Ok((state.generation, self.load_unlocked(profile_id, state)?))
+    }
+
+    fn save_if_generation(
+        &self,
+        profile_id: &str,
+        value: &str,
+        expected_generation: u64,
+    ) -> Result<bool, String> {
+        let lock_file = self.open_lock(profile_id)?;
+        self.save_if_generation_with_lock(lock_file, profile_id, value, expected_generation)
     }
 }
 
@@ -154,6 +463,19 @@ impl XaiCredentialStore for KeyringXaiCredentialStore {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!("Could not remove the xAI credential: {error}")),
         }
+    }
+
+    fn load_versioned(&self, profile_id: &str) -> Result<(u64, Option<String>), String> {
+        self.load(profile_id).map(|value| (0, value))
+    }
+
+    fn save_if_generation(
+        &self,
+        _profile_id: &str,
+        _value: &str,
+        _expected_generation: u64,
+    ) -> Result<bool, String> {
+        Err("The xAI keyring credential store does not support guarded saves.".to_owned())
     }
 }
 
@@ -244,8 +566,10 @@ impl XaiOAuthService {
                 .saturating_mul(1_000),
         );
         let flow_id = Uuid::now_v7().to_string();
+        let (credential_generation, _) = self.credentials.load_versioned(&profile.id)?;
         let pending = PendingDeviceFlow {
             profile_id: profile.id.clone(),
+            credential_generation,
             device_code: authorization.device_code,
             expires_at,
             interval_seconds,
@@ -308,7 +632,17 @@ impl XaiOAuthService {
         )? {
             TokenExchange::Granted(token) => {
                 let credential = StoredXaiCredential::from_token(token, None, now)?;
-                self.save_credential(&pending.profile_id, &credential)?;
+                if !self.save_credential_if_generation(
+                    &pending.profile_id,
+                    &credential,
+                    pending.credential_generation,
+                )? {
+                    self.pending
+                        .lock()
+                        .map_err(|error| error.to_string())?
+                        .remove(flow_id);
+                    return Err("The xAI sign-in was removed while it was completing.".to_owned());
+                }
                 self.pending
                     .lock()
                     .map_err(|error| error.to_string())?
@@ -369,8 +703,8 @@ impl XaiOAuthService {
 
     pub fn access_token(&self, profile_id: &str) -> Result<String, String> {
         let now = now_millis()?;
-        let credential = self
-            .load_credential(profile_id)?
+        let (generation, credential) = self
+            .load_credential_versioned(profile_id)?
             .ok_or("Connect this Grok profile to xAI before starting its runtime.")?;
         if credential
             .expires_at
@@ -378,7 +712,7 @@ impl XaiOAuthService {
         {
             return Ok(credential.access_token);
         }
-        self.refresh(profile_id, credential, now)
+        self.refresh(profile_id, credential, generation, now)
     }
 
     pub fn revoke(&self, profile_id: &str) -> Result<XaiOAuthStatus, String> {
@@ -419,6 +753,7 @@ impl XaiOAuthService {
         &self,
         profile_id: &str,
         credential: StoredXaiCredential,
+        generation: u64,
         now: i64,
     ) -> Result<String, String> {
         let refresh_token = credential.refresh_token.as_deref().ok_or(
@@ -446,7 +781,9 @@ impl XaiOAuthService {
         };
         let refreshed = StoredXaiCredential::from_token(token, credential.refresh_token, now)?;
         let access_token = refreshed.access_token.clone();
-        self.save_credential(profile_id, &refreshed)?;
+        if !self.save_credential_if_generation(profile_id, &refreshed, generation)? {
+            return Err("The xAI sign-in was removed while its token was refreshing.".to_owned());
+        }
         Ok(access_token)
     }
 
@@ -518,14 +855,30 @@ impl XaiOAuthService {
             .transpose()
     }
 
-    fn save_credential(
+    fn load_credential_versioned(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<(u64, StoredXaiCredential)>, String> {
+        let (generation, value) = self.credentials.load_versioned(profile_id)?;
+        value
+            .map(|value| {
+                serde_json::from_str(&value)
+                    .map(|credential| (generation, credential))
+                    .map_err(|error| format!("The saved xAI credential is invalid: {error}"))
+            })
+            .transpose()
+    }
+
+    fn save_credential_if_generation(
         &self,
         profile_id: &str,
         credential: &StoredXaiCredential,
-    ) -> Result<(), String> {
+        generation: u64,
+    ) -> Result<bool, String> {
         let encoded = serde_json::to_string(credential)
             .map_err(|error| format!("Could not encode the xAI credential: {error}"))?;
-        self.credentials.save(profile_id, &encoded)
+        self.credentials
+            .save_if_generation(profile_id, &encoded, generation)
     }
 }
 
@@ -1562,13 +1915,10 @@ fn sanitize_portable_json_schema(value: &mut Value) {
 
 fn coerce_known_integer_schema_types(value: &mut Value) {
     let Some(object) = value.as_object_mut() else {
-        match value {
-            Value::Array(values) => {
-                for child in values {
-                    coerce_known_integer_schema_types(child);
-                }
+        if let Value::Array(values) = value {
+            for child in values {
+                coerce_known_integer_schema_types(child);
             }
-            _ => {}
         }
         return;
     };
@@ -1813,6 +2163,7 @@ enum TokenExchange {
 #[derive(Clone)]
 struct PendingDeviceFlow {
     profile_id: String,
+    credential_generation: u64,
     device_code: String,
     expires_at: i64,
     interval_seconds: u64,
@@ -1867,34 +2218,119 @@ mod tests {
         create_codex_profile, credential_status, map_xai_response_event_to_codex,
         normalize_xai_image_inputs, refresh_model_catalog, sanitize_responses_request,
         start_responses_bridge, transform_xai_sse_chunk, validate_discovery, BlockingClient,
-        OAuthDiscovery, ProfileFileXaiCredentialStore, StatusCode, StoredXaiCredential,
-        TokenResponse, XaiCredentialStore, XaiOAuthService, XaiSseTransformState,
-        DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER, OAUTH_SCOPES, XAI_API_BASE_URL,
-        XAI_BRIDGE_MAX_REQUEST_BYTES, XAI_CLIENT_ID,
+        CredentialState, OAuthDiscovery, ProfileFileXaiCredentialStore, StatusCode,
+        StoredXaiCredential, TokenResponse, XaiCredentialStore, XaiOAuthService,
+        XaiSseTransformState, DEFAULT_TOKEN_LIFETIME_SECONDS, OAUTH_REFERRER, OAUTH_SCOPES,
+        XAI_API_BASE_URL, XAI_BRIDGE_MAX_REQUEST_BYTES, XAI_CLIENT_ID,
     };
     use crate::xiao::repository::XiaoRepository;
 
     #[derive(Default)]
     struct MemoryCredentialStore {
-        values: Mutex<HashMap<String, String>>,
+        state: Mutex<MemoryCredentialState>,
+    }
+
+    #[derive(Default)]
+    struct MemoryCredentialState {
+        values: HashMap<String, String>,
+        generations: HashMap<String, u64>,
     }
 
     impl XaiCredentialStore for MemoryCredentialStore {
         fn save(&self, profile_id: &str, value: &str) -> Result<(), String> {
-            self.values
-                .lock()
-                .unwrap()
-                .insert(profile_id.to_owned(), value.to_owned());
+            let mut state = self.state.lock().unwrap();
+            let generation = state.generations.get(profile_id).copied().unwrap_or(0);
+            let next_generation = generation
+                .checked_add(1)
+                .ok_or("The xAI credential generation is exhausted.")?;
+            state.values.insert(profile_id.to_owned(), value.to_owned());
+            state
+                .generations
+                .insert(profile_id.to_owned(), next_generation);
             Ok(())
         }
 
         fn load(&self, profile_id: &str) -> Result<Option<String>, String> {
-            Ok(self.values.lock().unwrap().get(profile_id).cloned())
+            Ok(self.state.lock().unwrap().values.get(profile_id).cloned())
         }
 
         fn delete(&self, profile_id: &str) -> Result<(), String> {
-            self.values.lock().unwrap().remove(profile_id);
+            let mut state = self.state.lock().unwrap();
+            let generation = state.generations.get(profile_id).copied().unwrap_or(0);
+            let next_generation = generation
+                .checked_add(1)
+                .ok_or("The xAI credential generation is exhausted.")?;
+            state.values.remove(profile_id);
+            state
+                .generations
+                .insert(profile_id.to_owned(), next_generation);
             Ok(())
+        }
+
+        fn load_versioned(&self, profile_id: &str) -> Result<(u64, Option<String>), String> {
+            let state = self.state.lock().unwrap();
+            Ok((
+                state.generations.get(profile_id).copied().unwrap_or(0),
+                state.values.get(profile_id).cloned(),
+            ))
+        }
+
+        fn save_if_generation(
+            &self,
+            profile_id: &str,
+            value: &str,
+            expected_generation: u64,
+        ) -> Result<bool, String> {
+            let mut state = self.state.lock().unwrap();
+            if state.generations.get(profile_id).copied().unwrap_or(0) != expected_generation {
+                return Ok(false);
+            }
+            let next_generation = expected_generation
+                .checked_add(1)
+                .ok_or("The xAI credential generation is exhausted.")?;
+            state.values.insert(profile_id.to_owned(), value.to_owned());
+            state
+                .generations
+                .insert(profile_id.to_owned(), next_generation);
+            Ok(true)
+        }
+    }
+
+    #[derive(Default)]
+    struct LegacyCredentialStore {
+        value: Mutex<Option<String>>,
+        fail_delete: std::sync::atomic::AtomicBool,
+    }
+
+    impl XaiCredentialStore for LegacyCredentialStore {
+        fn save(&self, _profile_id: &str, value: &str) -> Result<(), String> {
+            *self.value.lock().unwrap() = Some(value.to_owned());
+            Ok(())
+        }
+
+        fn load(&self, _profile_id: &str) -> Result<Option<String>, String> {
+            Ok(self.value.lock().unwrap().clone())
+        }
+
+        fn delete(&self, _profile_id: &str) -> Result<(), String> {
+            if self.fail_delete.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("injected keyring delete failure".to_owned());
+            }
+            self.value.lock().unwrap().take();
+            Ok(())
+        }
+
+        fn load_versioned(&self, profile_id: &str) -> Result<(u64, Option<String>), String> {
+            self.load(profile_id).map(|value| (0, value))
+        }
+
+        fn save_if_generation(
+            &self,
+            _profile_id: &str,
+            _value: &str,
+            _expected_generation: u64,
+        ) -> Result<bool, String> {
+            Err("legacy store does not support guarded saves".to_owned())
         }
     }
 
@@ -1996,6 +2432,49 @@ mod tests {
         let service = XaiOAuthService::with_credentials(Arc::new(MemoryCredentialStore::default()));
         service.forget("missing").unwrap();
         assert_eq!(service.status("missing").unwrap().state, "unauthenticated");
+    }
+
+    #[test]
+    fn deleting_a_credential_wins_over_an_in_flight_refresh_save() {
+        let service = Arc::new(XaiOAuthService::with_credentials(Arc::new(
+            MemoryCredentialStore::default(),
+        )));
+        let original = StoredXaiCredential {
+            access_token: "expired".to_owned(),
+            refresh_token: Some("refresh".to_owned()),
+            token_type: "Bearer".to_owned(),
+            scope: None,
+            expires_at: Some(0),
+        };
+        assert!(service
+            .save_credential_if_generation("grok", &original, 0)
+            .unwrap());
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let refresh_service = Arc::clone(&service);
+        let refresh = std::thread::spawn(move || {
+            let (generation, accepted) = refresh_service
+                .load_credential_versioned("grok")
+                .unwrap()
+                .unwrap();
+            accepted_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+            let refreshed = StoredXaiCredential {
+                access_token: "refreshed".to_owned(),
+                expires_at: Some(i64::MAX),
+                ..accepted
+            };
+            assert!(!refresh_service
+                .save_credential_if_generation("grok", &refreshed, generation)
+                .unwrap());
+        });
+
+        accepted_rx.recv().unwrap();
+        service.forget("grok").unwrap();
+        resume_tx.send(()).unwrap();
+        refresh.join().unwrap();
+
+        assert_eq!(service.status("grok").unwrap().state, "unauthenticated");
     }
 
     #[test]
@@ -2635,6 +3114,7 @@ mod tests {
         })
         .to_string();
         assert!(value.len() > 2_560);
+        store.save("grok-large", "old credential").unwrap();
         store.save("grok-large", &value).unwrap();
         assert_eq!(
             store.load("grok-large").unwrap().as_deref(),
@@ -2642,6 +3122,318 @@ mod tests {
         );
         store.delete("grok-large").unwrap();
         assert_eq!(store.load("grok-large").unwrap(), None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_save_advances_generation() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-save-{}", uuid::Uuid::now_v7()));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+
+        assert_eq!(store.load_versioned("grok").unwrap(), (0, None));
+        store.save("grok", "credential").unwrap();
+
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (1, Some("credential".to_owned()))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_guarded_save_advances_generation() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-guarded-save-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+
+        assert!(store.save_if_generation("grok", "credential", 0).unwrap());
+
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (1, Some("credential".to_owned()))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_failed_save_still_fences_stale_generation() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-failed-save-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "old credential").unwrap();
+        let (generation, _) = store.load_versioned("grok").unwrap();
+
+        store.fail_next_save_after_generation_advance();
+        let error = store.save("grok", "new credential").unwrap_err();
+
+        assert!(error.contains("generation"));
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (generation + 1, Some("old credential".to_owned()))
+        );
+        assert!(!store
+            .save_if_generation("grok", "stale refreshed credential", generation)
+            .unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_failed_guarded_save_still_fences_stale_generation() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-failed-guarded-save-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "old credential").unwrap();
+        let (generation, _) = store.load_versioned("grok").unwrap();
+
+        store.fail_next_save_after_generation_advance();
+        let error = store
+            .save_if_generation("grok", "new credential", generation)
+            .unwrap_err();
+
+        assert!(error.contains("generation"));
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (generation + 1, Some("old credential".to_owned()))
+        );
+        assert!(!store
+            .save_if_generation("grok", "stale refreshed credential", generation)
+            .unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_rejects_a_save_from_before_a_new_connect() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-race-{}", uuid::Uuid::now_v7()));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "old credential").unwrap();
+        let (generation, _) = store.load_versioned("grok").unwrap();
+
+        store.save("grok", "new credential").unwrap();
+
+        assert!(!store
+            .save_if_generation("grok", "stale refreshed credential", generation)
+            .unwrap());
+        assert_eq!(
+            store.load("grok").unwrap().as_deref(),
+            Some("new credential")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_delete_advances_generation_and_rejects_stale_refresh() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-delete-{}", uuid::Uuid::now_v7()));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "old credential").unwrap();
+        let (generation, _) = store.load_versioned("grok").unwrap();
+
+        store.delete("grok").unwrap();
+
+        assert!(!store
+            .save_if_generation("grok", "stale refreshed credential", generation)
+            .unwrap());
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (generation + 1, None)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_reads_legacy_numeric_state() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-legacy-state-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let profile_directory = directory.join("model-profiles").join("grok");
+        std::fs::create_dir_all(&profile_directory).unwrap();
+        std::fs::write(profile_directory.join("xai-oauth.generation"), "41").unwrap();
+        std::fs::write(profile_directory.join("xai-oauth.credential"), "credential").unwrap();
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (41, Some("credential".to_owned()))
+        );
+        store.save("grok", "replacement").unwrap();
+        assert_eq!(store.load_versioned("grok").unwrap().0, 42);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_state_publish_is_old_or_new_never_torn() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-torn-state-{}", uuid::Uuid::now_v7()));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "old credential").unwrap();
+        let state_path = store.generation_path("grok").unwrap();
+
+        store.fail_next_state_replace();
+        assert!(store.save("grok", "new credential").is_err());
+
+        let old_state: CredentialState =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        assert_eq!(
+            old_state,
+            CredentialState {
+                generation: 1,
+                deleted: false
+            }
+        );
+        let temporary_state = std::fs::read_dir(state_path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("xai-oauth.generation.")
+            })
+            .unwrap();
+        let new_state: CredentialState =
+            serde_json::from_str(&std::fs::read_to_string(temporary_state.path()).unwrap())
+                .unwrap();
+        assert_eq!(
+            new_state,
+            CredentialState {
+                generation: 2,
+                deleted: false
+            }
+        );
+
+        store.save("grok", "new credential").unwrap();
+        assert_eq!(
+            store.load_versioned("grok").unwrap(),
+            (2, Some("new credential".to_owned()))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_tombstone_suppresses_resurrected_file_and_keyring() {
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-tombstone-{}", uuid::Uuid::now_v7()));
+        let legacy = Arc::new(LegacyCredentialStore::default());
+        let store = ProfileFileXaiCredentialStore::with_legacy_credentials(
+            directory.clone(),
+            legacy.clone(),
+        );
+        store.save("grok", "file credential").unwrap();
+        legacy.save("grok", "keyring credential").unwrap();
+        store
+            .publish_state(
+                "grok",
+                CredentialState {
+                    generation: 2,
+                    deleted: true,
+                },
+            )
+            .unwrap();
+
+        assert!(store.credential_path("grok").unwrap().exists());
+        assert_eq!(
+            legacy.load("grok").unwrap().as_deref(),
+            Some("keyring credential")
+        );
+        assert_eq!(store.load_versioned("grok").unwrap(), (2, None));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_keyring_delete_failure_leaves_authoritative_tombstone() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-keyring-delete-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let legacy = Arc::new(LegacyCredentialStore::default());
+        let store = ProfileFileXaiCredentialStore::with_legacy_credentials(
+            directory.clone(),
+            legacy.clone(),
+        );
+        store.save("grok", "file credential").unwrap();
+        legacy.save("grok", "keyring credential").unwrap();
+        legacy
+            .fail_delete
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        assert!(store.delete("grok").unwrap_err().contains("keyring"));
+        assert!(store.credential_path("grok").unwrap().exists());
+        assert_eq!(
+            legacy.load("grok").unwrap().as_deref(),
+            Some("keyring credential")
+        );
+        assert_eq!(store.load_versioned("grok").unwrap(), (2, None));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_file_store_stale_waiter_observes_state_replaced_by_another_store() {
+        let directory = std::env::temp_dir().join(format!(
+            "xiao-xai-cred-multiprocess-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let legacy = Arc::new(LegacyCredentialStore::default());
+        let first = ProfileFileXaiCredentialStore::with_legacy_credentials(
+            directory.clone(),
+            legacy.clone(),
+        );
+        let second =
+            ProfileFileXaiCredentialStore::with_legacy_credentials(directory.clone(), legacy);
+        first.save("grok", "old credential").unwrap();
+        let stale_generation = first.load_versioned("grok").unwrap().0;
+        // A different process may already have opened the lock before waiting for the writer.
+        let stale_waiter_lock = first.open_lock("grok").unwrap();
+
+        second.save("grok", "new credential").unwrap();
+
+        assert!(!first
+            .save_if_generation_with_lock(
+                stale_waiter_lock,
+                "grok",
+                "stale credential",
+                stale_generation,
+            )
+            .unwrap());
+        assert_eq!(
+            first.load_versioned("grok").unwrap(),
+            (stale_generation + 1, Some("new credential".to_owned()))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn profile_file_store_restricts_credential_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("xiao-xai-cred-mode-{}", uuid::Uuid::now_v7()));
+        let store = ProfileFileXaiCredentialStore::new(directory.clone());
+        store.save("grok", "credential").unwrap();
+
+        let profile_directory = directory.join("model-profiles").join("grok");
+        let credential = profile_directory.join("xai-oauth.credential");
+        assert_eq!(
+            std::fs::metadata(profile_directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(credential).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

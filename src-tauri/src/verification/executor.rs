@@ -499,23 +499,7 @@ fn execute_command_gate_with_supervision(
         if status.is_none() {
             match child.try_wait() {
                 Ok(Some(exit_status)) => status = Some(exit_status),
-                Ok(None) => {
-                    if cancellation.load(Ordering::Acquire) {
-                        forced_outcome = Some((
-                            VerificationGateOutcome::Cancelled,
-                            "Verification was cancelled while the command was running.".to_owned(),
-                        ));
-                        terminate_child(&mut child);
-                        status = child.try_wait().ok().flatten();
-                    } else if started.elapsed() >= timeout {
-                        forced_outcome = Some((
-                            VerificationGateOutcome::Blocked,
-                            format!("The verification command timed out after {timeout_ms} ms."),
-                        ));
-                        terminate_child(&mut child);
-                        status = child.try_wait().ok().flatten();
-                    }
-                }
+                Ok(None) => {}
                 Err(error) => {
                     forced_outcome = Some((
                         VerificationGateOutcome::Blocked,
@@ -525,6 +509,22 @@ fn execute_command_gate_with_supervision(
                     status = child.try_wait().ok().flatten();
                 }
             }
+        }
+
+        if forced_outcome.is_none() && cancellation.load(Ordering::Acquire) {
+            forced_outcome = Some((
+                VerificationGateOutcome::Cancelled,
+                "Verification was cancelled while the command was running.".to_owned(),
+            ));
+            terminate_child(&mut child);
+            status = status.or_else(|| child.try_wait().ok().flatten());
+        } else if forced_outcome.is_none() && started.elapsed() >= timeout {
+            forced_outcome = Some((
+                VerificationGateOutcome::Blocked,
+                format!("The verification command timed out after {timeout_ms} ms."),
+            ));
+            terminate_child(&mut child);
+            status = status.or_else(|| child.try_wait().ok().flatten());
         }
 
         if status.is_some() && readers_finished >= 2 {
@@ -1392,6 +1392,30 @@ mod tests {
         assert_eq!(cancelled.outcome, VerificationGateOutcome::Cancelled);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn timeout_terminates_descendant_holding_output_after_direct_child_exits() {
+        let root = std::env::current_dir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let started = Instant::now();
+        let execution = execute_command_gate_with_supervision(
+            &root,
+            &display_path(&executable),
+            &fixture_arguments("fixture_descendant_holds_output"),
+            150,
+            &[0],
+            &AtomicBool::new(false),
+            true,
+        );
+
+        assert_eq!(execution.outcome, VerificationGateOutcome::Blocked);
+        assert!(execution
+            .diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("timed out")));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
     #[test]
     fn output_is_bounded_hashed_and_cwd_is_exact() {
         let directory = std::env::temp_dir().join(format!(
@@ -1467,6 +1491,13 @@ mod tests {
     #[ignore]
     fn fixture_sleep() {
         thread::sleep(Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn fixture_descendant_holds_output() {
+        Command::new("sh").args(["-c", "sleep 10"]).spawn().unwrap();
     }
 
     #[test]

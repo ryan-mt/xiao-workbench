@@ -96,6 +96,8 @@ function TerminalSession({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   const fitTerminal = () => {
     const terminal = terminalRef.current;
@@ -252,7 +254,7 @@ function TerminalSession({
         terminalStarted = true;
         setStatus("ready");
         fitTerminal();
-        if (active) terminal.focus();
+        if (activeRef.current) terminal.focus();
       } catch (reason) {
         unregisterStartCancellation();
         if (disposed) return;

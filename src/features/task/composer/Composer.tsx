@@ -343,6 +343,8 @@ export function Composer({
   const fileSearchRequest = useRef(0);
   const submittingRef = useRef(false);
   const mounted = useRef(true);
+  const latestAttachments = useRef(attachments);
+  latestAttachments.current = attachments;
   const slashMenu = useRef<HTMLDivElement>(null);
   const slashCommandOptions = useRef<Array<HTMLButtonElement | null>>([]);
   const currentTaskWorking = runtime.phase === "working" && runtime.taskId === taskId;
@@ -524,10 +526,17 @@ export function Composer({
     };
   }, [slashMenuOpen]);
 
+  const changeAttachments = (next: AgentAttachment[]) => {
+    latestAttachments.current = next;
+    onAttachmentsChange(next);
+  };
+
   const appendAttachments = (items: AgentAttachment[]) => {
-    const next = new Map(attachments.map((attachment) => [attachment.path, attachment]));
+    const next = new Map(
+      latestAttachments.current.map((attachment) => [attachment.path, attachment]),
+    );
     items.forEach((attachment) => next.set(attachment.path, attachment));
-    onAttachmentsChange([...next.values()]);
+    changeAttachments([...next.values()]);
   };
 
   useEffect(() => {
@@ -1167,13 +1176,14 @@ export function Composer({
         onDrop={onDrop}
       >
         <StashedPrompts
+          workspacePath={workspacePath}
           taskId={taskId}
           prompt={stashSubmission.prompt}
           attachments={stashSubmission.attachments}
           disabled={disabled || submitting || compacting || undoing}
           onClear={() => {
             updateValue("");
-            onAttachmentsChange([]);
+            changeAttachments([]);
             onReviewContextSent(activeReviewContext);
             onClearSelectedContext();
             setRestoredReviewContext([]);
@@ -1192,7 +1202,7 @@ export function Composer({
             updateValue(visiblePrompt);
             setRestoredSelectedContext(selectedParts?.context ?? null);
             setRestoredReviewContext(restoredReviews);
-            onAttachmentsChange(restoredFiles);
+            changeAttachments(restoredFiles);
             window.requestAnimationFrame(() => {
               textarea.current?.focus();
               if (!textarea.current) return;
@@ -1364,7 +1374,7 @@ export function Composer({
                       type="button"
                       aria-label={`Remove ${attachment.name}`}
                       onClick={() =>
-                        onAttachmentsChange(
+                        changeAttachments(
                           attachments.filter((item) => item.path !== attachment.path),
                         )
                       }

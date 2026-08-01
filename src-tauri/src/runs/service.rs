@@ -140,6 +140,11 @@ impl RunService {
                 notify.notified().await;
                 loop {
                     let claimed = {
+                        let registry = app.state::<EnvironmentRuntimeRegistry>();
+                        let _admission = match registry.admit_run() {
+                            Ok(admission) => admission,
+                            Err(_) => break,
+                        };
                         let repository = app.state::<XiaoRepository>();
                         repository.claim_next_eligible_run(RUN_CONCURRENCY_LIMIT)
                     };
@@ -264,6 +269,8 @@ impl RunService {
             defaults.reasoning_effort,
             request.default_reasoning_effort,
         )?;
+        let registry = app.state::<EnvironmentRuntimeRegistry>();
+        let _admission = registry.admit_run()?;
         let mutation = repository.enqueue_run(NewRun {
             id: new_uuid_v7(),
             workspace_id: defaults.workspace_id,
@@ -297,24 +304,6 @@ impl RunService {
         &self,
         app: &AppHandle<R>,
         request: SteerRunRequest,
-    ) -> Result<String, String> {
-        self.steer_inner(app, request, None).await
-    }
-
-    pub(crate) async fn steer_at_version<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        request: SteerRunRequest,
-        expected_version: i64,
-    ) -> Result<String, String> {
-        self.steer_inner(app, request, Some(expected_version)).await
-    }
-
-    async fn steer_inner<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        request: SteerRunRequest,
-        expected_version: Option<i64>,
     ) -> Result<String, String> {
         if request.client_user_message_id.trim().is_empty() || request.input.is_empty() {
             return Err("A message is required to steer the active Xiao run.".to_owned());
@@ -376,10 +365,6 @@ impl RunService {
             registry.runtime(&run.execution_environment_id)?
         };
         let _runtime_action = self.runtime_actions.lock().await;
-        if let Some(expected_version) = expected_version {
-            let current = app.state::<XiaoRepository>().get_run(&request.run_id)?;
-            require_steer_route_at_version(&current, expected_version)?;
-        }
         #[cfg(test)]
         let result = if let Some(hook) = steer_test_hook {
             hook.entered.notify_one();
@@ -439,26 +424,6 @@ impl RunService {
         app: &AppHandle<R>,
         run_id: &str,
     ) -> Result<RunSnapshot, String> {
-        self.cancel_inner(app, run_id, None).await
-    }
-
-    pub(crate) async fn cancel_at_version<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        run_id: &str,
-        expected_version: i64,
-        command_id: &str,
-    ) -> Result<RunSnapshot, String> {
-        self.cancel_inner(app, run_id, Some((expected_version, command_id)))
-            .await
-    }
-
-    async fn cancel_inner<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        run_id: &str,
-        companion_command: Option<(i64, &str)>,
-    ) -> Result<RunSnapshot, String> {
         let current = {
             let repository = app.state::<XiaoRepository>();
             repository.get_run(run_id)?
@@ -495,19 +460,14 @@ impl RunService {
             hook.before_linearization.notify_one();
         }
         let _runtime_action = self.runtime_actions.lock().await;
-        let disposition =
-            {
-                let _lifecycle = self
-                    .input_resolutions
-                    .lock()
-                    .map_err(|error| error.to_string())?;
-                let repository = app.state::<XiaoRepository>();
-                match companion_command {
-                    Some((expected_version, command_id)) => repository
-                        .request_run_cancel_at_version(run_id, expected_version, command_id)?,
-                    None => repository.request_run_cancel(run_id)?,
-                }
-            };
+        let disposition = {
+            let _lifecycle = self
+                .input_resolutions
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let repository = app.state::<XiaoRepository>();
+            repository.request_run_cancel(run_id)?
+        };
         match disposition {
             CancelDisposition::Settled(mutation) => {
                 let snapshot = mutation.run.snapshot();
@@ -530,12 +490,7 @@ impl RunService {
                     stop.wait().await?;
                 }
                 let repository = app.state::<XiaoRepository>();
-                let mutation = match companion_command {
-                    Some((_, command_id)) => {
-                        repository.finish_run_cancel_for_companion(run_id, command_id)?
-                    }
-                    None => repository.finish_run_cancel(run_id)?,
-                };
+                let mutation = repository.finish_run_cancel(run_id)?;
                 let snapshot = mutation.run.snapshot();
                 emit_update(app, &mutation, None);
                 self.wake();
@@ -609,12 +564,7 @@ impl RunService {
                     ),
                 }
                 let repository = app.state::<XiaoRepository>();
-                let mutation = match companion_command {
-                    Some((_, command_id)) => {
-                        repository.finish_run_cancel_for_companion(run_id, command_id)?
-                    }
-                    None => repository.finish_run_cancel(run_id)?,
-                };
+                let mutation = repository.finish_run_cancel(run_id)?;
                 let snapshot = mutation.run.snapshot();
                 emit_update(app, &mutation, None);
                 self.wake();
@@ -643,33 +593,10 @@ impl RunService {
         run_id: &str,
         idempotency_key: &str,
     ) -> Result<RunSnapshot, String> {
-        self.retry_inner(app, run_id, idempotency_key, None)
-    }
-
-    pub(crate) fn retry_at_version(
-        &self,
-        app: &AppHandle,
-        run_id: &str,
-        idempotency_key: &str,
-        expected_version: i64,
-    ) -> Result<RunSnapshot, String> {
-        self.retry_inner(app, run_id, idempotency_key, Some(expected_version))
-    }
-
-    fn retry_inner(
-        &self,
-        app: &AppHandle,
-        run_id: &str,
-        idempotency_key: &str,
-        expected_version: Option<i64>,
-    ) -> Result<RunSnapshot, String> {
         let repository = app.state::<XiaoRepository>();
-        let mutation = match expected_version {
-            Some(expected_version) => {
-                repository.retry_run_at_version(run_id, idempotency_key, expected_version)?
-            }
-            None => repository.retry_run(run_id, idempotency_key)?,
-        };
+        let registry = app.state::<EnvironmentRuntimeRegistry>();
+        let _admission = registry.admit_run()?;
+        let mutation = repository.retry_run(run_id, idempotency_key)?;
         let snapshot = mutation.run.snapshot();
         emit_update(app, &mutation, None);
         self.wake();
@@ -682,34 +609,6 @@ impl RunService {
         pending_input_id: &str,
         result: Value,
     ) -> Result<RunSnapshot, String> {
-        self.resolve_input_inner(app, pending_input_id, result, None)
-            .await
-    }
-
-    pub(crate) async fn resolve_input_at_version(
-        &self,
-        app: &AppHandle,
-        pending_input_id: &str,
-        result: Value,
-        expected_version: i64,
-        command_id: &str,
-    ) -> Result<RunSnapshot, String> {
-        self.resolve_input_inner(
-            app,
-            pending_input_id,
-            result,
-            Some((expected_version, command_id)),
-        )
-        .await
-    }
-
-    async fn resolve_input_inner(
-        &self,
-        app: &AppHandle,
-        pending_input_id: &str,
-        result: Value,
-        companion_command: Option<(i64, &str)>,
-    ) -> Result<RunSnapshot, String> {
         let _resolution = self
             .input_resolutions
             .lock()
@@ -718,21 +617,6 @@ impl RunService {
             let repository = app.state::<XiaoRepository>();
             repository.get_pending_input(pending_input_id)?
         };
-        let current_version = pending
-            .resolved_at
-            .into_iter()
-            .chain(pending.invalidated_at)
-            .fold(pending.opened_at, i64::max);
-        if companion_command.is_some_and(|(expected, _)| {
-            current_version != expected
-                || pending.resolved_at.is_some()
-                || pending.invalidated_at.is_some()
-        }) {
-            return Err(
-                "The Xiao input request changed before the Companion command was applied."
-                    .to_owned(),
-            );
-        }
         if pending.resolved_at.is_some() {
             let repository = app.state::<XiaoRepository>();
             return Ok(repository.get_run(&pending.run_id)?.snapshot());
@@ -756,14 +640,12 @@ impl RunService {
             result,
         )?;
         let repository = app.state::<XiaoRepository>();
-        let (mutation, pending) = match companion_command {
-            Some((expected_version, command_id)) => repository.resolve_pending_input_at_version(
-                pending_input_id,
-                expected_version,
-                command_id,
-            )?,
-            None => repository.resolve_pending_input(pending_input_id)?,
-        };
+        let persisted = repository.resolve_pending_input(pending_input_id);
+        let (mutation, pending) = recover_replied_input_persistence(persisted, || {
+            registry
+                .runtime(&run.execution_environment_id)?
+                .stop_generation(pending.runtime_generation)
+        })?;
         let snapshot = mutation.run.snapshot();
         emit_update(app, &mutation, Some(pending));
         Ok(snapshot)
@@ -1181,13 +1063,6 @@ fn turn_model_override<'a>(
     run_model.or(session_model)
 }
 
-fn require_steer_route_at_version(run: &RunRecord, expected_version: i64) -> Result<(), String> {
-    if run.version != expected_version {
-        return Err("The Xiao run changed before the Companion command was applied.".to_owned());
-    }
-    require_steer_route(run)
-}
-
 fn require_steer_route(run: &RunRecord) -> Result<(), String> {
     if !matches!(run.status, RunStatus::Running | RunStatus::WaitingForInput)
         || run.cancel_requested
@@ -1449,6 +1324,19 @@ fn apply_runtime_message(
         )?;
         emit_update(app, &mutation, None);
         emit_protocol(app, &mutation, generation, &safe_message, None, None);
+        if mutation.run.status == RunStatus::Verifying {
+            if let Err(error) = app
+                .state::<VerificationService>()
+                .launch_initial(app, &mutation.run.id)
+            {
+                settle_preparation_failure(
+                    app,
+                    &mutation.run.id,
+                    RunStatus::NeedsAttention,
+                    &error,
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -1460,6 +1348,19 @@ fn apply_runtime_message(
         )?;
         emit_update(app, &mutation, None);
         emit_protocol(app, &mutation, generation, &safe_message, None, None);
+        if mutation.run.status == RunStatus::Verifying {
+            if let Err(error) = app
+                .state::<VerificationService>()
+                .launch_initial(app, &mutation.run.id)
+            {
+                settle_preparation_failure(
+                    app,
+                    &mutation.run.id,
+                    RunStatus::NeedsAttention,
+                    &error,
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -1727,11 +1628,28 @@ fn auto_decline_pending(
         request_id,
         result,
     )?;
-    let (mutation, resolved) = app
+    let persisted = app
         .state::<XiaoRepository>()
-        .resolve_pending_input(&pending.id)?;
+        .resolve_pending_input(&pending.id);
+    let (mutation, resolved) = recover_replied_input_persistence(persisted, || {
+        registry
+            .runtime(&run.execution_environment_id)?
+            .stop_generation(pending.runtime_generation)
+    })?;
     emit_update(app, &mutation, Some(resolved));
     Ok(())
+}
+
+fn recover_replied_input_persistence<T>(
+    persisted: Result<T, String>,
+    stop_runtime_generation: impl FnOnce() -> Result<bool, String>,
+) -> Result<T, String> {
+    persisted.map_err(|persistence_error| match stop_runtime_generation() {
+        Ok(_) => persistence_error,
+        Err(stop_error) => format!(
+            "{persistence_error} The resumed runtime generation could not be stopped safely: {stop_error}"
+        ),
+    })
 }
 
 fn require_pending_route(run: &RunRecord, pending: &PendingInputSnapshot) -> Result<(), String> {
@@ -2211,7 +2129,7 @@ fn renderable_protocol_message(safe_message: &Value, original_message: &Value) -
                 let data = original_part.get("data").and_then(Value::as_str);
                 if original_part.get("type").and_then(Value::as_str) != Some("image")
                     || !mime.is_some_and(|mime| mime.to_ascii_lowercase().starts_with("image/"))
-                    || !data.is_some_and(|data| data.len() <= remaining)
+                    || data.is_none_or(|data| data.len() > remaining)
                 {
                     continue;
                 }
@@ -2460,6 +2378,7 @@ pub(crate) fn emit_service_error_for_workspace<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -2498,6 +2417,29 @@ mod tests {
             ("xiao_preview".to_owned(), "targets".to_owned())
         );
         assert!(resolve_dynamic_tool_route(None, "unknown").is_err());
+    }
+
+    #[test]
+    fn replied_input_persistence_failure_stops_runtime_generation() {
+        let stopped = Cell::new(false);
+        let error = recover_replied_input_persistence::<()>(
+            Err("injected persistence failure".to_owned()),
+            || {
+                stopped.set(true);
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+
+        assert!(stopped.get());
+        assert_eq!(error, "injected persistence failure");
+        assert_eq!(
+            recover_replied_input_persistence(Ok("persisted"), || {
+                panic!("successful persistence must not stop the runtime")
+            })
+            .unwrap(),
+            "persisted"
+        );
     }
 
     fn running_service_test_app() -> (
@@ -2633,7 +2575,7 @@ mod tests {
             let steer = tauri::async_runtime::spawn(async move {
                 steer_app
                     .state::<RunService>()
-                    .steer_at_version(&steer_app, request, running.version)
+                    .steer(&steer_app, request)
                     .await
             });
             tokio::time::timeout(Duration::from_secs(1), steer_hook.entered.notified())
@@ -3142,24 +3084,6 @@ mod tests {
             finished_at: None,
             version: 1,
         }
-    }
-
-    #[test]
-    fn stale_companion_follow_up_does_not_reach_runtime_steer() {
-        let mut running = test_run();
-        running.status = RunStatus::Running;
-        running.turn_id = Some("turn".to_owned());
-        let runtime_steered = std::cell::Cell::new(false);
-
-        let result = require_steer_route_at_version(&running, running.version - 1).and_then(|_| {
-            runtime_steered.set(true);
-            Ok(())
-        });
-
-        assert!(result
-            .unwrap_err()
-            .contains("changed before the Companion command"));
-        assert!(!runtime_steered.get());
     }
 
     #[test]

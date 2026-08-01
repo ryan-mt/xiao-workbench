@@ -10,7 +10,10 @@ import {
   workspacePathComparisonKey,
   workspacePathIsWithin,
 } from "../../../core/workspacePath";
-import { timelineEntryFromItem } from "../hooks/useAgentRuntime";
+import {
+  normalizeFileChangeDiff,
+  timelineEntryFromItem,
+} from "../hooks/useAgentRuntime";
 
 type RawThread = {
   id?: unknown;
@@ -216,11 +219,14 @@ export const readCodexThreadChangeSummary = async (
         const change = rawChange as Record<string, unknown>;
         if (typeof change.path !== "string") continue;
         changed = true;
-        const diff = typeof change.diff === "string" ? change.diff : "";
-        for (const line of diff.replace(/\r\n?/g, "\n").split("\n")) {
-          if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
-          if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
-        }
+        const normalized = normalizeFileChangeDiff(
+          typeof change.diff === "string" ? change.diff : "",
+          change.kind === "add" || change.kind === "delete" || change.kind === "update"
+            ? change.kind
+            : null,
+        );
+        additions += normalized.additions;
+        deletions += normalized.deletions;
       }
     }
     if (changed) return { additions, deletions };

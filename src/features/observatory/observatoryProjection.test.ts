@@ -56,6 +56,17 @@ const event = (sequence: number, item: Record<string, unknown>): RunEventRecord 
 });
 
 describe("Agent Observatory projection", () => {
+  it("ignores events belonging to another run", () => {
+    const foreignEvent = { ...event(1, { type: "fileChange", id: "foreign" }), runId: "run-2" };
+
+    const snapshot = projectObservatory(run(), [
+      foreignEvent,
+      event(2, { type: "fileChange", id: "local" }),
+    ], []);
+
+    expect(snapshot.activities.map((activity) => activity.timelineEntryId)).toEqual(["local"]);
+  });
+
   it("builds nested parent and child nodes from normalized collaboration events", () => {
     const snapshot = projectObservatory(run(), [
       event(1, {

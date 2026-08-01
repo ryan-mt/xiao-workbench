@@ -65,7 +65,10 @@ const groupTurnFlow = (
   };
 
   for (const entry of flow) {
-    if (entry === response) {
+    if (
+      entry === response ||
+      (entry.kind === "result" && entry.title === "Agent response" && entry.meta !== "Commentary")
+    ) {
       flushExecution();
       groups.push({ kind: "response", entry });
     } else if (entry.kind === "user" || entry.kind === "brief") {

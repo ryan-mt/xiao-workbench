@@ -48,8 +48,8 @@ export function Hero() {
             <Image
               src="/screenshots/sidebar.png"
               alt="Xiao Workbench with projects sidebar and new task composer"
-              width={1600}
-              height={1000}
+              width={1440}
+              height={900}
               priority
               sizes="100vw"
             />

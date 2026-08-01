@@ -154,8 +154,13 @@ export function CommandMenu({
   useEffect(() => {
     if (!open) return;
     setActiveIndex(resultCount > 0 ? 0 : -1);
+  }, [open, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    setActiveIndex((current) => current >= resultCount ? resultCount - 1 : current);
     resultButtons.current = resultButtons.current.slice(0, resultCount);
-  }, [open, query, resultCount]);
+  }, [open, resultCount]);
 
   const moveActiveResult = (direction: 1 | -1) => {
     if (!resultCount) return;

@@ -3,7 +3,7 @@ import { Reveal } from "@/components/Reveal";
 const points = [
   {
     title: "Host stays authoritative",
-    body: "Companion devices authenticate to the primary Xiao host. They do not own the Codex runtime or canonical state.",
+    body: "The local Xiao host owns the Codex runtime and canonical state.",
   },
   {
     title: "No product analytics",

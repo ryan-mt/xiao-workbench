@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
@@ -125,7 +125,7 @@ impl Default for AgentRuntime {
 }
 
 impl AgentRuntime {
-    pub fn start_for_environment_profile(
+    fn start_for_environment_profile(
         &self,
         app: AppHandle,
         environment_id: &str,
@@ -423,21 +423,9 @@ impl AgentRuntime {
 
     fn stop_locked(&self) -> Result<(), String> {
         let mut child_slot = self.child.lock().map_err(|error| error.to_string())?;
+        stop_process_slot(&mut child_slot)?;
         *self.stdin.lock().map_err(|error| error.to_string())? = None;
         fail_pending_requests(&self.pending, "Agent runtime was disconnected.");
-        if let Some(mut child) = child_slot.take() {
-            if let Err(kill_error) = child.kill() {
-                let still_running = child
-                    .try_wait()
-                    .map_err(|error| error.to_string())?
-                    .is_none();
-                if still_running {
-                    *child_slot = Some(child);
-                    return Err(format!("Could not stop the agent runtime: {kill_error}"));
-                }
-            }
-            child.wait().map_err(|error| error.to_string())?;
-        }
         self.thread_bindings
             .lock()
             .map_err(|error| error.to_string())?
@@ -654,12 +642,77 @@ impl AgentRuntime {
     }
 }
 
-#[derive(Default)]
 pub struct EnvironmentRuntimeRegistry {
     runtimes: Mutex<HashMap<String, Arc<AgentRuntime>>>,
+    update_interlock: Arc<Mutex<UpdateInterlockState>>,
+}
+
+#[derive(Default)]
+struct UpdateInterlockState {
+    update_reserved: bool,
+}
+
+pub(crate) struct RunAdmission<'a> {
+    _state: MutexGuard<'a, UpdateInterlockState>,
+}
+
+pub struct CodexUpdateReservation {
+    interlock: Arc<Mutex<UpdateInterlockState>>,
+}
+
+impl Drop for CodexUpdateReservation {
+    fn drop(&mut self) {
+        let mut state = self
+            .interlock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.update_reserved = false;
+    }
+}
+
+impl Default for EnvironmentRuntimeRegistry {
+    fn default() -> Self {
+        Self {
+            runtimes: Mutex::new(HashMap::new()),
+            update_interlock: Arc::new(Mutex::new(UpdateInterlockState::default())),
+        }
+    }
 }
 
 impl EnvironmentRuntimeRegistry {
+    pub(crate) fn admit_run(&self) -> Result<RunAdmission<'_>, String> {
+        let state = self
+            .update_interlock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if state.update_reserved {
+            return Err(
+                "Wait for the Codex CLI update to finish before starting a Xiao run.".to_owned(),
+            );
+        }
+        Ok(RunAdmission { _state: state })
+    }
+
+    pub fn reserve_update(
+        &self,
+        has_active_runs: impl FnOnce() -> Result<bool, String>,
+    ) -> Result<CodexUpdateReservation, String> {
+        let mut state = self
+            .update_interlock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if state.update_reserved {
+            return Err("A Codex CLI update is already in progress.".to_owned());
+        }
+        if has_active_runs()? {
+            return Err("Wait for active Xiao runs to finish before updating Codex.".to_owned());
+        }
+        state.update_reserved = true;
+        Ok(CodexUpdateReservation {
+            interlock: Arc::clone(&self.update_interlock),
+        })
+    }
+
     pub(crate) fn runtime(&self, environment_id: &str) -> Result<Arc<AgentRuntime>, String> {
         validate_environment_id(environment_id)?;
         let mut runtimes = self.runtimes.lock().map_err(|error| error.to_string())?;
@@ -676,6 +729,7 @@ impl EnvironmentRuntimeRegistry {
         environment_id: &str,
         profile: &crate::xiao::models::CodexProfile,
     ) -> Result<StartResult, String> {
+        let _admission = self.admit_run()?;
         if crate::xai::service::is_xai_profile(profile) {
             let responses_base_url = app
                 .state::<crate::xai::service::XaiOAuthService>()
@@ -874,6 +928,46 @@ fn fail_pending_requests(pending: &Mutex<HashMap<u64, PendingResponse>>, message
     }
 }
 
+trait RuntimeProcess {
+    fn kill_process(&mut self) -> std::io::Result<()>;
+    fn process_is_running(&mut self) -> std::io::Result<bool>;
+    fn wait_for_exit(&mut self) -> std::io::Result<()>;
+}
+
+impl RuntimeProcess for Child {
+    fn kill_process(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+
+    fn process_is_running(&mut self) -> std::io::Result<bool> {
+        self.try_wait().map(|status| status.is_none())
+    }
+
+    fn wait_for_exit(&mut self) -> std::io::Result<()> {
+        self.wait().map(|_| ())
+    }
+}
+
+fn stop_process(process: &mut impl RuntimeProcess) -> Result<(), String> {
+    if let Err(kill_error) = process.kill_process() {
+        if process
+            .process_is_running()
+            .map_err(|error| error.to_string())?
+        {
+            return Err(format!("Could not stop the agent runtime: {kill_error}"));
+        }
+    }
+    process.wait_for_exit().map_err(|error| error.to_string())
+}
+
+fn stop_process_slot<P: RuntimeProcess>(process_slot: &mut Option<P>) -> Result<(), String> {
+    if let Some(process) = process_slot.as_mut() {
+        stop_process(process)?;
+    }
+    *process_slot = None;
+    Ok(())
+}
+
 fn terminate_child(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
@@ -940,9 +1034,131 @@ fn hide_window(_command: &mut Command) {}
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::sync::Barrier;
+
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn enqueue_wins_before_update_reservation() {
+        let registry = Arc::new(EnvironmentRuntimeRegistry::default());
+        let run_exists = Arc::new(AtomicBool::new(false));
+        let admission = registry.admit_run().unwrap();
+        let ready = Arc::new(Barrier::new(2));
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let update_registry = Arc::clone(&registry);
+        let update_run_exists = Arc::clone(&run_exists);
+        let update_ready = Arc::clone(&ready);
+        let update = thread::spawn(move || {
+            update_ready.wait();
+            let result =
+                update_registry.reserve_update(|| Ok(update_run_exists.load(Ordering::Acquire)));
+            finished_tx.send(result.map(drop)).unwrap();
+        });
+
+        ready.wait();
+        run_exists.store(true, Ordering::Release);
+        drop(admission);
+
+        assert!(finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap_err()
+            .contains("active Xiao runs"));
+        update.join().unwrap();
+    }
+
+    #[test]
+    fn update_reservation_wins_before_enqueue() {
+        let registry = EnvironmentRuntimeRegistry::default();
+        let reservation = registry.reserve_update(|| Ok(false)).unwrap();
+
+        assert!(registry
+            .admit_run()
+            .err()
+            .unwrap()
+            .contains("update to finish"));
+
+        drop(reservation);
+        registry.admit_run().unwrap();
+    }
+
+    #[test]
+    fn failed_update_releases_reservation() {
+        let registry = EnvironmentRuntimeRegistry::default();
+
+        let result: Result<(), &str> = {
+            let _reservation = registry.reserve_update(|| Ok(false)).unwrap();
+            Err("injected updater failure")
+        };
+
+        assert_eq!(result.unwrap_err(), "injected updater failure");
+        registry.admit_run().unwrap();
+    }
+
+    #[test]
+    fn concurrent_updates_have_one_owner() {
+        let registry = EnvironmentRuntimeRegistry::default();
+        let reservation = registry.reserve_update(|| Ok(false)).unwrap();
+        let active_check_called = AtomicBool::new(false);
+
+        let error = registry
+            .reserve_update(|| {
+                active_check_called.store(true, Ordering::Release);
+                Ok(false)
+            })
+            .err()
+            .unwrap();
+
+        assert!(error.contains("already in progress"));
+        assert!(!active_check_called.load(Ordering::Acquire));
+        drop(reservation);
+    }
+
+    #[test]
+    fn update_reservation_blocks_queue_claim_admission() {
+        let registry = EnvironmentRuntimeRegistry::default();
+        let reservation = registry.reserve_update(|| Ok(false)).unwrap();
+
+        let claim = registry.admit_run();
+
+        assert!(claim.is_err());
+        drop(reservation);
+        registry.admit_run().unwrap();
+    }
+
+    struct KillFailingProcess {
+        wait_called: bool,
+    }
+
+    impl RuntimeProcess for KillFailingProcess {
+        fn kill_process(&mut self) -> io::Result<()> {
+            Err(io::Error::other("injected kill failure"))
+        }
+
+        fn process_is_running(&mut self) -> io::Result<bool> {
+            Ok(true)
+        }
+
+        fn wait_for_exit(&mut self) -> io::Result<()> {
+            self.wait_called = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn failed_stop_preserves_live_process_state() {
+        let mut process_slot = Some(KillFailingProcess { wait_called: false });
+
+        let error = stop_process_slot(&mut process_slot).unwrap_err();
+
+        assert!(error.contains("injected kill failure"));
+        assert!(!process_slot.as_ref().unwrap().wait_called);
+    }
 
     #[test]
     fn machine_login_names_cannot_override_codex_identity() {

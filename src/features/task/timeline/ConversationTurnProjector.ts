@@ -88,6 +88,9 @@ export class ConversationTurnProjector {
           continue;
         }
         if (isResponse(candidate)) {
+          if (response && responseFlowIndex !== null) {
+            flow.splice(responseFlowIndex, 0, response);
+          }
           response = candidate;
           responseFlowIndex = flow.length;
         } else if (isCommentary(candidate)) {

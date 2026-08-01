@@ -1,4 +1,5 @@
-import type { TaskStage } from "../../core/models/xiao";
+import type { TaskStage, XiaoProjectSummary } from "../../core/models/xiao";
+import { workspaceContainsPath } from "../agent/history/codexHistory";
 import type { WorkbenchTask } from "../task/task.types";
 
 export type SidebarTaskTone =
@@ -43,6 +44,15 @@ export function sidebarTaskPresentation(
 
 const compareTaskRecency = (left: WorkbenchTask, right: WorkbenchTask) =>
   Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt;
+
+export function activeSidebarProject(
+  projects: readonly XiaoProjectSummary[],
+  activeProjectPath: string,
+): XiaoProjectSummary | null {
+  return projects
+    .filter((project) => workspaceContainsPath(project.path, activeProjectPath))
+    .sort((left, right) => right.path.length - left.path.length)[0] ?? null;
+}
 
 export function projectSidebarTasks(
   tasks: readonly WorkbenchTask[],

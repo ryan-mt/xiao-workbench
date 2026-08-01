@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -139,7 +140,56 @@ fn restore_intent_path(app_data_dir: &Path) -> std::path::PathBuf {
     app_data_dir.join(RESTORE_INTENT_FILE_NAME)
 }
 
-fn write_restore_intent(app_data_dir: &Path, intent: &PendingRestoreIntent) -> Result<(), String> {
+trait RestoreIntentPersistence {
+    fn write_temporary(&self, path: &Path, contents: &[u8]) -> std::io::Result<()>;
+    fn sync_temporary(&self, path: &Path) -> std::io::Result<()>;
+    fn publish(&self, temporary_path: &Path, path: &Path) -> std::io::Result<()>;
+    fn retire(&self, path: &Path, retired_path: &Path) -> std::io::Result<bool>;
+    fn remove_retired(&self, path: &Path) -> std::io::Result<()>;
+}
+
+struct FileRestoreIntentPersistence;
+
+impl RestoreIntentPersistence for FileRestoreIntentPersistence {
+    fn write_temporary(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        if let Err(error) = file.write_all(contents) {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn sync_temporary(&self, path: &Path) -> std::io::Result<()> {
+        fs::OpenOptions::new().write(true).open(path)?.sync_all()
+    }
+
+    fn publish(&self, temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+        publish_restore_intent(temporary_path, path)
+    }
+
+    fn retire(&self, path: &Path, retired_path: &Path) -> std::io::Result<bool> {
+        retire_restore_intent(path, retired_path)
+    }
+
+    fn remove_retired(&self, path: &Path) -> std::io::Result<()> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn write_restore_intent_with(
+    app_data_dir: &Path,
+    intent: &PendingRestoreIntent,
+    persistence: &impl RestoreIntentPersistence,
+) -> Result<(), String> {
     let path = restore_intent_path(app_data_dir);
     if path.exists() {
         return Err(
@@ -152,22 +202,31 @@ fn write_restore_intent(app_data_dir: &Path, intent: &PendingRestoreIntent) -> R
     ));
     let contents = serde_json::to_vec(intent)
         .map_err(|error| format!("Could not encode the time-travel restore intent: {error}"))?;
-    let persistence = (|| {
-        fs::write(&temporary_path, contents)
-            .map_err(|error| format!("Could not write the time-travel restore intent: {error}"))?;
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&temporary_path)
-            .and_then(|file| file.sync_all())
+    persistence
+        .write_temporary(&temporary_path, &contents)
+        .map_err(|error| format!("Could not write the time-travel restore intent: {error}"))?;
+    let publication = (|| {
+        persistence
+            .sync_temporary(&temporary_path)
             .map_err(|error| format!("Could not sync the time-travel restore intent: {error}"))?;
-        fs::rename(&temporary_path, &path)
+        persistence
+            .publish(&temporary_path, &path)
             .map_err(|error| format!("Could not publish the time-travel restore intent: {error}"))
     })();
-    if persistence.is_err() {
+    if publication.is_err() {
         let _ = fs::remove_file(&temporary_path);
-        let _ = fs::remove_file(&path);
     }
-    persistence
+    publication
+}
+
+fn after_restore_intent_published<T>(
+    app_data_dir: &Path,
+    intent: &PendingRestoreIntent,
+    persistence: &impl RestoreIntentPersistence,
+    operation: impl FnOnce() -> T,
+) -> Result<T, String> {
+    write_restore_intent_with(app_data_dir, intent, persistence)?;
+    Ok(operation())
 }
 
 fn remove_restore_intent(app_data_dir: &Path) -> Result<(), String> {
@@ -175,14 +234,101 @@ fn remove_restore_intent(app_data_dir: &Path) -> Result<(), String> {
     if FAIL_RESTORE_INTENT_REMOVAL.with(|fail| fail.replace(false)) {
         return Err("Injected restore intent cleanup failure.".to_owned());
     }
+    remove_restore_intent_with(app_data_dir, &FileRestoreIntentPersistence)
+}
+
+fn remove_restore_intent_with(
+    app_data_dir: &Path,
+    persistence: &impl RestoreIntentPersistence,
+) -> Result<(), String> {
     let path = restore_intent_path(app_data_dir);
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+    let retired_path = app_data_dir.join(format!(
+        "{RESTORE_INTENT_FILE_NAME}.{}.retired",
+        new_uuid_v7()
+    ));
+    match persistence.retire(&path, &retired_path) {
+        Ok(true) => {
+            let _ = persistence.remove_retired(&retired_path);
+            Ok(())
+        }
+        Ok(false) => Ok(()),
         Err(error) => Err(format!(
             "Could not clear the completed time-travel restore intent: {error}"
         )),
     }
+}
+
+#[cfg(windows)]
+fn write_through_rename(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn publish_restore_intent(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+    write_through_rename(temporary_path, path)
+}
+
+#[cfg(not(windows))]
+fn publish_restore_intent(temporary_path: &Path, path: &Path) -> std::io::Result<()> {
+    fs::hard_link(temporary_path, path)?;
+    fs::remove_file(temporary_path)?;
+    sync_directory(
+        path.parent()
+            .expect("restore intent has a parent directory"),
+    )
+}
+
+#[cfg(windows)]
+fn retire_restore_intent(path: &Path, retired_path: &Path) -> std::io::Result<bool> {
+    match write_through_rename(path, retired_path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(windows))]
+fn retire_restore_intent(path: &Path, _retired_path: &Path) -> std::io::Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => {
+            sync_directory(
+                path.parent()
+                    .expect("restore intent has a parent directory"),
+            )?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
 }
 
 fn complete_restore(
@@ -606,8 +752,12 @@ impl XiaoRepository {
                         .to_owned(),
                 );
             }
-            write_restore_intent(&app_data_dir, &intent)?;
-            let restore = match restore_workspace_checkpoints_with_rollback(execution_root, &steps) {
+            let restore = match after_restore_intent_published(
+                &app_data_dir,
+                &intent,
+                &FileRestoreIntentPersistence,
+                || restore_workspace_checkpoints_with_rollback(execution_root, &steps),
+            )? {
                 Ok(restore) => restore,
                 Err(error) => {
                     if workspace_fingerprint(execution_root).ok().as_deref()
@@ -697,7 +847,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::fs;
+    use std::io;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use rusqlite::params;
@@ -710,6 +862,222 @@ mod tests {
     };
 
     static NEXT_TEST: AtomicU64 = AtomicU64::new(1);
+
+    struct RecordingRestoreIntentPersistence {
+        operations: RefCell<Vec<&'static str>>,
+        fail_at: Option<&'static str>,
+    }
+
+    impl RecordingRestoreIntentPersistence {
+        fn new(fail_at: Option<&'static str>) -> Self {
+            Self {
+                operations: RefCell::new(Vec::new()),
+                fail_at,
+            }
+        }
+
+        fn record(&self, operation: &'static str) -> io::Result<()> {
+            self.operations.borrow_mut().push(operation);
+            if self.fail_at == Some(operation) {
+                Err(io::Error::other("injected persistence failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl RestoreIntentPersistence for RecordingRestoreIntentPersistence {
+        fn write_temporary(&self, _path: &Path, _contents: &[u8]) -> io::Result<()> {
+            self.record("write")
+        }
+
+        fn sync_temporary(&self, _path: &Path) -> io::Result<()> {
+            self.record("sync")
+        }
+
+        fn publish(&self, _temporary_path: &Path, _path: &Path) -> io::Result<()> {
+            self.record("publish")
+        }
+
+        fn retire(&self, _path: &Path, _retired_path: &Path) -> io::Result<bool> {
+            self.record("retire").map(|()| true)
+        }
+
+        fn remove_retired(&self, _path: &Path) -> io::Result<()> {
+            self.record("remove-retired")
+        }
+    }
+
+    fn restore_intent() -> PendingRestoreIntent {
+        PendingRestoreIntent {
+            version: RESTORE_INTENT_VERSION,
+            restore_batch_id: "restore-batch".to_owned(),
+            checkpoint_ids: vec!["checkpoint".to_owned()],
+            target_run_id: "run".to_owned(),
+            execution_root: "workspace".to_owned(),
+            original_fingerprint: "a".repeat(40),
+            target_fingerprint: "b".repeat(40),
+            restored_at: 1,
+        }
+    }
+
+    #[test]
+    fn restore_intent_publication_writes_and_syncs_before_durable_publish() {
+        let persistence = RecordingRestoreIntentPersistence::new(None);
+
+        after_restore_intent_published(Path::new("state"), &restore_intent(), &persistence, || {
+            persistence.operations.borrow_mut().push("workspace")
+        })
+        .unwrap();
+
+        assert_eq!(
+            *persistence.operations.borrow(),
+            ["write", "sync", "publish", "workspace"]
+        );
+    }
+
+    #[test]
+    fn restore_intent_publication_faults_stop_before_later_operations() {
+        for (failure, expected) in [
+            ("write", vec!["write"]),
+            ("sync", vec!["write", "sync"]),
+            ("publish", vec!["write", "sync", "publish"]),
+        ] {
+            let persistence = RecordingRestoreIntentPersistence::new(Some(failure));
+
+            assert!(after_restore_intent_published(
+                Path::new("state"),
+                &restore_intent(),
+                &persistence,
+                || persistence.operations.borrow_mut().push("workspace"),
+            )
+            .is_err());
+            assert_eq!(*persistence.operations.borrow(), expected);
+        }
+    }
+
+    struct CanonicalInstallingFailure {
+        canonical_path: std::path::PathBuf,
+        fail_at: &'static str,
+    }
+
+    impl CanonicalInstallingFailure {
+        fn fail(&self) -> io::Result<()> {
+            fs::write(&self.canonical_path, b"winner")?;
+            Err(io::Error::other("injected persistence failure"))
+        }
+    }
+
+    impl RestoreIntentPersistence for CanonicalInstallingFailure {
+        fn write_temporary(&self, path: &Path, contents: &[u8]) -> io::Result<()> {
+            if self.fail_at == "write" {
+                self.fail()
+            } else {
+                FileRestoreIntentPersistence.write_temporary(path, contents)
+            }
+        }
+
+        fn sync_temporary(&self, path: &Path) -> io::Result<()> {
+            if self.fail_at == "sync" {
+                self.fail()
+            } else {
+                FileRestoreIntentPersistence.sync_temporary(path)
+            }
+        }
+
+        fn publish(&self, temporary_path: &Path, path: &Path) -> io::Result<()> {
+            if self.fail_at == "publish" {
+                self.fail()
+            } else {
+                FileRestoreIntentPersistence.publish(temporary_path, path)
+            }
+        }
+
+        fn retire(&self, path: &Path, retired_path: &Path) -> io::Result<bool> {
+            FileRestoreIntentPersistence.retire(path, retired_path)
+        }
+
+        fn remove_retired(&self, path: &Path) -> io::Result<()> {
+            FileRestoreIntentPersistence.remove_retired(path)
+        }
+    }
+
+    #[test]
+    fn restore_intent_errors_never_delete_a_concurrently_installed_canonical_intent() {
+        for failure in ["write", "sync", "publish"] {
+            let app_data = test_directory(failure);
+            fs::create_dir_all(&app_data).unwrap();
+            let canonical_path = restore_intent_path(&app_data);
+            let persistence = CanonicalInstallingFailure {
+                canonical_path: canonical_path.clone(),
+                fail_at: failure,
+            };
+
+            assert!(write_restore_intent_with(&app_data, &restore_intent(), &persistence).is_err());
+            assert_eq!(fs::read(&canonical_path).unwrap(), b"winner");
+
+            fs::remove_dir_all(app_data).unwrap();
+        }
+    }
+
+    #[test]
+    fn restore_intent_publisher_collision_preserves_the_winner() {
+        let app_data = test_directory("publisher-collision");
+        fs::create_dir_all(&app_data).unwrap();
+        let temporary_path = app_data.join("candidate.tmp");
+        let canonical_path = restore_intent_path(&app_data);
+        fs::write(&temporary_path, b"candidate").unwrap();
+        fs::write(&canonical_path, b"winner").unwrap();
+
+        assert!(publish_restore_intent(&temporary_path, &canonical_path).is_err());
+        assert_eq!(fs::read(&canonical_path).unwrap(), b"winner");
+        assert_eq!(fs::read(&temporary_path).unwrap(), b"candidate");
+
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn restore_intent_preexisting_temporary_file_is_unchanged() {
+        let app_data = test_directory("preexisting-temporary");
+        fs::create_dir_all(&app_data).unwrap();
+        let temporary_path = app_data.join(format!(
+            "{RESTORE_INTENT_FILE_NAME}.{}.tmp",
+            restore_intent().restore_batch_id
+        ));
+        fs::write(&temporary_path, b"not ours").unwrap();
+
+        assert!(write_restore_intent_with(
+            &app_data,
+            &restore_intent(),
+            &FileRestoreIntentPersistence,
+        )
+        .is_err());
+        assert_eq!(fs::read(&temporary_path).unwrap(), b"not ours");
+        assert!(!restore_intent_path(&app_data).exists());
+
+        fs::remove_dir_all(app_data).unwrap();
+    }
+
+    #[test]
+    fn restore_intent_retirement_is_durable_before_best_effort_deletion() {
+        let persistence = RecordingRestoreIntentPersistence::new(Some("remove-retired"));
+
+        remove_restore_intent_with(Path::new("state"), &persistence).unwrap();
+
+        assert_eq!(
+            *persistence.operations.borrow(),
+            ["retire", "remove-retired"]
+        );
+    }
+
+    #[test]
+    fn restore_intent_retirement_fault_does_not_attempt_deletion() {
+        let persistence = RecordingRestoreIntentPersistence::new(Some("retire"));
+
+        assert!(remove_restore_intent_with(Path::new("state"), &persistence).is_err());
+
+        assert_eq!(*persistence.operations.borrow(), ["retire"]);
+    }
 
     fn test_directory(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(

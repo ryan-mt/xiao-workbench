@@ -20,13 +20,10 @@ const isBeta = channel === "beta";
 const executableName = process.platform === "win32"
   ? "xiao-workbench.exe"
   : "xiao-workbench";
-const releaseExecutable = join(
-  root,
-  "src-tauri",
-  "target",
-  "release",
-  executableName,
-);
+const cargoTargetDirectory = process.env.CARGO_TARGET_DIR
+  ? resolve(root, process.env.CARGO_TARGET_DIR)
+  : join(root, "src-tauri", "target");
+const releaseExecutable = join(cargoTargetDirectory, "release", executableName);
 
 if (!existsSync(tauriCli)) {
   throw new Error("Tauri CLI is missing. Run `npm install` first.");

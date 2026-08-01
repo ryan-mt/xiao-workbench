@@ -39,11 +39,13 @@ enum NavigationAllowance {
 
 #[derive(Clone, Default)]
 pub struct PreviewRegistry {
-    roots: Arc<Mutex<VecDeque<(String, PathBuf, Option<PreviewScope>)>>>,
+    roots: Arc<Mutex<PreviewRoots>>,
     navigation_allowances: Arc<Mutex<HashMap<String, NavigationAllowance>>>,
     webview_tasks: Arc<Mutex<HashMap<String, PreviewScope>>>,
     registered_origins: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
+
+type PreviewRoots = VecDeque<(String, PathBuf, Option<PreviewScope>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreviewScope {
@@ -98,8 +100,17 @@ impl PreviewRegistry {
         if !registered {
             return Err("Task Preview target is not registered for this Task.".to_owned());
         }
-        if let Ok(mut bindings) = self.webview_tasks.lock() {
+        let rebound = if let Ok(mut bindings) = self.webview_tasks.lock() {
+            let rebound = bindings
+                .get(webview_label)
+                .is_some_and(|existing| existing != &scope);
             bindings.insert(webview_label.to_owned(), scope);
+            rebound
+        } else {
+            false
+        };
+        if rebound {
+            self.clear_navigation_allowance(webview_label);
         }
         if let Some(origin) = url_origin(target) {
             let mut origins = self
@@ -107,6 +118,9 @@ impl PreviewRegistry {
                 .lock()
                 .map_err(|_| "Task Preview registry is unavailable.".to_owned())?;
             let registered = origins.entry(webview_label.to_owned()).or_default();
+            if rebound {
+                registered.clear();
+            }
             if !registered.contains(&origin) {
                 registered.push(origin);
             }
@@ -764,6 +778,46 @@ mod tests {
                 execution_root: "C:/other-root".to_owned(),
             })
             .is_empty());
+    }
+
+    #[test]
+    fn rebinding_a_preview_label_drops_origins_from_the_previous_scope() {
+        let registry = PreviewRegistry::default();
+        let task_a = scope("task-a");
+        let task_b = scope("task-b");
+        registry
+            .register_task_preview_target(
+                "xiao-task-preview-shared",
+                task_a.clone(),
+                &Url::parse("http://127.0.0.1:4101/").unwrap(),
+            )
+            .unwrap();
+        registry.allow_navigation(
+            "xiao-task-preview-shared",
+            &Url::parse("http://127.0.0.1:4101/next").unwrap(),
+        );
+
+        registry
+            .register_task_preview_target(
+                "xiao-task-preview-shared",
+                task_b.clone(),
+                &Url::parse("http://127.0.0.1:4102/").unwrap(),
+            )
+            .unwrap();
+
+        assert!(registry.task_preview_targets(&task_a).is_empty());
+        assert_eq!(
+            registry.task_preview_targets(&task_b),
+            vec![(
+                "xiao-task-preview-shared".to_owned(),
+                vec!["http://127.0.0.1:4102".to_owned()],
+            )],
+        );
+        assert!(!registry.navigation_allowed(
+            "xiao-task-preview-shared",
+            &Url::parse("http://127.0.0.1:4102/").unwrap(),
+            &Url::parse("http://127.0.0.1:4101/next").unwrap(),
+        ));
     }
 
     #[test]
