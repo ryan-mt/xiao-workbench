@@ -153,7 +153,7 @@ pub(crate) async fn prepare_xiao_session(
             return Ok(AgentSession {
                 thread_id: binding.thread_id.clone(),
                 model: model.map(str::to_owned),
-                materialized: true,
+                materialized: binding.materialized,
             });
         }
     }
@@ -201,9 +201,6 @@ fn reusable_xiao_binding(
     let Some(binding) = binding else {
         return Ok(None);
     };
-    if !binding.materialized {
-        return Ok(None);
-    }
     if binding.thread_source.as_deref() != Some("xiao-workbench") {
         return Err("The stored Codex thread is not owned by Xiao Workbench.".to_owned());
     }
@@ -374,10 +371,16 @@ mod tests {
         assert!(reusable_xiao_binding(Some(&wrong_source)).is_err());
 
         let provisional = XiaoThreadBinding {
+            thread_source: Some("xiao-workbench".to_owned()),
             materialized: false,
             ..wrong_source
         };
-        assert!(reusable_xiao_binding(Some(&provisional)).unwrap().is_none());
+        assert_eq!(
+            reusable_xiao_binding(Some(&provisional))
+                .unwrap()
+                .map(|binding| binding.thread_id.as_str()),
+            Some("owned")
+        );
     }
 
     #[test]

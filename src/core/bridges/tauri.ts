@@ -91,14 +91,19 @@ export const nativeBridge = {
     return invoke<CodexUpdateResult>("update_codex_cli");
   },
 
-  startAgent(projectPath: string, taskId: string | null, profileId: string | null) {
+  startAgent(
+    projectPath: string,
+    taskId: string | null,
+    profileId: string | null,
+    prewarmOnly = false,
+  ) {
     return invoke<{
       version: string;
       alreadyRunning: boolean;
       environmentId: string;
       generation: number;
       profileId: string | null;
-    }>("start_agent_runtime", { projectPath, taskId, profileId });
+    }>("start_agent_runtime", { projectPath, taskId, profileId, prewarmOnly });
   },
 
   stopAgent(projectPath: string, taskId: string | null) {

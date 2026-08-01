@@ -3134,6 +3134,43 @@ export function useAgentRuntime(
     selectedCodexProfileId,
   ]);
 
+  useEffect(() => {
+    if (
+      !isTauriHost() ||
+      !autoConnect ||
+      !listenersReady ||
+      runtime.phase !== "ready" ||
+      !executionTaskId
+    ) {
+      return;
+    }
+    const scope = workspaceScopeRef.current;
+    void nativeBridge.startAgent(
+      workspacePath,
+      executionTaskId,
+      selectedCodexProfileId,
+      true,
+    ).catch((reason) => {
+      if (!agentRuntimeWorkspaceScopeMatches(
+        workspaceScopeRef.current,
+        workspacePath,
+        scope.generation,
+      )) return;
+      appendRuntimeLog(
+        "system",
+        `Task prewarm deferred: ${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    });
+  }, [
+    appendRuntimeLog,
+    autoConnect,
+    executionTaskId,
+    listenersReady,
+    runtime.phase,
+    selectedCodexProfileId,
+    workspacePath,
+  ]);
+
   const submit = useCallback(
     async (
       prompt: string,

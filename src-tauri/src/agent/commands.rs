@@ -10,7 +10,8 @@ use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::execution::service::resolve_execution_context;
-use crate::lsp::LspManager;
+use crate::lsp::{codex_supports_dynamic_tools, LspManager};
+use crate::runs::models::RuntimeAttachment;
 use crate::xiao::repository::XiaoRepository;
 
 use super::runtime::{EnvironmentRuntimeRegistry, StartResult};
@@ -637,19 +638,64 @@ pub fn read_codex_rollout_commands(
 }
 
 #[tauri::command]
-pub fn start_agent_runtime(
+pub async fn start_agent_runtime(
     app: AppHandle,
     project_path: String,
     task_id: Option<String>,
     profile_id: Option<String>,
+    prewarm_only: Option<bool>,
     runtimes: State<'_, EnvironmentRuntimeRegistry>,
     repository: State<'_, XiaoRepository>,
 ) -> Result<StartResult, String> {
     let task_id = task_id.as_deref();
-    let context = resolve_execution_context(&repository, &project_path, task_id)?;
+    let prewarm_eligible = task_id
+        .map(|task_id| repository.task_is_pristine_for_prewarm(&project_path, task_id))
+        .transpose()?
+        .unwrap_or(false);
+    let runtime_task_id = if prewarm_only.unwrap_or(false) && !prewarm_eligible {
+        None
+    } else {
+        task_id
+    };
+    let context = resolve_execution_context(&repository, &project_path, runtime_task_id)?;
     let profile =
-        repository.runtime_codex_profile(&project_path, task_id, profile_id.as_deref())?;
-    runtimes.start_with_profile(app, &context.environment.id, &profile)
+        repository.runtime_codex_profile(&project_path, runtime_task_id, profile_id.as_deref())?;
+    let start = runtimes.start_with_profile(app, &context.environment.id, &profile)?;
+    let Some(task_id) = task_id else {
+        return Ok(start);
+    };
+    if !prewarm_eligible {
+        return Ok(start);
+    }
+
+    let defaults = repository.run_task_defaults(&project_path, task_id)?;
+    let runtime = runtimes.runtime(&context.environment.id)?;
+    let session = service::prepare_xiao_session(
+        &runtime,
+        &context.execution_root,
+        &context.project_path,
+        task_id,
+        defaults.model.as_deref(),
+        Vec::new(),
+        defaults.thread_binding.as_ref(),
+        None,
+        &defaults.approval_policy,
+        &defaults.sandbox_mode,
+        codex_supports_dynamic_tools(&start.version),
+    )
+    .await?;
+    repository.persist_prewarmed_thread(
+        &project_path,
+        task_id,
+        &RuntimeAttachment {
+            generation: start.generation,
+            thread_id: session.thread_id,
+            thread_source: "xiao-workbench".to_owned(),
+            cli_version: start.version.clone(),
+            materialized: session.materialized,
+        },
+    )?;
+    Ok(start)
 }
 
 #[tauri::command]

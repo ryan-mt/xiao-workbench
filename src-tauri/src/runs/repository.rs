@@ -302,6 +302,79 @@ impl XiaoRepository {
         })
     }
 
+    pub(crate) fn task_is_pristine_for_prewarm(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+    ) -> Result<bool, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        self.with_connection(|connection| {
+            connection
+                .query_row(
+                    r#"SELECT t.timeline_entry_count = 0
+                              AND t.thread_binding_json IS NULL
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM runs r
+                                  WHERE r.workspace_id = t.workspace_id
+                                    AND r.task_id = t.task_id
+                                    AND r.status IN ('queued', 'preparing', 'running',
+                                                     'waiting_for_input', 'verifying')
+                              )
+                       FROM workspaces w
+                       JOIN tasks t ON t.workspace_id = w.id
+                       WHERE w.workspace_path = ?1 AND t.task_id = ?2"#,
+                    params![workspace_path, task_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map(|pristine| pristine.unwrap_or(false))
+                .map_err(|error| format!("Could not inspect Xiao task prewarm state: {error}"))
+        })
+    }
+
+    pub(crate) fn persist_prewarmed_thread(
+        &self,
+        workspace_path: &str,
+        task_id: &str,
+        attachment: &RuntimeAttachment,
+    ) -> Result<bool, String> {
+        let workspace_path = normalize_workspace_path(workspace_path);
+        let binding = XiaoThreadBinding {
+            thread_id: attachment.thread_id.clone(),
+            persistence: XiaoThreadPersistence::Ephemeral,
+            materialized: attachment.materialized,
+            thread_source: Some(attachment.thread_source.clone()),
+            cli_version: Some(attachment.cli_version.clone()),
+        };
+        self.with_connection(|connection| {
+            connection
+                .execute(
+                    r#"UPDATE tasks
+                       SET thread_binding_json = ?1
+                       WHERE workspace_id = (
+                           SELECT id FROM workspaces WHERE workspace_path = ?2
+                       )
+                         AND task_id = ?3
+                         AND timeline_entry_count = 0
+                         AND thread_binding_json IS NULL
+                         AND NOT EXISTS (
+                             SELECT 1 FROM runs r
+                             WHERE r.workspace_id = tasks.workspace_id
+                               AND r.task_id = tasks.task_id
+                               AND r.status IN ('queued', 'preparing', 'running',
+                                                'waiting_for_input', 'verifying')
+                         )"#,
+                    params![
+                        json_string(&binding, "prewarmed Xiao thread binding")?,
+                        workspace_path,
+                        task_id
+                    ],
+                )
+                .map(|changed| changed == 1)
+                .map_err(|error| format!("Could not persist Xiao task prewarm state: {error}"))
+        })
+    }
+
     pub(crate) fn enqueue_run(&self, run: NewRun) -> Result<RunMutation, String> {
         self.with_connection(|connection| {
             let transaction = connection
@@ -3150,6 +3223,46 @@ mod tests {
             goal: defaults.goal,
             queued_at: now_millis().unwrap(),
         }
+    }
+
+    #[test]
+    fn pristine_tasks_accept_one_prewarmed_thread_before_a_run_is_queued() {
+        let directory = TestDirectory::new("task-prewarm");
+        let repository = repository_with_tasks(&directory.0, &["task-a", "task-b"]);
+        let workspace = workspace_path(&directory.0);
+        let attachment = RuntimeAttachment {
+            generation: 1,
+            thread_id: "prewarmed-thread".to_owned(),
+            thread_source: "xiao-workbench".to_owned(),
+            cli_version: "codex-test".to_owned(),
+            materialized: false,
+        };
+
+        assert!(repository
+            .task_is_pristine_for_prewarm(&workspace, "task-a")
+            .unwrap());
+        assert!(repository
+            .persist_prewarmed_thread(&workspace, "task-a", &attachment)
+            .unwrap());
+        assert!(!repository
+            .task_is_pristine_for_prewarm(&workspace, "task-a")
+            .unwrap());
+        assert!(!repository
+            .persist_prewarmed_thread(&workspace, "task-a", &attachment)
+            .unwrap());
+
+        repository
+            .enqueue_run(new_run(&repository, &workspace, "task-b", "queued"))
+            .unwrap();
+        assert!(!repository
+            .task_is_pristine_for_prewarm(&workspace, "task-b")
+            .unwrap());
+        assert!(!repository
+            .persist_prewarmed_thread(&workspace, "task-b", &attachment)
+            .unwrap());
+        assert!(!repository
+            .task_is_pristine_for_prewarm(&workspace, "not-yet-persisted")
+            .unwrap());
     }
 
     fn verifying_run_with_gates(
